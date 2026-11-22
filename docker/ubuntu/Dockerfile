@@ -39,7 +39,7 @@ RUN case "${TARGETARCH}" in \
 RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
     && if getent group ubuntu >/dev/null 2>&1; then groupdel ubuntu; fi \
     && useradd -m -u 1000 -s /bin/bash dev \
-    && install -d -o dev -g dev /opt/mise /workspace /home/dev/.claude /home/dev/.local/bin \
+    && install -d -o dev -g dev /opt/mise /workspace /home/dev/.claude /home/dev/.local /home/dev/.local/bin /home/dev/.local/share \
     && printf '\n. /etc/profile.d/agent-secrets.sh\n' >> /etc/bash.bashrc
 
 COPY --chmod=644 agent-secrets-profile.sh /etc/profile.d/agent-secrets.sh
