@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#MISE description="Fast-forward the remote pc checkout of dotfiles-v2 and apply mise tools and dotfiles inside the running container"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker host over SSH"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+name="dotfiles-v2"
+
+export DOCKER_HOST="ssh://${host}"
+
+remote_dir="$(ssh -o BatchMode=yes "${host}" 'printf "%s/dev/containers/dotfiles-v2" "$HOME"')"
+ssh -o BatchMode=yes "${host}" "git -C '${remote_dir}' fetch -q origin && git -C '${remote_dir}' merge -q --ff-only origin/main"
+
+docker exec -w /workspace "${name}" mise bootstrap --only tools,dotfiles

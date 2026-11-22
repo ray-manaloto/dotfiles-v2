@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#MISE description="Build the bare Ubuntu 26.10 mise image on pc, sync the checkout there, and start the non-privileged container"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker host over SSH"
+#USAGE flag "--tag <tag>" default="dotfiles-v2:dev" help="Docker image tag"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+tag="${usage_tag:-dotfiles-v2:dev}"
+name="dotfiles-v2"
+repo_url="https://github.com/ray-manaloto/dotfiles-v2.git"
+root="$(git rev-parse --show-toplevel)"
+
+export DOCKER_HOST="ssh://${host}"
+
+docker build --progress=plain -t "${tag}" -f "${root}/docker/ubuntu/Dockerfile" "${root}/docker/ubuntu"
+
+remote_home="$(ssh -o BatchMode=yes "${host}" 'printf "%s" "$HOME"')"
+remote_dir="${remote_home}/dev/containers/${name}"
+
+ssh -o BatchMode=yes "${host}" "mkdir -p '${remote_home}/dev/containers' && if [ -d '${remote_dir}/.git' ]; then git -C '${remote_dir}' fetch -q origin && git -C '${remote_dir}' merge -q --ff-only origin/main; else git clone -q '${repo_url}' '${remote_dir}'; fi"
+
+want_image="$(docker image inspect --format '{{.Id}}' "${tag}")"
+have_image="$(docker container inspect --format '{{.Image}}' "${name}" 2>/dev/null || true)"
+
+if [ "${have_image}" != "${want_image}" ]; then
+	docker rm -f "${name}" >/dev/null 2>&1 || true
+	docker run -d \
+		--name "${name}" \
+		--hostname "${name}" \
+		-e container=docker \
+		--restart unless-stopped \
+		-v "${remote_dir}:/workspace" \
+		"${tag}" >/dev/null
+else
+	docker start "${name}" >/dev/null
+fi
+
+docker ps --filter "name=^${name}$" --format '{{.Names}} {{.Status}} {{.Image}}'
