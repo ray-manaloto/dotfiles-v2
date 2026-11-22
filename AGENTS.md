@@ -24,7 +24,13 @@ and C++26 workstation setup.
 - **Schemas, hooks & verification:** Declare public `$schema` / `#:schema`
   headers on config files. Prefer `mise` / `jdx` ecosystem tools, native
   compiled `hk` builtins, `mise fmt` for mise configs, and `mise doctor project`
-  plus `hk check --all` over unit tests for setup checks.
+  plus `hk check --all` over unit tests for setup checks. In `hk.pkl`, pair
+  `Builtins.mise` + `Builtins.mise_config_dir` for all mise configs and exclude
+  them from `tombi-format` while keeping `tombi lint --error-on-warnings`.
+- **`mise` `[dotfiles]` & guest sync pitfalls:** Always anchor `dotfiles.root`
+  with Tera syntax (`"{{ config_root }}/unix/home"`), pass `--force-dotfiles` on
+  sync, and ensure `tart exec` guest scripts trust repo configs (`mise trust
+  --all` / `MISE_TRUSTED_CONFIG_PATHS`) and prepend shims to `PATH`.
 - **Prototype workflow & privacy:** Direct push to `main` during prototyping,
   guarded locally by `hk check --all` (includes `betterleaks`). Stage files
   explicitly by name; never `git add -A` or `git add .`. Never commit secrets,

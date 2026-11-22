@@ -19,3 +19,6 @@ hosts, Linux containers, and macOS VMs.
   supported config files. Prefer `mise doctor project` and `hk` checks/hooks over
   unit tests for setup verification, and always inspect current docs or source
   before acting.
+- **Non-interactive runs and watchdogs:** Pass explicit non-interactive flags
+  (`MISE_YES=1`, `--yes` / `-y`) to long-running commands, and pair any
+  backgrounded build, sync, or upgrade task with a bounded `schedule` watchdog.
