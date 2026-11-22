@@ -14,6 +14,7 @@ lockfile = true
 lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
 
 [dotfiles]
+"~/.config/agent-secrets/env.sh" = { mode = "symlink" }
 "~/.config/agents/AGENTS.md" = { mode = "symlink" }
 "~/.config/mise/config.toml" = { mode = "symlink" }
 "~/.config/mise/mise.lock" = { mode = "symlink" }

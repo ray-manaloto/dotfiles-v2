@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-#MISE description="Provision, start, and prepare the dotfiles-v2-macos Tart VM with pinned mise and repo checkout"
+#MISE description="Provision, start, and prepare the dotfiles-v2-macos Tart VM with pinned mise, Claude Code, and agent-secrets"
+#USAGE flag "--ref <ref>" help="Git branch or ref to check out in VM (default: current branch)"
 set -euo pipefail
 
 VM_NAME="dotfiles-v2-macos"
@@ -7,11 +8,41 @@ BASE_IMAGE="ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fba
 MISE_VER="2026.11.12"
 MISE_SHA256_MACOS_ARM64="f7bd19aa4e6b7a58d7296f98e2c6af68b2e2643dfd608b0bc46c2b5fdbc8749b"
 REPO_URL="https://github.com/ray-manaloto/dotfiles-v2.git"
+SLUG_REPO="ray-manaloto/dotfiles-v2"
+root="$(git rev-parse --show-toplevel)"
+
+resolve_ref() {
+	local r="${usage_ref:-}"
+	if [[ -z ${r} ]]; then
+		r="$(git -C "${root}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+		if [[ ${r} == "HEAD" || -z ${r} ]]; then
+			r="main"
+		fi
+	fi
+	if [[ ! ${r} =~ ^[A-Za-z0-9._/-]+$ ]]; then
+		echo "invalid git ref '${r}'" >&2
+		exit 1
+	fi
+	printf '%s' "${r}"
+}
 
 if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
 	echo "tasks/vm/up requires macOS with tart on PATH" >&2
 	exit 1
 fi
+
+secrets_running="$(env -u DOCKER_HOST docker --context desktop-linux container inspect --format '{{.State.Running}}' agent-secrets 2>/dev/null || echo false)"
+if [[ ${secrets_running} != "true" ]]; then
+	echo "agent-secrets container is not running on desktop-linux; start it before vm:up" >&2
+	exit 1
+fi
+keys="$(env -u DOCKER_HOST docker --context desktop-linux exec agent-secrets agent-secrets register "${VM_NAME}" "${SLUG_REPO}")"
+if [[ ! -s "${keys}/claude-oauth-token" ]]; then
+	echo "missing non-empty claude-oauth-token at ${keys}" >&2
+	exit 1
+fi
+
+ref="$(resolve_ref)"
 
 if ! tart list --quiet | grep -Fxq "${VM_NAME}"; then
 	echo "Cloning ${BASE_IMAGE} -> ${VM_NAME}"
@@ -19,9 +50,28 @@ if ! tart list --quiet | grep -Fxq "${VM_NAME}"; then
 	tart set "${VM_NAME}" --cpu 4 --memory 8192
 fi
 
+if tart exec "${VM_NAME}" true >/dev/null 2>&1; then
+	if ! tart exec "${VM_NAME}" test -s "/Volumes/My Shared Files/agent-secrets/claude-oauth-token" >/dev/null 2>&1; then
+		echo "Restarting ${VM_NAME} headless with read-only agent-secrets VirtioFS share"
+		tart stop "${VM_NAME}"
+		stopped=0
+		for _ in $(seq 1 15); do
+			if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
+				stopped=1
+				break
+			fi
+			sleep 2
+		done
+		if [[ ${stopped} -ne 1 ]]; then
+			echo "timed out waiting 30s for ${VM_NAME} to stop" >&2
+			exit 1
+		fi
+	fi
+fi
+
 if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
 	echo "Starting ${VM_NAME} headless"
-	nohup tart run --no-graphics "${VM_NAME}" >/tmp/dotfiles-v2-tart.log 2>&1 </dev/null &
+	nohup tart run --no-graphics --dir="agent-secrets:${keys}:ro" "${VM_NAME}" >/tmp/dotfiles-v2-tart.log 2>&1 </dev/null &
 	ready=0
 	for _ in $(seq 1 40); do
 		if tart exec "${VM_NAME}" true >/dev/null 2>&1; then
@@ -53,14 +103,33 @@ if [[ "${have}" != "${MISE_VER}" ]]; then
 fi
 GUEST
 
-tart exec -i "${VM_NAME}" env REPO_URL="${REPO_URL}" /bin/bash -euo pipefail <<'GUEST'
+tart exec -i "${VM_NAME}" env REPO_URL="${REPO_URL}" REF="${ref}" /bin/bash -euo pipefail <<'GUEST'
 mkdir -p "${HOME}/dev"
 if [[ -d "${HOME}/dev/dotfiles-v2/.git" ]]; then
-  git -C "${HOME}/dev/dotfiles-v2" fetch -q origin
-  git -C "${HOME}/dev/dotfiles-v2" merge -q --ff-only origin/main
+  git -C "${HOME}/dev/dotfiles-v2" fetch -q origin "${REF}"
+  git -C "${HOME}/dev/dotfiles-v2" checkout -q -B "${REF}" "origin/${REF}"
 else
-  git clone -q "${REPO_URL}" "${HOME}/dev/dotfiles-v2"
+  git clone -q -b "${REF}" "${REPO_URL}" "${HOME}/dev/dotfiles-v2"
 fi
+GUEST
+
+# Install native Claude Code when missing and wire shell profiles for PATH + agent-secrets.
+tart exec -i "${VM_NAME}" /bin/bash -euo pipefail <<'GUEST'
+mkdir -p "${HOME}/.local/bin"
+if [[ ! -x "${HOME}/.local/bin/claude" ]]; then
+  PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" curl -fsSL https://claude.ai/install.sh | bash
+fi
+path_line='export PATH="${HOME}/.local/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"'
+env_line='[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"'
+for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc"; do
+  touch "${rc}"
+  if ! grep -Fqx "${path_line}" "${rc}"; then
+    printf '%s\n' "${path_line}" >>"${rc}"
+  fi
+  if ! grep -Fqx "${env_line}" "${rc}"; then
+    printf '%s\n' "${env_line}" >>"${rc}"
+  fi
+done
 GUEST
 
 echo "VM ready: ${VM_NAME}"

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-#MISE description="Verify live state, isolation, symlinks, tools, and project doctor across pc, mac, and vm"
+#MISE description="Verify live state, isolation, symlinks, tools, Claude Code, and project doctor across pc, mac, and vm"
 #USAGE flag "--target <target>" default="all" help="Environment to check: pc, mac, vm, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
+#USAGE flag "--smoke" help="Run live Claude Code subscription prompt test across requested targets"
 set -euo pipefail
 
 target="${usage_target:-all}"
 host="${usage_host:-pc}"
+smoke="${usage_smoke:-false}"
 name="dotfiles-v2"
 vm_name="dotfiles-v2-macos"
 fail_count=0
@@ -29,7 +31,7 @@ check_container() {
 	shift 2
 	local -a dcmd=("$@")
 
-	local running privileged env_c arch mise_ver link_target missing_cnt hk_ver
+	local running privileged secrets_rw env_c arch mise_ver link_target missing_cnt hk_ver claude_out
 	running="$("${dcmd[@]}" container inspect --format '{{.State.Running}}' "${name}" 2>/dev/null || echo false)"
 	if [[ ${running} != "true" ]]; then
 		fail_row "${label}" "container ${name} is not running"
@@ -39,6 +41,12 @@ check_container() {
 	privileged="$("${dcmd[@]}" container inspect --format '{{.HostConfig.Privileged}}' "${name}")"
 	if [[ ${privileged} != "false" ]]; then
 		fail_row "${label}" "Privileged=${privileged} (expected false)"
+		return
+	fi
+
+	secrets_rw="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/run/agent-secrets"}}{{.RW}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
+	if [[ ${secrets_rw} != "false" ]]; then
+		fail_row "${label}" "/run/agent-secrets mount RW='${secrets_rw}' (expected false)"
 		return
 	fi
 
@@ -83,7 +91,28 @@ check_container() {
 		return
 	fi
 
-	pass_row "${label}" "${arch}, Privileged=false, container=docker, mise=${mise_ver}, ${hk_ver}, 0 missing tools"
+	if ! claude_out="$(
+		"${dcmd[@]}" exec -i -w /workspace -e SMOKE="${smoke}" "${name}" /bin/bash -lc 'bash -euo pipefail -s' <<'CONTAINER'
+test -s /run/agent-secrets/claude-oauth-token
+test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+cpath="$(command -v claude)"
+test "${cpath}" = "/home/dev/.local/bin/claude"
+cver="$(claude --version | awk '{print $1}')"
+claude doctor 2>&1 | grep -Fq "Running: native"
+smoke_suffix=""
+if [[ "${SMOKE}" == "true" ]]; then
+	sout="$(claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK")"
+	[[ "${sout}" == *OK* ]]
+	smoke_suffix=", smoke=OK"
+fi
+printf 'claude=%s%s' "${cver}" "${smoke_suffix}"
+CONTAINER
+	)"; then
+		fail_row "${label}" "Claude Code / agent-secrets verification failed"
+		return
+	fi
+
+	pass_row "${label}" "${arch}, Privileged=false, container=docker, mise=${mise_ver}, ${hk_ver}, ${claude_out}, 0 missing tools"
 }
 
 check_vm() {
@@ -99,8 +128,8 @@ check_vm() {
 
 	local out
 	if ! out="$(
-		tart exec -i "${vm_name}" /bin/bash -euo pipefail <<'GUEST'
-export PATH="${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"
+		tart exec -i "${vm_name}" env SMOKE="${smoke}" /bin/bash -euo pipefail <<'GUEST'
+export PATH="${HOME}/.local/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 sm="$(uname -sm)"
 test "${sm}" = "Darwin arm64"
@@ -113,7 +142,19 @@ miss="$(mise -C "${HOME}/dev/dotfiles-v2" ls --missing | grep -vc '^Tool[[:space
 test "${miss}" -eq 0
 mise -C "${HOME}/dev/dotfiles-v2" doctor project >/dev/null
 hv="$(hk --version)"
-printf '%s | mise=%s | %s | 0 missing tools\n' "${sm}" "${mv}" "${hv}"
+test -s "/Volumes/My Shared Files/agent-secrets/claude-oauth-token"
+cpath="$(/bin/bash -lc 'command -v claude')"
+test "${cpath}" = "${HOME}/.local/bin/claude"
+cver="$(/bin/bash -lc 'claude --version' | awk '{print $1}')"
+/bin/bash -lc 'claude doctor' 2>&1 | grep -Fq 'Running: native'
+/bin/bash -lc 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"'
+smoke_suffix=""
+if [[ "${SMOKE}" == "true" ]]; then
+  sout="$(/bin/bash -lc 'claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK"')"
+  [[ "${sout}" == *OK* ]]
+  smoke_suffix=" | smoke=OK"
+fi
+printf '%s | mise=%s | %s | claude=%s | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${smoke_suffix}"
 GUEST
 	)"; then
 		fail_row "vm" "guest verification failed"

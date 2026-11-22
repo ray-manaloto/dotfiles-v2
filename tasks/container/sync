@@ -1,17 +1,37 @@
 #!/usr/bin/env bash
-#MISE description="Fast-forward checkout(s) of dotfiles-v2 and apply mise dotfiles and tools inside running container(s)"
+#MISE description="Sync checkout(s) of dotfiles-v2 and apply mise dotfiles and tools inside running container(s)"
 #USAGE flag "--target <target>" default="pc" help="Target environment: pc, mac, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
+#USAGE flag "--ref <ref>" help="Git branch or ref to sync (default: current branch)"
 set -euo pipefail
 
 target="${usage_target:-pc}"
 host="${usage_host:-pc}"
 name="dotfiles-v2"
+root="$(git rev-parse --show-toplevel)"
+
+resolve_ref() {
+	local r="${usage_ref:-}"
+	if [[ -z ${r} ]]; then
+		r="$(git -C "${root}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+		if [[ ${r} == "HEAD" || -z ${r} ]]; then
+			r="main"
+		fi
+	fi
+	if [[ ! ${r} =~ ^[A-Za-z0-9._/-]+$ ]]; then
+		echo "invalid git ref '${r}'" >&2
+		exit 1
+	fi
+	printf '%s' "${r}"
+}
+
+ref="$(resolve_ref)"
 
 sync_pc() {
 	local remote_dir
 	remote_dir="$(ssh -o BatchMode=yes "${host}" 'printf "%s/dev/containers/dotfiles-v2" "$HOME"')"
-	ssh -o BatchMode=yes "${host}" "git -C '${remote_dir}' fetch -q origin && git -C '${remote_dir}' merge -q --ff-only origin/main"
+	ssh -o BatchMode=yes "${host}" \
+		"git -C '${remote_dir}' -c core.hooksPath=/dev/null fetch -q origin '${ref}' && git -C '${remote_dir}' -c core.hooksPath=/dev/null checkout -q -B '${ref}' 'origin/${ref}'"
 	DOCKER_HOST="ssh://${host}" docker exec -w /workspace "${name}" mise bootstrap --only dotfiles,tools --force-dotfiles --yes
 }
 
@@ -23,8 +43,8 @@ sync_mac() {
 	fi
 
 	local_dir="${HOME}/dev/containers/${name}"
-	git -C "${local_dir}" fetch -q origin
-	git -C "${local_dir}" merge -q --ff-only origin/main
+	git -C "${local_dir}" -c core.hooksPath=/dev/null fetch -q origin "${ref}"
+	git -C "${local_dir}" -c core.hooksPath=/dev/null checkout -q -B "${ref}" "origin/${ref}"
 	env -u DOCKER_HOST docker --context desktop-linux exec -w /workspace "${name}" mise bootstrap --only dotfiles,tools --force-dotfiles --yes
 }
 

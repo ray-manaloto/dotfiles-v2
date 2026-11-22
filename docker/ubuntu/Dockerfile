@@ -7,11 +7,13 @@ ARG TARGETARCH
 
 ENV container=docker \
     DEBIAN_FRONTEND=noninteractive \
+    HOME=/home/dev \
+    CLAUDE_CONFIG_DIR=/home/dev/.claude \
     MISE_DATA_DIR=/opt/mise \
     MISE_CACHE_DIR=/opt/mise/cache \
     MISE_YES=1 \
     MISE_TRUSTED_CONFIG_PATHS=/workspace:/home/dev/.config/mise \
-    PATH=/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/home/dev/.local/bin:/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -37,8 +39,16 @@ RUN case "${TARGETARCH}" in \
 RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
     && if getent group ubuntu >/dev/null 2>&1; then groupdel ubuntu; fi \
     && useradd -m -u 1000 -s /bin/bash dev \
-    && install -d -o dev -g dev /opt/mise /workspace
+    && install -d -o dev -g dev /opt/mise /workspace /home/dev/.claude /home/dev/.local/bin \
+    && printf '\n. /etc/profile.d/agent-secrets.sh\n' >> /etc/bash.bashrc
+
+COPY --chmod=644 agent-secrets-profile.sh /etc/profile.d/agent-secrets.sh
 
 USER 1000:1000
+
+RUN export PATH=/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin \
+    && curl -fsSL https://claude.ai/install.sh | bash \
+    && /home/dev/.local/bin/claude --version
+
 WORKDIR /workspace
 CMD ["sleep", "infinity"]

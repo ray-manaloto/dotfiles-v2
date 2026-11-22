@@ -18,6 +18,20 @@ tombi = "1.11.3"
 typos = "1.52.2"
 
 [settings]
+auto_install_disable_tools = [
+  "aqua:anthropics/claude-code",
+  "claude",
+  "claude-code",
+  "github:anthropics/claude-code",
+  "npm:@anthropic-ai/claude-code",
+]
+disable_tools = [
+  "aqua:anthropics/claude-code",
+  "claude",
+  "claude-code",
+  "github:anthropics/claude-code",
+  "npm:@anthropic-ai/claude-code",
+]
 exec_auto_install = false
 experimental = true
 lockfile = true
