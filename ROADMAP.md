@@ -8,7 +8,7 @@
 - [x] **Step 1.5:** Mac `agy` context bloat cleanup and checkpoint (redundant
   plugins disabled, duplicate plugin folder removed, 47 redundant skills cleaned
   from `~/.agents/skills/` and `~/.claude/skills/`).
-- [ ] **Step 1.6:** Day-1 foundation overhaul across all 3 live environments
+- [x] **Step 1.6:** Day-1 foundation overhaul across all 3 live environments
   (`pc` Ubuntu 26.10 `amd64`, Mac Docker Desktop Ubuntu 26.10 `arm64`, Mac Tart
   `dotfiles-v2-macos` `arm64`): tool-free root `mise.toml`, global tools in
   `unix/home/.config/mise/`, public config schemas, 100% native compiled `hk.pkl`
