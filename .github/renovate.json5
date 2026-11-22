@@ -4,13 +4,13 @@
   customManagers: [
     {
       customType: "regex",
-      description: "Updates MISE_VER in Dockerfiles",
-      managerFilePatterns: ["/^docker\\/.*Dockerfile$/"],
+      description: "Updates MISE_VER in Dockerfiles and Tart VM provisioning task",
+      managerFilePatterns: ["/^docker\\/.*Dockerfile$/", "/^tasks\\/vm\\/up$/"],
       datasourceTemplate: "github-releases",
       depNameTemplate: "mise",
       packageNameTemplate: "jdx/mise",
       extractVersionTemplate: "^v(?<version>.+)$",
-      matchStrings: ["ARG MISE_VER=(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      matchStrings: ['(?:ARG )?MISE_VER="?(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"?'],
     },
   ],
 }

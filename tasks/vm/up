@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#MISE description="Provision, start, and prepare the dotfiles-v2-macos Tart VM with pinned mise and repo checkout"
+set -euo pipefail
+
+VM_NAME="dotfiles-v2-macos"
+BASE_IMAGE="ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fbac071c663bf249007b9b387e16b7d576144588acb1d93f9"
+MISE_VER="2026.11.12"
+MISE_SHA256_MACOS_ARM64="f7bd19aa4e6b7a58d7296f98e2c6af68b2e2643dfd608b0bc46c2b5fdbc8749b"
+REPO_URL="https://github.com/ray-manaloto/dotfiles-v2.git"
+
+if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+	echo "tasks/vm/up requires macOS with tart on PATH" >&2
+	exit 1
+fi
+
+if ! tart list --quiet | grep -Fxq "${VM_NAME}"; then
+	echo "Cloning ${BASE_IMAGE} -> ${VM_NAME}"
+	tart clone "${BASE_IMAGE}" "${VM_NAME}"
+	tart set "${VM_NAME}" --cpu 4 --memory 8192
+fi
+
+if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
+	echo "Starting ${VM_NAME} headless"
+	nohup tart run --no-graphics "${VM_NAME}" >/tmp/dotfiles-v2-tart.log 2>&1 </dev/null &
+	ready=0
+	for _ in $(seq 1 40); do
+		if tart exec "${VM_NAME}" true >/dev/null 2>&1; then
+			ready=1
+			break
+		fi
+		sleep 3
+	done
+	if [[ ${ready} -ne 1 ]]; then
+		echo "timed out waiting 120s for tart exec ${VM_NAME}; see /tmp/dotfiles-v2-tart.log" >&2
+		exit 1
+	fi
+fi
+
+# Install pinned mise v2026.11.12 with SHA-256 verification when missing or stale.
+tart exec -i "${VM_NAME}" env MISE_VER="${MISE_VER}" MISE_SHA="${MISE_SHA256_MACOS_ARM64}" /bin/bash -euo pipefail <<'GUEST'
+have=""
+if [[ -x /usr/local/bin/mise ]]; then
+  have="$(/usr/local/bin/mise --version | awk '{print $1}')"
+fi
+if [[ "${have}" != "${MISE_VER}" ]]; then
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "${tmp_dir}"' EXIT
+  curl -fsSLo "${tmp_dir}/mise.tar.gz" "https://github.com/jdx/mise/releases/download/v${MISE_VER}/mise-v${MISE_VER}-macos-arm64.tar.gz"
+  printf '%s  %s/mise.tar.gz\n' "${MISE_SHA}" "${tmp_dir}" | shasum -a 256 -c -
+  tar -C "${tmp_dir}" -xzf "${tmp_dir}/mise.tar.gz"
+  sudo install -d -m 0755 /usr/local/bin
+  sudo install -m 0755 "${tmp_dir}/mise/bin/mise" /usr/local/bin/mise
+fi
+GUEST
+
+tart exec -i "${VM_NAME}" env REPO_URL="${REPO_URL}" /bin/bash -euo pipefail <<'GUEST'
+mkdir -p "${HOME}/dev"
+if [[ -d "${HOME}/dev/dotfiles-v2/.git" ]]; then
+  git -C "${HOME}/dev/dotfiles-v2" fetch -q origin
+  git -C "${HOME}/dev/dotfiles-v2" merge -q --ff-only origin/main
+else
+  git clone -q "${REPO_URL}" "${HOME}/dev/dotfiles-v2"
+fi
+GUEST
+
+echo "VM ready: ${VM_NAME}"

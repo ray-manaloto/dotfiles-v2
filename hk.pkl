@@ -1,18 +1,77 @@
 amends "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.0.1/presets.pkl"
 
 import "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.0.1/helpers.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.13.0/hk@2.13.0#/Builtins.pkl"
 
-exclude = List(".mise/locks/**", "unix/home/.config/mise/locks/**")
+exclude =
+  List(
+    ".mise/locks/**",
+    "unix/home/.config/mise/locks/**",
+    "unix/home/.config/mise/mise.lock",
+    "mise.lock",
+  )
 
-steps =
+// Mise owns formatting for every mise config; tombi lint still validates schemas.
+local const miseConfigGlobs =
+  List(
+    "mise.toml",
+    "mise.*.toml",
+    "mise/**/mise.toml",
+    "mise/**/mise.*.toml",
+    "unix/home/.config/mise/config.toml",
+    "unix/home/.config/mise/config.*.toml",
+    "unix/home/.config/mise/conf.d/*.toml",
+  )
+
+local const picked =
   helpers.pick(new Listing {
     "betterleaks"
     "hadolint"
     "hk"
     "hygiene"
     "mise"
+    "oxfmt"
     "rumdl"
     "shell"
     "tombi"
     "typos"
   })
+
+local const miseGroup = picked["mise"] as Group
+local const oxfmtStep = picked["oxfmt"] as Step
+local const tombiGroup = picked["tombi"] as Group
+
+steps = (picked) {
+  ["oxfmt"] = (oxfmtStep) {
+    exclude = (oxfmtStep.exclude ?? List()) + List("**/*.yml", "**/*.yaml")
+  }
+  ["mise"] = (miseGroup) {
+    steps {
+      ["mise-fmt"] = miseGroup.steps["mise-fmt"]
+      ["mise-config-dir"] = (Builtins.mise_config_dir) {
+        glob =
+          List(
+            "unix/home/.config/mise/config.toml",
+            "unix/home/.config/mise/config.*.toml",
+            "unix/home/.config/mise/conf.d/*.toml",
+            "mise/**/mise.toml",
+            "mise/**/mise.*.toml",
+          )
+        exclude = List()
+      }
+      ["mise-tasks"] = (miseGroup.steps["mise-tasks"]) {
+        glob = List("mise.toml", "mise.*.toml", "mise/**", "tasks/**")
+      }
+    }
+  }
+  ["tombi"] = (tombiGroup) {
+    steps {
+      ["tombi"] = tombiGroup.steps["tombi"]
+      ["tombi-format"] = (tombiGroup.steps["tombi-format"]) {
+        exclude = ((tombiGroup.steps["tombi-format"] as Step).exclude ?? List()) + miseConfigGlobs
+      }
+    }
+  }
+  ["ryl"] = Builtins.ryl
+  ["ryl-format"] = Builtins.ryl_format
+}

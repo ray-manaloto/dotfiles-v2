@@ -1,2 +1,4 @@
+#:schema https://raw.githubusercontent.com/jdx/mise/HEAD/schema/miserc.json
 # ref: https://mise.jdx.dev/configuration/environments.html#platform-environments
+
 auto_env = true

@@ -1,0 +1,28 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+# ref: https://mise.jdx.dev/configuration.html
+
+min_version = "2026.11.12"
+
+[tools]
+"aqua:owenlamont/ryl" = "0.30.0"
+"aqua:oxc-project/oxc/oxfmt" = "0.79.0"
+betterleaks = "1.10.1"
+fnox = "1.50.0"
+hadolint = "2.15.1"
+hk = "2.13.0"
+pkl = "0.33.1"
+rumdl = "0.3.5"
+shellcheck = "0.11.0"
+shfmt = "3.14.1"
+tombi = "1.11.3"
+typos = "1.52.2"
+
+[settings]
+exec_auto_install = false
+experimental = true
+lockfile = true
+lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
+
+[settings.skills]
+auto_sync = true
+prune = true

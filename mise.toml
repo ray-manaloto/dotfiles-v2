@@ -1,28 +1,70 @@
-# ref: https://mise.jdx.dev/configuration.html
 #:schema https://mise.jdx.dev/schema/mise.json
+# ref: https://mise.jdx.dev/configuration.html
 
 min_version = "2026.11.12"
 
-[tools]
-hk = "2.13.0"
-pkl = "0.33.1"
-betterleaks = "1.10.1"
-hadolint = "2.15.1"
-tombi = "1.11.3"
-rumdl = "0.3.5"
-shfmt = "3.14.1"
-shellcheck = "0.11.0"
-typos = "1.52.2"
+# User/global developer tools live in unix/home/.config/mise/config.toml so
+# this project config never duplicates project-scoped .agents/.claude skills.
 
 [settings]
+dotfiles.root = "unix/home"
+exec_auto_install = false
 experimental = true
 lockfile = true
 lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
-exec_auto_install = false
-dotfiles.root = "unix/home"
+
+[dotfiles]
+"~/.config/agents/AGENTS.md" = { mode = "symlink" }
+"~/.config/mise/config.toml" = { mode = "symlink" }
+"~/.config/mise/mise.lock" = { mode = "symlink" }
+"~/.config/mise/miserc.toml" = { mode = "symlink" }
+"~/.gemini/GEMINI.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
+"~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
+"~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
 
 [task_config]
 includes = ["tasks"]
 
 [hooks]
 postinstall = '[ -n "${CI:-}" ] || hk install --mise'
+
+[doctor.checks.no-project-tools]
+description = "Root mise.toml declares no project-level [tools]"
+run = '! grep -Eq "^\[tools([.]|\])" mise.toml'
+hint = "Declare global tools in unix/home/.config/mise/config.toml instead of root mise.toml."
+
+[doctor.checks.no-repo-skills]
+description = "No duplicated repo-level .agents or .claude skill directories"
+run = "test ! -e .agents && test ! -e .claude"
+hint = "Remove .agents/ and .claude/ from the repository root."
+
+[doctor.checks.pwf-root-mode]
+description = "Committed .mode pins autonomous mode for planning-with-files"
+run = 'test -f .mode && test "$(tr -d "[:space:]" < .mode)" = "autonomous"'
+hint = "Commit 'autonomous' in .mode at repository root."
+
+[doctor.checks.hk-validate]
+description = "hk.pkl configuration evaluates cleanly"
+run = "hk validate"
+hint = "Run 'hk validate' to inspect hk.pkl errors."
+
+[doctor.checks.mise-task-validate]
+description = "All mise tasks validate cleanly"
+run = "mise task validate"
+hint = "Run 'mise task validate' to inspect task definition errors."
+
+[doctor.checks.pwf-worktree-plan]
+description = "Worktree PLAN_ID resolves and passes plan-doctor when set"
+run = '''
+if [ -z "${PLAN_ID:-}" ]; then
+  exit 0
+fi
+rel_json="$HOME/.local/share/agy-pwf/current/.agy-pwf-release.json"
+test -f "$rel_json"
+pkg_rel="$(sed -n 's/.*"skill_pkg_rel"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$rel_json" | head -n 1)"
+pwf_dir="$HOME/.local/share/agy-pwf/current/$pkg_rel"
+resolved="$(sh "$pwf_dir/scripts/resolve-plan-dir.sh")"
+test -n "$resolved" && test -f "$resolved/task_plan.md"
+! sh "$pwf_dir/scripts/plan-doctor.sh" | grep -q "^FAIL "
+'''
+hint = "Run 'mise run worktree:new <slug>' or verify .planning/$PLAN_ID."

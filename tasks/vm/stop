@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#MISE description="Gracefully stop the dotfiles-v2-macos Tart VM if running"
+set -euo pipefail
+
+VM_NAME="dotfiles-v2-macos"
+
+if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+	echo "tasks/vm/stop requires macOS with tart on PATH" >&2
+	exit 1
+fi
+
+if tart exec "${VM_NAME}" true >/dev/null 2>&1; then
+	tart stop "${VM_NAME}"
+else
+	echo "${VM_NAME} is already stopped"
+fi

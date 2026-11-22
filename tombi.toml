@@ -1,0 +1,9 @@
+#:schema https://json.schemastore.org/tombi.json
+# ref: https://tombi-toml.github.io/tombi/docs/configuration/
+
+toml-version = "v1.0.0"
+
+[lint.rules]
+dotted-keys-out-of-order = "error"
+key-empty = "error"
+tables-out-of-order = "error"

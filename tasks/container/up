@@ -1,38 +1,92 @@
 #!/usr/bin/env bash
-#MISE description="Build the bare Ubuntu 26.10 mise image on pc, sync the checkout there, and start the non-privileged container"
-#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker host over SSH"
+#MISE description="Build the bare Ubuntu 26.10 mise image, sync checkout, and start non-privileged container(s)"
+#USAGE flag "--target <target>" default="pc" help="Target environment: pc, mac, or all"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
 #USAGE flag "--tag <tag>" default="dotfiles-v2:dev" help="Docker image tag"
 set -euo pipefail
 
+target="${usage_target:-pc}"
 host="${usage_host:-pc}"
 tag="${usage_tag:-dotfiles-v2:dev}"
 name="dotfiles-v2"
 repo_url="https://github.com/ray-manaloto/dotfiles-v2.git"
 root="$(git rev-parse --show-toplevel)"
 
-export DOCKER_HOST="ssh://${host}"
+up_pc() {
+	local remote_home remote_dir want_image have_image
+	remote_home="$(ssh -o BatchMode=yes "${host}" 'printf "%s" "$HOME"')"
+	remote_dir="${remote_home}/dev/containers/${name}"
 
-docker build --progress=plain -t "${tag}" -f "${root}/docker/ubuntu/Dockerfile" "${root}/docker/ubuntu"
+	DOCKER_HOST="ssh://${host}" docker build --progress=plain -t "${tag}" -f "${root}/docker/ubuntu/Dockerfile" "${root}/docker/ubuntu"
 
-remote_home="$(ssh -o BatchMode=yes "${host}" 'printf "%s" "$HOME"')"
-remote_dir="${remote_home}/dev/containers/${name}"
+	ssh -o BatchMode=yes "${host}" \
+		"mkdir -p '${remote_home}/dev/containers' && if [ -d '${remote_dir}/.git' ]; then git -C '${remote_dir}' fetch -q origin && git -C '${remote_dir}' merge -q --ff-only origin/main; else git clone -q '${repo_url}' '${remote_dir}'; fi"
 
-ssh -o BatchMode=yes "${host}" "mkdir -p '${remote_home}/dev/containers' && if [ -d '${remote_dir}/.git' ]; then git -C '${remote_dir}' fetch -q origin && git -C '${remote_dir}' merge -q --ff-only origin/main; else git clone -q '${repo_url}' '${remote_dir}'; fi"
+	want_image="$(DOCKER_HOST="ssh://${host}" docker image inspect --format '{{.Id}}' "${tag}")"
+	have_image="$(DOCKER_HOST="ssh://${host}" docker container inspect --format '{{.Image}}' "${name}" 2>/dev/null || true)"
 
-want_image="$(docker image inspect --format '{{.Id}}' "${tag}")"
-have_image="$(docker container inspect --format '{{.Image}}' "${name}" 2>/dev/null || true)"
+	if [[ ${have_image} != "${want_image}" ]]; then
+		DOCKER_HOST="ssh://${host}" docker rm -f "${name}" >/dev/null 2>&1 || true
+		DOCKER_HOST="ssh://${host}" docker run -d \
+			--name "${name}" \
+			--hostname "${name}" \
+			-e container=docker \
+			--restart unless-stopped \
+			-v "${remote_dir}:/workspace" \
+			"${tag}" >/dev/null
+	else
+		DOCKER_HOST="ssh://${host}" docker start "${name}" >/dev/null
+	fi
 
-if [ "${have_image}" != "${want_image}" ]; then
-	docker rm -f "${name}" >/dev/null 2>&1 || true
-	docker run -d \
-		--name "${name}" \
-		--hostname "${name}" \
-		-e container=docker \
-		--restart unless-stopped \
-		-v "${remote_dir}:/workspace" \
-		"${tag}" >/dev/null
-else
-	docker start "${name}" >/dev/null
-fi
+	DOCKER_HOST="ssh://${host}" docker ps --filter "name=^${name}$" --format 'pc: {{.Names}} {{.Status}} {{.Image}}'
+}
 
-docker ps --filter "name=^${name}$" --format '{{.Names}} {{.Status}} {{.Image}}'
+up_mac() {
+	local local_dir want_image have_image
+	if [[ "$(uname -s)" != "Darwin" ]]; then
+		echo "mac Docker Desktop target must run on macOS" >&2
+		exit 1
+	fi
+
+	local_dir="${HOME}/dev/containers/${name}"
+	mkdir -p "${HOME}/dev/containers"
+	if [[ -d "${local_dir}/.git" ]]; then
+		git -C "${local_dir}" fetch -q origin
+		git -C "${local_dir}" merge -q --ff-only origin/main
+	else
+		git clone -q "${repo_url}" "${local_dir}"
+	fi
+
+	env -u DOCKER_HOST docker --context desktop-linux build --progress=plain -t "${tag}" -f "${root}/docker/ubuntu/Dockerfile" "${root}/docker/ubuntu"
+
+	want_image="$(env -u DOCKER_HOST docker --context desktop-linux image inspect --format '{{.Id}}' "${tag}")"
+	have_image="$(env -u DOCKER_HOST docker --context desktop-linux container inspect --format '{{.Image}}' "${name}" 2>/dev/null || true)"
+
+	if [[ ${have_image} != "${want_image}" ]]; then
+		env -u DOCKER_HOST docker --context desktop-linux rm -f "${name}" >/dev/null 2>&1 || true
+		env -u DOCKER_HOST docker --context desktop-linux run -d \
+			--name "${name}" \
+			--hostname "${name}" \
+			-e container=docker \
+			--restart unless-stopped \
+			-v "${local_dir}:/workspace" \
+			"${tag}" >/dev/null
+	else
+		env -u DOCKER_HOST docker --context desktop-linux start "${name}" >/dev/null
+	fi
+
+	env -u DOCKER_HOST docker --context desktop-linux ps --filter "name=^${name}$" --format 'mac: {{.Names}} {{.Status}} {{.Image}}'
+}
+
+case "${target}" in
+pc) up_pc ;;
+mac) up_mac ;;
+all)
+	up_pc
+	up_mac
+	;;
+*)
+	echo "unknown target '${target}' (expected pc, mac, or all)" >&2
+	exit 1
+	;;
+esac

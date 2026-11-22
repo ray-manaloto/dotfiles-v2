@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#MISE description="Remove a sibling git worktree and its wt/<slug> branch"
+#USAGE arg "<slug>" help="Worktree slug to remove"
+#USAGE flag "--force" help="Force remove even with uncommitted changes or unmerged branch"
+set -euo pipefail
+
+slug="${usage_slug:-}"
+force="${usage_force:-false}"
+
+if [[ ! ${slug} =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+	echo "invalid slug '${slug}'" >&2
+	exit 1
+fi
+
+root="$(git rev-parse --show-toplevel)"
+wt_dir="$(dirname "${root}")/dotfiles-v2-${slug}"
+branch="wt/${slug}"
+
+if [[ -d ${wt_dir} ]]; then
+	if [[ ${force} == "true" ]]; then
+		git worktree remove --force "${wt_dir}"
+	else
+		git worktree remove "${wt_dir}"
+	fi
+fi
+
+if git show-ref --verify --quiet "refs/heads/${branch}"; then
+	if [[ ${force} == "true" ]]; then
+		git branch -D "${branch}"
+	else
+		git branch -d "${branch}"
+	fi
+fi

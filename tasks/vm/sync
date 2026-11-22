@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#MISE description="Fast-forward dotfiles-v2 inside dotfiles-v2-macos VM and apply mise dotfiles and tools"
+set -euo pipefail
+
+VM_NAME="dotfiles-v2-macos"
+
+if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+	echo "tasks/vm/sync requires macOS with tart on PATH" >&2
+	exit 1
+fi
+
+if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
+	echo "VM ${VM_NAME} is not running; run 'mise run vm:up' first" >&2
+	exit 1
+fi
+
+tart exec -i "${VM_NAME}" /bin/bash -euo pipefail <<'GUEST'
+export PATH="${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"
+git -C "${HOME}/dev/dotfiles-v2" fetch -q origin
+git -C "${HOME}/dev/dotfiles-v2" merge -q --ff-only origin/main
+MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise" \
+MISE_YES=1 \
+mise -C "${HOME}/dev/dotfiles-v2" bootstrap --only dotfiles,tools --yes
+GUEST

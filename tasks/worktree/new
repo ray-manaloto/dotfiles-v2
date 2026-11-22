@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#MISE description="Create a sibling git worktree with an isolated planning-with-files PLAN_ID pinned in mise.local.toml"
+#USAGE arg "<slug>" help="Worktree and plan slug (lowercase alphanumeric, dashes, underscores)"
+#USAGE flag "--base <ref>" default="HEAD" help="Git ref to branch from"
+set -euo pipefail
+
+slug="${usage_slug:-}"
+base="${usage_base:-HEAD}"
+
+if [[ ! ${slug} =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+	echo "invalid slug '${slug}': use lowercase alphanumeric, '-', or '_' starting with alphanumeric" >&2
+	exit 1
+fi
+
+rel_json="${HOME}/.local/share/agy-pwf/current/.agy-pwf-release.json"
+if [[ ! -f ${rel_json} ]]; then
+	echo "planning-with-files release manifest missing: ${rel_json}" >&2
+	exit 1
+fi
+
+pkg_rel="$(sed -n 's/.*"skill_pkg_rel"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${rel_json}" | head -n 1)"
+if [[ -z ${pkg_rel} ]]; then
+	echo "could not read skill_pkg_rel from ${rel_json}" >&2
+	exit 1
+fi
+
+pwf_dir="${HOME}/.local/share/agy-pwf/current/${pkg_rel}"
+if [[ ! -f "${pwf_dir}/scripts/init-session.sh" ]]; then
+	echo "planning-with-files scripts missing under ${pwf_dir}" >&2
+	exit 1
+fi
+
+root="$(git rev-parse --show-toplevel)"
+wt_dir="$(dirname "${root}")/dotfiles-v2-${slug}"
+branch="wt/${slug}"
+
+if [[ -e ${wt_dir} ]]; then
+	echo "worktree directory already exists: ${wt_dir}" >&2
+	exit 1
+fi
+
+if git show-ref --verify --quiet "refs/heads/${branch}"; then
+	git worktree add "${wt_dir}" "${branch}"
+else
+	git worktree add -b "${branch}" "${wt_dir}" "${base}"
+fi
+
+(cd "${wt_dir}" && sh "${pwf_dir}/scripts/init-session.sh" "${slug}")
+
+active_file="${wt_dir}/.planning/.active_plan"
+if [[ ! -f ${active_file} ]]; then
+	echo "init-session.sh did not create ${active_file}" >&2
+	exit 1
+fi
+plan_id="$(tr -d '\r\n[:space:]' <"${active_file}")"
+
+cat >"${wt_dir}/mise.local.toml" <<EOF
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[env]
+PLAN_ID = "${plan_id}"
+EOF
+
+mise trust "${wt_dir}"
+
+resolved="$(cd "${wt_dir}" && PLAN_ID="${plan_id}" sh "${pwf_dir}/scripts/resolve-plan-dir.sh")"
+if [[ -z ${resolved} || ! -f "${resolved}/task_plan.md" ]]; then
+	echo "resolve-plan-dir.sh failed for PLAN_ID=${plan_id} in ${wt_dir}" >&2
+	exit 1
+fi
+
+doc_out="$(cd "${wt_dir}" && PLAN_ID="${plan_id}" sh "${pwf_dir}/scripts/plan-doctor.sh")"
+printf '%s\n' "${doc_out}"
+if printf '%s\n' "${doc_out}" | grep -q '^FAIL '; then
+	echo "plan-doctor reported FAIL in ${wt_dir}" >&2
+	exit 1
+fi
+
+echo "Worktree ready: ${wt_dir} (branch=${branch}, PLAN_ID=${plan_id})"

@@ -1,3 +1,4 @@
+#:schema https://mise.jdx.dev/schema/mise.json
 # Loaded automatically on Linux via .miserc.toml (auto_env = true).
 
 [bootstrap.user]

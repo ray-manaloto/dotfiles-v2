@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#MISE description="Verify live state, isolation, symlinks, tools, and project doctor across pc, mac, and vm"
+#USAGE flag "--target <target>" default="all" help="Environment to check: pc, mac, vm, or all"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
+set -euo pipefail
+
+target="${usage_target:-all}"
+host="${usage_host:-pc}"
+name="dotfiles-v2"
+vm_name="dotfiles-v2-macos"
+fail_count=0
+
+pass_row() {
+	printf 'PASS  %-6s  %s\n' "$1" "$2"
+}
+
+fail_row() {
+	printf 'FAIL  %-6s  %s\n' "$1" "$2"
+	fail_count=$((fail_count + 1))
+}
+
+version_ge() {
+	local have="$1" want="$2"
+	[[ "$(printf '%s\n%s\n' "${want}" "${have}" | sort -V | head -n 1)" == "${want}" ]]
+}
+
+check_container() {
+	local label="$1" want_arch="$2"
+	shift 2
+	local -a dcmd=("$@")
+
+	local running privileged env_c arch mise_ver link_target missing_cnt hk_ver
+	running="$("${dcmd[@]}" container inspect --format '{{.State.Running}}' "${name}" 2>/dev/null || echo false)"
+	if [[ ${running} != "true" ]]; then
+		fail_row "${label}" "container ${name} is not running"
+		return
+	fi
+
+	privileged="$("${dcmd[@]}" container inspect --format '{{.HostConfig.Privileged}}' "${name}")"
+	if [[ ${privileged} != "false" ]]; then
+		fail_row "${label}" "Privileged=${privileged} (expected false)"
+		return
+	fi
+
+	env_c="$("${dcmd[@]}" exec "${name}" printenv container 2>/dev/null || true)"
+	if [[ ${env_c} != "docker" ]]; then
+		fail_row "${label}" "container env='${env_c}' (expected docker)"
+		return
+	fi
+
+	arch="$("${dcmd[@]}" exec "${name}" uname -m)"
+	if [[ ${arch} != "${want_arch}" ]]; then
+		fail_row "${label}" "arch=${arch} (expected ${want_arch})"
+		return
+	fi
+
+	mise_ver="$("${dcmd[@]}" exec "${name}" mise --version | awk '{print $1}')"
+	if ! version_ge "${mise_ver}" "2026.11.12"; then
+		fail_row "${label}" "mise=${mise_ver} (< 2026.11.12)"
+		return
+	fi
+
+	link_target="$("${dcmd[@]}" exec "${name}" readlink -f /home/dev/.config/mise/config.toml 2>/dev/null || true)"
+	if [[ ${link_target} != "/workspace/unix/home/.config/mise/config.toml" ]]; then
+		fail_row "${label}" "config.toml link='${link_target}' (expected /workspace/unix/home/.config/mise/config.toml)"
+		return
+	fi
+
+	missing_cnt="$("${dcmd[@]}" exec -w /workspace "${name}" mise ls --missing | grep -vc '^Tool[[:space:]]' || true)"
+	if [[ ${missing_cnt} -ne 0 ]]; then
+		fail_row "${label}" "mise ls --missing reported ${missing_cnt} missing tools"
+		return
+	fi
+
+	if ! "${dcmd[@]}" exec -w /workspace "${name}" mise doctor project >/dev/null; then
+		fail_row "${label}" "mise doctor project failed"
+		return
+	fi
+
+	hk_ver="$("${dcmd[@]}" exec -w /workspace "${name}" hk --version 2>/dev/null || true)"
+	if [[ -z ${hk_ver} ]]; then
+		fail_row "${label}" "hk --version failed"
+		return
+	fi
+
+	pass_row "${label}" "${arch}, Privileged=false, container=docker, mise=${mise_ver}, ${hk_ver}, 0 missing tools"
+}
+
+check_vm() {
+	if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+		fail_row "vm" "requires macOS host with tart"
+		return
+	fi
+
+	if ! tart exec "${vm_name}" true >/dev/null 2>&1; then
+		fail_row "vm" "Tart VM ${vm_name} is not running"
+		return
+	fi
+
+	local out
+	if ! out="$(
+		tart exec -i "${vm_name}" /bin/bash -euo pipefail <<'GUEST'
+export PATH="${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"
+sm="$(uname -sm)"
+test "${sm}" = "Darwin arm64"
+mv="$(/usr/local/bin/mise --version | awk '{print $1}')"
+test "$(printf '%s\n%s\n' "2026.11.12" "${mv}" | sort -V | head -n 1)" = "2026.11.12"
+link="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.config/mise/config.toml")"
+want="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/mise/config.toml")"
+test "${link}" = "${want}"
+miss="$(mise -C "${HOME}/dev/dotfiles-v2" ls --missing | grep -vc '^Tool[[:space:]]' || true)"
+test "${miss}" -eq 0
+mise -C "${HOME}/dev/dotfiles-v2" doctor project >/dev/null
+hv="$(hk --version)"
+printf '%s | mise=%s | %s | 0 missing tools\n' "${sm}" "${mv}" "${hv}"
+GUEST
+	)"; then
+		fail_row "vm" "guest verification failed"
+		return
+	fi
+
+	pass_row "vm" "${out}"
+}
+
+case "${target}" in
+pc)
+	check_container "pc" "x86_64" env "DOCKER_HOST=ssh://${host}" docker
+	;;
+mac)
+	check_container "mac" "aarch64" env -u DOCKER_HOST docker --context desktop-linux
+	;;
+vm)
+	check_vm
+	;;
+all)
+	check_container "pc" "x86_64" env "DOCKER_HOST=ssh://${host}" docker
+	check_container "mac" "aarch64" env -u DOCKER_HOST docker --context desktop-linux
+	check_vm
+	;;
+*)
+	echo "unknown target '${target}' (expected pc, mac, vm, or all)" >&2
+	exit 1
+	;;
+esac
+
+if [[ ${fail_count} -ne 0 ]]; then
+	echo "env:doctor: ${fail_count} target(s) failed" >&2
+	exit 1
+fi
+echo "env:doctor: all requested targets passed"

@@ -2,6 +2,52 @@
 
 lockfile_version = 4
 
+[[tools."aqua:owenlamont/ryl"]]
+version = "0.30.0"
+backend = "aqua:owenlamont/ryl"
+specifiers = ["0.30.0"]
+
+[tools."aqua:owenlamont/ryl"."platforms.linux-arm64"]
+checksum = "sha256:2e4a765434d63986c858678df0573349da44abc162b7b698a4395e5b586a1e10"
+url = "https://github.com/owenlamont/ryl/releases/download/v0.30.0/ryl-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/owenlamont/ryl/releases/assets/757823621"
+provenance = "github-attestations"
+
+[tools."aqua:owenlamont/ryl"."platforms.linux-x64"]
+checksum = "sha256:37ee3c236005117886949cb413b467a9f4ec06072e2233a1727222b06e54ea3e"
+url = "https://github.com/owenlamont/ryl/releases/download/v0.30.0/ryl-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/owenlamont/ryl/releases/assets/757823693"
+provenance = "github-attestations"
+
+[tools."aqua:owenlamont/ryl"."platforms.macos-arm64"]
+checksum = "sha256:d3d0010227870a6e4b2764eb26cff52efe0570508f2c52369d17eae3889575eb"
+url = "https://github.com/owenlamont/ryl/releases/download/v0.30.0/ryl-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/owenlamont/ryl/releases/assets/757823626"
+provenance = "github-attestations"
+
+[[tools."aqua:oxc-project/oxc/oxfmt"]]
+version = "0.79.0"
+backend = "aqua:oxc-project/oxc/oxfmt"
+specifiers = ["0.79.0"]
+
+[tools."aqua:oxc-project/oxc/oxfmt"."platforms.linux-arm64"]
+checksum = "sha256:2d550f171f2464df1fc7dd63154c6c77d795a9c6d54f99a3366cb45d2ff9e46d"
+checksum_source = "mise-versions"
+url = "https://github.com/oxc-project/oxc/releases/download/oxfmt_v0.79.0/oxfmt-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/oxc-project/oxc/releases/assets/754764756"
+
+[tools."aqua:oxc-project/oxc/oxfmt"."platforms.linux-x64"]
+checksum = "sha256:458ba526dd692baad90c5cf164341257e339da2a6e0f585dea6eae6644df5608"
+checksum_source = "mise-versions"
+url = "https://github.com/oxc-project/oxc/releases/download/oxfmt_v0.79.0/oxfmt-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/oxc-project/oxc/releases/assets/754764891"
+
+[tools."aqua:oxc-project/oxc/oxfmt"."platforms.macos-arm64"]
+checksum = "sha256:c75859a53ec3a57a78d3e9752d2e9604badfca97dda65366c310ed2f5bf28534"
+checksum_source = "mise-versions"
+url = "https://github.com/oxc-project/oxc/releases/download/oxfmt_v0.79.0/oxfmt-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/oxc-project/oxc/releases/assets/754764750"
+
 [[tools.betterleaks]]
 version = "1.10.1"
 backend = "aqua:betterleaks/betterleaks"
@@ -24,6 +70,29 @@ checksum = "sha256:ca91eb3b006f15478411f235b5e2712fb15cea74f6701ebadc2364efe0af1
 url = "https://github.com/betterleaks/betterleaks/releases/download/v1.10.1/betterleaks_1.10.1_darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/betterleaks/betterleaks/releases/assets/740237732"
 provenance = "cosign"
+
+[[tools.fnox]]
+version = "1.50.0"
+backend = "packslip:github.com/jdx/fnox"
+specifiers = ["1.50.0"]
+
+[tools.fnox."platforms.linux-arm64"]
+checksum = "sha256:605b3f5fdd8cf4806d7be63ca4ef52c6fa26d86ac7c97a04a3263daf990233dd"
+url = "https://github.com/jdx/fnox/releases/download/v1.50.0/fnox-aarch64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/fnox/.github/workflows/release.yml"
+repository_ids = { repository = "1078762196" }
+
+[tools.fnox."platforms.linux-x64"]
+checksum = "sha256:f08da606e120c676fc3a4f3def970a4ade82e3857841a3961afbdd337a88e30b"
+url = "https://github.com/jdx/fnox/releases/download/v1.50.0/fnox-x86_64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/fnox/.github/workflows/release.yml"
+repository_ids = { repository = "1078762196" }
+
+[tools.fnox."platforms.macos-arm64"]
+checksum = "sha256:cf8301a5355c3249284b4102c871b0c4b5e5924cd7b61397f7539f4328041eff"
+url = "https://github.com/jdx/fnox/releases/download/v1.50.0/fnox-aarch64-apple-darwin.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/fnox/.github/workflows/release.yml"
+repository_ids = { repository = "1078762196" }
 
 [[tools.hadolint]]
 version = "2.15.1"
