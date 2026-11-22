@@ -7,7 +7,7 @@ min_version = "2026.11.12"
 # this project config never duplicates project-scoped .agents/.claude skills.
 
 [settings]
-dotfiles.root = "unix/home"
+dotfiles.root = "{{ config_root }}/unix/home"
 exec_auto_install = false
 experimental = true
 lockfile = true
