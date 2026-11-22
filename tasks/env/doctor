@@ -97,17 +97,17 @@ test -s /run/agent-secrets/claude-oauth-token
 test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"
 cpath="$(command -v claude)"
 test "${cpath}" = "/home/dev/.local/bin/claude"
-cver="$(claude --version | awk '{print $1}')"
-claude doctor 2>&1 | grep -Fq "Running: native"
+cver="$(claude --version </dev/null | awk '{print $1}')"
+claude doctor </dev/null 2>&1 | grep -Fq "Running: native"
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
-	sout="$(claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK")"
+	sout="$(claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null)"
 	[[ "${sout}" == *OK* ]]
 	smoke_suffix=", smoke=OK"
 fi
 printf 'claude=%s%s' "${cver}" "${smoke_suffix}"
 CONTAINER
-	)"; then
+	)" || [[ -z ${claude_out} ]]; then
 		fail_row "${label}" "Claude Code / agent-secrets verification failed"
 		return
 	fi
@@ -145,12 +145,12 @@ hv="$(hk --version)"
 test -s "/Volumes/My Shared Files/agent-secrets/claude-oauth-token"
 cpath="$(/bin/bash -lc 'command -v claude')"
 test "${cpath}" = "${HOME}/.local/bin/claude"
-cver="$(/bin/bash -lc 'claude --version' | awk '{print $1}')"
-/bin/bash -lc 'claude doctor' 2>&1 | grep -Fq 'Running: native'
+cver="$(/bin/bash -lc 'claude --version </dev/null' | awk '{print $1}')"
+/bin/bash -lc 'claude doctor </dev/null' 2>&1 | grep -Fq 'Running: native'
 /bin/bash -lc 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"'
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
-  sout="$(/bin/bash -lc 'claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK"')"
+  sout="$(/bin/bash -lc 'claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null')"
   [[ "${sout}" == *OK* ]]
   smoke_suffix=" | smoke=OK"
 fi
