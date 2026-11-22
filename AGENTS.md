@@ -31,6 +31,12 @@ and C++26 workstation setup.
   with Tera syntax (`"{{ config_root }}/unix/home"`), pass `--force-dotfiles` on
   sync, and ensure `tart exec` guest scripts trust repo configs (`mise trust
   --all` / `MISE_TRUSTED_CONFIG_PATHS`) and prepend shims to `PATH`.
+- **Harnesses & container scripts:** Install AI CLIs via native installers only
+  (blocked in global `mise` settings). Omit `--bare` when authenticating Claude
+  with `CLAUDE_CODE_OAUTH_TOKEN`, redirect `</dev/null` on interactive/agent
+  CLIs inside `bash -s` / `docker exec -i` / `tart exec -i` heredocs, and list
+  parent home directories explicitly in `install -d -o dev -g dev` inside
+  Dockerfiles.
 - **Prototype workflow & privacy:** Direct push to `main` during prototyping,
   guarded locally by `hk check --all` (includes `betterleaks`). Stage files
   explicitly by name; never `git add -A` or `git add .`. Never commit secrets,

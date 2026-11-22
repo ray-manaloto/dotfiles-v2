@@ -9,7 +9,8 @@ hosts, Linux containers, and macOS VMs.
 - **Privacy and git hygiene:** Stage changed files explicitly by name (never
   `git add -A` or `git add .`). Never commit secrets, tokens, private
   hostnames (use `pc` or "remote Linux host"), or local `/Users/...` home
-  paths.
+  paths. Never enable `set -x` / `bash -x` or print environment variables in
+  shells where tokens or credentials are loaded.
 - **Tooling scope and ecosystem:** Keep developer tools user-global under
   `~/.config/mise/config.toml` unless a tool is strictly project-specific.
   Prefer `mise`, `hk`, `fnox`, `aube`, and `jdx` ecosystem tools, native compiled

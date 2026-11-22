@@ -20,8 +20,10 @@ lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
 "~/.config/mise/mise.lock" = { mode = "symlink" }
 "~/.config/mise/miserc.toml" = { mode = "symlink" }
 "~/.gemini/GEMINI.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
+"~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink" }
 "~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
 "~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
+"~/.gemini/config/skills/post-task-learn/SKILL.md" = { mode = "symlink" }
 
 [task_config]
 includes = ["tasks"]
