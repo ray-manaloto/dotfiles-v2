@@ -11,7 +11,7 @@ ENV container=docker \
     MISE_CACHE_DIR=/opt/mise/cache \
     MISE_YES=1 \
     MISE_TRUSTED_CONFIG_PATHS=/workspace \
-    PATH=/opt/mise/shims:/usr/local/bin:/usr/bin:/bin
+    PATH=/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
