@@ -1,0 +1,18 @@
+amends "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.0.1/presets.pkl"
+
+import "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.0.1/helpers.pkl"
+
+exclude = List(".mise/locks/**", "unix/home/.config/mise/locks/**")
+
+steps =
+  helpers.pick(new Listing {
+    "betterleaks"
+    "hadolint"
+    "hk"
+    "hygiene"
+    "mise"
+    "rumdl"
+    "shell"
+    "tombi"
+    "typos"
+  })
