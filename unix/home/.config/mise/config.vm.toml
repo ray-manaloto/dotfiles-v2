@@ -29,5 +29,4 @@ stderr_path = "~/Library/Logs/tailscaled.err.log"
 "~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink" }
 "~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink" }
 "~/.zprofile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
-"~/.zshenv/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
 "~/.zshrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
