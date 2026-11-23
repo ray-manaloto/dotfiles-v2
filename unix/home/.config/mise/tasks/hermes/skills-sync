@@ -46,6 +46,8 @@ def ensure_external_dirs(text: str) -> str:
         None,
     )
     if ext_idx is None:
+        if not lines[skills_idx].endswith("\n"):
+            lines[skills_idx] += "\n"
         lines.insert(skills_idx + 1, f"  external_dirs:\n    - {SKILLS_DIR}\n")
         return "".join(lines)
 
@@ -72,6 +74,8 @@ def ensure_external_dirs(text: str) -> str:
             existing.append(m.group(1).strip("'\""))
     if SKILLS_DIR in existing:
         return text
+    if ext_end > 0 and not lines[ext_end - 1].endswith("\n"):
+        lines[ext_end - 1] += "\n"
     lines.insert(ext_end, f"    - {SKILLS_DIR}\n")
     return "".join(lines)
 

@@ -51,6 +51,7 @@ node = "26.13.1"
 "packslip:grafana/flint" = "0.22.15"
 pitchfork = { version = "2.36.0", workflow = "release.yml@refs/heads/main" }
 pkl = "0.33.1"
+pnpm = { version = "12.21.0", os = ["macos"] }
 python = "3.15.2"
 ripgrep = "15.2.0"
 ruff = "0.17.6"

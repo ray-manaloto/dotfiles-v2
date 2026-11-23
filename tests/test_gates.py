@@ -44,13 +44,35 @@ def test_schema_first_ast_bans_handwritten_dtos_and_allows_generated_and_ignore(
         )
         assert ast_mod.check_file(ignored_file, root) == []
 
-        gen_file = root / "pkg" / "generated" / "models.py"
+        gen_file = (
+            root
+            / "unix"
+            / "home"
+            / ".config"
+            / "mise"
+            / "lib"
+            / "dotfiles_py"
+            / "generated"
+            / "models.py"
+        )
         gen_file.parent.mkdir(parents=True)
         gen_file.write_text(
             "from pydantic import BaseModel\nclass M(BaseModel):\n    x: int\n",
             encoding="utf-8",
         )
         assert ast_mod.check_file(gen_file, root) == []
+
+        sub_and_call = root / "pkg" / "bypass.py"
+        sub_and_call.write_text(
+            "from enum import Enum as AliasEnum\n"
+            "from typing import TypedDict\n"
+            "from pydantic import RootModel\n"
+            "class R(RootModel[dict[str, int]]):\n    pass\n"
+            "DynTD = TypedDict('DynTD', {'a': int})\n",
+            encoding="utf-8",
+        )
+        bypass_errs = ast_mod.check_file(sub_and_call, root)
+        assert len(bypass_errs) == 3
 
 
 def test_schema_contract_check_rejects_missing_additional_properties_and_envelope() -> (
@@ -151,3 +173,92 @@ def test_doctor_checks_no_project_tools_and_pre_cutover_gate(monkeypatch) -> Non
         strict_errs, _ = doc_mod.check_host_option_a(root, strict_host=True)
         assert any("host-mise-parity" in e for e in strict_errs)
         assert os.path.isdir(fake_home)
+
+
+def test_schema_contract_check_nested_composites_and_doctor_multi_lock_entries(
+    monkeypatch,
+) -> None:
+    contract_mod = _load_task_module("schema_contract_check")
+    doc_mod = _load_task_module("doctor_checks")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bad_schema = root / "schemas" / "nested.schema.json"
+        bad_schema.parent.mkdir(parents=True)
+        bad_schema.write_text(
+            json.dumps(
+                {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "$id": "https://dotfiles-v2.local/schemas/nested.schema.json",
+                    "$defs": {
+                        "Wrapper": {
+                            "anyOf": [
+                                {
+                                    "type": ["object", "null"],
+                                    "properties": {"a": {"type": "string"}},
+                                },
+                                {"type": "null"},
+                            ]
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        errs = contract_mod.check_schema_file(bad_schema, root)
+        assert any("anyOf[0]" in e and "additionalProperties" in e for e in errs)
+
+        mise_dir = root / "unix" / "home" / ".config" / "mise"
+        mise_dir.mkdir(parents=True)
+        (mise_dir / "config.toml").write_text(
+            '[tools]\n"github:microsoft/vcpkg-tool" = "2026-10-29"\n\n'
+            '[settings]\nlockfile_platforms = ["macos-arm64", "linux-x64"]\n',
+            encoding="utf-8",
+        )
+        (mise_dir / "mise.lock").write_text(
+            '[[tools."github:microsoft/vcpkg-tool"]]\nversion = "2026-10-29"\n'
+            '[tools."github:microsoft/vcpkg-tool"."platforms.macos-arm64"]\nurl = "https://example.com/mac"\n'
+            '[[tools."github:microsoft/vcpkg-tool"]]\nversion = "2026-10-29"\n'
+            '[tools."github:microsoft/vcpkg-tool"."platforms.linux-x64"]\nurl = "https://example.com/linux"\n',
+            encoding="utf-8",
+        )
+        assert doc_mod.check_mise_lock_integrity(root) == []
+
+        # Verify `mise dot status --json` object schema catches missing/differs/orphaned
+        fake_home = root / "home"
+        v2_mise = root / "dotfiles-v2" / "unix" / "home" / ".config" / "mise"
+        v2_mise.mkdir(parents=True)
+        (v2_mise / "config.toml").write_text("[tools]\n", encoding="utf-8")
+        (fake_home / ".config").mkdir(parents=True)
+        (fake_home / ".config" / "mise").symlink_to(v2_mise)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        tasks_json = json.dumps(
+            [
+                {
+                    "name": f"roll:{s}",
+                    "source": str(v2_mise / "tasks" / "roll" / s),
+                }
+                for s in ("snapshot", "restart", "stop", "start", "verify", "self")
+            ]
+        )
+        dot_json = json.dumps(
+            {
+                "files": [
+                    {"target": "~/.zshrc", "state": "missing"},
+                    {"target": "~/.zshenv", "state": "tracked"},
+                ],
+                "orphaned": [],
+            }
+        )
+        monkeypatch.setattr(
+            doc_mod.subprocess,
+            "check_output",
+            lambda cmd, **_kw: tasks_json if "tasks" in cmd else dot_json,
+        )
+        host_errs, _ = doc_mod.check_host_option_a(
+            root / "dotfiles-v2", strict_host=True
+        )
+        assert any(
+            "host-dotfiles-status: ~/.zshrc state=missing" in e for e in host_errs
+        )
+        assert not any("~/.zshenv" in e for e in host_errs)

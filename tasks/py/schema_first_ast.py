@@ -21,6 +21,18 @@ BANNED_BASES = frozenset(
     }
 )
 BANNED_DECORATORS = frozenset({"dataclass"})
+BANNED_CALL_CONSTRUCTORS = frozenset(
+    {
+        "TypedDict",
+        "NamedTuple",
+        "Enum",
+        "StrEnum",
+        "IntEnum",
+        "make_dataclass",
+        "create_model",
+    }
+)
+BANNED_IMPORTS = BANNED_BASES | BANNED_DECORATORS | BANNED_CALL_CONSTRUCTORS
 
 # Temporary narrow exemption for untouched Issue #12 hook file until migrated.
 PRE_ISSUE_12_EXEMPTIONS = frozenset(
@@ -31,8 +43,9 @@ PRE_ISSUE_12_EXEMPTIONS = frozenset(
 
 
 def _is_exempt_path(rel_posix: str) -> bool:
-    parts = Path(rel_posix).parts
-    if "generated" in parts or "tests" in parts:
+    if rel_posix.startswith("unix/home/.config/mise/lib/dotfiles_py/generated/"):
+        return True
+    if rel_posix.startswith(("tests/", "unix/home/.config/mise/lib/herdr_roll/tests/")):
         return True
     return Path(rel_posix).name.startswith("test_")
 
@@ -44,15 +57,18 @@ def _attr_or_name(node: ast.AST) -> str | None:
         return node.attr
     if isinstance(node, ast.Call):
         return _attr_or_name(node.func)
+    if isinstance(node, ast.Subscript):
+        return _attr_or_name(node.value)
     return None
 
 
-def _has_ignore_comment(lines: list[str], class_node: ast.ClassDef) -> bool:
-    candidates = [class_node.lineno]
-    for dec in class_node.decorator_list:
+def _has_ignore_comment(lines: list[str], node: ast.AST) -> bool:
+    candidates = [getattr(node, "lineno", 1)]
+    for dec in getattr(node, "decorator_list", ()):
         candidates.append(dec.lineno)
     first_line = min(candidates)
-    for line_no in range(max(1, first_line - 1), class_node.lineno + 1):
+    last_line = max(first_line, getattr(node, "lineno", first_line))
+    for line_no in range(max(1, first_line - 1), min(len(lines), last_line) + 1):
         text = lines[line_no - 1]
         if "# schema-first-ignore:" in text:
             _, _, reason = text.partition("# schema-first-ignore:")
@@ -77,6 +93,28 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
     violations: list[str] = []
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if _has_ignore_comment(lines, node):
+                continue
+            for alias in node.names:
+                if alias.name in BANNED_IMPORTS and alias.asname:
+                    violations.append(
+                        f"{rel_posix}:{node.lineno}: aliased DTO/enum import "
+                        f"`{alias.name} as {alias.asname}` bypasses schema-first AST checks."
+                    )
+            continue
+
+        if isinstance(node, ast.Call):
+            fn_name = _attr_or_name(node.func)
+            if fn_name in BANNED_CALL_CONSTRUCTORS and not _has_ignore_comment(
+                lines, node
+            ):
+                violations.append(
+                    f"{rel_posix}:{node.lineno}: functional DTO/enum constructor `{fn_name}(...)` "
+                    "is banned outside generated modules; declare in schemas/**/*.schema.json."
+                )
+            continue
+
         if not isinstance(node, ast.ClassDef):
             continue
         if (rel_posix, node.name) in PRE_ISSUE_12_EXEMPTIONS:

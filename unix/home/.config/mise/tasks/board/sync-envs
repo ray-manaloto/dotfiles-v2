@@ -95,7 +95,7 @@ all)
 	sync_vm
 	;;
 *)
-	echo "unknown target '${target}' (expected pc, mac, or all)" >&2
+	echo "unknown target '${target}' (expected pc, mac, vm, or all)" >&2
 	exit 1
 	;;
 esac

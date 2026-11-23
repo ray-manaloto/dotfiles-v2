@@ -44,13 +44,15 @@
           "$ref": "#/$defs/CommonErrorCode"
         },
         "message": {
-          "type": "string",
+          "type": ["string", "null"],
           "minLength": 1,
+          "default": null,
           "description": "Optional human-readable error message."
         },
         "detail": {
-          "type": "object",
+          "type": ["object", "null"],
           "additionalProperties": true,
+          "default": null,
           "description": "Optional structured diagnostic metadata."
         }
       }
@@ -65,13 +67,15 @@
           "$ref": "#/$defs/CommonReturnCode"
         },
         "message": {
-          "type": "string",
+          "type": ["string", "null"],
           "minLength": 1,
+          "default": null,
           "description": "Optional human-readable outcome note."
         },
         "detail": {
-          "type": "object",
+          "type": ["object", "null"],
           "additionalProperties": true,
+          "default": null,
           "description": "Optional structured outcome metadata."
         }
       }

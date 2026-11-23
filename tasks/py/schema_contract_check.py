@@ -22,21 +22,37 @@ def _check_object_additional_properties(
 ) -> None:
     if not isinstance(node, dict):
         return
-    if node.get("type") == "object":
-        if location.endswith(".properties.detail") or location.endswith(".detail"):
-            return
-        if node.get("additionalProperties") is not False:
-            violations.append(
-                f'{location}: object definition must set `"additionalProperties": false`'
+    node_type = node.get("type")
+    is_object_type = (
+        node_type == "object"
+        or (isinstance(node_type, list) and "object" in node_type)
+        or (
+            node_type is None
+            and (
+                isinstance(node.get("properties"), dict)
+                or isinstance(node.get("patternProperties"), dict)
             )
-    props = node.get("properties")
-    if isinstance(props, dict):
-        for prop_name, prop_schema in props.items():
-            _check_object_additional_properties(
-                prop_schema,
-                location=f"{location}.properties.{prop_name}",
-                violations=violations,
-            )
+        )
+    )
+    if (
+        is_object_type
+        and not (
+            location.endswith(".properties.detail") or location.endswith(".detail")
+        )
+        and node.get("additionalProperties") is not False
+    ):
+        violations.append(
+            f'{location}: object definition must set `"additionalProperties": false`'
+        )
+    for map_key in ("properties", "patternProperties"):
+        mapping = node.get(map_key)
+        if isinstance(mapping, dict):
+            for prop_name, prop_schema in mapping.items():
+                _check_object_additional_properties(
+                    prop_schema,
+                    location=f"{location}.{map_key}.{prop_name}",
+                    violations=violations,
+                )
     items = node.get("items")
     if isinstance(items, dict):
         _check_object_additional_properties(
@@ -44,6 +60,38 @@ def _check_object_additional_properties(
             location=f"{location}.items",
             violations=violations,
         )
+    prefix_items = node.get("prefixItems")
+    if isinstance(prefix_items, list):
+        for idx, sub in enumerate(prefix_items):
+            _check_object_additional_properties(
+                sub,
+                location=f"{location}.prefixItems[{idx}]",
+                violations=violations,
+            )
+    add_props = node.get("additionalProperties")
+    if isinstance(add_props, dict):
+        _check_object_additional_properties(
+            add_props,
+            location=f"{location}.additionalProperties",
+            violations=violations,
+        )
+    for comb in ("anyOf", "oneOf", "allOf"):
+        branches = node.get(comb)
+        if isinstance(branches, list):
+            for idx, branch in enumerate(branches):
+                _check_object_additional_properties(
+                    branch,
+                    location=f"{location}.{comb}[{idx}]",
+                    violations=violations,
+                )
+    for sub_key in ("not", "if", "then", "else"):
+        sub_schema = node.get(sub_key)
+        if isinstance(sub_schema, dict):
+            _check_object_additional_properties(
+                sub_schema,
+                location=f"{location}.{sub_key}",
+                violations=violations,
+            )
 
 
 def check_schema_file(path: Path, repo_root: Path) -> list[str]:
@@ -115,11 +163,15 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path.cwd().resolve()
     schemas_dir = repo_root / "schemas"
 
-    targets = (
-        [Path(arg) for arg in args]
-        if args
-        else sorted(schemas_dir.rglob("*.schema.json"))
-    )
+    if args:
+        targets = [Path(arg) for arg in args if arg.endswith(".schema.json")]
+        if not targets:
+            sys.stdout.write(
+                "schema-contract-check: 0 schema file(s) matched arguments\n"
+            )
+            return 0
+    else:
+        targets = sorted(schemas_dir.rglob("*.schema.json"))
 
     if not (schemas_dir / "common" / "envelope.schema.json").is_file():
         sys.stderr.write("schemas/common/envelope.schema.json is missing\n")

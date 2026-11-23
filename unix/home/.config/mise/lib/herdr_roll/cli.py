@@ -10,7 +10,6 @@ from typing import Annotated
 import cyclopts
 import orjson
 
-from dotfiles_py.logging import configure_logging, get_logger
 from dotfiles_py.time_ns import now_ns_pair
 from herdr_roll.engine import (
     EXIT_FAILED,
@@ -326,8 +325,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return EXIT_REFUSED
     except (RefusedError, GraphError, OSError) as err:
-        configure_logging(logger_name="herdr_roll")
-        log = get_logger("herdr_roll")
         is_refused = isinstance(err, RefusedError)
         rc = EXIT_REFUSED if is_refused else EXIT_FAILED
         err_code = (
@@ -354,7 +351,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             errors=[HerdrRollErrorEntry(code=err_code, message=str(err))],
             returns=[HerdrRollReturnEntry(code=ret_code, message=str(err))],
         )
-        log.error("herdr_roll_error", response=resp)
         sys.stderr.write(
             orjson.dumps(resp.model_dump(mode="json")).decode("utf-8") + "\n"
         )

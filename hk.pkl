@@ -3,7 +3,8 @@ amends "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.1.0/presets.
 import "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.1.0/helpers.pkl"
 import "package://github.com/jdx/hk/releases/download/v2.13.0/hk@2.13.0#/Builtins.pkl"
 
-exclude =
+// Exclude lockfiles only from formatting/content/secret/hygiene steps so integrity & gate steps still run.
+local const lockfileExcludes =
   List(
     ".mise/locks/**",
     "unix/home/.config/mise/locks/**",
@@ -42,13 +43,31 @@ local const picked =
     "typos"
   })
 
+local const betterleaksStep = picked["betterleaks"] as Step
+local const hygieneGroup = picked["hygiene"] as Group
 local const miseGroup = picked["mise"] as Group
 local const oxfmtStep = picked["oxfmt"] as Step
 local const tombiGroup = picked["tombi"] as Group
+local const typosStep = picked["typos"] as Step
 
 local const fastSteps: Mapping<String, Step | Group> = (picked) {
+  ["betterleaks"] = (betterleaksStep) {
+    exclude = (betterleaksStep.exclude ?? List()) + lockfileExcludes
+  }
+  ["hygiene"] = (hygieneGroup) {
+    steps {
+      for (name, step in hygieneGroup.steps) {
+        [name] = (step as Step) {
+          exclude = ((step as Step).exclude ?? List()) + lockfileExcludes
+        }
+      }
+    }
+  }
   ["oxfmt"] = (oxfmtStep) {
-    exclude = (oxfmtStep.exclude ?? List()) + List("**/*.yml", "**/*.yaml")
+    exclude = (oxfmtStep.exclude ?? List()) + List("**/*.yml", "**/*.yaml") + lockfileExcludes
+  }
+  ["typos"] = (typosStep) {
+    exclude = (typosStep.exclude ?? List()) + lockfileExcludes
   }
   ["mise"] = (miseGroup) {
     steps {
@@ -80,9 +99,10 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
   }
   ["ruff"] = Builtins.ruff
   ["ruff-format"] = (Builtins.ruff_format) {
-    // Legacy hooks owned by Issues #6/#12 use pre-PEP-758 `except (...)` syntax until migrated.
+    // Hook files invoked by `/usr/bin/python3` keep pre-PEP-758 `except (...)` syntax for macOS system Python.
     exclude =
       List(
+        "unix/home/.gemini/config/hooks/agy-code-review-guard.py",
         "unix/home/.gemini/config/hooks/agy-hc-send-guard.py",
         "unix/home/.gemini/config/hooks/agy-interactive-questions.py",
         "unix/home/.gemini/config/hooks/agy-pwf-guard.py",
@@ -90,8 +110,12 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
         "unix/home/.gemini/config/hooks/post-task-learn.py",
       )
   }
-  ["ryl"] = Builtins.ryl
-  ["ryl-format"] = Builtins.ryl_format
+  ["ryl"] = (Builtins.ryl) {
+    exclude = (Builtins.ryl.exclude ?? List()) + lockfileExcludes
+  }
+  ["ryl-format"] = (Builtins.ryl_format) {
+    exclude = (Builtins.ryl_format.exclude ?? List()) + lockfileExcludes
+  }
   ["py-deps"] = new Step {
     glob = List("pyproject.toml", "uv.lock")
     check = "mise deps uv --explain"
@@ -103,6 +127,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
   }
   ["codegen-check"] = new Step {
     depends = List("py-deps")
+    exclusive = true
     glob =
       List(
         "schemas/**",
@@ -118,7 +143,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     check = "python3 -I -B tasks/py/schema_first_ast.py {{ files }}"
   }
   ["schema-contract-check"] = new Step {
-    glob = List("schemas/**")
+    glob = List("schemas/**/*.schema.json")
     check = "python3 -I -B tasks/py/schema_contract_check.py {{ files }}"
   }
   ["no-project-tools"] = new Step {

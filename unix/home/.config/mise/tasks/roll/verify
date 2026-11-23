@@ -27,4 +27,4 @@ args=(verify --settle "${usage_settle:-45}")
 if [[ -x ${venv_py} ]]; then
 	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
 fi
-exec uv run --project "${repo_root}" --offline --no-sync python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

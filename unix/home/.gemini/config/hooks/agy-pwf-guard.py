@@ -11,7 +11,7 @@ import re
 import shlex
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -150,7 +150,7 @@ def _read_plan_id_from_mise_local(repo_root: Path) -> tuple[bool, str]:
 def _format_ns_timestamp(ns: int | None = None) -> str:
     raw_ns = time.time_ns() if ns is None else ns
     sec, rem = divmod(raw_ns, 1_000_000_000)
-    dt = datetime.fromtimestamp(sec, UTC).astimezone()
+    dt = datetime.fromtimestamp(sec, timezone.utc).astimezone()
     return f"{dt:%Y%m%dT%H%M%S}.{rem:09d}{dt:%z}"
 
 
@@ -188,7 +188,22 @@ def _read_issue_from_mise_local(repo_root: Path) -> tuple[bool, str]:
                     raw_url = env_tbl.get("GITHUB_ISSUE_URL")
     else:
         for line in text.splitlines():
-            stripped = line.split("#", 1)[0]
+            in_quotes = False
+            escaped = False
+            cut = len(line)
+            for idx, ch in enumerate(line):
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == "\\" and in_quotes:
+                    escaped = True
+                    continue
+                if ch == '"':
+                    in_quotes = not in_quotes
+                elif ch == "#" and not in_quotes:
+                    cut = idx
+                    break
+            stripped = line[:cut]
             m_issue = GITHUB_ISSUE_LINE_RE.match(stripped)
             if m_issue:
                 raw_issue = m_issue.group(1)
@@ -243,10 +258,12 @@ def _extract_task_plan_issue(plan_path: Path) -> tuple[bool, str]:
     in_goal = False
     for raw in lines:
         line = raw.rstrip("\r")
-        if not heading_num and line.startswith("# "):
-            m_head = TASK_PLAN_ISSUE_RE.match(line)
-            if m_head:
-                heading_num = m_head.group(1)
+        if line.startswith("# "):
+            in_goal = False
+            if not heading_num:
+                m_head = TASK_PLAN_ISSUE_RE.match(line)
+                if m_head:
+                    heading_num = m_head.group(1)
             continue
         if re.match(r"^##\s+Goal\s*$", line):
             in_goal = True

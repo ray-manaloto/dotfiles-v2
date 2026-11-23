@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKTREE_NEW = REPO_ROOT / "tasks" / "worktree" / "new"
@@ -42,7 +42,7 @@ def _clean_git_env(extra: dict[str, str] | None = None) -> dict[str, str]:
             text=True,
             stderr=subprocess.DEVNULL,
         ).splitlines()
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         local_vars = [
             "GIT_ALTERNATE_OBJECT_DIRECTORIES",
             "GIT_CONFIG",
@@ -394,6 +394,44 @@ exit 1
             self.assertIn("#99", out)
             self.assertIn("https://github.com/example/demo-repo/issues/99", out)
             self.assertIn("(unlinked)", out)
+
+            # Verify fallback TOML parser handles `#` inside quotes and Python 3.9 compat
+            guard_mod = _load_guard_module()
+            modules_dict = cast(dict[str, Any], sys.modules)
+            orig_tomllib = modules_dict.get("tomllib", ...)
+            try:
+                modules_dict["tomllib"] = None
+                fallback_repo = tmp_path / "fallback-repo"
+                fallback_repo.mkdir()
+                (fallback_repo / "mise.local.toml").write_text(
+                    'GITHUB_ISSUE = "#42" # inline comment\n'
+                    'GITHUB_ISSUE_URL = "https://github.com/example/demo-repo/issues/42" # cmt\n',
+                    encoding="utf-8",
+                )
+                has_issue, num_str = guard_mod._read_issue_from_mise_local(
+                    fallback_repo
+                )
+                self.assertTrue(has_issue)
+                self.assertEqual(num_str, "42")
+            finally:
+                if orig_tomllib is ...:
+                    modules_dict.pop("tomllib", None)
+                else:
+                    modules_dict["tomllib"] = orig_tomllib
+
+            # Verify _format_ns_timestamp outputs 9-digit ns format
+            self.assertRegex(guard_mod._format_ns_timestamp(), NS_TS_RE)
+
+            # Verify in_goal resets on subsequent `# ` headings without corrupting goal extraction
+            goal_plan = tmp_path / "goal_reset.md"
+            goal_plan.write_text(
+                "# Task Plan: #55 Title\n\n## Goal\nDo x\n# Unrelated H1\n"
+                "https://github.com/example/demo-repo/issues/88\n",
+                encoding="utf-8",
+            )
+            has_p_issue, p_num = guard_mod._extract_task_plan_issue(goal_plan)
+            self.assertTrue(has_p_issue)
+            self.assertEqual(p_num, "55")
 
 
 if __name__ == "__main__":

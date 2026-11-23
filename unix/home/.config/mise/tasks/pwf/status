@@ -80,7 +80,7 @@ read_local_plan_id() {
 read_local_issue_num() {
 	local cfg="$1/mise.local.toml"
 	[[ -f ${cfg} ]] || return 0
-	sed -nE 's/^[[:space:]]*GITHUB_ISSUE[[:space:]]*=[[:space:]]*"?#?([1-9][0-9]*)"?.*/\1/p' "${cfg}" | head -n 1
+	sed -nE 's/^[[:space:]]*GITHUB_ISSUE[[:space:]]*=[[:space:]]*"?#?([1-9][0-9]*)"?[[:space:]]*(#.*)?$/\1/p' "${cfg}" | head -n 1
 }
 
 read_local_issue_url() {
@@ -105,7 +105,7 @@ resolve_issue_for_dir() {
 			RESOLVED_ISSUE_NUM="$(
 				LC_ALL=C awk '
 					NR == 1 { sub(/^\357\273\277/, "") }
-					/^#[[:space:]]*Task Plan:[[:space:]]*#[1-9][0-9]*([[:space:]]|$)/ {
+					/^#[[:space:]]*Task Plan:[[:space:]]*(.*[[:space:]])?#[1-9][0-9]*([^0-9A-Za-z_]|$)/ {
 						if (match($0, /#[1-9][0-9]*/)) {
 							print substr($0, RSTART + 1, RLENGTH - 1)
 							exit

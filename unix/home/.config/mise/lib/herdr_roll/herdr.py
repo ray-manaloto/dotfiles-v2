@@ -365,14 +365,20 @@ def is_transient_or_shell(args: str) -> bool:
     stripped = args.strip()
     if not stripped or stripped == "<defunct>":
         return True
-    first = stripped.split()[0]
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = stripped.split()
+    if not tokens:
+        return True
+    first = tokens[0]
     if first in TRANSIENT_WRAPPED_NAMES or (
         first.startswith("(") and first.endswith(")")
     ):
         return True
     if first.startswith("-") and first.lstrip("-") in SHELLS:
         return True
-    return Path(first).name.lstrip("-") in SHELLS and len(stripped.split()) == 1
+    return Path(first).name.lstrip("-") in SHELLS and len(tokens) == 1
 
 
 def owned_by_harness(

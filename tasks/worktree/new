@@ -42,6 +42,7 @@ if [[ -n ${issue} ]]; then
 		ISSUE_JSON="${issue_json}" python3 -I -B - <<'PY'
 import json
 import os
+import re
 import sys
 
 try:
@@ -53,10 +54,25 @@ if not isinstance(data, dict):
     sys.exit("unexpected non-object JSON from gh issue view")
 
 num = data.get("number")
-title = " ".join(str(data.get("title", "")).split())
-url = str(data.get("url", "")).strip()
-if isinstance(num, bool) or not isinstance(num, int) or num <= 0 or not title or not url:
-    sys.exit("incomplete issue metadata from gh issue view (need number, title, url)")
+raw_title = data.get("title")
+raw_url = data.get("url")
+title = " ".join(raw_title.split()) if isinstance(raw_title, str) else ""
+url = raw_url.strip() if isinstance(raw_url, str) else ""
+url_match = re.fullmatch(
+    r"https?://github\.com/[^/\s]+/[^/\s]+/issues/([1-9][0-9]*)",
+    url,
+)
+if (
+    isinstance(num, bool)
+    or not isinstance(num, int)
+    or num <= 0
+    or not title
+    or url_match is None
+    or int(url_match.group(1)) != num
+):
+    sys.exit(
+        "incomplete or invalid issue metadata from gh issue view (need issue number, title, /issues/{num} url)"
+    )
 print(f"{num}\t{url}")
 PY
 	)"

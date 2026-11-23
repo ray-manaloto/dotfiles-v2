@@ -64,6 +64,7 @@ _RESULT_ERROR_MAP: dict[str, HerdrRollErrorCode] = {
     "blocked-dialog": HerdrRollErrorCode.ERR_BLOCKED_DIALOG,
     "skipped-busy": HerdrRollErrorCode.ERR_BUSY,
     "skipped-busy-after-handshake": HerdrRollErrorCode.ERR_BUSY_AFTER_HANDSHAKE,
+    "skipped-busy-keep-me": HerdrRollErrorCode.ERR_BUSY_KEEP_ME,
     "skipped-handshake-not-sent": HerdrRollErrorCode.ERR_HANDSHAKE_NOT_SENT,
     "skipped-no-handshake-ack": HerdrRollErrorCode.ERR_NO_HANDSHAKE_ACK,
     "skipped-background-work": HerdrRollErrorCode.ERR_BACKGROUND_WORK,

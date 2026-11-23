@@ -33,6 +33,7 @@
         "ERR_BLOCKED_DIALOG",
         "ERR_BUSY",
         "ERR_BUSY_AFTER_HANDSHAKE",
+        "ERR_BUSY_KEEP_ME",
         "ERR_HANDSHAKE_NOT_SENT",
         "ERR_NO_HANDSHAKE_ACK",
         "ERR_BACKGROUND_WORK",
@@ -76,12 +77,14 @@
           "$ref": "#/$defs/HerdrRollErrorCode"
         },
         "message": {
-          "type": "string",
-          "minLength": 1
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
         },
         "detail": {
-          "type": "object",
-          "additionalProperties": true
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
         }
       }
     },
@@ -95,12 +98,14 @@
           "$ref": "#/$defs/HerdrRollReturnCode"
         },
         "message": {
-          "type": "string",
-          "minLength": 1
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
         },
         "detail": {
-          "type": "object",
-          "additionalProperties": true
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
         }
       }
     },

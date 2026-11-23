@@ -40,7 +40,8 @@ def _git_tracked(repo_root: Path, *patterns: str) -> list[Path]:
 
 
 def _pkg_name(req: str) -> str:
-    return re.split(r"[<>=!~;\[\s]", req.strip(), maxsplit=1)[0].lower()
+    base = re.split(r"[<>=!~;\[\s]", req.strip(), maxsplit=1)[0].lower()
+    return re.sub(r"[-_.]+", "-", base)
 
 
 def check_no_project_tools(repo_root: Path) -> list[str]:
@@ -126,16 +127,29 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
         if not isinstance(entries, list) or not entries:
             errors.append(f"mise.lock missing entry for [tools].{tool_name!r}")
             continue
-        first = entries[0]
-        got_ver = str(first.get("version", ""))
-        if want_ver and got_ver != want_ver:
-            errors.append(
-                f"mise.lock version mismatch for {tool_name}: config={want_ver}, lock={got_ver}"
-            )
+        entry_dicts = [e for e in entries if isinstance(e, dict)]
+        if not entry_dicts:
+            errors.append(f"mise.lock invalid entries for [tools].{tool_name!r}")
+            continue
+        if want_ver:
+            matching = [e for e in entry_dicts if str(e.get("version", "")) == want_ver]
+            if not matching:
+                got_vers = ", ".join(str(e.get("version", "")) for e in entry_dicts)
+                errors.append(
+                    f"mise.lock version mismatch for {tool_name}: config={want_ver}, lock=[{got_vers}]"
+                )
+                continue
+        else:
+            matching = entry_dicts
         if tool_name.startswith("npm:"):
-            aube_info = first.get("aube")
-            aube_rel = aube_info.get("path") if isinstance(aube_info, dict) else None
-            if not isinstance(aube_rel, str) or not aube_rel:
+            aube_rel: str | None = None
+            for entry in matching:
+                aube_info = entry.get("aube")
+                cand = aube_info.get("path") if isinstance(aube_info, dict) else None
+                if isinstance(cand, str) and cand:
+                    aube_rel = cand
+                    break
+            if not aube_rel:
                 errors.append(f"mise.lock missing aube.path for {tool_name}@{want_ver}")
                 continue
             aube_dir = repo_root / "unix" / "home" / ".config" / "mise" / aube_rel
@@ -155,7 +169,7 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                 if allowed_os and plat_os not in allowed_os:
                     continue
                 plat_key = f"platforms.{plat}"
-                if plat_key not in first:
+                if not any(plat_key in entry for entry in matching):
                     errors.append(
                         f"mise.lock missing {plat_key} for {tool_name} ({want_ver})"
                     )
@@ -179,20 +193,18 @@ def _is_dotfiles_v2_mise_cutover(home: Path | None = None) -> tuple[bool, Path]:
         return False, host_mise
     resolved = host_mise.resolve(strict=False)
     is_v2 = (
-        resolved.parts[-3:] == (".config", "mise")
-        or (
-            len(resolved.parts) >= 4
-            and resolved.parts[-4:] == ("unix", "home", ".config", "mise")
-            and any("dotfiles-v2" in part for part in resolved.parts)
-        )
-    ) and any("dotfiles-v2" in part for part in resolved.parts)
+        len(resolved.parts) >= 4
+        and resolved.parts[-4:] == ("unix", "home", ".config", "mise")
+        and any("dotfiles-v2" in part for part in resolved.parts)
+    )
     return is_v2, resolved
 
 
 def _is_legacy_dotfiles_target(target: Path) -> bool:
     for part in target.parts:
         if part == "dotfiles" or (
-            part.startswith("dotfiles.") and "dotfiles-v2" not in part
+            part.startswith(("dotfiles.", "dotfiles-legacy"))
+            and "dotfiles-v2" not in part
         ):
             return True
     return False
@@ -320,7 +332,10 @@ def check_host_option_a(
     for sub in ("snapshot", "restart", "stop", "start", "verify", "self"):
         tname = f"roll:{sub}"
         src = task_sources.get(tname, "")
-        if "dotfiles-v2" not in src or "/tasks/roll/" not in src:
+        resolved_src = (
+            Path(src).expanduser().resolve(strict=False).as_posix() if src else ""
+        )
+        if "dotfiles-v2" not in resolved_src or "/tasks/roll/" not in resolved_src:
             errors.append(
                 f"roll-ownership: global task `{tname}` source {src!r} does not resolve inside dotfiles-v2/unix/home/.config/mise/tasks/roll/"
             )
@@ -337,16 +352,39 @@ def check_host_option_a(
         errors.append(
             f"host-dotfiles-status: failed to run `mise -C ~ dot status --json`: {exc}"
         )
-        dot_data = []
+        dot_data = {}
 
-    if isinstance(dot_data, list):
+    healthy_states = {
+        "applied",
+        "tracked",
+        "absent",
+        "not_on_this_machine",
+        "ok",
+        "synced",
+        "match",
+    }
+    if isinstance(dot_data, dict):
+        for entry in dot_data.get("files") or []:
+            if not isinstance(entry, dict):
+                continue
+            state = str(entry.get("state") or entry.get("status") or "")
+            if state and state not in healthy_states:
+                errors.append(
+                    f"host-dotfiles-status: {entry.get('target')} state={state}"
+                )
+        for orphan in dot_data.get("orphaned") or []:
+            if isinstance(orphan, dict):
+                errors.append(
+                    f"host-dotfiles-status: orphaned {orphan.get('target')} state={orphan.get('state', 'orphaned')}"
+                )
+    elif isinstance(dot_data, list):
         for entry in dot_data:
             if not isinstance(entry, dict):
                 continue
-            status = str(entry.get("status") or "")
-            if status and status not in {"ok", "synced", "match"}:
+            state = str(entry.get("state") or entry.get("status") or "")
+            if state and state not in healthy_states:
                 errors.append(
-                    f"host-dotfiles-status: {entry.get('target')} status={status}"
+                    f"host-dotfiles-status: {entry.get('target')} state={state}"
                 )
 
     return (

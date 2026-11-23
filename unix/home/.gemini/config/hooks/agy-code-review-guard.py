@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -11,7 +12,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -247,16 +248,20 @@ def _strip_env_prefix(segment: list[str]) -> list[str]:
 
 
 def _git_output(cwd: Path, *args: str) -> tuple[int, str]:
+    env = dict(os.environ)
+    for var_name in _local_git_env_vars():
+        env.pop(var_name, None)
     try:
         proc = subprocess.run(
             ["git", *args],
             cwd=cwd,
+            env=env,
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return 1, ""
     return proc.returncode, proc.stdout.strip()
 
@@ -335,7 +340,7 @@ def _load_receipts(common_dir: Path) -> dict[str, dict[str, Any]]:
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -440,7 +445,7 @@ def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
     receipts[commit_sha] = {
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
-        "recorded_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "summary": summary.strip(),
     }
     path = _write_receipts(common_dir, commit_sha, receipts)
@@ -554,7 +559,7 @@ def _verify_receipt(
         )
         raise RuntimeError(msg)
     entry = dict(cur_entry)
-    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     recorded_at = str(entry.get("recorded_at", ""))
     verified_at = max(now_iso, recorded_at)
     entry["verification"] = {
@@ -951,7 +956,7 @@ def _read_stop_state(path: Path) -> dict[str, int]:
     out = _make_stop_state()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, ValueError, TypeError, json.JSONDecodeError:
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return out
     if not isinstance(raw, dict):
         return out
@@ -1257,7 +1262,7 @@ def _process_stdin_text(raw_stdin: str, event: str = "auto") -> dict[str, Any]:
     fallback = {} if event == "stop" else _allow()
     try:
         payload = json.loads(raw_stdin)
-    except json.JSONDecodeError, ValueError:
+    except (json.JSONDecodeError, ValueError):
         return fallback
     if not isinstance(payload, dict):
         return fallback
@@ -1313,6 +1318,7 @@ def _check_hooks_json(path: Path) -> None:
         )
 
 
+@functools.lru_cache(maxsize=1)
 def _local_git_env_vars() -> tuple[str, ...]:
     try:
         proc = subprocess.run(
@@ -1326,7 +1332,7 @@ def _local_git_env_vars() -> tuple[str, ...]:
             return tuple(
                 line.strip() for line in proc.stdout.splitlines() if line.strip()
             )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         pass
     return (
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
