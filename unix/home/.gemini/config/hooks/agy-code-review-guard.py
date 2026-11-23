@@ -22,6 +22,9 @@ MAX_STORED_RECEIPTS = 32
 SEPARATORS = frozenset(
     {";", "&&", "||", "|", "&", "\n", "then", "do", "else", "elif", "{", "}", "(", ")"}
 )
+MUTATING_GIT_SUBS = frozenset(
+    {"commit", "merge", "rebase", "cherry-pick", "am", "revert", "reset"}
+)
 
 
 def _allow() -> dict[str, Any]:
@@ -33,10 +36,9 @@ def _deny(reason: str) -> dict[str, Any]:
 
 
 def _split_shell_segments(command: str) -> list[list[str]]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&")
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&()\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
-    lexer.wordchars = lexer.wordchars.replace("\n", "")
     try:
         tokens = list(lexer)
     except ValueError:
@@ -60,8 +62,24 @@ def _strip_env_prefix(segment: list[str]) -> list[str]:
     idx = 0
     while idx < len(segment):
         tok = segment[idx]
-        if ENV_ASSIGN_RE.match(tok) or Path(tok).name == "env":
+        if ENV_ASSIGN_RE.match(tok):
             idx += 1
+            continue
+        if Path(tok).name == "env":
+            idx += 1
+            while idx < len(segment) and segment[idx].startswith("-"):
+                flag = segment[idx]
+                if flag in {
+                    "-u",
+                    "--unset",
+                    "-C",
+                    "--chdir",
+                    "-S",
+                    "--split-string",
+                } and idx + 1 < len(segment):
+                    idx += 2
+                    continue
+                idx += 1
             continue
         break
     return segment[idx:]
@@ -117,6 +135,7 @@ def _changed_files(
         if base_ref
         else ["@{u}", "origin/HEAD", "origin/main", "origin/master"]
     )
+    diff_op = ".." if base_ref is not None else "..."
     for candidate_base in bases:
         if not candidate_base:
             continue
@@ -126,7 +145,7 @@ def _changed_files(
         if base_sha == target_sha:
             return []
         rc_d, out = _git_output(
-            repo_root, "diff", "--name-only", f"{base_sha}..{target_sha}"
+            repo_root, "diff", "--name-only", f"{base_sha}{diff_op}{target_sha}"
         )
         if rc_d == 0:
             return [line for line in out.splitlines() if line.strip()]
@@ -210,7 +229,15 @@ def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
 
     path = _receipt_path(common_dir)
     payload = {"latest": commit_sha, "receipts": receipts}
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    data = json.dumps(payload, indent=2) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{RECEIPT_FILENAME}.", dir=common_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+        os.replace(tmp_name, path)
+    except Exception:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
     return {
         "repo_root": str(repo_root),
         "receipt_file": str(path),
@@ -219,10 +246,22 @@ def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
     }
 
 
+def _push_source_refs(refspecs: list[str]) -> list[str]:
+    if not refspecs:
+        return ["HEAD"]
+    refs: list[str] = []
+    for spec in refspecs:
+        if spec.startswith(":"):
+            continue
+        src = spec.lstrip("+").split(":", 1)[0]
+        refs.append(src or "HEAD")
+    return refs
+
+
 def _parse_git_segment(
     tokens: list[str], cwd: Path
-) -> tuple[str, Path, str, str | None] | None:
-    """Return (op, repo_dir, ref_to_check, base_ref_override) or None."""
+) -> tuple[str, Path, list[str], str | None, bool] | None:
+    """Return (op, repo_dir, refs_to_check, base_ref_override, is_mutator) or None."""
     if not tokens or Path(tokens[0]).name != "git":
         return None
     repo_dir = cwd
@@ -275,21 +314,20 @@ def _parse_git_segment(
                 continue
             positionals.append(tok)
             idx += 1
-        refspecs = positionals[1:]
-        if refspecs and all(spec.startswith(":") for spec in refspecs):
+        source_refs = _push_source_refs(positionals[1:])
+        if not source_refs:
             return None
-        return "git push", repo_dir, "HEAD", None
+        return "git push", repo_dir, source_refs, None, False
 
     if sub == "merge":
-        has_ff_only = False
+        if any(tok in {"--abort", "--continue", "--quit", "--dry-run"} for tok in rest):
+            return None
+        has_ff_only = "--ff-only" in rest
         merge_refs: list[str] = []
         idx = 0
         while idx < len(rest):
             tok = rest[idx]
-            if tok in {"--abort", "--continue", "--quit"}:
-                return None
             if tok == "--ff-only":
-                has_ff_only = True
                 idx += 1
                 continue
             if tok in {
@@ -308,28 +346,38 @@ def _parse_git_segment(
                 continue
             merge_refs.append(tok)
             idx += 1
-        if not has_ff_only or not merge_refs:
+        if has_ff_only and merge_refs:
+            rc_b, branch = _git_output(
+                repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD"
+            )
+            if rc_b == 0 and branch in {"main", "master"}:
+                return (
+                    f"git merge --ff-only {merge_refs[0]}",
+                    repo_dir,
+                    [merge_refs[0]],
+                    "HEAD",
+                    False,
+                )
+        return "git merge", repo_dir, [], None, True
+
+    if sub in MUTATING_GIT_SUBS:
+        if any(tok in {"--dry-run", "--abort", "--quit", "-n"} for tok in rest):
             return None
-        rc_b, branch = _git_output(
-            repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD"
-        )
-        if rc_b != 0 or branch not in {"main", "master"}:
-            return None
-        return f"git merge --ff-only {merge_refs[0]}", repo_dir, merge_refs[0], "HEAD"
+        return f"git {sub}", repo_dir, [], None, True
 
     return None
 
 
 def _parse_mise_or_pr_segment(
     tokens: list[str], cwd: Path
-) -> tuple[str, Path, str, str | None] | None:
+) -> tuple[str, Path, list[str], str | None, bool] | None:
     if not tokens:
         return None
     exe = Path(tokens[0]).name
     if exe == "repotools" and len(tokens) >= 2 and tokens[1] == "pr-create":
-        return "repotools pr-create", cwd, "HEAD", None
+        return "repotools pr-create", cwd, ["HEAD"], None, False
     if exe == "gh" and len(tokens) >= 3 and tokens[1] == "pr" and tokens[2] == "create":
-        return "gh pr create", cwd, "HEAD", None
+        return "gh pr create", cwd, ["HEAD"], None, False
     if exe == "mise":
         repo_dir = cwd
         i = 1
@@ -338,6 +386,19 @@ def _parse_mise_or_pr_segment(
             if tok in {"-C", "--cd"} and i + 1 < len(tokens):
                 raw_dir = Path(os.path.expanduser(tokens[i + 1]))
                 repo_dir = raw_dir if raw_dir.is_absolute() else (cwd / raw_dir)
+                i += 2
+                continue
+            if tok.startswith("--cd="):
+                raw_dir = Path(os.path.expanduser(tok.split("=", 1)[1]))
+                repo_dir = raw_dir if raw_dir.is_absolute() else (cwd / raw_dir)
+                i += 1
+                continue
+            if tok.startswith("-C") and len(tok) > 2:
+                raw_dir = Path(os.path.expanduser(tok[2:]))
+                repo_dir = raw_dir if raw_dir.is_absolute() else (cwd / raw_dir)
+                i += 1
+                continue
+            if tok in {"-E", "--env", "-j", "--jobs"} and i + 1 < len(tokens):
                 i += 2
                 continue
             if tok.startswith("-"):
@@ -353,12 +414,13 @@ def _parse_mise_or_pr_segment(
                 "pr-create",
                 "//repo:pr-create",
             }:
-                return f"mise run {tokens[j]}", repo_dir, "HEAD", None
+                return f"mise run {tokens[j]}", repo_dir, ["HEAD"], None, False
     return None
 
 
 def _check_command(command: str, initial_cwd: Path | None = None) -> dict[str, Any]:
     cwd = (initial_cwd or Path.cwd()).resolve(strict=False)
+    mutated_repos: set[Path] = set()
     for segment in _split_shell_segments(command):
         tokens = _strip_env_prefix(segment)
         if not tokens:
@@ -376,33 +438,50 @@ def _check_command(command: str, initial_cwd: Path | None = None) -> dict[str, A
         if parsed is None:
             continue
 
-        op_label, repo_candidate, target_ref, base_override = parsed
+        op_label, repo_candidate, target_refs, base_override, is_mutator = parsed
         resolved = _resolve_repo_dirs(repo_candidate)
         if resolved is None:
             continue
         repo_root, common_dir = resolved
-        target = _resolve_target_commit(repo_root, target_ref)
-        if target is None:
-            continue
-        target_sha, target_tree_sha = target
 
-        changed = _changed_files(repo_root, target_sha, base_ref=base_override)
-        if changed is not None:
-            if not changed:
-                continue
-            if all(Path(path).suffix.lower() in DOC_SUFFIXES for path in changed):
-                continue
-
-        if _has_valid_receipt(common_dir, target_sha, target_tree_sha):
+        if not target_refs:
+            if is_mutator:
+                mutated_repos.add(repo_root)
             continue
 
-        return _deny(
-            f"code-review-guard (code-review-protocol.md): '{op_label}' requires a "
-            f"/code-review:code-review (+ code-review-commons) receipt for {target_sha[:7]} "
-            f"in {repo_root}. Run the review, fix confirmed CRITICAL/HIGH/MEDIUM findings, "
-            "then run:\n"
-            f'python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --repo "{repo_root}" --summary "<summary>"'
-        )
+        for target_ref in target_refs:
+            if repo_root in mutated_repos:
+                return _deny(
+                    f"code-review-guard (code-review-protocol.md): '{op_label}' follows an earlier "
+                    f"commit/history mutation in the same command for {repo_root}. Commit first, run "
+                    "/code-review:code-review (+ code-review-commons), and record the HEAD receipt via --record "
+                    "before pushing or creating a PR."
+                )
+            target = _resolve_target_commit(repo_root, target_ref)
+            if target is None:
+                continue
+            target_sha, target_tree_sha = target
+
+            changed = _changed_files(repo_root, target_sha, base_ref=base_override)
+            if changed is not None:
+                if not changed:
+                    continue
+                if all(Path(path).suffix.lower() in DOC_SUFFIXES for path in changed):
+                    continue
+
+            if _has_valid_receipt(common_dir, target_sha, target_tree_sha):
+                continue
+
+            return _deny(
+                f"code-review-guard (code-review-protocol.md): '{op_label}' requires a "
+                f"/code-review:code-review (+ code-review-commons) receipt for {target_sha[:7]} "
+                f"in {repo_root}. Run the review, fix confirmed CRITICAL/HIGH/MEDIUM findings, "
+                "then run:\n"
+                f'python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --repo "{repo_root}" --summary "<summary>"'
+            )
+
+        if is_mutator:
+            mutated_repos.add(repo_root)
     return _allow()
 
 
@@ -536,32 +615,66 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         _git_exec(wt, "add", "app.py")
         _git_exec(wt, "commit", "-m", "add app")
 
-        # Unreviewed merge --ff-only, push, pr-create, ship -> denied
-        r_merge = call_cmd("git merge --ff-only wt/feat", repo)
-        assert r_merge.get("decision") == "deny", r_merge
-        r_push = call_cmd(f"cd {wt} && git push origin HEAD", repo)
-        assert r_push.get("decision") == "deny", r_push
-        r_pr = call_cmd("repotools pr-create --title t --body-file b", wt)
-        assert r_pr.get("decision") == "deny", r_pr
-        r_gh = call_cmd("gh pr create --fill", wt)
-        assert r_gh.get("decision") == "deny", r_gh
-        r_ship = call_cmd("mise run ship", wt)
-        assert r_ship.get("decision") == "deny", r_ship
+        # Unreviewed merge --ff-only, push, pr-create, ship (incl. multiline, subshell, env -u, refspec, mise -E) -> denied
+        assert call_cmd("git merge --ff-only wt/feat", repo).get("decision") == "deny"
+        assert (
+            call_cmd(f"cd {wt} && git push origin HEAD", repo).get("decision") == "deny"
+        )
+        assert (
+            call_cmd(f"cd {wt}\ngit push origin HEAD", repo).get("decision") == "deny"
+        )
+        assert (
+            call_cmd(f"(cd {wt} && env -u GIT_DIR git push origin HEAD)", repo).get(
+                "decision"
+            )
+            == "deny"
+        )
+        assert call_cmd("git push origin wt/feat", repo).get("decision") == "deny"
+        assert (
+            call_cmd("repotools pr-create --title t --body-file b", wt).get("decision")
+            == "deny"
+        )
+        assert call_cmd("gh pr create --fill", wt).get("decision") == "deny"
+        assert call_cmd("mise run ship", wt).get("decision") == "deny"
+        assert (
+            call_cmd(f"mise --cd={wt} -E dev run ship", repo).get("decision") == "deny"
+        )
         checks.append("unreviewed_code_gates_denied")
 
+        # Docs-only branch still allowed even after origin/main receives a code commit
+        doc_wt = root / "repo-doc-wt"
+        _git_exec(repo, "worktree", "add", "-b", "wt/docs", str(doc_wt), "main")
+        (repo / "main_code.py").write_text("x = 1\n", encoding="utf-8")
+        _git_exec(repo, "add", "main_code.py")
+        _git_exec(repo, "commit", "-m", "main code")
+        _git_exec(repo, "push", "origin", "main")
+        (doc_wt / "GUIDE.md").write_text("# Guide\n", encoding="utf-8")
+        _git_exec(doc_wt, "add", "GUIDE.md")
+        _git_exec(doc_wt, "commit", "-m", "docs")
+        assert call_cmd("git push origin wt/docs", doc_wt) == _allow()
+        checks.append("three_dot_merge_base_docs_only_allowed")
+
         # Record receipt in wt -> allows merge --ff-only AND push of same SHA on main
+        # Reset repo to match wt base first so --ff-only is valid
+        _git_exec(repo, "reset", "--hard", "HEAD~1")
         _record_receipt(wt, "HEAD", "self-check review")
         assert call_cmd("git merge --ff-only wt/feat", repo) == _allow()
         _git_exec(repo, "merge", "--ff-only", "wt/feat")
         assert call_cmd("git push origin main", repo) == _allow()
         checks.append("receipt_carries_across_ff_only_merge_to_push")
 
+        # Chained commit + push in same invocation -> denied
+        assert (
+            call_cmd("git commit -am msg && git push origin main", repo).get("decision")
+            == "deny"
+        )
+        checks.append("chained_mutator_and_push_denied")
+
         # New code commit invalidates previous SHA receipt
         (repo / "app.py").write_text("print('v2')\n", encoding="utf-8")
         _git_exec(repo, "add", "app.py")
         _git_exec(repo, "commit", "-m", "update app")
-        r_stale = call_cmd("git push origin main", repo)
-        assert r_stale.get("decision") == "deny", r_stale
+        assert call_cmd("git push origin main", repo).get("decision") == "deny"
         checks.append("new_commit_requires_new_receipt")
 
     if hooks_json_path is not None:
