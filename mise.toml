@@ -7,32 +7,10 @@ min_version = "2026.11.12"
 # this project config never duplicates project-scoped .agents/.claude skills.
 
 [settings]
-dotfiles.root = "{{ config_root }}/unix/home"
 exec_auto_install = false
 experimental = true
 lockfile = true
 lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
-
-[dotfiles]
-"~/.config/agent-secrets/env.sh" = { mode = "symlink" }
-"~/.config/agents/AGENTS.md" = { mode = "symlink" }
-"~/.config/mise/config.toml" = { mode = "symlink" }
-"~/.config/mise/locks" = { mode = "symlink" }
-"~/.config/mise/mise.lock" = { mode = "symlink" }
-"~/.config/mise/miserc.toml" = { mode = "symlink" }
-"~/.config/mise/tasks/pwf/status" = { mode = "symlink" }
-"~/.config/opencode/AGENTS.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
-"~/.config/opencode/opencode.json" = { mode = "symlink" }
-"~/.gemini/GEMINI.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
-"~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
-"~/.gemini/config/hooks/agy-interactive-questions.py" = { mode = "symlink" }
-"~/.gemini/config/hooks/agy-skill-cutoff.py" = { mode = "symlink" }
-"~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink" }
-"~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
-"~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
-"~/.gemini/config/rules/skill-cutoff-agy.md" = { mode = "symlink" }
-"~/.gemini/config/skills/post-task-learn/SKILL.md" = { mode = "symlink" }
-"~/.gemini/config/skills/pwf-status/SKILL.md" = { mode = "symlink" }
 
 [task_config]
 includes = ["tasks", "unix/home/.config/mise/tasks"]
@@ -91,6 +69,14 @@ python3 -I -B unix/home/.gemini/config/hooks/agy-skill-cutoff.py --check --no-wr
 '''
 hint = "Ensure unix/home/.gemini/config/hooks/agy-skill-cutoff.py is executable and skill-cutoff-agy.md replaces last30days-agy.md."
 
+[doctor.checks.agy-pwf-guard]
+description = "Antigravity PWF PreToolUse guard hook and hooks.json registration are valid"
+run = '''
+test -x unix/home/.gemini/config/hooks/agy-pwf-guard.py
+python3 -I -B unix/home/.gemini/config/hooks/agy-pwf-guard.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
+'''
+hint = "Ensure unix/home/.gemini/config/hooks/agy-pwf-guard.py is executable, passes --self-check, and registers in hooks.json."
+
 [doctor.checks.agy-interactive-questions]
 description = "Antigravity interactive-questions Stop hook, rule, and hooks.json registration are valid"
 run = '''
@@ -108,3 +94,24 @@ test -f unix/home/.gemini/config/skills/post-task-learn/SKILL.md
 python3 -I -B unix/home/.gemini/config/hooks/post-task-learn.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
 '''
 hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-check and registers in hooks.json."
+
+[doctor.checks.native-harnesses]
+description = "Global mise config blocks non-native AI harnesses and mise installs via disable_tools and auto_install_disable_tools"
+run = '''
+python3 - <<'PY'
+import tomllib
+from pathlib import Path
+
+cfg = tomllib.loads(Path("unix/home/.config/mise/config.toml").read_text(encoding="utf-8"))
+tools = set(cfg.get("tools", {}))
+settings = cfg.get("settings", {})
+required = {"claude", "codex", "agy", "opencode", "mise"}
+forbidden_tools = tools & (required | {"antigravity-cli", "npm:antigravity-cli", "npm:@openai/codex", "npm:@anthropic-ai/claude-code"})
+assert not forbidden_tools, f"Native harnesses/mise must not be in [tools]: {sorted(forbidden_tools)}"
+for key in ("disable_tools", "auto_install_disable_tools"):
+    vals = set(settings.get(key, []))
+    missing = required - vals
+    assert not missing, f"{key} missing: {sorted(missing)}"
+PY
+'''
+hint = "Keep claude, codex, agy, opencode, and mise in disable_tools and auto_install_disable_tools (not [tools]) in unix/home/.config/mise/config.toml."

@@ -1,0 +1,9 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+# Remove stock ubuntu (1000:1000) before config.container.toml creates dev (1000:1000).
+
+[bootstrap.users.ubuntu]
+state = "absent"
+remove_home = true
+
+[bootstrap.groups.ubuntu]
+state = "absent"

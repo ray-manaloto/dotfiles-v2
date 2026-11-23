@@ -30,3 +30,8 @@
   extras (`clang-p2996`, IWYU, CUDA/NVPTX).
 - [ ] **Step 4:** Tighten GitHub ruleset and CI gates after Step 2 and Step 3
   pass cold-build verification.
+- [ ] **Follow-up (Host Homebrew -> `mise` audit):** Migrate clean prebuilt
+  Mac host leaves (`mas` -> `aqua:mas-cli/mas`, `ruby` -> `core:ruby`, `viu`
+  -> `github:atanunq/viu`, `dockerfilegraph` ->
+  `github:patrickhoefler/dockerfilegraph`) to global `mise` config while keeping
+  native C++/system libraries and Casks in Homebrew.

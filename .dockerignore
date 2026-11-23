@@ -1,0 +1,3 @@
+*
+!docker/ubuntu/Dockerfile
+!unix/home/.config/mise/**

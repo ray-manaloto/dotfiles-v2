@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Install native Claude Code CLI idempotently"
+set -euo pipefail
+
+mkdir -p "${HOME}/.local/bin"
+if [[ ! -x "${HOME}/.local/bin/claude" ]]; then
+	script="$(mktemp)"
+	trap 'rm -f "${script}"' EXIT
+	curl -fsSLo "${script}" https://claude.ai/install.sh
+	PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" bash "${script}" </dev/null
+fi
+"${HOME}/.local/bin/claude" --version </dev/null

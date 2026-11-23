@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Sync checkout(s) of dotfiles-v2 and apply mise dotfiles and tools inside running container(s)"
+#MISE description="Sync checkout(s) of dotfiles-v2 and apply Option A mise bootstrap inside running container(s)"
 #USAGE flag "--target <target>" default="pc" help="Target environment: pc, mac, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
 #USAGE flag "--ref <ref>" help="Git branch or ref to sync (default: current branch)"
@@ -8,6 +8,7 @@ set -euo pipefail
 target="${usage_target:-pc}"
 host="${usage_host:-pc}"
 name="dotfiles-v2"
+repo_url="https://github.com/ray-manaloto/dotfiles-v2.git"
 root="$(git rev-parse --show-toplevel)"
 
 resolve_ref() {
@@ -25,6 +26,22 @@ resolve_ref() {
 	printf '%s' "${r}"
 }
 
+bootstrap_phase2() {
+	local -a dcmd=("$@")
+	# shellcheck disable=SC2016
+	"${dcmd[@]}" exec -w /workspace "${name}" /bin/bash -euo pipefail -c '
+		if [ -e /home/dev/.config/mise ] && [ ! -L /home/dev/.config/mise ]; then
+			rm -rf /home/dev/.config/mise
+		fi
+		mise -E container,linux bootstrap \
+			--from "$1" \
+			--from-dir /workspace \
+			--config-dir unix/home/.config/mise \
+			--only dotfiles,tools,task \
+			--force-dotfiles --yes
+	' bash "${repo_url}"
+}
+
 ref="$(resolve_ref)"
 
 sync_pc() {
@@ -32,7 +49,7 @@ sync_pc() {
 	remote_dir="$(ssh -o BatchMode=yes "${host}" 'printf "%s/dev/containers/dotfiles-v2" "$HOME"')"
 	ssh -o BatchMode=yes "${host}" \
 		"git -C '${remote_dir}' -c core.hooksPath=/dev/null fetch -q origin '${ref}' && git -C '${remote_dir}' -c core.hooksPath=/dev/null checkout -q -B '${ref}' 'origin/${ref}'"
-	DOCKER_HOST="ssh://${host}" docker exec -w /workspace "${name}" mise bootstrap --only files,dotfiles,tools --force-dotfiles --yes
+	bootstrap_phase2 env "DOCKER_HOST=ssh://${host}" docker
 }
 
 sync_mac() {
@@ -45,7 +62,7 @@ sync_mac() {
 	local_dir="${HOME}/dev/containers/${name}"
 	git -C "${local_dir}" -c core.hooksPath=/dev/null fetch -q origin "${ref}"
 	git -C "${local_dir}" -c core.hooksPath=/dev/null checkout -q -B "${ref}" "origin/${ref}"
-	env -u DOCKER_HOST docker --context desktop-linux exec -w /workspace "${name}" mise bootstrap --only files,dotfiles,tools --force-dotfiles --yes
+	bootstrap_phase2 env -u DOCKER_HOST docker --context desktop-linux
 }
 
 case "${target}" in

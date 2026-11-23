@@ -1,0 +1,109 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+# Ubuntu 26.10 non-privileged container environment (`MISE_ENV=container`).
+
+[bootstrap.packages]
+"apt:ca-certificates" = "20260816ubuntu0.26.10.2"
+"apt:curl" = "8.20.0-2ubuntu11.1"
+"apt:git" = "1:2.55.0-1ubuntu1.1"
+"apt:libatomic1" = "16.2.0-3ubuntu1"
+
+[bootstrap.groups.dev]
+gid = 1000
+
+[bootstrap.users.dev]
+uid = 1000
+group = "dev"
+home = "/home/dev"
+shell = "/bin/bash"
+create_home = true
+
+[bootstrap.directories."/opt/mise"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/run/tailscale"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/workspace"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.claude"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.config"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.config/opencode"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.local"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.local/bin"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.local/share"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.local/share/opencode"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.local/state"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.local/state/tailscale"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
+[bootstrap.directories."/home/dev/.opencode"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.opencode/bin"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.files."/etc/profile.d/dotfiles-v2-env.sh"]
+source = "./assets/container/dotfiles-v2-env.sh"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/profile.d/agent-secrets.sh"]
+source = "./assets/container/agent-secrets-profile.sh"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/bash.bashrc"]
+id = "dotfiles-v2"
+block = """
+. /etc/profile.d/dotfiles-v2-env.sh
+. /etc/profile.d/agent-secrets.sh"""
+
+[dotfiles]
+"~/.bashrc/dotfiles-v2" = { line = ". /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-secrets.sh", position = "prepend" }

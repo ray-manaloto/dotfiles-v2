@@ -393,6 +393,19 @@ checksum_source = "mise-versions"
 url = "https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_darwin_arm64"
 url_api = "https://api.github.com/repos/mvdan/sh/releases/assets/547320930"
 
+[[tools.tailscale]]
+version = "1.104.7"
+backend = "aqua:tailscale/tailscale"
+specifiers = ["1.104.7"]
+
+[tools.tailscale."platforms.linux-arm64"]
+checksum = "sha256:d6bed2720310b328b861f943d7b4016c5358a9bad60575eb51e8143b79068484"
+url = "https://pkgs.tailscale.com/stable/tailscale_1.104.7_arm64.tgz"
+
+[tools.tailscale."platforms.linux-x64"]
+checksum = "sha256:e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c"
+url = "https://pkgs.tailscale.com/stable/tailscale_1.104.7_amd64.tgz"
+
 [[tools.tombi]]
 version = "1.11.3"
 backend = "aqua:tombi-toml/tombi"

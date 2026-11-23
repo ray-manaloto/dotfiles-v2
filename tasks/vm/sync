@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-#MISE description="Sync dotfiles-v2 inside dotfiles-v2-macos VM and apply mise dotfiles and tools"
+#MISE description="Sync dotfiles-v2 inside dotfiles-v2-macos VM and apply Option A mise bootstrap"
 #USAGE flag "--ref <ref>" help="Git branch or ref to sync (default: current branch)"
 set -euo pipefail
 
 VM_NAME="dotfiles-v2-macos"
+REPO_URL="https://github.com/ray-manaloto/dotfiles-v2.git"
 root="$(git rev-parse --show-toplevel)"
 
 resolve_ref() {
@@ -33,12 +34,18 @@ fi
 
 ref="$(resolve_ref)"
 
-tart exec -i "${VM_NAME}" env REF="${ref}" /bin/bash -euo pipefail <<'GUEST'
-export PATH="${HOME}/.local/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"
+tart exec -i "${VM_NAME}" env REF="${ref}" REPO_URL="${REPO_URL}" /bin/bash -euo pipefail <<'GUEST'
+export PATH="/opt/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:${PATH}"
 git -C "${HOME}/dev/dotfiles-v2" fetch -q origin "${REF}"
 git -C "${HOME}/dev/dotfiles-v2" checkout -q -B "${REF}" "origin/${REF}"
-mise -C "${HOME}/dev/dotfiles-v2" trust --all
-MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise" \
-MISE_YES=1 \
-mise -C "${HOME}/dev/dotfiles-v2" bootstrap --only files,dotfiles,tools --force-dotfiles --yes
+if [[ -e "${HOME}/.config/mise" && ! -L "${HOME}/.config/mise" ]]; then
+  rm -rf "${HOME}/.config/mise"
+fi
+export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
+export MISE_YES=1
+/usr/local/bin/mise -E vm,macos bootstrap \
+  --from "${REPO_URL}" \
+  --from-dir "${HOME}/dev/dotfiles-v2" \
+  --config-dir unix/home/.config/mise \
+  --force-dotfiles --yes
 GUEST

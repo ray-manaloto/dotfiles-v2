@@ -22,7 +22,10 @@ steps:
    turn (Plan Mode off) and user decisions or next-step choices are needed,
    hand back via `enter_plan_mode` (or call `ask_question` in a dedicated
    short turn) rather than ending a long summary with prose options.
-6. **Branch coupled decisions (`/grill-me` style)**: when later choices depend
+6. **Ask-question `/learn` boundary**: `ask_question` does not trigger the
+   `Stop` hook; after finishing a mutating task before asking the user a
+   follow-up question, run one bounded `/learn` check first.
+7. **Branch coupled decisions (`/grill-me` style)**: when later choices depend
    on earlier answers, resolve them iteratively (one focused branch at a time)
    instead of dumping a speculative matrix; suggest `/grill-me` or
    `/plan /grill-me` when a broad design needs a full upfront interview.

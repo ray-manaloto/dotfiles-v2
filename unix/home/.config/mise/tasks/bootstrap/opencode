@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#MISE description="Install native OpenCode v2 CLI idempotently"
+set -euo pipefail
+
+mkdir -p "${HOME}/.opencode/bin"
+ver=""
+if [[ -x "${HOME}/.opencode/bin/opencode" ]]; then
+	ver="$("${HOME}/.opencode/bin/opencode" --version </dev/null | awk '{print $NF}' || true)"
+fi
+if [[ ! -x "${HOME}/.opencode/bin/opencode" || ${ver} == 1.* || -z ${ver} ]]; then
+	script="$(mktemp)"
+	trap 'rm -f "${script}"' EXIT
+	curl -fsSLo "${script}" https://opencode.ai/v2/install
+	PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" bash "${script}" --no-modify-path </dev/null
+fi
+"${HOME}/.opencode/bin/opencode" --version </dev/null

@@ -24,6 +24,9 @@ files before explicit user approval.
 - When triggered by a completed `planning-with-files` plan, inspect its
   `task_plan.md` (`Errors Encountered`, `Decisions Made`), `findings.md`, and
   `progress.md` alongside recent user messages.
+- **Ask-question boundary**: `ask_question` does not trigger the `Stop` hook,
+  so after completing a mutating task before calling `ask_question`, run one
+  bounded `/learn` check first.
 - **Fast exit**: if the completed task was routine and revealed no new reusable
   lesson, output `Post-task /learn: no reusable customization updates needed.`
   and stop immediately without modifying `learning_proposal.md`.

@@ -1,0 +1,31 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+# Tart macOS VM environment (`MISE_ENV=vm`): native brew:tailscale bottle + non-root launchd tailscaled.
+
+[bootstrap.packages]
+"brew:tailscale" = "latest"
+
+[bootstrap.directories."~/Library/Logs"]
+mode = "0755"
+
+[bootstrap.macos.launchd.agents.tailscaled]
+program = "/opt/homebrew/opt/tailscale/bin/tailscaled"
+args = [
+  "--tun=userspace-networking",
+  "--statedir={{ xdg_state_home }}/tailscale",
+  "--socket={{ xdg_state_home }}/tailscale/tailscaled.sock",
+  "--socks5-server=localhost:1055",
+  "--outbound-http-proxy-listen=localhost:1055",
+]
+run_at_load = true
+keep_alive = true
+kickstart = true
+stdout_path = "~/Library/Logs/tailscaled.log"
+stderr_path = "~/Library/Logs/tailscaled.err.log"
+
+[dotfiles]
+"~/.bash_profile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
+"~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
+"~/.config/dotfiles-v2/vm-env.sh" = { source = "assets/vm/vm-env.sh", mode = "symlink" }
+"~/.zprofile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
+"~/.zshenv/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
+"~/.zshrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }

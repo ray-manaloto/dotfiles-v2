@@ -1,0 +1,14 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+# Optional opt-in apt proxy layer (`DOTFILES_APT_CACHE=http://<host>:3142 mise -E ubuntu-cache bootstrap`).
+
+[bootstrap.files."/etc/apt/apt.conf.d/01proxy"]
+group = "root"
+mode = "0644"
+owner = "root"
+phase = "pre-packages"
+remove_empty = true
+template = true
+content = """
+{% set cache = env.DOTFILES_APT_CACHE | default(value="") %}
+{% if cache %}Acquire::http::Proxy "{{ cache }}";
+{% endif %}"""

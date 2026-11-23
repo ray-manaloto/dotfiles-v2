@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Provision, start, and prepare the dotfiles-v2-macos Tart VM with pinned mise, Claude Code, OpenCode, agent-secrets, and Tailscale SSH"
+#MISE description="Provision, bootstrap, and verify dotfiles-v2-macos Tart VM via packslip, mise bootstrap, and non-root LaunchAgent Tailscale SSH"
 #USAGE flag "--ref <ref>" help="Git branch or ref to check out in VM (default: current branch)"
 set -euo pipefail
 
@@ -7,7 +7,9 @@ VM_NAME="dotfiles-v2-macos"
 TS_HOSTNAME="dotfiles-v2-vm"
 BASE_IMAGE="ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fbac071c663bf249007b9b387e16b7d576144588acb1d93f9"
 MISE_VER="2026.11.12"
-MISE_SHA256_MACOS_ARM64="f7bd19aa4e6b7a58d7296f98e2c6af68b2e2643dfd608b0bc46c2b5fdbc8749b"
+PACKSLIP_VER="1.11.4"
+PACKSLIP_SHA256_MACOS_ARM64="2b21dc68d54c23a56123f9f9d7402a8b9cfb1e6950c5d4966730ec5cee20146b"
+PACKSLIP_MISE_PIN="ps1_nlhmwtfeufglxv5myvwvronk7a"
 REPO_URL="https://github.com/ray-manaloto/dotfiles-v2.git"
 SLUG_REPO="ray-manaloto/dotfiles-v2"
 root="$(git rev-parse --show-toplevel)"
@@ -118,8 +120,13 @@ if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
 	fi
 fi
 
-# Remove any pre-installed Homebrew mise and install pinned mise v2026.11.12 with SHA-256 verification.
-tart exec -i "${VM_NAME}" env MISE_VER="${MISE_VER}" MISE_SHA="${MISE_SHA256_MACOS_ARM64}" /bin/bash -euo pipefail <<'GUEST'
+# Remove any pre-installed Homebrew mise and install pinned mise v2026.11.12 via packslip v1.11.4.
+tart exec -i "${VM_NAME}" env \
+	MISE_VER="${MISE_VER}" \
+	PACKSLIP_VER="${PACKSLIP_VER}" \
+	PACKSLIP_SHA="${PACKSLIP_SHA256_MACOS_ARM64}" \
+	PACKSLIP_PIN="${PACKSLIP_MISE_PIN}" \
+	/bin/bash -euo pipefail <<'GUEST'
 if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --versions mise >/dev/null 2>&1; then
   /opt/homebrew/bin/brew uninstall --force mise
 fi
@@ -131,14 +138,13 @@ have=""
 if [[ -x /usr/local/bin/mise ]]; then
   have="$(/usr/local/bin/mise --version | awk '{print $1}')"
 fi
-if [[ "${have}" != "${MISE_VER}" ]]; then
+if [[ "${have}" != "${MISE_VER}" || ! -L /usr/local/bin/mise ]]; then
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir}"' EXIT
-  curl -fsSLo "${tmp_dir}/mise.tar.gz" "https://github.com/jdx/mise/releases/download/v${MISE_VER}/mise-v${MISE_VER}-macos-arm64.tar.gz"
-  printf '%s  %s/mise.tar.gz\n' "${MISE_SHA}" "${tmp_dir}" | shasum -a 256 -c -
-  tar -C "${tmp_dir}" -xzf "${tmp_dir}/mise.tar.gz"
-  sudo install -d -m 0755 /usr/local/bin
-  sudo install -m 0755 "${tmp_dir}/mise/bin/mise" /usr/local/bin/mise
+  curl -fsSLo "${tmp_dir}/packslip" "https://github.com/jdx/packslip/releases/download/v${PACKSLIP_VER}/packslip-v${PACKSLIP_VER}-darwin-arm64"
+  printf '%s  %s/packslip\n' "${PACKSLIP_SHA}" "${tmp_dir}" | shasum -a 256 -c -
+  chmod 0755 "${tmp_dir}/packslip"
+  sudo "${tmp_dir}/packslip" install github.com/jdx/mise --version "${MISE_VER}" --pin "${PACKSLIP_PIN}" --system --force
 fi
 GUEST
 
@@ -152,96 +158,81 @@ else
 fi
 GUEST
 
-# Install native Claude Code & OpenCode v2 when missing and wire shell profiles for PATH + agent-secrets.
-tart exec -i "${VM_NAME}" /bin/bash -euo pipefail <<'GUEST'
-mkdir -p "${HOME}/.local/bin" "${HOME}/.opencode/bin"
-if [[ ! -x "${HOME}/.local/bin/claude" ]]; then
-  PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" curl -fsSL https://claude.ai/install.sh | bash
+# Retire legacy root tailscale LaunchDaemon + legacy RC blocks, then run one declarative Option A mise bootstrap.
+tart exec -i "${VM_NAME}" env REPO_URL="${REPO_URL}" /bin/bash -euo pipefail <<'GUEST'
+if [[ -e /Library/LaunchDaemons/sh.brew.tailscale.plist ]]; then
+  sudo /opt/homebrew/bin/brew services stop tailscale >/dev/null 2>&1 || true
+  sudo launchctl bootout system/sh.brew.tailscale >/dev/null 2>&1 || true
+  sudo rm -f /Library/LaunchDaemons/sh.brew.tailscale.plist
 fi
-if [[ ! -x "${HOME}/.opencode/bin/opencode" ]] || [[ "$("${HOME}/.opencode/bin/opencode" --version </dev/null | awk '{print $NF}')" == 1.* ]]; then
-  PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path
-fi
-legacy_line_1='export PATH="${HOME}/.local/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"'
-legacy_line_2='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"'
-legacy_line_3='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"'
-legacy_line_4='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"'
-legacy_env_line='[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"'
 for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc"; do
-  touch "${rc}"
-  awk '/^# >>> dotfiles-v2 >>>$/{skip=1;next} /^# <<< dotfiles-v2 <<<$/{skip=0;next} !skip' "${rc}" \
-    | grep -Fvx -e "${legacy_line_1}" -e "${legacy_line_2}" -e "${legacy_line_3}" -e "${legacy_line_4}" -e "${legacy_env_line}" \
-    >"${rc}.tmp" || true
-  mv "${rc}.tmp" "${rc}"
-  cat <<'BLOCK' >>"${rc}"
-# >>> dotfiles-v2 >>>
-_df_prepend_path() {
-	_df_new="$1"
-	_df_old=":${PATH}:"
-	while :; do
-		case "${_df_old}" in
-		*":${_df_new}:"*) _df_old="${_df_old%%":${_df_new}:"*}:${_df_old#*":${_df_new}:"}" ;;
-		*) break ;;
-		esac
-	done
-	_df_old="${_df_old#:}"
-	_df_old="${_df_old%:}"
-	PATH="${_df_new}${_df_old:+:${_df_old}}"
-}
-for _df_p in /opt/homebrew/sbin /opt/homebrew/bin /usr/local/bin "${HOME}/.local/share/mise/shims" "${HOME}/.opencode/bin" "${HOME}/.local/bin"; do
-	_df_prepend_path "${_df_p}"
+  if [[ -f "${rc}" ]]; then
+    awk '/^# >>> dotfiles-v2 >>>$/{skip=1;next} /^# <<< dotfiles-v2 <<<$/{skip=0;next} !skip' "${rc}" >"${rc}.tmp"
+    mv "${rc}.tmp" "${rc}"
+  fi
 done
-unset _df_p _df_new _df_old
-unset -f _df_prepend_path
-export PATH
-[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"
-# <<< dotfiles-v2 <<<
-BLOCK
-done
+if [[ -e "${HOME}/.config/mise" && ! -L "${HOME}/.config/mise" ]]; then
+  rm -rf "${HOME}/.config/mise"
+fi
+touch "${HOME}/.zshenv" "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc"
+export PATH="/opt/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:${PATH}"
+export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
+export MISE_YES=1
+/usr/local/bin/mise -E vm,macos bootstrap \
+  --from "${REPO_URL}" \
+  --from-dir "${HOME}/dev/dotfiles-v2" \
+  --config-dir unix/home/.config/mise \
+  --force-dotfiles --yes
 GUEST
 
-# Install and start open-source Homebrew tailscale (provides tailscaled + Tailscale SSH on macOS).
+# Wait for non-root launchd tailscaled socket (no sudo, no --operator needed).
 tart exec -i "${VM_NAME}" /bin/bash -euo pipefail <<'GUEST'
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
-if ! /opt/homebrew/bin/brew list --versions tailscale >/dev/null 2>&1; then
-  /opt/homebrew/bin/brew install tailscale
-fi
-sudo /opt/homebrew/bin/brew services start tailscale >/dev/null
+sock="${HOME}/.local/state/tailscale/tailscaled.sock"
 ready=0
 for _ in $(seq 1 20); do
-  if /opt/homebrew/bin/tailscale status --json >/dev/null 2>&1; then
+  if /opt/homebrew/bin/tailscale --socket="${sock}" status --json >/dev/null 2>&1; then
     ready=1
     break
   fi
   sleep 1
 done
 if [[ ${ready} -ne 1 ]]; then
-  echo "tailscaled did not become ready in VM; check /opt/homebrew/var/log/tailscaled.log" >&2
+  echo "non-root tailscaled did not become ready in VM; check ~/Library/Logs/tailscaled*.log" >&2
   exit 1
 fi
 GUEST
 
-status_json="$(tart exec "${VM_NAME}" /opt/homebrew/bin/tailscale status --json 2>/dev/null || true)"
+ts_exec() {
+	# shellcheck disable=SC2016
+	tart exec "${VM_NAME}" /bin/bash -euo pipefail -c '
+		sock="${HOME}/.local/state/tailscale/tailscaled.sock"
+		/opt/homebrew/bin/tailscale --socket="${sock}" "$@"
+	' bash "$@"
+}
+
+status_json="$(ts_exec status --json 2>/dev/null || true)"
 ts_state="$(printf '%s' "${status_json}" | jq -r '.BackendState // empty' 2>/dev/null || true)"
 if [[ ${ts_state} == "Running" ]]; then
 	cur_hostname="$(printf '%s' "${status_json}" | jq -r '.Self.HostName // empty')"
-	run_ssh="$(tart exec "${VM_NAME}" sudo /opt/homebrew/bin/tailscale debug prefs 2>/dev/null | jq -r '.RunSSH // false' 2>/dev/null || echo false)"
+	run_ssh="$(ts_exec debug prefs 2>/dev/null | jq -r '.RunSSH // false' 2>/dev/null || echo false)"
 	if [[ ${cur_hostname} != "${TS_HOSTNAME}" || ${run_ssh} != "true" ]]; then
-		tart exec "${VM_NAME}" sudo /opt/homebrew/bin/tailscale set --ssh --hostname="${TS_HOSTNAME}" --accept-dns=false --operator=admin
+		ts_exec set --ssh --hostname="${TS_HOSTNAME}" --accept-dns=false
 	fi
 else
 	key="$(mint_tailscale_authkey "${TS_HOSTNAME}")"
 	# shellcheck disable=SC2016
 	printf '%s' "${key}" | tart exec -i "${VM_NAME}" env TS_HOSTNAME="${TS_HOSTNAME}" /bin/bash -euo pipefail -c '
+		sock="${HOME}/.local/state/tailscale/tailscaled.sock"
 		keyfile="$(mktemp)"
 		trap "rm -f \"\${keyfile}\"" EXIT
 		chmod 0600 "${keyfile}"
 		cat >"${keyfile}"
-		sudo /opt/homebrew/bin/tailscale up --auth-key="file:${keyfile}" --ssh --hostname="${TS_HOSTNAME}" --accept-dns=false --operator=admin --timeout=30s
+		/opt/homebrew/bin/tailscale --socket="${sock}" up --auth-key="file:${keyfile}" --ssh --hostname="${TS_HOSTNAME}" --accept-dns=false --timeout=30s
 	'
 	unset key
 fi
 
-status_json="$(tart exec "${VM_NAME}" /opt/homebrew/bin/tailscale status --json)"
+status_json="$(ts_exec status --json)"
 ts_state="$(printf '%s' "${status_json}" | jq -r '.BackendState // empty')"
 cur_hostname="$(printf '%s' "${status_json}" | jq -r '.Self.HostName // empty')"
 if [[ ${ts_state} != "Running" || ${cur_hostname} != "${TS_HOSTNAME}" ]]; then

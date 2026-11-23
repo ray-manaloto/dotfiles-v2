@@ -3,6 +3,7 @@ export container=docker
 export CLAUDE_CONFIG_DIR=/home/dev/.claude
 export MISE_DATA_DIR=/opt/mise
 export MISE_CACHE_DIR=/opt/mise/cache
+export MISE_ENV=container
 export MISE_YES=1
 export MISE_TRUSTED_CONFIG_PATHS=/workspace:/home/dev/.config/mise
 _df_prepend_path() {

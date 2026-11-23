@@ -20,12 +20,20 @@ hosts, Linux containers, and macOS VMs.
   supported config files. Prefer `mise doctor project` and `hk` checks/hooks over
   unit tests for setup verification, and always inspect current docs or source
   before acting.
+- **Research gate & error resolution:** Run multi-source research (local
+  offline repos/docs, session/git history, OpenWiki, Context7, Exa, Firecrawl,
+  Last30Days, and GitHub issues/PRs/discussions/code) before proposing custom
+  builds, and report every route run plus any failed route (`Research checked:`).
+  Root-cause and fix (or report exact remediation for) every tool, MCP, proxy,
+  or permission failure first rather than ignoring or bypassing it.
 - **Non-interactive runs and watchdogs:** Pass explicit non-interactive flags
   (`MISE_YES=1`, `--yes` / `-y`) to long-running commands, and pair any
   backgrounded build, sync, or upgrade task with a bounded `schedule` watchdog.
-- **Reporting peer messages:** When confirming a peer-agent message to the
-  owner, name the target as `tab-name (id)`, state the channel (native
-  `send_message`), and confirm delivery status.
+- **Reporting peer messages & receipt confirmation:** Always request explicit
+  receipt confirmation when sending a message to another agent. When reporting
+  peer messages to the owner, name the target as `tab-name (id)`, state the
+  channel (native `send_message`), and clearly distinguish **dispatched (receipt
+  pending)** from **receipt confirmed**.
 - **OpenWiki search routing:** Use the `openwiki_search` / `openwiki_read` MCP
   tools for workspace-scoped queries (`--workspace` is not an `openwiki` CLI
   flag).
