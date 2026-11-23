@@ -44,7 +44,7 @@
     "enabled": true,
     "includeInstructions": true,
     "metadataBudget": 20000,
-    "roots": []
+    "roots": ["~/.agents/skills"]
   },
   "logging": {
     "level": "info",

@@ -9,13 +9,13 @@ importers:
   .:
     dependencies:
       '@vercel/board':
-        specifier: 0.54.1
-        version: 0.54.1
+        specifier: 0.55.0
+        version: 0.55.0
 
 packages:
 
-  '@vercel/board@0.54.1':
-    resolution: {integrity: sha512-2MVL+E6ijXL94zcxN6PdTT4k/x8m1MxFwI02rA2Y+X2lW+0jgmAExyyGr/OoCVM9cAbQNyo1kYZdcqgpQmIeJQ==}
+  '@vercel/board@0.55.0':
+    resolution: {integrity: sha512-i9vsZj+vqAcCAmauZx9SJBISg+QWPuwX6iMHBF6bKqdVOVg3JV6WGqi9lc8Q18q6BzgnPkhRUMW6ZYhAtZEZiw==}
     engines: {node: '>=22.18'}
     hasBin: true
     peerDependencies:
@@ -135,7 +135,7 @@ packages:
 
 snapshots:
 
-  '@vercel/board@0.54.1':
+  '@vercel/board@0.55.0':
     dependencies:
       '@vercel/oidc': 3.8.10
       jose: 6.2.18

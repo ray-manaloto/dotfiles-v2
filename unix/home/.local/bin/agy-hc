@@ -1,0 +1,5 @@
+#!/bin/sh
+# Antigravity CLI for herdr tabs and `hc run`, which start programs without a shell, so PATH has no mise wrappers dir.
+# Runs the [wrappers.agy] shim by path, which starts `agy` under `fnox --config <global file> proxy run`.
+# Usage: herdr-app do tab.new ... --argv '["agy-hc", ...]'
+exec "$HOME/.local/share/mise/command-wrappers/bin/agy" "$@"

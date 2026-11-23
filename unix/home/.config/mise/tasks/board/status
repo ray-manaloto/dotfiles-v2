@@ -18,6 +18,6 @@ if [[ -r ${env_file} ]]; then
 	. "${env_file}"
 	vb whoami
 else
-	echo "missing ${env_file}; run 'mise run board:up' first" >&2
+	echo "missing ${env_file}; run 'mise -C ~ run board:up' first" >&2
 	exit 1
 fi

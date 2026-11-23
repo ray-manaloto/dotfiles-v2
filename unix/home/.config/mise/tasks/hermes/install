@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#MISE description="Install the pinned Hermes Agent CLI and TUI from upstream lockfiles"
+set -euo pipefail
+
+install_dir="${HOME}/.local/share/hermes-cli.noindex"
+source_dir="${install_dir}/source"
+release="v0.23.3"
+commit="caafe5389ae585ef77387a962aee05b1bcf17029"
+
+if [[ ! -d ${source_dir} ]]; then
+	git clone --depth 1 --branch "${release}" https://github.com/NousResearch/hermes-agent.git "${source_dir}"
+fi
+if [[ "$(git -C "${source_dir}" rev-parse HEAD)" != "${commit}" ]]; then
+	echo "Hermes source does not match the pinned release: ${source_dir}" >&2
+	exit 1
+fi
+
+uv sync --project "${source_dir}" --frozen --no-dev --python 3.14.8
+mise x pnpm@12.21.0 -- node "${source_dir}/scripts/build/node-deps.mjs" --source "${source_dir}" --reuse --workspace ui-tui
+mise x pnpm@12.21.0 -- node "${source_dir}/scripts/build/tui.mjs" --source "${source_dir}" --out "${install_dir}/tui"
+mkdir -p "${install_dir}/bin"
+ln -sfn "${source_dir}/.venv/bin/hermes" "${install_dir}/bin/hermes"

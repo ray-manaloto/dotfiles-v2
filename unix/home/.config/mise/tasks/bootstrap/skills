@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Sync mise/jdx tool skills and mirror ~/.agents/skills into ~/.claude/skills"
+#MISE description="Sync mise/jdx tool skills, mirror ~/.agents/skills into ~/.claude/skills, and wire Hermes external_dirs"
 set -euo pipefail
 
 # Never bake temporary Docker Phase 1b paths into image layers.
@@ -67,3 +67,8 @@ for entry in sorted(agents_dir.iterdir()):
         continue
     os.symlink(desired, dst)
 PY
+
+hermes_sync="$(cd "$(dirname "$0")/.." && pwd)/hermes/skills-sync"
+if [[ -x ${hermes_sync} ]]; then
+	"${hermes_sync}"
+fi

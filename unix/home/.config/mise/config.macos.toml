@@ -1,2 +1,61 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # Loaded automatically on macOS via miserc.toml (auto_env = true).
+
+[env]
+HERMES_TUI_DIR = "{{ env.HOME }}/.local/share/hermes-cli.noindex/tui"
+HOMEBREW_PREFIX = "{{ system_brew_prefix }}"
+
+[env._]
+path = [
+  "~/.config/mise/apple-bin",
+  "~/.local/share/hermes-cli.noindex/bin",
+  "$HOMEBREW_PREFIX/opt/llvm/bin",
+  "$HOMEBREW_PREFIX/opt/lldb/bin",
+  "$HOMEBREW_PREFIX/opt/make/libexec/gnubin",
+  "/Applications/Orca.app/Contents/Resources/bin",
+]
+
+[dotfiles]
+"~/.config/herdr-app/programs.json" = { mode = "symlink" }
+"~/.config/mise/apple-bin" = { mode = "symlink" }
+"~/.config/zsh/.zprofile" = { mode = "symlink" }
+"~/.config/zsh/.zshenv" = { source = "../../.zshenv", mode = "symlink" }
+"~/.config/zsh/.zshrc" = { mode = "symlink" }
+"~/.config/zsh/.zshrc.d/10-zsh.zsh" = { mode = "symlink" }
+"~/.config/zsh/.zshrc.d/60-agent-tools.zsh" = { mode = "symlink" }
+"~/.config/zsh/.zshrc.d/90-mise.zsh" = { mode = "symlink" }
+"~/.config/zsh/path.zsh" = { mode = "symlink" }
+"~/.gitconfig/gh-doctor" = { block = '''
+[hook "gh-doctor-pre-push"]
+	command = test "${HK:-1}" = "0" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE sh -c '~/.local/bin/mise doctor project'
+	event = pre-push
+''' }
+"~/.gitconfig/hk" = { block = '''
+[hook "hk-pre-commit"]
+	command = test \"${HK:-1}\" = \"0\" || ~/.local/bin/mise x hk -- hk run pre-commit --from-hook --staged
+	event = pre-commit
+[hook "hk-post-commit"]
+	command = test \"${HK:-1}\" = \"0\" || ~/.local/bin/mise x hk -- hk run post-commit --from-hook
+	event = post-commit
+[hook "hk-post-merge"]
+	command = test \"${HK:-1}\" = \"0\" || ~/.local/bin/mise x hk -- hk run post-merge --from-hook
+	event = post-merge
+[hook "hk-post-rewrite"]
+	command = test \"${HK:-1}\" = \"0\" || ~/.local/bin/mise x hk -- hk run post-rewrite --from-hook
+	event = post-rewrite
+[hook "hk-pre-merge-commit"]
+	command = test \"${HK:-1}\" = \"0\" || ~/.local/bin/mise x hk -- hk run pre-merge-commit --from-hook
+	event = pre-merge-commit
+[hook "hk-pre-push"]
+	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE ~/.local/bin/mise x hk -- hk run pre-push --from-hook
+	event = pre-push
+[hook "hk-commit-msg"]
+	command = test \"${HK:-1}\" = \"0\" || ~/.local/bin/mise x hk -- hk run commit-msg --from-hook
+	event = commit-msg
+[hook "hk-prepare-commit-msg"]
+	command = test \"${HK:-1}\" = \"0\" || ~/.local/bin/mise x hk -- hk run prepare-commit-msg --from-hook
+	event = prepare-commit-msg
+''' }
+"~/.local/bin/agy-hc" = { mode = "symlink" }
+"~/.local/bin/codex-hc" = { mode = "symlink" }
+"~/.zshenv" = { mode = "symlink" }

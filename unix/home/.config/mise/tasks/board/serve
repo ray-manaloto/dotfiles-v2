@@ -49,10 +49,15 @@ EOF
 	mv "${env_file}.tmp.$$" "${env_file}"
 )
 
-root="$(git rev-parse --show-toplevel)"
+mise_cfg_dir="${MISE_CONFIG_DIR:-${HOME}/.config/mise}"
+server_mjs="${mise_cfg_dir}/assets/board/server.mjs"
+if [[ ! -f ${server_mjs} ]]; then
+	server_mjs="$(cd "$(dirname "$0")/../.." && pwd)/assets/board/server.mjs"
+fi
+
 export BOARD_PORT="${port}"
 export BOARD_DIR="${board_dir}"
 export BOARD_TOKEN_FILE="${token_file}"
 export BOARD_TAILSCALE_HOST="${ts_host}"
 
-exec node "${root}/unix/home/.config/mise/assets/board/server.mjs"
+exec node "${server_mjs}"

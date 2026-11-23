@@ -1,9 +1,14 @@
 #:schema https://mise.jdx.dev/schema/mise.json
+#:tombi schema.strict = false
 # ref: https://mise.jdx.dev/configuration.html
 
 min_version = "2026.11.12"
 
 [tools]
+"aqua:FiloSottile/age" = "1.3.2"
+"aqua:docker/buildx" = { version = "0.39.1", bin = "docker-buildx", os = [
+  "macos",
+], postinstall = { when = "always", run = '''d="$HOME/.local/share/docker/cli-plugins" f="$HOME/.docker/config.json"; mkdir -p "$d" "$HOME/.docker"; ln -sfn "$MISE_TOOL_INSTALL_PATH/docker-cli-plugin-docker-buildx" "$d/docker-buildx"; [ -s "$f" ] || echo '{}' > "$f"; if command -v jq >/dev/null 2>&1; then jq -e --arg d "$d" '.cliPluginsExtraDirs[0] == $d' "$f" >/dev/null || { jq --arg d "$d" '.cliPluginsExtraDirs = [$d] + ((.cliPluginsExtraDirs // []) - [$d])' "$f" > "$f.new" && mv "$f.new" "$f"; }; fi''' } }
 "aqua:jdx/jactionlint" = "2.6.0"
 "aqua:owenlamont/ryl" = "0.30.0"
 "aqua:oxc-project/oxc/oxfmt" = "0.79.0"
@@ -12,49 +17,136 @@ aube = { version = "2.10.1", workflow = [
   "release-plz.yml@refs/heads/main",
   "release.yml@refs/heads/main",
 ] }
+bat = "0.26.1"
 betterleaks = "1.10.1"
+cmake = "4.5.1"
 communique = { version = "1.8.0", workflow = "release.yml@refs/heads/main" }
+delta = "0.21.2"
+docker-cli = { version = "29.10.0", os = ["macos"] }
+docker-compose = { version = "5.8.0", os = ["macos"] }
+doppler = "3.77.1"
+editorconfig-checker = "4.0.2"
+fd = "10.5.2"
 fnox = { version = "1.50.0", workflow = "release.yml" }
+fzf = "0.75.0"
 "github:agent-sh/agnix" = "0.61.0"
+"github:kenn-io/agentsview" = "0.47.0"
+"github:microsoft/vcpkg-tool" = { version = "2026-10-29", additional_asset_patterns = [
+  "vcpkg-standalone-bundle.tar.gz",
+], rename_exe = "vcpkg", platforms = { macos-arm64 = { asset_pattern = "vcpkg-macos" }, linux-x64 = { asset_pattern = "vcpkg-glibc" }, linux-arm64 = { asset_pattern = "vcpkg-glibc-arm64" } } }
 github-cli = "2.105.0"
 hadolint = "2.15.1"
 hk = { version = "2.13.0", workflow = "release.yml" }
+jouet = { version = "0.0.5", workflow = "release.yml@refs/heads/main" }
+jq = "1.8.2"
+lychee = "0.24.2"
+ninja = "1.13.2"
 node = "26.13.1"
-"npm:@vercel/board" = "0.54.1"
+"npm:@vercel/board" = "0.55.0"
+"npm:ctx7" = "0.12.2"
+"npm:firecrawl-cli" = "1.30.0"
 "npm:openwiki" = { version = "0.9.0", allow_builds = ["better-sqlite3"] }
+"npm:skills" = "1.9.0"
 "npm:zcode-app-cli" = "3.18.2-48"
 "packslip:grafana/flint" = "0.22.15"
 pitchfork = { version = "2.36.0", workflow = "release.yml@refs/heads/main" }
 pkl = "0.33.1"
 python = "3.15.2"
+ripgrep = "15.2.0"
 ruff = "0.17.6"
 rumdl = "0.3.5"
+sccache = "0.19.0"
 shellcheck = "0.11.0"
 shfmt = "3.14.1"
+starship = "1.27.0"
 tailscale = { version = "1.104.7", os = ["linux"] }
+tart = { version = "2.42.0", os = ["macos"] }
 tombi = "1.11.3"
 ty = "0.0.108"
 typos = "1.52.2"
 usage = { version = "7.4.0", workflow = "publish-cli.yml" }
 uv = "0.13.9"
+zoxide = "0.10.0"
 
 [vars]
 last30days_config_dir = "{{ [xdg_config_home, 'last30days'] | join_path }}"
 last30days_memory_dir = "{% if os() == 'macos' %}{{ [xdg_data_home, 'last30days', 'briefings.noindex'] | join_path }}{% else %}{{ [xdg_data_home, 'last30days', 'briefings'] | join_path }}{% endif %}"
 
 [env]
+GIT_TERMINAL_PROMPT = "0"
 LAST30DAYS_CONFIG_DIR = "{{ vars.last30days_config_dir }}"
 LAST30DAYS_MEMORY_DIR = "{{ vars.last30days_memory_dir }}"
+VCPKG_DISABLE_METRICS = "1"
+VCPKG_ROOT = { value = "{{ tools['github:microsoft/vcpkg-tool'].path }}", tools = true }
 XDG_CACHE_HOME = "{{ xdg_cache_home }}"
 XDG_CONFIG_HOME = "{{ xdg_config_home }}"
 XDG_DATA_HOME = "{{ xdg_data_home }}"
 XDG_STATE_HOME = "{{ xdg_state_home }}"
 
+[wrappers.agy]
+command = "fnox"
+args = [
+  "--non-interactive",
+  "--config",
+  "{{env.HOME}}/.config/fnox/config.toml",
+  "proxy",
+  "run",
+  "--",
+  "env",
+  "-u",
+  "RUST_LOG",
+  "agy",
+]
+env = { RUST_LOG = "info,fnox::proxy=warn" }
+
+[wrappers.codex]
+command = "fnox"
+args = [
+  "--non-interactive",
+  "--config",
+  "{{env.HOME}}/.config/fnox/config.toml",
+  "proxy",
+  "run",
+  "--",
+  "env",
+  "-u",
+  "RUST_LOG",
+  "codex",
+  "--disable",
+  "daemon_auto_start",
+  "-c",
+  'shell_environment_policy.inherit="all"',
+  "-c",
+  'shell_environment_policy.include_only=["PATH","SHELL","TMPDIR","TEMP","TMP","HOME","LANG","LC_ALL","LC_CTYPE","LOGNAME","USER","HC_*","CLAUDE_CODE_BRIEF","CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS","CLAUDE_CODE_FORK_SUBAGENT","CLAUDE_CODE_NEW_INIT","CLAUDE_CODE_NO_FLICKER","ENABLE_CLAUDEAI_MCP_SERVERS","ENABLE_TOOL_SEARCH","NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S","OTEL_LOG_RAW_API_BODIES"]',
+]
+env = { RUST_LOG = "info,fnox::proxy=warn" }
+
+[wrappers.opencode]
+command = "fnox"
+args = [
+  "--non-interactive",
+  "--config",
+  "{{env.HOME}}/.config/fnox/config.toml",
+  "proxy",
+  "run",
+  "--",
+  "env",
+  "-u",
+  "RUST_LOG",
+  "opencode",
+  "--standalone",
+]
+env = { RUST_LOG = "info,fnox::proxy=warn" }
+
 [dotfiles]
 "~/.config/agent-secrets/env.sh" = { mode = "symlink" }
 "~/.config/agents/AGENTS.md" = { mode = "symlink" }
+"~/.config/fnox/config.toml" = { mode = "symlink" }
+"~/.config/git/config" = { mode = "symlink" }
 "~/.config/opencode/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
 "~/.config/opencode/opencode.json" = { mode = "symlink" }
+"~/.config/pitchfork/config.toml" = { mode = "symlink" }
+"~/.config/starship.toml" = { mode = "symlink" }
 "~/.gemini/GEMINI.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
 "~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
 "~/.gemini/config/hooks/agy-code-review-guard.py" = { mode = "symlink" }
@@ -139,6 +231,41 @@ depends = [
   "bootstrap:skills",
 ]
 
+[doctor.checks.gh-env-token]
+description = "No stale GH_TOKEN or GITHUB_TOKEN overrides the gh login"
+os = "macos"
+run = '[ -f "$HOME/.config/dotfiles-v2/vm-env.sh" ] || [ "${container:-}" = "docker" ] || [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] || gh api user --silent'
+hint = "A bad env token beats the keyring with no fallback. Unset it or restart this process; pass tokens only through fnox exec."
+timeout = "15s"
+
+[doctor.checks.gh-keyring]
+description = "The stored gh login works without env tokens"
+os = "macos"
+run = '[ -f "$HOME/.config/dotfiles-v2/vm-env.sh" ] || [ "${container:-}" = "docker" ] || env -u GH_TOKEN -u GITHUB_TOKEN gh api user --silent'
+hint = "Run `gh auth login`. Sandboxed agents without keychain access use agent-secrets."
+timeout = "15s"
+
+[doctor.checks.gh-scopes]
+description = "The stored gh login has repo, workflow and read:org"
+os = "macos"
+run = '''[ -f "$HOME/.config/dotfiles-v2/vm-env.sh" ] || [ "${container:-}" = "docker" ] || [ "$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth status --active --no-refresh --hostname github.com --json hosts --jq '.hosts["github.com"][]? | select(.active) | if .state == "success" and (["repo","workflow","read:org"] - (.scopes | split(", ")) | length) == 0 then "ok" else "missing" end')" = ok ]'''
+hint = "Run `gh auth refresh -s repo,workflow,read:org`."
+timeout = "15s"
+depends = "gh-keyring"
+
+[doctor.checks.gh-hosts-file]
+description = "gh keeps its token in the keyring, not in hosts.yml"
+os = "macos"
+run = '[ -f "$HOME/.config/dotfiles-v2/vm-env.sh" ] || [ "${container:-}" = "docker" ] || [ ! -e ~/.config/gh/hosts.yml ] || ! grep -q oauth_token ~/.config/gh/hosts.yml'
+hint = "Run `gh auth logout`, then `gh auth login` so the token moves to the keyring."
+
+[doctor.checks.gh-ssh]
+description = "SSH to GitHub authenticates"
+os = "macos"
+run = '[ -f "$HOME/.config/dotfiles-v2/vm-env.sh" ] || [ "${container:-}" = "docker" ] || ssh -T -o BatchMode=yes -o ConnectTimeout=8 git@github.com 2>&1 | grep -q "successfully authenticated"'
+hint = "Check your SSH key in the agent and on GitHub."
+timeout = "15s"
+
 [settings]
 auto_install_disable_tools = [
   "agy",
@@ -195,10 +322,18 @@ download_cache = true
 download_cache_max_size = "10GiB"
 exec_auto_install = false
 experimental = true
+github.credential_command = "gh auth token"
 lockfile = true
 lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
+paranoid = ["config"]
 pin = true
 task.history = true
+trusted_config_paths = [
+  "~/.config/mise",
+  "~/dev/github/ray-manaloto",
+  "~/.codex/worktrees",
+  "~/dev/dotfiles-v2",
+]
 
 [settings.npm]
 package_manager = "aube"

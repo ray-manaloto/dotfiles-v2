@@ -54,39 +54,36 @@ function resolveVbBinary() {
 }
 
 function findVercelBoardPkgRoot() {
-  const dataDir = process.env.MISE_DATA_DIR || join(homedir(), ".local", "share", "mise");
-  const direct = join(
-    dataDir,
-    "installs",
-    "npm-vercel-board",
-    "latest",
-    "node_modules",
-    "@vercel",
-    "board",
-  );
-  if (existsSync(join(direct, "package.json"))) {
-    return realpathSync(direct);
+  const candidates = [];
+  try {
+    let cur = dirname(realpathSync(resolveVbBinary()));
+    for (let i = 0; i < 10; i += 1) {
+      candidates.push(
+        cur,
+        join(cur, "@vercel", "board"),
+        join(cur, "node_modules", "@vercel", "board"),
+      );
+      const parent = dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+  } catch {
+    // Fall back to mise install layout below.
   }
-  let cur = dirname(realpathSync(resolveVbBinary()));
-  for (let i = 0; i < 10; i += 1) {
-    for (const candidate of [
-      cur,
-      join(cur, "@vercel", "board"),
-      join(cur, "node_modules", "@vercel", "board"),
-    ]) {
-      const pkgFile = join(candidate, "package.json");
-      if (existsSync(pkgFile)) {
-        try {
-          const pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
-          if (pkg?.name === "@vercel/board") return realpathSync(candidate);
-        } catch {
-          // Keep walking up.
-        }
+  const dataDir = process.env.MISE_DATA_DIR || join(homedir(), ".local", "share", "mise");
+  candidates.push(
+    join(dataDir, "installs", "npm-vercel-board", "latest", "node_modules", "@vercel", "board"),
+  );
+  for (const candidate of candidates) {
+    const pkgFile = join(candidate, "package.json");
+    if (existsSync(pkgFile)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
+        if (pkg?.name === "@vercel/board") return realpathSync(candidate);
+      } catch {
+        // Keep checking next candidate.
       }
     }
-    const parent = dirname(cur);
-    if (parent === cur) break;
-    cur = parent;
   }
   throw new Error("could not locate @vercel/board package directory from vb executable");
 }

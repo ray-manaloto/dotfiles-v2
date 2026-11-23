@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#MISE description="Wire ~/.hermes/config.yaml skills.external_dirs to include ~/.agents/skills idempotently"
+set -euo pipefail
+
+exec python3 - <<'PY'
+"""Ensure Hermes discovers global ~/.agents/skills without clobbering existing config."""
+
+from __future__ import annotations
+
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+SKILLS_DIR = "~/.agents/skills"
+
+
+def ensure_external_dirs(text: str) -> str:
+    """Return updated YAML text ensuring skills.external_dirs includes ~/.agents/skills."""
+    if not text.strip():
+        return f"skills:\n  external_dirs:\n    - {SKILLS_DIR}\n"
+
+    lines = text.splitlines(keepends=True)
+    skills_idx = next(
+        (i for i, line in enumerate(lines) if re.match(r"^skills:\s*(#.*)?$", line)),
+        None,
+    )
+    if skills_idx is None:
+        sep = "" if text.endswith("\n") else "\n"
+        return f"{text}{sep}skills:\n  external_dirs:\n    - {SKILLS_DIR}\n"
+
+    end_idx = len(lines)
+    for i in range(skills_idx + 1, len(lines)):
+        if lines[i].strip() and not lines[i].startswith((" ", "\t", "#")):
+            end_idx = i
+            break
+
+    ext_idx = next(
+        (
+            i
+            for i in range(skills_idx + 1, end_idx)
+            if re.match(r"^  external_dirs:\s*(#.*)?$", lines[i])
+            or re.match(r"^  external_dirs:\s*\[.*\]\s*(#.*)?$", lines[i])
+        ),
+        None,
+    )
+    if ext_idx is None:
+        lines.insert(skills_idx + 1, f"  external_dirs:\n    - {SKILLS_DIR}\n")
+        return "".join(lines)
+
+    inline = re.match(r"^  external_dirs:\s*\[(.*)\]\s*(#.*)?$", lines[ext_idx])
+    if inline:
+        raw_items = [x.strip().strip("'\"") for x in inline.group(1).split(",") if x.strip()]
+        if SKILLS_DIR in raw_items:
+            return text
+        raw_items.append(SKILLS_DIR)
+        lines[ext_idx] = "  external_dirs:\n" + "".join(f"    - {item}\n" for item in raw_items)
+        return "".join(lines)
+
+    ext_end = end_idx
+    existing: list[str] = []
+    for i in range(ext_idx + 1, end_idx):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if re.match(r"^  [A-Za-z0-9_]+:", lines[i]):
+            ext_end = i
+            break
+        m = re.match(r"^\s+-\s+(.+?)\s*(#.*)?$", lines[i])
+        if m:
+            existing.append(m.group(1).strip("'\""))
+    if SKILLS_DIR in existing:
+        return text
+    lines.insert(ext_end, f"    - {SKILLS_DIR}\n")
+    return "".join(lines)
+
+
+def main() -> int:
+    cfg_path = Path(os.environ.get("HERMES_CONFIG", str(Path.home() / ".hermes" / "config.yaml")))
+    if not cfg_path.parent.is_dir() and not cfg_path.exists():
+        return 0
+    if not cfg_path.exists():
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        old_text = ""
+    else:
+        old_text = cfg_path.read_text(encoding="utf-8")
+
+    new_text = ensure_external_dirs(old_text)
+    if new_text == old_text:
+        return 0
+
+    fd, tmp_name = tempfile.mkstemp(prefix=".config.yaml.", dir=str(cfg_path.parent))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+        os.replace(tmp_name, cfg_path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+PY

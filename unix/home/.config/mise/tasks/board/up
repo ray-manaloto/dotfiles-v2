@@ -35,7 +35,7 @@ if [[ ${no_ts} != "true" ]] && command -v tailscale >/dev/null 2>&1; then
 			pitchfork restart vercel-board
 		fi
 		tailscale serve --bg "${port}"
-		mise run board:sync-envs --target all
+		mise -C "${HOME}" run board:sync-envs --target all
 	else
 		echo "tailscale is not online; skipping tailscale serve and remote env sync" >&2
 	fi

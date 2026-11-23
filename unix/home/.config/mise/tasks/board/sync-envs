@@ -11,7 +11,7 @@ vm_name="dotfiles-v2-macos"
 token_file="${BOARD_TOKEN_FILE:-${HOME}/.config/board/agent-token}"
 
 if [[ ! -s ${token_file} ]]; then
-	echo "missing board token at ${token_file}; run 'mise run board:up' first" >&2
+	echo "missing board token at ${token_file}; run 'mise -C ~ run board:up' first" >&2
 	exit 1
 fi
 
@@ -95,7 +95,7 @@ all)
 	sync_vm
 	;;
 *)
-	echo "unknown target '${target}' (expected pc, mac, vm, or all)" >&2
+	echo "unknown target '${target}' (expected pc, mac, or all)" >&2
 	exit 1
 	;;
 esac
