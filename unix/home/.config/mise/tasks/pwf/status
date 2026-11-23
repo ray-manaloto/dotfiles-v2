@@ -1,0 +1,529 @@
+#!/usr/bin/env bash
+#MISE description="Show planning-with-files status across the current directory and git worktrees"
+#USAGE flag "--dir <path>" help="Inspect a target directory instead of the caller's working directory"
+#USAGE flag "--doctor" help="Also run upstream plan-doctor.sh (exits non-zero on FAIL)"
+#USAGE flag "--here" help="Inspect only the target directory without scanning sibling git worktrees"
+set -euo pipefail
+
+doctor="${usage_doctor:-false}"
+here="${usage_here:-false}"
+raw_dir="${usage_dir:-${MISE_ORIGINAL_CWD:-${PWD}}}"
+
+canon_dir() {
+	(cd "$1" 2>/dev/null && pwd -P)
+}
+
+if ! target_dir="$(canon_dir "${raw_dir}")"; then
+	echo "pwf:status: directory not found: ${raw_dir}" >&2
+	exit 1
+fi
+
+orig_cwd="$(canon_dir "${MISE_ORIGINAL_CWD:-${PWD}}" || printf '%s' "${PWD}")"
+
+PWF_SCRIPTS_DIR=""
+PWF_SOURCE_LABEL="not installed (built-in fallback)"
+RESOLVED_STATE="none"
+RESOLVED_PLAN_DIR=""
+
+find_pwf_scripts() {
+	local rel_json pkg_rel cand latest d
+
+	rel_json="${HOME}/.local/share/agy-pwf/current/.agy-pwf-release.json"
+	if [[ -f ${rel_json} ]]; then
+		pkg_rel="$(sed -n 's/.*"skill_pkg_rel"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${rel_json}" | head -n 1)"
+		if [[ -n ${pkg_rel} && -f "${HOME}/.local/share/agy-pwf/current/${pkg_rel}/scripts/resolve-plan-dir.sh" ]]; then
+			local ver
+			ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${rel_json}" | head -n 1)"
+			PWF_SCRIPTS_DIR="${HOME}/.local/share/agy-pwf/current/${pkg_rel}/scripts"
+			PWF_SOURCE_LABEL="agy-pwf${ver:+ v${ver}}"
+			return 0
+		fi
+	fi
+
+	for cache_base in \
+		"${HOME}/.codex/plugins/cache/planning-with-files/planning-with-files" \
+		"${HOME}/.claude/plugins/cache/planning-with-files/planning-with-files"; do
+		[[ -d ${cache_base} ]] || continue
+		latest="$(
+			for d in "${cache_base}"/*; do
+				[[ -f "${d}/scripts/resolve-plan-dir.sh" ]] || continue
+				basename "${d}"
+			done | sort -V | tail -n 1
+		)"
+		if [[ -n ${latest} && -f "${cache_base}/${latest}/scripts/resolve-plan-dir.sh" ]]; then
+			PWF_SCRIPTS_DIR="${cache_base}/${latest}/scripts"
+			case "${cache_base}" in
+			*/.codex/*) PWF_SOURCE_LABEL="codex-cache v${latest}" ;;
+			*) PWF_SOURCE_LABEL="claude-cache v${latest}" ;;
+			esac
+			return 0
+		fi
+	done
+
+	for cand in \
+		"${HOME}/.agents/skills/planning-with-files/scripts" \
+		"${HOME}/.gemini/antigravity/skills/planning-with-files/scripts"; do
+		if [[ -f "${cand}/resolve-plan-dir.sh" ]]; then
+			PWF_SCRIPTS_DIR="${cand}"
+			PWF_SOURCE_LABEL="skill-dir (${cand#"${HOME}"/})"
+			return 0
+		fi
+	done
+}
+
+read_local_plan_id() {
+	local cfg="$1/mise.local.toml"
+	[[ -f ${cfg} ]] || return 0
+	sed -n 's/^[[:space:]]*PLAN_ID[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${cfg}" | head -n 1
+}
+
+read_mode() {
+	local dir="$1" pdir="${2:-}" mfile
+	if [[ -n ${pdir} && -f "${pdir}/.mode" ]]; then
+		mfile="${pdir}/.mode"
+	elif [[ -f "${dir}/.mode" ]]; then
+		mfile="${dir}/.mode"
+	else
+		printf '%s' "(none)"
+		return 0
+	fi
+	tr -d '\r\n[:space:]' <"${mfile}"
+}
+
+run_pwf_script() {
+	local dir="$1" pid="$2" proot="$3" script="$4"
+	shift 4
+	local -a env_args=(-u PLAN_ID -u PWF_PLAN_ROOT)
+	if [[ -n ${pid} ]]; then
+		env_args+=("PLAN_ID=${pid}")
+	fi
+	if [[ -n ${proot} ]]; then
+		env_args+=("PWF_PLAN_ROOT=${proot}")
+	fi
+	(cd "${dir}" && env "${env_args[@]}" sh "${script}" "$@" 2>/dev/null || true)
+}
+
+resolve_plan_for_dir() {
+	local dir="$1" pid="$2" proot="$3"
+	local res ambig root_base
+
+	RESOLVED_STATE="none"
+	RESOLVED_PLAN_DIR=""
+
+	if [[ -n ${PWF_SCRIPTS_DIR} ]]; then
+		res="$(run_pwf_script "${dir}" "${pid}" "${proot}" "${PWF_SCRIPTS_DIR}/resolve-plan-dir.sh")"
+		if [[ -n ${res} ]]; then
+			RESOLVED_STATE="resolved"
+			RESOLVED_PLAN_DIR="${res}"
+			return 0
+		fi
+		if [[ -n ${proot} ]] && [[ ${proot} != /* || ! -d ${proot} ]]; then
+			RESOLVED_STATE="rejected"
+			return 0
+		fi
+		if [[ -n ${pid} ]]; then
+			RESOLVED_STATE="rejected"
+			return 0
+		fi
+		ambig="$(run_pwf_script "${dir}" "${pid}" "${proot}" "${PWF_SCRIPTS_DIR}/resolve-plan-dir.sh" --check-ambiguity)"
+		if [[ ${ambig} == "PWF_PLAN_AMBIGUOUS_V1" ]]; then
+			RESOLVED_STATE="ambiguous"
+			return 0
+		fi
+		root_base="${proot:-${dir}}"
+		if [[ -f "${root_base}/task_plan.md" ]]; then
+			RESOLVED_STATE="legacy"
+			RESOLVED_PLAN_DIR="${root_base}"
+		fi
+		return 0
+	fi
+
+	# Fallback when upstream planning-with-files scripts are absent on this host.
+	root_base="${dir}"
+	if [[ -n ${proot} ]]; then
+		if [[ ${proot} != /* || ! -d ${proot} ]]; then
+			RESOLVED_STATE="rejected"
+			return 0
+		fi
+		root_base="${proot}"
+	fi
+
+	if [[ -n ${pid} ]]; then
+		if [[ ${pid} != *[/\\]* && ${pid} != .* && -f "${root_base}/.planning/${pid}/task_plan.md" ]]; then
+			RESOLVED_STATE="resolved"
+			RESOLVED_PLAN_DIR="${root_base}/.planning/${pid}"
+		else
+			RESOLVED_STATE="rejected"
+		fi
+		return 0
+	fi
+
+	if [[ -f "${root_base}/.planning/.active_plan" ]]; then
+		local active_id
+		active_id="$(tr -d '\r\n[:space:]' <"${root_base}/.planning/.active_plan")"
+		if [[ -n ${active_id} && ${active_id} != *[/\\]* && ${active_id} != .* && -f "${root_base}/.planning/${active_id}/task_plan.md" ]]; then
+			RESOLVED_STATE="resolved"
+			RESOLVED_PLAN_DIR="${root_base}/.planning/${active_id}"
+			return 0
+		fi
+	fi
+
+	local count=0 only_dir="" p
+	if [[ -d "${root_base}/.planning" ]]; then
+		for p in "${root_base}"/.planning/*/task_plan.md; do
+			[[ -f ${p} ]] || continue
+			count=$((count + 1))
+			only_dir="$(dirname "${p}")"
+		done
+	fi
+	if [[ ${count} -eq 1 ]]; then
+		RESOLVED_STATE="resolved"
+		RESOLVED_PLAN_DIR="${only_dir}"
+		return 0
+	elif [[ ${count} -gt 1 ]]; then
+		RESOLVED_STATE="ambiguous"
+		return 0
+	fi
+
+	if [[ -f "${root_base}/task_plan.md" ]]; then
+		RESOLVED_STATE="legacy"
+		RESOLVED_PLAN_DIR="${root_base}"
+	fi
+}
+
+parse_plan_awk() {
+	LC_ALL=C awk '
+		function flush_phase() {
+			if (!in_phase) return
+			if (status_count != 1) {
+				invalid = 1
+				phase_status = "unknown"
+			} else {
+				counts[phase_status]++
+			}
+			phase_statuses[total] = phase_status
+			in_phase = 0
+			status_count = 0
+			phase_status = ""
+		}
+		function is_fenced(line,    trimmed, marker, run) {
+			trimmed = line
+			sub(/^ ? ? ?/, "", trimmed)
+			if (line ~ /^ ? ? ?```/ || line ~ /^ ? ? ?~~~/) {
+				marker = substr(trimmed, 1, 1)
+				run = 0
+				while (substr(trimmed, run + 1, 1) == marker) run++
+				if (fence == "" && marker == "`" && index(substr(trimmed, run + 1), "`")) return 0
+				if (fence == "") { fence = marker; fence_len = run }
+				else if (marker == fence && run >= fence_len && substr(trimmed, run + 1) ~ /^[ \t]*$/) fence = ""
+				return 1
+			}
+			return fence != ""
+		}
+		function read_status(line,    token, boundary) {
+			while (match(line, /\*\*Status:\*\*[ \t]+(pending|in_progress|complete)([^A-Za-z0-9_]|$)|\[(pending|in_progress|complete)\]/)) {
+				token = substr(line, RSTART, RLENGTH)
+				boundary = substr(token, 1, 2) == "**" && token ~ /[^A-Za-z0-9_]$/
+				sub(/^\*\*Status:\*\*[ \t]+|^\[/, "", token)
+				sub(/[^a-z_].*$/, "", token)
+				status_count++
+				phase_status = token
+				line = substr(line, RSTART + RLENGTH - boundary)
+			}
+		}
+		NR == 1 { sub(/^\357\273\277/, "") }
+		{ sub(/\r$/, "") }
+		is_fenced($0) || /^ ? ? ?>/ { next }
+		/^ ? ? ?##[ \t]+Errors Encountered[ \t]*$/ {
+			flush_phase()
+			in_errors = 1
+			errors_sep_seen = 0
+			next
+		}
+		/^ ? ? ?(#|##)[ \t]+/ {
+			in_errors = 0
+		}
+		in_errors {
+			trimmed = $0
+			sub(/^[ \t]+/, "", trimmed)
+			if (trimmed ~ /^\|/) {
+				if (trimmed ~ /^\|[-:| \t]+$/) {
+					errors_sep_seen = 1
+				} else if (errors_sep_seen) {
+					errors++
+				}
+			}
+		}
+		/^ ? ? ?### Phase([0-9:]|-[0-9])/ {
+			flush_phase()
+			malformed = 1
+			next
+		}
+		/^ ? ? ?### Phase([ \t]|$)/ {
+			flush_phase()
+			total++
+			in_phase = 1
+			h = $0
+			sub(/^ ? ? ?###[ \t]+/, "", h)
+			phase_headings[total] = h
+			next
+		}
+		!/^ ? ? ?### Phase([ \t]|$)/ && /^ ? ? ?(###|##|#)([ \t]|$)/ {
+			flush_phase()
+		}
+		in_phase {
+			read_status($0)
+		}
+		END {
+			flush_phase()
+			unk = (fence != "" || malformed) ? 1 : 0
+			printf "SUMMARY\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+				total, counts["complete"] + 0, counts["in_progress"] + 0,
+				counts["pending"] + 0, invalid + 0, unk, errors + 0
+			for (i = 1; i <= total; i++) {
+				printf "PHASE\t%s\t%s\n", phase_statuses[i], phase_headings[i]
+			}
+		}
+	' <"$1"
+}
+
+phase_icon() {
+	case "$1" in
+	complete) printf '[x]' ;;
+	in_progress) printf '[~]' ;;
+	pending) printf '[ ]' ;;
+	*) printf '[?]' ;;
+	esac
+}
+
+compact_status() {
+	local state="$1" pdir="$2"
+	case "${state}" in
+	resolved | legacy)
+		local summary tag total comp inprog pend inv unk errs
+		summary="$(parse_plan_awk "${pdir}/task_plan.md" | head -n 1)"
+		IFS=$'\t' read -r tag total comp inprog pend inv unk errs <<<"${summary}"
+		if [[ ${inv} -ne 0 || ${unk} -ne 0 ]]; then
+			printf 'invalid format (%s phases)' "${total}"
+		elif [[ ${total} -eq 0 ]]; then
+			printf 'unstructured (%s)' "${state}"
+		else
+			printf '%s/%s complete' "${comp}" "${total}"
+			if [[ ${inprog} -gt 0 ]]; then
+				printf ' (%s active)' "${inprog}"
+			fi
+		fi
+		;;
+	ambiguous) printf 'AMBIGUOUS (set PLAN_ID)' ;;
+	rejected) printf 'REJECTED PLAN_ID' ;;
+	*) printf 'no active plan' ;;
+	esac
+}
+
+print_inventory() {
+	local dir="$1" root_base="$2"
+	[[ -d "${root_base}/.planning" ]] || return 0
+	if [[ -n ${PWF_SCRIPTS_DIR} && -f "${PWF_SCRIPTS_DIR}/set-active-plan.sh" ]]; then
+		local out
+		out="$(run_pwf_script "${dir}" "" "${root_base}" "${PWF_SCRIPTS_DIR}/set-active-plan.sh" --list)"
+		if [[ -n ${out} ]]; then
+			printf '\nNamed plans (%s/.planning):\n' "${root_base}"
+			printf '%s\n' "${out}" | sed 's/^/  /'
+		fi
+		return 0
+	fi
+	local any=0 d name active_id=""
+	if [[ -f "${root_base}/.planning/.active_plan" ]]; then
+		active_id="$(tr -d '\r\n[:space:]' <"${root_base}/.planning/.active_plan")"
+	fi
+	for d in "${root_base}"/.planning/*/; do
+		[[ -d ${d} ]] || continue
+		name="$(basename "${d}")"
+		[[ ${name} == ".archive" ]] && continue
+		if [[ ${any} -eq 0 ]]; then
+			printf '\nNamed plans (%s/.planning):\n' "${root_base}"
+			any=1
+		fi
+		if [[ ${name} == "${active_id}" ]]; then
+			printf '  * %s [active]\n' "${name}"
+		else
+			printf '  - %s\n' "${name}"
+		fi
+	done
+}
+
+print_primary() {
+	local dir="$1" eff_plan_id="$2" pid_src="$3" proot="$4"
+	local branch mode_val root_for_inv
+
+	branch="$(git -C "${dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '(not a git repo)')"
+	resolve_plan_for_dir "${dir}" "${eff_plan_id}" "${proot}"
+	mode_val="$(read_mode "${dir}" "${RESOLVED_PLAN_DIR}")"
+
+	printf 'PWF Status\n'
+	printf '  Directory:    %s\n' "${dir}"
+	printf '  Branch:       %s\n' "${branch}"
+	printf '  Mode:         %s\n' "${mode_val}"
+	if [[ -n ${eff_plan_id} ]]; then
+		printf '  PLAN_ID:      %s (%s)\n' "${eff_plan_id}" "${pid_src}"
+	else
+		printf '  PLAN_ID:      (unset)\n'
+	fi
+	if [[ -n ${proot} ]]; then
+		printf '  PWF_PLAN_ROOT:%s\n' " ${proot}"
+	fi
+	printf '  PWF scripts:  %s\n' "${PWF_SOURCE_LABEL}"
+
+	case "${RESOLVED_STATE}" in
+	resolved | legacy)
+		local pfile="${RESOLVED_PLAN_DIR}/task_plan.md"
+		local f_find="no" f_prog="no" attest="missing"
+		[[ -f "${RESOLVED_PLAN_DIR}/findings.md" ]] && f_find="yes"
+		[[ -f "${RESOLVED_PLAN_DIR}/progress.md" ]] && f_prog="yes"
+		if [[ -f "${RESOLVED_PLAN_DIR}/.attestation" || -f "${RESOLVED_PLAN_DIR}/.plan-attestation" ]]; then
+			attest="present"
+		fi
+		printf '  State:        %s\n' "${RESOLVED_STATE}"
+		printf '  Plan file:    %s\n' "${pfile}"
+		printf '  Files:        task_plan.md=yes  findings.md=%s  progress.md=%s\n' "${f_find}" "${f_prog}"
+		printf '  Attestation:  %s\n' "${attest}"
+
+		local parsed tag total comp inprog pend inv unk errs st hd
+		parsed="$(parse_plan_awk "${pfile}")"
+		IFS=$'\t' read -r tag total comp inprog pend inv unk errs <<<"$(printf '%s\n' "${parsed}" | head -n 1)"
+		if [[ ${inv} -ne 0 || ${unk} -ne 0 ]]; then
+			printf '  Phases:       INVALID FORMAT (%s phases, %s errors logged)\n' "${total}" "${errs}"
+		elif [[ ${total} -eq 0 ]]; then
+			printf '  Phases:       unstructured (0 ### Phase headings, %s errors logged)\n' "${errs}"
+		else
+			local pct=0
+			pct=$((comp * 100 / total))
+			printf '  Phases:       %d/%d complete (%d%%) | in_progress=%d pending=%d | errors=%d\n' \
+				"${comp}" "${total}" "${pct}" "${inprog}" "${pend}" "${errs}"
+		fi
+		while IFS=$'\t' read -r tag st hd; do
+			[[ ${tag} == "PHASE" ]] || continue
+			printf '    %s %s\n' "$(phase_icon "${st}")" "${hd}"
+		done <<<"${parsed}"
+		;;
+	ambiguous)
+		printf '  State:        AMBIGUOUS (multiple plans under .planning/; set PLAN_ID=<slug>)\n'
+		;;
+	rejected)
+		printf '  State:        REJECTED (explicit PLAN_ID or PWF_PLAN_ROOT did not resolve)\n'
+		;;
+	*)
+		printf '  State:        no active plan\n'
+		;;
+	esac
+
+	root_for_inv="${proot:-${dir}}"
+	if [[ -d ${root_for_inv} ]]; then
+		print_inventory "${dir}" "${root_for_inv}"
+	fi
+}
+
+print_worktrees() {
+	local dir="$1" primary_pid="$2"
+	git -C "${dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+	printf '\nWorktrees:\n'
+	local line wt_path="" wt_branch="" wt_bare=0
+
+	emit_wt() {
+		local path="$1" branch="$2" bare="$3"
+		[[ -n ${path} && ${bare} -eq 0 ]] || return 0
+		local cpath mark="-" pid="" status_str
+		cpath="$(canon_dir "${path}" || printf '%s' "${path}")"
+		if [[ ${cpath} == "${dir}" ]]; then
+			mark="*"
+			pid="${primary_pid}"
+		else
+			pid="$(read_local_plan_id "${cpath}")"
+		fi
+		resolve_plan_for_dir "${cpath}" "${pid}" ""
+		status_str="$(compact_status "${RESOLVED_STATE}" "${RESOLVED_PLAN_DIR}")"
+		printf '  %s %-20s  %-26s  %-22s  %s\n' \
+			"${mark}" "${branch:-unknown}" "${pid:-(unset)}" "${status_str}" "${cpath}"
+	}
+
+	while IFS= read -r line || [[ -n ${line} ]]; do
+		case "${line}" in
+		"worktree "*)
+			wt_path="${line#worktree }"
+			wt_branch=""
+			wt_bare=0
+			;;
+		"branch refs/heads/"*)
+			wt_branch="${line#branch refs/heads/}"
+			;;
+		"branch "*)
+			wt_branch="${line#branch }"
+			;;
+		detached)
+			wt_branch="detached"
+			;;
+		bare)
+			wt_bare=1
+			;;
+		"")
+			emit_wt "${wt_path}" "${wt_branch}" "${wt_bare}"
+			wt_path=""
+			wt_branch=""
+			wt_bare=0
+			;;
+		esac
+	done < <(git -C "${dir}" worktree list --porcelain)
+	emit_wt "${wt_path}" "${wt_branch}" "${wt_bare}"
+}
+
+run_doctor() {
+	local dir="$1" pid="$2" proot="$3"
+	if [[ -z ${PWF_SCRIPTS_DIR} || ! -f "${PWF_SCRIPTS_DIR}/plan-doctor.sh" ]]; then
+		echo "pwf:status: --doctor requested but upstream plan-doctor.sh is not installed" >&2
+		return 1
+	fi
+	local out
+	printf '\n'
+	out="$(run_pwf_script "${dir}" "${pid}" "${proot}" "${PWF_SCRIPTS_DIR}/plan-doctor.sh")"
+	printf '%s\n' "${out}"
+	if printf '%s\n' "${out}" | grep -q '^FAIL '; then
+		return 1
+	fi
+	return 0
+}
+
+find_pwf_scripts || true
+
+primary_plan_id=""
+primary_pid_source="unset"
+primary_pwf_root=""
+local_plan_id="$(read_local_plan_id "${target_dir}")"
+
+if [[ ${target_dir} == "${orig_cwd}" ]]; then
+	primary_pwf_root="${PWF_PLAN_ROOT:-}"
+	if [[ -n ${PLAN_ID:-} ]]; then
+		primary_plan_id="${PLAN_ID}"
+		if [[ ${PLAN_ID} == "${local_plan_id}" ]]; then
+			primary_pid_source="env + mise.local.toml"
+		else
+			primary_pid_source="env"
+		fi
+	elif [[ -n ${local_plan_id} ]]; then
+		primary_plan_id="${local_plan_id}"
+		primary_pid_source="mise.local.toml"
+	fi
+elif [[ -n ${local_plan_id} ]]; then
+	primary_plan_id="${local_plan_id}"
+	primary_pid_source="mise.local.toml"
+fi
+
+print_primary "${target_dir}" "${primary_plan_id}" "${primary_pid_source}" "${primary_pwf_root}"
+
+if [[ ${here} != "true" ]]; then
+	print_worktrees "${target_dir}" "${primary_plan_id}"
+fi
+
+if [[ ${doctor} == "true" ]]; then
+	run_doctor "${target_dir}" "${primary_plan_id}" "${primary_pwf_root}"
+fi

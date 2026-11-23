@@ -60,7 +60,8 @@ steps = (picked) {
         exclude = List()
       }
       ["mise-tasks"] = (miseGroup.steps["mise-tasks"]) {
-        glob = List("mise.toml", "mise.*.toml", "mise/**", "tasks/**")
+        glob =
+          List("mise.toml", "mise.*.toml", "mise/**", "tasks/**", "unix/home/.config/mise/tasks/**")
       }
     }
   }

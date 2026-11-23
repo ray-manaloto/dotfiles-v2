@@ -19,14 +19,16 @@ lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
 "~/.config/mise/config.toml" = { mode = "symlink" }
 "~/.config/mise/mise.lock" = { mode = "symlink" }
 "~/.config/mise/miserc.toml" = { mode = "symlink" }
+"~/.config/mise/tasks/pwf/status" = { mode = "symlink" }
 "~/.gemini/GEMINI.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
 "~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink" }
 "~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
 "~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
 "~/.gemini/config/skills/post-task-learn/SKILL.md" = { mode = "symlink" }
+"~/.gemini/config/skills/pwf-status/SKILL.md" = { mode = "symlink" }
 
 [task_config]
-includes = ["tasks"]
+includes = ["tasks", "unix/home/.config/mise/tasks"]
 
 [hooks]
 postinstall = '[ -n "${CI:-}" ] || hk install --mise'
