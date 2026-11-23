@@ -138,13 +138,29 @@ have=""
 if [[ -x /usr/local/bin/mise ]]; then
   have="$(/usr/local/bin/mise --version | awk '{print $1}')"
 fi
-if [[ "${have}" != "${MISE_VER}" || ! -L /usr/local/bin/mise ]]; then
+if [[ "${have}" != "${MISE_VER}" ]]; then
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir}"' EXIT
   curl -fsSLo "${tmp_dir}/packslip" "https://github.com/jdx/packslip/releases/download/v${PACKSLIP_VER}/packslip-v${PACKSLIP_VER}-darwin-arm64"
   printf '%s  %s/packslip\n' "${PACKSLIP_SHA}" "${tmp_dir}" | shasum -a 256 -c -
   chmod 0755 "${tmp_dir}/packslip"
-  sudo "${tmp_dir}/packslip" install github.com/jdx/mise --version "${MISE_VER}" --pin "${PACKSLIP_PIN}" --system --force
+  # Work around jdx/packslip#346 in v1.11.4 (fixed on main by #347, awaiting v1.11.5):
+  # verify the Sigstore bundle + macOS arm64 tarball offline against the signer pin.
+  tarball="mise-v${MISE_VER}-macos-arm64.tar.gz"
+  curl -fsSLo "${tmp_dir}/packslip.sigstore.json" "https://github.com/jdx/mise/releases/download/v${MISE_VER}/packslip.sigstore.json"
+  curl -fsSLo "${tmp_dir}/${tarball}" "https://github.com/jdx/mise/releases/download/v${MISE_VER}/${tarball}"
+  verify_json="$("${tmp_dir}/packslip" verify "${tmp_dir}/packslip.sigstore.json" --pin "${PACKSLIP_PIN}" --artifact "${tmp_dir}/${tarball}" --json)"
+  VERIFY_JSON="${verify_json}" WANT_VER="${MISE_VER}" WANT_TARBALL="${tarball}" /usr/bin/python3 - <<'PY'
+import json, os
+data = json.loads(os.environ["VERIFY_JSON"])
+assert data.get("project") == "github.com/jdx/mise", f"unexpected project: {data.get('project')}"
+assert data.get("version") == os.environ["WANT_VER"], f"unexpected version: {data.get('version')}"
+assert os.environ["WANT_TARBALL"] in data.get("checked_artifacts", []), f"artifact not verified: {data.get('checked_artifacts')}"
+PY
+  tar -xzf "${tmp_dir}/${tarball}" -C "${tmp_dir}"
+  sudo install -d -m 0755 /usr/local/bin
+  sudo rm -f /usr/local/bin/mise
+  sudo install -m 0755 "${tmp_dir}/mise/bin/mise" /usr/local/bin/mise
 fi
 GUEST
 

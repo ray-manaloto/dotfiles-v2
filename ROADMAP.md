@@ -35,3 +35,6 @@
   -> `github:atanunq/viu`, `dockerfilegraph` ->
   `github:patrickhoefler/dockerfilegraph`) to global `mise` config while keeping
   native C++/system libraries and Casks in Homebrew.
+- [ ] **Follow-up (`packslip v1.11.5`):** Switch `tasks/vm/up` from
+  `packslip verify --pin` back to `packslip install github.com/jdx/mise` once
+  `jdx/packslip` `v1.11.5` (PR `#337`, fixing `#346`) releases.

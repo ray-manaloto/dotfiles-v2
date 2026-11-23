@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build the Ubuntu 26.10 mise/packslip image with userspace Tailscale SSH, sync checkout, and start non-privileged container(s)"
+#MISE description="Build the Ubuntu 26.10 mise image with userspace Tailscale SSH, sync checkout, and start non-privileged container(s)"
 #USAGE flag "--target <target>" default="pc" help="Target environment: pc, mac, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
 #USAGE flag "--tag <tag>" default="dotfiles-v2:dev" help="Docker image tag"
