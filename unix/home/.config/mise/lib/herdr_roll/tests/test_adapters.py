@@ -699,6 +699,177 @@ class AdapterTests(unittest.TestCase):
             ],
         )
 
+    def test_opencode_session_v2_truncated_title_and_fail_closed_controls(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "opencode.db"
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "CREATE TABLE session (id TEXT, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT, time_updated INTEGER, time_archived INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT, time_updated INTEGER, time_archived INTEGER)"
+            )
+            # Stale legacy v1 row in `session` must NOT mask `session_v2` or match when `session_v2` is empty.
+            other_dir = str(Path(tmp) / "other")
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_legacy_v1', 'p1', NULL, ?, 'Legacy v1', 100, NULL)",
+                (other_dir,),
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_v2_child', 'p1', 'ses_v2_live', ?, 'jouet hooks context', 500, NULL)",
+                (tmp,),
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_v2_arch', 'p1', NULL, ?, 'jouet hooks context', 450, 460)",
+                (tmp,),
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_v2_live', 'p1', NULL, ?, 'jouet hooks context', 400, NULL)",
+                (tmp,),
+            )
+            long_title = "Fix OpenCodeAdapter session-ID resolution for standalone tabs"
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_v2_long', 'p1', NULL, ?, ?, 300, NULL)",
+                (tmp, long_title),
+            )
+            conn.commit()
+            conn.close()
+
+            adapter = OpenCodeAdapter(db_path=db)
+            self.assertEqual(
+                adapter.session_id(
+                    address="t3xn",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=tmp,
+                    title="OC | jouet hooks context",
+                    screen_text="",
+                ),
+                "ses_v2_live",
+            )
+            # Truncated OpenCode TUI title (`OC | <title[:37]>…`) resolves uniquely.
+            self.assertEqual(
+                adapter.session_id(
+                    address="t3xn",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=tmp,
+                    title=f"OC | {long_title[:37]}…",
+                    screen_text="",
+                ),
+                "ses_v2_long",
+            )
+            # Generic `"OpenCode"` home-screen title must fail closed when only titled historical sessions exist.
+            self.assertIsNone(
+                adapter.session_id(
+                    address="t3xn",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=tmp,
+                    title="OpenCode",
+                    screen_text="",
+                )
+            )
+            # Unpersisted session in `session_v2` must NOT fall back to legacy `session`.
+            self.assertIsNone(
+                adapter.session_id(
+                    address="t3xn",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=other_dir,
+                    title="OC | Legacy v1",
+                    screen_text="",
+                )
+            )
+
+            # Ambiguous truncated prefix and duplicate exact title both fail closed.
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_v2_long_dup', 'p1', NULL, ?, ?, 600, NULL)",
+                (tmp, f"{long_title[:37]} OTHER"),
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_v2_exact_dup', 'p1', NULL, ?, 'jouet hooks context', 700, NULL)",
+                (tmp,),
+            )
+            conn.commit()
+            conn.close()
+            self.assertIsNone(
+                adapter.session_id(
+                    address="t3xn",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=tmp,
+                    title=f"OC | {long_title[:37]}…",
+                    screen_text="",
+                )
+            )
+            self.assertIsNone(
+                adapter.session_id(
+                    address="t3xn",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=tmp,
+                    title="OC | jouet hooks context",
+                    screen_text="",
+                )
+            )
+
+    def test_opencode_generic_title_resolves_only_single_fallback_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "opencode.db"
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT, time_updated INTEGER, time_archived INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_untitled', 'p1', NULL, ?, NULL, 100, NULL)",
+                (tmp,),
+            )
+            conn.commit()
+            conn.close()
+
+            adapter = OpenCodeAdapter(db_path=db)
+            self.assertEqual(
+                adapter.session_id(
+                    address="t3xn",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=tmp,
+                    title="OpenCode",
+                    screen_text="",
+                ),
+                "ses_untitled",
+            )
+
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_fallback2', 'p1', NULL, ?, 'New session - 2026-11-23T12:34:56.789Z', 200, NULL)",
+                (tmp,),
+            )
+            conn.commit()
+            conn.close()
+            self.assertIsNone(
+                adapter.session_id(
+                    address="t3xn",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=tmp,
+                    title="OpenCode",
+                    screen_text="",
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

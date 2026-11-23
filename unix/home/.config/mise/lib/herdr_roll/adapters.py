@@ -873,6 +873,10 @@ class OpenCodeAdapter(BaseAdapter):
 
     kind = HarnessKind.OPENCODE
 
+    _FALLBACK_TITLE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"^(?:New session|Child session) - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
+    )
+
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path
 
@@ -889,6 +893,13 @@ class OpenCodeAdapter(BaseAdapter):
             or program_name(term_argv) == "opencode"
         )
 
+    @classmethod
+    def _is_fallback_title(cls, value: Any) -> bool:
+        if not isinstance(value, str):
+            return True
+        stripped = value.strip()
+        return not stripped or cls._FALLBACK_TITLE_RE.fullmatch(stripped) is not None
+
     def _lookup_sqlite(self, cwd: str | None, title: str) -> str | None:
         dirs = _dir_candidates(cwd)
         if not dirs:
@@ -897,11 +908,40 @@ class OpenCodeAdapter(BaseAdapter):
         if conn is None:
             return None
         try:
+            tables = {
+                str(r["name"])
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name IN ('session_v2', 'session')"
+                ).fetchall()
+            }
+            table = (
+                "session_v2"
+                if "session_v2" in tables
+                else ("session" if "session" in tables else None)
+            )
+            if table is None:
+                return None
+
+            cols = {
+                str(r["name"])
+                for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if not {"id", "directory", "title"}.issubset(cols):
+                return None
+
             placeholders = ", ".join("?" for _ in dirs)
+            clauses = [f"directory IN ({placeholders})"]
+            if "parent_id" in cols:
+                clauses.append("parent_id IS NULL")
+            if "time_archived" in cols:
+                clauses.append("time_archived IS NULL")
+            if "time_deleted" in cols:
+                clauses.append("time_deleted IS NULL")
+            order_col = "time_updated" if "time_updated" in cols else "rowid"
             rows = conn.execute(
-                f"SELECT id, title FROM session WHERE directory IN ({placeholders}) "
-                "AND parent_id IS NULL AND time_archived IS NULL "
-                "ORDER BY time_updated DESC LIMIT 50",
+                f"SELECT id, title FROM {table} WHERE {' AND '.join(clauses)} "
+                f"ORDER BY {order_col} DESC LIMIT 50",
                 dirs,
             ).fetchall()
         except sqlite3.Error:
@@ -911,15 +951,41 @@ class OpenCodeAdapter(BaseAdapter):
 
         if not rows:
             return None
-        clean_title = re.sub(r"^OC\s*\|\s*", "", title).strip()
-        if clean_title:
-            title_matches = [
+
+        raw_title = title.strip()
+        if raw_title == "OpenCode":
+            if len(rows) == 1 and self._is_fallback_title(rows[0]["title"]):
+                return str(rows[0]["id"])
+            return None
+
+        clean_title = re.sub(r"^OC\s*\|\s*", "", raw_title).strip()
+        if not clean_title:
+            return str(rows[0]["id"]) if len(rows) == 1 else None
+
+        exact_matches = [
+            str(r["id"]) for r in rows if r["title"] and str(r["title"]) == clean_title
+        ]
+        if exact_matches:
+            return exact_matches[0] if len(exact_matches) == 1 else None
+
+        prefix = ""
+        if clean_title.endswith("…"):
+            prefix = clean_title[:-1]
+        elif clean_title.endswith("..."):
+            prefix = clean_title[:-3]
+        if prefix:
+            prefix_matches = [
                 str(r["id"])
                 for r in rows
-                if r["title"] and str(r["title"]) in clean_title
+                if r["title"] and str(r["title"]).startswith(prefix)
             ]
-            return title_matches[0] if len(title_matches) == 1 else None
-        return str(rows[0]["id"]) if len(rows) == 1 else None
+            if prefix_matches:
+                return prefix_matches[0] if len(prefix_matches) == 1 else None
+
+        sub_matches = [
+            str(r["id"]) for r in rows if r["title"] and str(r["title"]) in clean_title
+        ]
+        return sub_matches[0] if len(sub_matches) == 1 else None
 
     def session_id(
         self,
