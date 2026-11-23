@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -22,14 +23,21 @@ EDIT_TOOLS = frozenset(
     }
 )
 TASK_CMD_RE = re.compile(
-    r"\b(git\s+(add|commit|push|merge|worktree\s+remove)|repotools\s+pr-create|pr-merge"
-    r"|workflowtools\s+(round-close|verify-receipt)"
-    r"|mise\s+run\s+(ci|check|pins:apt-bump|worktree:rm|//repo:pr-merge)|hc\s+send)\b"
+    r"\b(git\s+(?:add|commit|push|merge|worktree\s+remove)|repotools\s+pr-create|pr-merge"
+    r"|gh\s+pr\s+(?:create|merge)|prototype/ship\.py\s+(?:commit|merge|cleanup)"
+    r"|workflowtools\s+(?:round-close|verify-receipt)"
+    r"|mise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+(?:ci|check|pins:apt-bump|worktree:rm|//repo:pr-merge|kb:(?:add|update|fix|judge|verify-fix|register|finish|retro))"
+    r"|hc\s+send)\b"
 )
 WORKTREE_RM_RE = re.compile(
     r"\bmise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+worktree:rm\s+([a-z0-9][a-z0-9_-]*)"
 )
-LEARN_MARKER_RE = re.compile(r"(?:^|\s)/learn\b|<LEARN>|post-task-learn/SKILL\.md")
+SHIP_CLOSEOUT_RE = re.compile(r"\bprototype/ship\.py\s+(merge|cleanup)\b")
+USER_REQUEST_RE = re.compile(r"<USER_REQUEST>([\s\S]*?)</USER_REQUEST>")
+USER_LEARN_CMD_RE = re.compile(r"^\s*/learn(?:\s|$)")
+SYSTEM_LEARN_RE = re.compile(
+    r"Automated post-task /learn check|post-task-learn/SKILL\.md"
+)
 
 BLOCKQUOTE_RE = re.compile(r"^ ? ? ?>")
 FENCE_RE = re.compile(r"^ ? ? ?(`{3,}|~{3,})(.*)$")
@@ -53,17 +61,15 @@ TRIGGER_REASON = (
 )
 
 
-def _emit(payload: dict[str, Any]) -> int:
-    sys.stdout.write(json.dumps(payload) + "\n")
-    return 0
+def _extract_user_request(text: str) -> str:
+    match = USER_REQUEST_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    return text.strip()
 
 
-def _load_stdin() -> dict[str, Any] | None:
-    try:
-        data = json.load(sys.stdin)
-    except (json.JSONDecodeError, OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+def _is_explicit_user_learn(text: str) -> bool:
+    return bool(USER_LEARN_CMD_RE.match(_extract_user_request(text)))
 
 
 def _read_state(state_path: Path, total_lines: int) -> tuple[int, dict[str, str]]:
@@ -125,6 +131,15 @@ def _path_from_arg(args: Any, base_dir: Path | None) -> Path | None:
                 candidate = base_dir / candidate
             return candidate
     return None
+
+
+def _is_within_dir(candidate: Path, parent: Path) -> bool:
+    try:
+        return candidate.resolve(strict=False).is_relative_to(
+            parent.resolve(strict=False)
+        )
+    except OSError:
+        return False
 
 
 def _parse_pwf_plan(text: str) -> tuple[int, int, int, int, bool]:
@@ -295,33 +310,44 @@ def _plan_sha256(plan_path: Path) -> str | None:
 
 
 def _analyze_slice(
-    lines: list[str], last_user_input: str, base_dir: Path | None
-) -> tuple[bool, bool, list[Path], str | None]:
-    """Return (already_learned, has_task_work, touched_plans, closed_worktree_slug)."""
-    if LEARN_MARKER_RE.search(last_user_input):
-        return True, False, [], None
+    lines: list[str],
+    last_user_input: str,
+    base_dir: Path | None,
+    artifact_dir: Path | None,
+) -> tuple[bool, bool, list[Path], str | None, str | None]:
+    """Return (already_learned, has_task_work, touched_plans, closed_worktree_slug, ship_closeout)."""
+    if last_user_input and _is_explicit_user_learn(last_user_input):
+        return True, False, [], None, None
 
-    already_learned = False
-    has_task_work = False
-    touched_plans: list[Path] = []
-    closed_worktree_slug: str | None = None
-
+    parsed: list[dict[str, Any]] = []
+    last_user_pos: int | None = None
     for raw in lines:
         if not raw.strip():
             continue
         try:
             entry = json.loads(raw)
         except json.JSONDecodeError:
-            entry = None
+            continue
         if not isinstance(entry, dict):
             continue
+        if entry.get("type") == "USER_INPUT":
+            last_user_pos = len(parsed)
+        parsed.append(entry)
 
+    turn_entries = parsed[last_user_pos:] if last_user_pos is not None else parsed
+
+    already_learned = False
+    has_task_work = False
+    touched_plans: list[Path] = []
+    closed_worktree_slug: str | None = None
+    ship_closeout: str | None = None
+
+    for entry in turn_entries:
         entry_type = entry.get("type")
         content = entry.get("content")
-        if (
-            entry_type in ("USER_INPUT", "SYSTEM_MESSAGE")
-            and isinstance(content, str)
-            and LEARN_MARKER_RE.search(content)
+        if isinstance(content, str) and (
+            (entry_type == "USER_INPUT" and _is_explicit_user_learn(content))
+            or (entry_type == "SYSTEM_MESSAGE" and SYSTEM_LEARN_RE.search(content))
         ):
             already_learned = True
 
@@ -335,13 +361,22 @@ def _analyze_slice(
             args = tc.get("args")
             if name in EDIT_TOOLS:
                 target = _tool_target_str(args)
-                if "learning_proposal.md" in target:
+                target_path = _path_from_arg(args, base_dir)
+                if (
+                    target_path is not None
+                    and target_path.name == "learning_proposal.md"
+                ) or "learning_proposal.md" in target:
                     already_learned = True
+                elif (
+                    artifact_dir is not None
+                    and target_path is not None
+                    and _is_within_dir(target_path, artifact_dir)
+                ):
+                    continue
                 else:
                     has_task_work = True
-                    p = _path_from_arg(args, base_dir)
-                    if p is not None and p.name == "task_plan.md":
-                        touched_plans.append(p)
+                    if target_path is not None and target_path.name == "task_plan.md":
+                        touched_plans.append(target_path)
             elif name == "read_file":
                 target = _tool_target_str(args)
                 if "post-task-learn/SKILL.md" in target:
@@ -357,48 +392,56 @@ def _analyze_slice(
                     wt_match = WORKTREE_RM_RE.search(cmd)
                     if wt_match:
                         closed_worktree_slug = wt_match.group(1)
+                    ship_match = SHIP_CLOSEOUT_RE.search(cmd)
+                    if ship_match:
+                        ship_closeout = ship_match.group(1)
 
-    return already_learned, has_task_work, touched_plans, closed_worktree_slug
+    return (
+        already_learned,
+        has_task_work,
+        touched_plans,
+        closed_worktree_slug,
+        ship_closeout,
+    )
 
 
-def main() -> int:
+def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if os.environ.get("AGY_DISABLE_AUTO_LEARN") == "1":
-        return _emit({})
-
-    payload = _load_stdin()
-    if payload is None:
-        return _emit({})
-
+        return {}
     if payload.get("terminationReason") != "NO_TOOL_CALL":
-        return _emit({})
+        return {}
     if payload.get("fullyIdle") is not True:
-        return _emit({})
-    if payload.get("continuationActive") or payload.get("continuation_active"):
-        return _emit({})
+        return {}
 
     transcript_raw = payload.get("transcriptPath")
     if not isinstance(transcript_raw, str) or not transcript_raw:
-        return _emit({})
+        return {}
     transcript_path = Path(transcript_raw)
     if not transcript_path.is_file():
-        return _emit({})
+        return {}
 
     try:
         lines = transcript_path.read_text(
             encoding="utf-8", errors="replace"
         ).splitlines()
     except OSError:
-        return _emit({})
+        return {}
 
-    artifact_dir = payload.get("artifactDirectoryPath")
-    state_base = (
-        Path(artifact_dir)
-        if isinstance(artifact_dir, str) and artifact_dir
-        else transcript_path.parent
+    artifact_raw = payload.get("artifactDirectoryPath")
+    artifact_dir = (
+        Path(artifact_raw).expanduser()
+        if isinstance(artifact_raw, str) and artifact_raw
+        else None
     )
+    state_base = artifact_dir if artifact_dir is not None else transcript_path.parent
     state_path = state_base / ".post-task-learn-state.json"
 
     last_line, learned_plans = _read_state(state_path, len(lines))
+
+    if payload.get("continuationActive") or payload.get("continuation_active"):
+        _write_state(state_path, len(lines), learned_plans)
+        return {}
+
     new_lines = lines[last_line:]
 
     cwd_raw = payload.get("cwd")
@@ -406,13 +449,17 @@ def main() -> int:
 
     last_user_input = payload.get("lastUserInput")
     user_text = last_user_input if isinstance(last_user_input, str) else ""
-    already_learned, has_task_work, touched_plans, closed_worktree_slug = (
-        _analyze_slice(new_lines, user_text, base_dir)
-    )
+    (
+        already_learned,
+        has_task_work,
+        touched_plans,
+        closed_worktree_slug,
+        ship_closeout,
+    ) = _analyze_slice(new_lines, user_text, base_dir, artifact_dir)
 
     if already_learned:
         _write_state(state_path, len(lines), learned_plans)
-        return _emit({})
+        return {}
 
     discovered_plans = _discover_plans(payload, touched_plans)
     completed_unlearned: list[tuple[Path, str, str]] = []
@@ -449,7 +496,7 @@ def main() -> int:
             + BASE_TRIGGER_SUFFIX
             + " Review the completed `task_plan.md` (`Errors Encountered`, `Decisions Made`), `findings.md`, and `progress.md` alongside user messages."
         )
-        return _emit({"decision": "continue", "reason": reason})
+        return {"decision": "continue", "reason": reason}
 
     _write_state(state_path, len(lines), learned_plans)
 
@@ -458,15 +505,371 @@ def main() -> int:
             f"Automated post-task /learn check: worktree PWF task '{closed_worktree_slug}' finished. "
             + BASE_TRIGGER_SUFFIX
         )
-        return _emit({"decision": "continue", "reason": reason})
+        return {"decision": "continue", "reason": reason}
+
+    if ship_closeout:
+        reason = (
+            f"Automated post-task /learn check: prototype/ship.py {ship_closeout} completed. "
+            + BASE_TRIGGER_SUFFIX
+        )
+        return {"decision": "continue", "reason": reason}
 
     if has_incomplete_plan:
-        return _emit({})
+        return {}
 
     if has_task_work:
-        return _emit({"decision": "continue", "reason": TRIGGER_REASON})
+        return {"decision": "continue", "reason": TRIGGER_REASON}
 
-    return _emit({})
+    return {}
+
+
+def _check_hooks_json(path: Path) -> None:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or "post-task-learn" not in data:
+        raise AssertionError(f"missing 'post-task-learn' in {path}")
+    block = data["post-task-learn"]
+    stop_handlers = block.get("Stop") if isinstance(block, dict) else None
+    if not isinstance(stop_handlers, list) or not stop_handlers:
+        raise AssertionError(f"missing Stop handlers for post-task-learn in {path}")
+    cmd = (
+        stop_handlers[0].get("command", "")
+        if isinstance(stop_handlers[0], dict)
+        else ""
+    )
+    if not isinstance(cmd, str) or "post-task-learn.py" not in cmd:
+        raise AssertionError(f"unexpected hook command: {cmd!r}")
+    if cmd.startswith("/") or "/Users/" in cmd:
+        raise AssertionError(
+            f"hook command must be portable relative path, got: {cmd!r}"
+        )
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def _run_self_check(hooks_json_path: Path | None) -> list[str]:
+    checks: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        # 1. continuationActive advances last_line so next turn still triggers
+        ws1 = root / "ws1"
+        ws1.mkdir()
+        t1 = root / "t1.jsonl"
+        art1 = root / "art1"
+        art1.mkdir()
+        _write_jsonl(
+            t1,
+            [
+                {
+                    "type": "USER_INPUT",
+                    "content": "<USER_REQUEST>Task 1</USER_REQUEST>",
+                },
+                {
+                    "type": "SYSTEM_MESSAGE",
+                    "content": "Automated post-task /learn check",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {
+                            "name": "read_file",
+                            "args": {"Path": "post-task-learn/SKILL.md"},
+                        }
+                    ],
+                },
+            ],
+        )
+        assert (
+            _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "continuationActive": True,
+                    "transcriptPath": str(t1),
+                    "artifactDirectoryPath": str(art1),
+                    "cwd": str(ws1),
+                }
+            )
+            == {}
+        )
+        _write_jsonl(
+            t1,
+            [
+                {
+                    "type": "USER_INPUT",
+                    "content": "<USER_REQUEST>Task 1</USER_REQUEST>",
+                },
+                {
+                    "type": "SYSTEM_MESSAGE",
+                    "content": "Automated post-task /learn check",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {
+                            "name": "read_file",
+                            "args": {"Path": "post-task-learn/SKILL.md"},
+                        }
+                    ],
+                },
+                {
+                    "type": "USER_INPUT",
+                    "content": "<USER_REQUEST>Task 2</USER_REQUEST>",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "edit_file", "args": {"Path": str(ws1 / "foo.py")}}
+                    ],
+                },
+            ],
+        )
+        res1 = _run_hook(
+            {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "continuationActive": False,
+                "transcriptPath": str(t1),
+                "artifactDirectoryPath": str(art1),
+                "cwd": str(ws1),
+                "lastUserInput": "<USER_REQUEST>Task 2</USER_REQUEST>",
+            }
+        )
+        assert res1.get("decision") == "continue", f"case 1 failed: {res1}"
+        checks.append("continuation_active_advances_last_line")
+
+        # 2. Prose /learn with <LEARN> in ADDITIONAL_METADATA does not suppress; explicit /learn does
+        t2 = root / "t2.jsonl"
+        art2 = root / "art2"
+        art2.mkdir()
+        prose = (
+            "<USER_REQUEST>\nautomate running /learn after every task\n</USER_REQUEST>\n"
+            "<ADDITIONAL_METADATA><LEARN>expanded skill metadata</LEARN></ADDITIONAL_METADATA>"
+        )
+        _write_jsonl(
+            t2,
+            [
+                {"type": "USER_INPUT", "content": prose},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "edit_file", "args": {"Path": str(ws1 / "bar.py")}}
+                    ],
+                },
+            ],
+        )
+        res2a = _run_hook(
+            {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t2),
+                "artifactDirectoryPath": str(art2),
+                "cwd": str(ws1),
+                "lastUserInput": prose,
+            }
+        )
+        assert res2a.get("decision") == "continue", f"case 2a failed: {res2a}"
+        t2b = root / "t2b.jsonl"
+        art2b = root / "art2b"
+        art2b.mkdir()
+        cmd_learn = "<USER_REQUEST>\n/learn\n</USER_REQUEST>\n<ADDITIONAL_METADATA><LEARN>ok</LEARN></ADDITIONAL_METADATA>"
+        _write_jsonl(
+            t2b,
+            [
+                {"type": "USER_INPUT", "content": cmd_learn},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "edit_file", "args": {"Path": str(ws1 / "baz.py")}}
+                    ],
+                },
+            ],
+        )
+        res2b = _run_hook(
+            {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t2b),
+                "artifactDirectoryPath": str(art2b),
+                "cwd": str(ws1),
+                "lastUserInput": cmd_learn,
+            }
+        )
+        assert res2b == {}, f"case 2b failed: {res2b}"
+        checks.append("prose_vs_explicit_learn_detection")
+
+        # 3. Completed PWF plan triggers once and dedupes on SHA-256
+        ws3 = root / "ws3"
+        plan_dir = ws3 / ".planning" / "demo"
+        plan_dir.mkdir(parents=True)
+        plan_file = plan_dir / "task_plan.md"
+        plan_file.write_text(
+            "# Demo\n\n### Phase 1: Do\n**Status:** complete\n", encoding="utf-8"
+        )
+        t3 = root / "t3.jsonl"
+        art3 = root / "art3"
+        art3.mkdir()
+        _write_jsonl(
+            t3, [{"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"}]
+        )
+        p3 = {
+            "terminationReason": "NO_TOOL_CALL",
+            "fullyIdle": True,
+            "transcriptPath": str(t3),
+            "artifactDirectoryPath": str(art3),
+            "cwd": str(ws3),
+        }
+        assert _run_hook(p3).get("decision") == "continue"
+        _write_jsonl(
+            t3,
+            [
+                {"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"},
+                {"type": "USER_INPUT", "content": "<USER_REQUEST>Next</USER_REQUEST>"},
+            ],
+        )
+        assert _run_hook(p3) == {}
+        checks.append("pwf_completion_digest_dedup")
+
+        # 4. ship.py merge triggers & artifactDirectoryPath edits are ignored
+        t4 = root / "t4.jsonl"
+        art4 = root / "art4"
+        art4.mkdir()
+        _write_jsonl(
+            t4,
+            [
+                {
+                    "type": "USER_INPUT",
+                    "content": "<USER_REQUEST>Write plan</USER_REQUEST>",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "write_file", "args": {"Path": str(art4 / "task.md")}}
+                    ],
+                },
+            ],
+        )
+        p4 = {
+            "terminationReason": "NO_TOOL_CALL",
+            "fullyIdle": True,
+            "transcriptPath": str(t4),
+            "artifactDirectoryPath": str(art4),
+            "cwd": str(ws1),
+        }
+        assert _run_hook(p4) == {}, "artifact dir write should not trigger"
+        _write_jsonl(
+            t4,
+            [
+                {
+                    "type": "USER_INPUT",
+                    "content": "<USER_REQUEST>Write plan</USER_REQUEST>",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "write_file", "args": {"Path": str(art4 / "task.md")}}
+                    ],
+                },
+                {"type": "USER_INPUT", "content": "<USER_REQUEST>Ship</USER_REQUEST>"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {
+                            "name": "run_command",
+                            "args": {
+                                "CommandLine": "python3 prototype/ship.py merge --pr 1"
+                            },
+                        }
+                    ],
+                },
+            ],
+        )
+        res4 = _run_hook(p4)
+        assert res4.get("decision") == "continue" and "ship.py merge" in res4.get(
+            "reason", ""
+        ), f"case 4 failed: {res4}"
+        checks.append("ship_closeout_and_artifact_dir_filtering")
+
+        # 5. Prior-turn SYSTEM_MESSAGE before latest USER_INPUT does not suppress new turn
+        t5 = root / "t5.jsonl"
+        art5 = root / "art5"
+        art5.mkdir()
+        _write_jsonl(
+            t5,
+            [
+                {
+                    "type": "SYSTEM_MESSAGE",
+                    "content": "Automated post-task /learn check",
+                },
+                {
+                    "type": "USER_INPUT",
+                    "content": "<USER_REQUEST>Edit code</USER_REQUEST>",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [
+                        {"name": "edit_file", "args": {"Path": str(ws1 / "qux.py")}}
+                    ],
+                },
+            ],
+        )
+        assert (
+            _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t5),
+                    "artifactDirectoryPath": str(art5),
+                    "cwd": str(ws1),
+                }
+            ).get("decision")
+            == "continue"
+        )
+        checks.append("turn_boundary_isolation")
+
+    if hooks_json_path is not None:
+        _check_hooks_json(hooks_json_path)
+        checks.append("hooks_json_portable")
+
+    return checks
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="Run built-in regression checks in a temporary directory.",
+    )
+    parser.add_argument(
+        "--check-hooks-json",
+        type=Path,
+        default=None,
+        help="Verify hooks.json registers post-task-learn cleanly.",
+    )
+    args = parser.parse_args()
+
+    if args.self_check:
+        checks = _run_self_check(args.check_hooks_json)
+        sys.stdout.write(json.dumps({"status": "ok", "checks": checks}) + "\n")
+        return 0
+
+    if args.check_hooks_json is not None:
+        _check_hooks_json(args.check_hooks_json)
+        sys.stdout.write(
+            json.dumps({"status": "ok", "checks": ["hooks_json_portable"]}) + "\n"
+        )
+        return 0
+
+    try:
+        raw_payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError, ValueError):
+        raw_payload = None
+    result = _run_hook(raw_payload) if isinstance(raw_payload, dict) else {}
+    sys.stdout.write(json.dumps(result) + "\n")
+    return 0
 
 
 if __name__ == "__main__":

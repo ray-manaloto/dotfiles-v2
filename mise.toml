@@ -17,12 +17,15 @@ lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
 "~/.config/agent-secrets/env.sh" = { mode = "symlink" }
 "~/.config/agents/AGENTS.md" = { mode = "symlink" }
 "~/.config/mise/config.toml" = { mode = "symlink" }
+"~/.config/mise/locks" = { mode = "symlink" }
 "~/.config/mise/mise.lock" = { mode = "symlink" }
 "~/.config/mise/miserc.toml" = { mode = "symlink" }
 "~/.config/mise/tasks/pwf/status" = { mode = "symlink" }
 "~/.config/opencode/AGENTS.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
 "~/.config/opencode/opencode.json" = { mode = "symlink" }
 "~/.gemini/GEMINI.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
+"~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
+"~/.gemini/config/hooks/agy-interactive-questions.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/agy-skill-cutoff.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink" }
 "~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
@@ -87,3 +90,21 @@ test ! -e unix/home/.gemini/config/rules/last30days-agy.md
 python3 -I -B unix/home/.gemini/config/hooks/agy-skill-cutoff.py --check --no-write --json >/dev/null
 '''
 hint = "Ensure unix/home/.gemini/config/hooks/agy-skill-cutoff.py is executable and skill-cutoff-agy.md replaces last30days-agy.md."
+
+[doctor.checks.agy-interactive-questions]
+description = "Antigravity interactive-questions Stop hook, rule, and hooks.json registration are valid"
+run = '''
+test -x unix/home/.gemini/config/hooks/agy-interactive-questions.py
+test -f unix/home/.gemini/config/rules/interactive-questions.md
+python3 -I -B unix/home/.gemini/config/hooks/agy-interactive-questions.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
+'''
+hint = "Ensure unix/home/.gemini/config/hooks/agy-interactive-questions.py passes --self-check and registers in hooks.json."
+
+[doctor.checks.post-task-learn]
+description = "Antigravity post-task-learn Stop hook, skill, and hooks.json registration are valid"
+run = '''
+test -x unix/home/.gemini/config/hooks/post-task-learn.py
+test -f unix/home/.gemini/config/skills/post-task-learn/SKILL.md
+python3 -I -B unix/home/.gemini/config/hooks/post-task-learn.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
+'''
+hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-check and registers in hooks.json."

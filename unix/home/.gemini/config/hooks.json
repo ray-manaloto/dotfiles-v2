@@ -1,0 +1,29 @@
+{
+  "agy-interactive-questions": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 -I -B ./hooks/agy-interactive-questions.py",
+        "timeout": 10
+      }
+    ]
+  },
+  "agy-skill-cutoff": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python3 -I -B ./hooks/agy-skill-cutoff.py --hook",
+        "timeout": 10
+      }
+    ]
+  },
+  "post-task-learn": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 -I -B ./hooks/post-task-learn.py",
+        "timeout": 10
+      }
+    ]
+  }
+}

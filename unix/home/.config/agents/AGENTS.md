@@ -23,3 +23,9 @@ hosts, Linux containers, and macOS VMs.
 - **Non-interactive runs and watchdogs:** Pass explicit non-interactive flags
   (`MISE_YES=1`, `--yes` / `-y`) to long-running commands, and pair any
   backgrounded build, sync, or upgrade task with a bounded `schedule` watchdog.
+- **Reporting peer messages:** When confirming a peer-agent message to the
+  owner, name the target as `tab-name (id)`, state the channel (native
+  `send_message`), and confirm delivery status.
+- **OpenWiki search routing:** Use the `openwiki_search` / `openwiki_read` MCP
+  tools for workspace-scoped queries (`--workspace` is not an `openwiki` CLI
+  flag).

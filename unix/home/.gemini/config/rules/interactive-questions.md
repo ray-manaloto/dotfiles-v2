@@ -17,3 +17,7 @@ steps:
 4. **Include concise Pros and Cons** for every option in the accompanying
    response immediately above the `ask_question` prompt so trade-offs are clear
    before choosing.
+5. **Orchestrator plan/execute hand-back**: when running on an execution
+   turn (Plan Mode off) and user decisions or next-step choices are needed,
+   hand back via `enter_plan_mode` (or call `ask_question` in a dedicated
+   short turn) rather than ending a long summary with prose options.

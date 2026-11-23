@@ -16,7 +16,10 @@ and C++26 workstation setup.
 - **Tailscale SSH & VM boundaries:** Pin Tailscale `>= 1.104.4` (Tailworm
   `TS-2026-014` forwarding fix). Containers run non-root
   `tailscaled --tun=userspace-networking` (`--init`, state dir `0700`) and
-  accept SSH only as `dev`. The Tart `vm` must use open-source Homebrew
+  accept SSH only as `dev`. Source container `PATH`/`MISE_*` and secret env
+  scripts at the top of `~/.bashrc` (above Ubuntu's interactive guard) so
+  non-login Tailscale SSH (`SSH_SOURCE_BASHRC`) matches login shells without
+  duplicating `PATH` entries. The Tart `vm` must use open-source Homebrew
   `tailscale` (`--operator=admin`, since macOS GUI builds lack Tailscale SSH
   server support) and cannot run Docker due to no nested virtualization
   (`kern.hv_support=0`).
@@ -33,7 +36,9 @@ and C++26 workstation setup.
 - **Schemas, hooks & verification:** Declare public `$schema` / `#:schema`
   headers on config files. Prefer `mise` / `jdx` ecosystem tools, native
   compiled `hk` builtins, `mise fmt` for mise configs, and `mise doctor project`
-  plus `hk check --all` over unit tests for setup checks. In `hk.pkl`, pair
+  plus `hk check --all` over unit tests for setup checks. Always invoke
+  `#USAGE` file tasks inside `[doctor.checks]` via `mise ... run <task>` rather
+  than direct script paths so `mise` parses flags. In `hk.pkl`, pair
   `Builtins.mise` + `Builtins.mise_config_dir` for all mise configs and exclude
   them from `tombi-format` while keeping `tombi lint --error-on-warnings`.
 - **`mise` `[dotfiles]` & guest sync pitfalls:** Always anchor `dotfiles.root`

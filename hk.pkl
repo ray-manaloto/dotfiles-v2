@@ -74,6 +74,9 @@ steps = (picked) {
       }
     }
   }
+  ["ruff"] = Builtins.ruff
+  ["ruff-format"] = Builtins.ruff_format
   ["ryl"] = Builtins.ryl
   ["ryl-format"] = Builtins.ryl_format
+  ["ty"] = Builtins.ty
 }

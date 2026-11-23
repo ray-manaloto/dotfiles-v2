@@ -45,10 +45,11 @@ files before explicit user approval.
     (`.agents/skills/<name>/SKILL.md` or `~/.gemini/config/skills/<name>/SKILL.md`).
   - **Hook**: deterministic lifecycle enforcement (`hooks.json`).
 - **Repository governance**:
-  - Changes to `~/.gemini/GEMINI.md` / `~/.config/agents/AGENTS.md` must go via
-    a reviewed pull request to `dotfiles`.
-  - Changes to `~/.config/agents/workflow/` must go via a pull request to
-    `cpp-standard`.
+  - Global rules, hooks, and skills (`~/.gemini/GEMINI.md`,
+    `~/.config/agents/AGENTS.md`, `~/.gemini/config/{hooks,rules,skills,hooks.json}`)
+    are managed in `dotfiles-v2` (coordinate updates via `dotfiles-v2-lead`).
+  - In `knowledge-base-v2`, wiki mapping/QA rounds use `kb:retro` +
+    `session-retro`, while code/ticket tasks use `post-task-learn`.
   - Coordinate with `ticket-retro` / `session-retro` when closing a ticket or
     session so findings are linked rather than duplicated.
 

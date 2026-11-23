@@ -2,4 +2,6 @@
 .agents/
 .claude/
 .planning/
+__pycache__/
 *.local.*
+*.pyc
