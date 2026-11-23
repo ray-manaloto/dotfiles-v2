@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#MISE description="Sync or verify unix/home/.gemini/config/ hooks, rules, skills, and hooks.json against local ~/.gemini/config/"
+#USAGE flag "--check" help="Verify local ~/.gemini/config/ matches repo without modifying files"
+set -euo pipefail
+
+check_mode="${usage_check:-false}"
+exec python3 - "${check_mode}" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+check_only = sys.argv[1].strip().lower() in {"1", "true", "yes"}
+
+def git_path(*args: str) -> Path:
+    out = subprocess.check_output(["git", *args], text=True).strip()
+    return Path(out)
+
+try:
+    import tomllib
+except ImportError:
+    print("host:sync-gemini requires Python >= 3.11 (tomllib)", file=sys.stderr)
+    sys.exit(1)
+
+repo_root = git_path("rev-parse", "--show-toplevel").resolve()
+common_dir = git_path("rev-parse", "--git-common-dir")
+if not common_dir.is_absolute():
+    common_dir = (Path.cwd() / common_dir).resolve()
+else:
+    common_dir = common_dir.resolve()
+main_root = common_dir.parent if common_dir.name == ".git" else repo_root
+
+src_cfg = repo_root / "unix" / "home" / ".gemini" / "config"
+main_src_cfg = main_root / "unix" / "home" / ".gemini" / "config"
+mise_cfg_path = repo_root / "unix" / "home" / ".config" / "mise" / "config.toml"
+parsed = tomllib.loads(mise_cfg_path.read_text(encoding="utf-8"))
+dotfiles_tbl = parsed.get("dotfiles", {})
+
+managed_rels: list[str] = []
+for sub in ("hooks", "rules", "skills"):
+    base = src_cfg / sub
+    if not base.is_dir():
+        continue
+    for p in sorted(base.rglob("*")):
+        if not p.is_file():
+            continue
+        if "__pycache__" in p.parts or p.suffix == ".pyc" or p.name == ".DS_Store":
+            continue
+        managed_rels.append(p.relative_to(src_cfg).as_posix())
+
+missing_dotfiles: list[str] = []
+for rel in managed_rels:
+    key = f"~/.gemini/config/{rel}"
+    if key not in dotfiles_tbl:
+        missing_dotfiles.append(key)
+if "~/.gemini/config/hooks.json/dotfiles-v2" not in dotfiles_tbl:
+    missing_dotfiles.append("~/.gemini/config/hooks.json/dotfiles-v2")
+
+if missing_dotfiles:
+    print(
+        "Unregistered ~/.gemini/config entries in unix/home/.config/mise/config.toml [dotfiles]: "
+        + ", ".join(missing_dotfiles),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+if os.environ.get("CI") and check_only:
+    sys.exit(0)
+
+host_cfg = Path.home() / ".gemini" / "config"
+repo_hooks_path = src_cfg / "hooks.json"
+repo_hooks = json.loads(repo_hooks_path.read_text(encoding="utf-8"))
+host_hooks_path = host_cfg / "hooks.json"
+
+if check_only:
+    errors: list[str] = []
+    for rel in managed_rels:
+        dst = host_cfg / rel
+        allowed_srcs = {(src_cfg / rel).resolve(), (main_src_cfg / rel).resolve()}
+        if not dst.exists():
+            errors.append(f"missing {dst}")
+            continue
+        if dst.resolve() not in allowed_srcs:
+            errors.append(f"drifted symlink {dst} -> {dst.resolve()}")
+
+    if not host_hooks_path.is_file():
+        errors.append(f"missing {host_hooks_path}")
+    else:
+        try:
+            host_hooks = json.loads(host_hooks_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"invalid JSON in {host_hooks_path}: {exc}")
+        else:
+            for key, expected_val in repo_hooks.items():
+                if host_hooks.get(key) != expected_val:
+                    errors.append(f"hooks.json key mismatch for '{key}' in {host_hooks_path}")
+
+    if errors:
+        for err in errors:
+            print(f"FAIL  {err}", file=sys.stderr)
+        sys.exit(1)
+    print(
+        f"OK: {len(managed_rels)} ~/.gemini/config file(s) and {len(repo_hooks)} hooks.json key(s) synced"
+    )
+    sys.exit(0)
+
+linked = 0
+for rel in managed_rels:
+    src = (src_cfg / rel).resolve()
+    dst = host_cfg / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink():
+        if dst.resolve(strict=False) == src:
+            continue
+        dst.unlink()
+    elif dst.exists():
+        dst.unlink()
+    os.symlink(src, dst)
+    linked += 1
+
+host_cfg.mkdir(parents=True, exist_ok=True)
+host_hooks = {}
+if host_hooks_path.is_file():
+    host_hooks = json.loads(host_hooks_path.read_text(encoding="utf-8"))
+
+hooks_changed = False
+for key, val in repo_hooks.items():
+    if host_hooks.get(key) != val:
+        host_hooks[key] = val
+        hooks_changed = True
+
+if hooks_changed or not host_hooks_path.is_file():
+    host_hooks_path.write_text(json.dumps(host_hooks, indent=2) + "\n", encoding="utf-8")
+
+print(
+    f"Synced {len(managed_rels)} ~/.gemini/config file(s) ({linked} updated) "
+    f"and {len(repo_hooks)} hooks.json key(s) (changed={hooks_changed})"
+)
+PY

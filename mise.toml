@@ -95,6 +95,11 @@ python3 -I -B unix/home/.gemini/config/hooks/post-task-learn.py --self-check --c
 '''
 hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-check and registers in hooks.json."
 
+[doctor.checks.host-gemini-sync]
+description = "Local ~/.gemini/config/ hooks, rules, skills, and hooks.json match unix/home/.gemini/config/ and [dotfiles]"
+run = "mise run host:sync-gemini --check"
+hint = "Run 'mise run host:sync-gemini' to sync ~/.gemini/config/ hooks, rules, skills, and hooks.json on this host."
+
 [doctor.checks.native-harnesses]
 description = "Global mise config blocks non-native AI harnesses and mise installs via disable_tools and auto_install_disable_tools"
 run = '''

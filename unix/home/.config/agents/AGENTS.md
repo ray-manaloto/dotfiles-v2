@@ -37,3 +37,11 @@ hosts, Linux containers, and macOS VMs.
 - **OpenWiki search routing:** Use the `openwiki_search` / `openwiki_read` MCP
   tools for workspace-scoped queries (`--workspace` is not an `openwiki` CLI
   flag).
+
+## Prefer native hk builtins and compiled tools
+
+Before writing a custom Python or shell check, search `hk builtins` for a native
+`Builtins.*` step and prefer compiled native tools (`Rust`, `C++`, `C`, `Zig`,
+`Go` — such as `betterleaks`, `rg`, `ruff`, `ty`, `tombi`, `jq`, `mise`,
+`agnix`, `jactionlint`, `zizmor`, `typos`, `hk util`) when available in the
+toolchain.

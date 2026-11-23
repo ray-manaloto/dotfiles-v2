@@ -27,8 +27,15 @@ files before explicit user approval.
 - **Ask-question boundary**: `ask_question` does not trigger the `Stop` hook,
   so after completing a mutating task before calling `ask_question`, run one
   bounded `/learn` check first.
-- **Fast exit**: if the completed task was routine and revealed no new reusable
-  lesson, output `Post-task /learn: no reusable customization updates needed.`
+- **Anti-fast-exit gate**: Do NOT fast-exit when `task_plan.md` logged
+  `Errors Encountered`, commands failed and needed retries, a multi-step
+  workflow was discovered, or global `~/.gemini/config/` / `AGENTS.md` files
+  changed without verifying local Mac host sync.
+- **Host sync check**: Whenever `dotfiles-v2` modifies global `.gemini/config/**`
+  files, verify host symlinks and `~/.gemini/config/hooks.json` match before
+  closing the task.
+- **Fast exit**: Only if the completed task had zero errors, retries, or
+  reusable lessons, output `Post-task /learn: no reusable customization updates needed.`
   and stop immediately without modifying `learning_proposal.md`.
 
 ## 2. Classify Rules vs. Skills & Prefer Updates
@@ -37,6 +44,10 @@ files before explicit user approval.
   `docs/hooks.md`) before drafting changes so schemas, frontmatter, and
   budgets match (`24 KB` max per rule file; `20,000`-token aggregate rule
   budget).
+- **Skill-first extraction**: Prefer creating or updating a
+  progressive-disclosure Skill (`skills/<name>/SKILL.md`) for repeatable
+  workflows, debugging checklists, and tool/environment gotchas rather than
+  appending runbook details to always-on `AGENTS.md` or rule files.
 - **Update Existing (Prefer)**: update an active rule, skill, or workflow doc
   when it was outdated, missed an edge case, or diverged from the verified fix.
 - **Classify**:

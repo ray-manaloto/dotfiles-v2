@@ -55,6 +55,8 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
 "~/.gemini/config/rules/research-due-diligence.md" = { mode = "symlink" }
 "~/.gemini/config/rules/skill-cutoff-agy.md" = { mode = "symlink" }
+"~/.gemini/config/skills/agy-session-ops/SKILL.md" = { mode = "symlink" }
+"~/.gemini/config/skills/mise-bootstrap-ops/SKILL.md" = { mode = "symlink" }
 "~/.gemini/config/skills/post-task-learn/SKILL.md" = { mode = "symlink" }
 "~/.gemini/config/skills/pwf-status/SKILL.md" = { mode = "symlink" }
 

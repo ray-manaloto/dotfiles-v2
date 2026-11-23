@@ -59,14 +59,18 @@ STATUS_TOKEN_RE = re.compile(
 
 BASE_TRIGGER_SUFFIX = (
     "Load the `post-task-learn` skill and run one bounded `/learn` review of the task just completed: "
-    "inspect user corrections, failures, and reusable fixes; if nothing reusable emerged, reply in "
-    "one line and stop; otherwise create/update `learning_proposal.md` with RequestFeedback=true "
-    "without modifying configuration files before explicit approval."
+    "inspect user corrections, failures, and reusable fixes; prioritize extracting repeatable workflows "
+    "or error checklists into Skills (`skills/<name>/SKILL.md`) over appending to always-on rules. "
+    "Only fast-exit in one line if truly zero errors, retries, or reusable lessons occurred; otherwise "
+    "create/update `learning_proposal.md` with RequestFeedback=true without modifying configuration files before explicit approval."
 )
 TRIGGER_REASON = (
     "Automated post-task /learn check (per https://antigravity.google/docs/commands/learn/). "
     + BASE_TRIGGER_SUFFIX
 )
+ERROR_HEADING_RE = re.compile(r"^#{1,3}\s+Errors\s+Encountered\b", re.IGNORECASE)
+SECTION_HEADING_RE = re.compile(r"^#{1,2}(?!#)\s+")
+PLACEHOLDER_CELLS = frozenset({"", "-", "none", "none yet", "n/a", "na", "nil"})
 
 
 def _extract_user_request(text: str) -> str:
@@ -80,11 +84,13 @@ def _is_explicit_user_learn(text: str) -> bool:
     return bool(USER_LEARN_CMD_RE.match(_extract_user_request(text)))
 
 
-def _read_state(state_path: Path, total_lines: int) -> tuple[int, dict[str, str]]:
+def _read_state(
+    state_path: Path, total_lines: int
+) -> tuple[int, dict[str, str], dict[str, Any] | None]:
     try:
         raw = json.loads(state_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
-            return 0, {}
+            return 0, {}, None
         val = int(raw.get("last_line", 0))
         last_line = val if 0 <= val <= total_lines else 0
         raw_plans = raw.get("learned_plans")
@@ -93,20 +99,55 @@ def _read_state(state_path: Path, total_lines: int) -> tuple[int, dict[str, str]
             for k, v in raw_plans.items():
                 if isinstance(k, str) and isinstance(v, str):
                     learned_plans[k] = v
-        return last_line, learned_plans
+        raw_pending = raw.get("pending_proposal")
+        pending: dict[str, Any] | None = None
+        if isinstance(raw_pending, dict):
+            plan_key = raw_pending.get("plan_key")
+            label = raw_pending.get("label")
+            digest = raw_pending.get("digest")
+            error_count = raw_pending.get("error_count")
+            baseline = raw_pending.get("baseline_proposal_sha")
+            retries = raw_pending.get("retries", 0)
+            if (
+                isinstance(plan_key, str)
+                and isinstance(label, str)
+                and isinstance(digest, str)
+                and isinstance(error_count, int)
+                and not isinstance(error_count, bool)
+                and isinstance(baseline, str)
+                and isinstance(retries, int)
+                and not isinstance(retries, bool)
+            ):
+                pending = {
+                    "plan_key": plan_key,
+                    "label": label,
+                    "digest": digest,
+                    "error_count": error_count,
+                    "baseline_proposal_sha": baseline,
+                    "retries": retries,
+                }
+        return last_line, learned_plans, pending
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return 0, {}
+        return 0, {}, None
 
 
 def _write_state(
-    state_path: Path, last_line: int, learned_plans: dict[str, str]
+    state_path: Path,
+    last_line: int,
+    learned_plans: dict[str, str],
+    pending_proposal: dict[str, Any] | None = None,
 ) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         dir=state_path.parent, prefix=f".{state_path.name}."
     )
     replaced = False
-    payload = {"last_line": last_line, "learned_plans": learned_plans}
+    payload: dict[str, Any] = {
+        "last_line": last_line,
+        "learned_plans": learned_plans,
+    }
+    if pending_proposal is not None:
+        payload["pending_proposal"] = pending_proposal
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload) + "\n")
@@ -117,6 +158,91 @@ def _write_state(
     finally:
         if not replaced:
             Path(tmp_name).unlink(missing_ok=True)
+
+
+def _file_sha256(path: Path | None) -> str:
+    if path is None or not path.is_file():
+        return ""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _count_plan_errors(text: str) -> int:
+    in_section = False
+    fence_char = ""
+    fence_len = 0
+    count = 0
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        fence_match = FENCE_RE.match(line)
+        if fence_match:
+            marker_run, rest = fence_match.group(1), fence_match.group(2)
+            marker = marker_run[0]
+            if not fence_char:
+                if not (marker == "`" and "`" in rest):
+                    fence_char = marker
+                    fence_len = len(marker_run)
+                    continue
+            elif (
+                marker == fence_char
+                and len(marker_run) >= fence_len
+                and rest.strip(" \t") == ""
+            ):
+                fence_char = ""
+                fence_len = 0
+                continue
+        if fence_char:
+            continue
+        stripped = line.strip()
+        if ERROR_HEADING_RE.match(stripped):
+            in_section = True
+            continue
+        if in_section and SECTION_HEADING_RE.match(stripped):
+            break
+        if not in_section or not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        if all(re.fullmatch(r":?-{1,}:?", c or "-") for c in cells):
+            continue
+        first_norm = cells[0].lower().rstrip(".")
+        if first_norm in {"error", "issue", "errors"}:
+            continue
+        if first_norm in PLACEHOLDER_CELLS or all(
+            c.lower().rstrip(".") in PLACEHOLDER_CELLS for c in cells
+        ):
+            continue
+        count += 1
+    return count
+
+
+def _slice_wrote_learning_proposal(lines: list[str], base_dir: Path | None) -> bool:
+    for raw in lines:
+        if not raw.strip():
+            continue
+        try:
+            entry = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        tool_calls = entry.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in tool_calls:
+            if not isinstance(tc, dict) or tc.get("name") not in EDIT_TOOLS:
+                continue
+            args = tc.get("args")
+            target = _tool_target_str(args)
+            target_path = _path_from_arg(args, base_dir)
+            if (
+                target_path is not None and target_path.name == "learning_proposal.md"
+            ) or "learning_proposal.md" in target:
+                return True
+    return False
 
 
 def _tool_target_str(args: Any) -> str:
@@ -455,16 +581,39 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     state_base = artifact_dir if artifact_dir is not None else transcript_path.parent
     state_path = state_base / ".post-task-learn-state.json"
 
-    last_line, learned_plans = _read_state(state_path, len(lines))
-
-    if payload.get("continuationActive") or payload.get("continuation_active"):
-        _write_state(state_path, len(lines), learned_plans)
-        return {}
-
-    new_lines = lines[last_line:]
+    last_line, learned_plans, pending_proposal = _read_state(state_path, len(lines))
 
     cwd_raw = payload.get("cwd")
     base_dir = Path(cwd_raw) if isinstance(cwd_raw, str) and cwd_raw else None
+    proposal_path = (
+        artifact_dir / "learning_proposal.md" if artifact_dir is not None else None
+    )
+    cur_proposal_sha = _file_sha256(proposal_path)
+    new_lines = lines[last_line:]
+
+    if payload.get("continuationActive") or payload.get("continuation_active"):
+        if pending_proposal is not None:
+            wrote_proposal = (
+                bool(cur_proposal_sha)
+                and cur_proposal_sha != pending_proposal["baseline_proposal_sha"]
+            ) or _slice_wrote_learning_proposal(new_lines, base_dir)
+            if wrote_proposal or int(pending_proposal["retries"]) >= 1:
+                learned_plans[pending_proposal["plan_key"]] = pending_proposal["digest"]
+                _write_state(state_path, len(lines), learned_plans, None)
+                return {}
+            updated_pending = dict(pending_proposal)
+            updated_pending["retries"] = int(pending_proposal["retries"]) + 1
+            _write_state(state_path, len(lines), learned_plans, updated_pending)
+            reason = (
+                f"Post-task /learn hard gate: completed plan '{pending_proposal['label']}' "
+                f"recorded {pending_proposal['error_count']} error(s) in `## Errors Encountered`, "
+                "but `learning_proposal.md` was not created/updated. Do NOT fast-exit — write/update "
+                "`learning_proposal.md` (RequestFeedback=true) evaluating Skill (`skills/<name>/SKILL.md`), "
+                "Rule, or Hook extraction for those errors before stopping."
+            )
+            return {"decision": "continue", "reason": reason}
+        _write_state(state_path, len(lines), learned_plans, None)
+        return {}
 
     last_user_input = payload.get("lastUserInput")
     user_text = last_user_input if isinstance(last_user_input, str) else ""
@@ -477,11 +626,11 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     ) = _analyze_slice(new_lines, user_text, base_dir, artifact_dir)
 
     if already_learned:
-        _write_state(state_path, len(lines), learned_plans)
+        _write_state(state_path, len(lines), learned_plans, None)
         return {}
 
     discovered_plans = _discover_plans(payload, touched_plans)
-    completed_unlearned: list[tuple[Path, str, str]] = []
+    completed_unlearned: list[tuple[Path, str, str, int]] = []
     has_incomplete_plan = False
 
     for plan_path in discovered_plans:
@@ -501,15 +650,41 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
             except OSError:
                 plan_key = str(plan_path)
             if learned_plans.get(plan_key) != digest:
-                completed_unlearned.append((plan_path, plan_key, digest))
+                completed_unlearned.append(
+                    (plan_path, plan_key, digest, _count_plan_errors(text))
+                )
         else:
             has_incomplete_plan = True
 
     if completed_unlearned:
-        for _, plan_key, digest in completed_unlearned:
+        labels = ", ".join(_plan_label(p) for p, _, _, _ in completed_unlearned)
+        total_errors = sum(err for _, _, _, err in completed_unlearned)
+        if total_errors > 0 and proposal_path is not None:
+            first_path, first_key, first_digest, _ = completed_unlearned[0]
+            for _, pk, dig, _ in completed_unlearned[1:]:
+                learned_plans[pk] = dig
+            next_pending = {
+                "plan_key": first_key,
+                "label": _plan_label(first_path),
+                "digest": first_digest,
+                "error_count": total_errors,
+                "baseline_proposal_sha": cur_proposal_sha,
+                "retries": 0,
+            }
+            _write_state(state_path, len(lines), learned_plans, next_pending)
+            reason = (
+                f"Automated post-task /learn check: planning-with-files task completed ({labels}) "
+                f"with {total_errors} logged error(s) in `## Errors Encountered`. "
+                + BASE_TRIGGER_SUFFIX
+                + " Review the completed `task_plan.md` (`Errors Encountered`, `Decisions Made`), "
+                "`findings.md`, and `progress.md` alongside user messages — fast-exit is blocked until "
+                "`learning_proposal.md` evaluates Skill/Rule/Hook extraction."
+            )
+            return {"decision": "continue", "reason": reason}
+
+        for _, plan_key, digest, _ in completed_unlearned:
             learned_plans[plan_key] = digest
-        _write_state(state_path, len(lines), learned_plans)
-        labels = ", ".join(_plan_label(p) for p, _, _ in completed_unlearned)
+        _write_state(state_path, len(lines), learned_plans, None)
         reason = (
             f"Automated post-task /learn check: planning-with-files task completed ({labels}). "
             + BASE_TRIGGER_SUFFIX
@@ -517,7 +692,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         )
         return {"decision": "continue", "reason": reason}
 
-    _write_state(state_path, len(lines), learned_plans)
+    _write_state(state_path, len(lines), learned_plans, None)
 
     if closed_worktree_slug:
         reason = (
@@ -997,6 +1172,149 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 "reason", ""
             ), f"case 8 failed: {res8}"
             checks.append("ship_cleanup_generalized_path")
+
+            # 9. Plan with Errors Encountered blocks premature fast-exit once via hard gate
+            ws9 = root / "ws9"
+            pdir9 = ws9 / ".planning" / "err9"
+            pdir9.mkdir(parents=True)
+            (pdir9 / "task_plan.md").write_text(
+                "# Err9\n\n### Phase 1: Fix\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| Bug A | Fixed A |\n| Bug B | Fixed B |\n",
+                encoding="utf-8",
+            )
+            t9 = root / "t9.jsonl"
+            art9 = root / "art9"
+            art9.mkdir()
+            _write_jsonl(
+                t9,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    }
+                ],
+            )
+            p9 = {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t9),
+                "artifactDirectoryPath": str(art9),
+                "cwd": str(ws9),
+            }
+            res9a = _run_hook(p9)
+            assert res9a.get(
+                "decision"
+            ) == "continue" and "2 logged error(s)" in res9a.get("reason", ""), (
+                f"case 9a failed: {res9a}"
+            )
+            _write_jsonl(
+                t9,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    },
+                    {
+                        "type": "SYSTEM_MESSAGE",
+                        "content": "Automated post-task /learn check",
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [],
+                        "content": "No updates needed.",
+                    },
+                ],
+            )
+            res9b = _run_hook(dict(p9, continuationActive=True))
+            assert res9b.get("decision") == "continue" and "hard gate" in res9b.get(
+                "reason", ""
+            ), f"case 9b failed: {res9b}"
+            res9c = _run_hook(dict(p9, continuationActive=True))
+            assert res9c == {}, f"case 9c bounded retry failed: {res9c}"
+            checks.append("errors_encountered_hard_gate")
+
+            # 10. Updating learning_proposal.md satisfies hard gate and marks plan learned
+            ws10 = root / "ws10"
+            pdir10 = ws10 / ".planning" / "err10"
+            pdir10.mkdir(parents=True)
+            (pdir10 / "task_plan.md").write_text(
+                "# Err10\n\n### Phase 1: Fix\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| Bug C | Fixed C |\n",
+                encoding="utf-8",
+            )
+            t10 = root / "t10.jsonl"
+            art10 = root / "art10"
+            art10.mkdir()
+            _write_jsonl(
+                t10,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    }
+                ],
+            )
+            p10 = {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t10),
+                "artifactDirectoryPath": str(art10),
+                "cwd": str(ws10),
+            }
+            res10a = _run_hook(p10)
+            assert res10a.get("decision") == "continue", f"case 10a failed: {res10a}"
+            (art10 / "learning_proposal.md").write_text(
+                "# Proposal\n\n1. Skill added.\n", encoding="utf-8"
+            )
+            res10b = _run_hook(dict(p10, continuationActive=True))
+            assert res10b == {}, f"case 10b failed: {res10b}"
+            _write_jsonl(
+                t10,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Next</USER_REQUEST>",
+                    }
+                ],
+            )
+            assert _run_hook(p10) == {}, "case 10c should keep plan deduped"
+            checks.append("proposal_update_clears_hard_gate")
+
+            # 11. Placeholder 'None yet' under Errors Encountered permits fast-exit
+            ws11 = root / "ws11"
+            pdir11 = ws11 / ".planning" / "clean11"
+            pdir11.mkdir(parents=True)
+            (pdir11 / "task_plan.md").write_text(
+                "# Clean11\n\n### Phase 1: Do\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| None yet | - |\n",
+                encoding="utf-8",
+            )
+            t11 = root / "t11.jsonl"
+            art11 = root / "art11"
+            art11.mkdir()
+            _write_jsonl(
+                t11,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    }
+                ],
+            )
+            p11 = {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t11),
+                "artifactDirectoryPath": str(art11),
+                "cwd": str(ws11),
+            }
+            res11a = _run_hook(p11)
+            assert res11a.get("decision") == "continue", f"case 11a failed: {res11a}"
+            assert _run_hook(dict(p11, continuationActive=True)) == {}
+            checks.append("zero_error_placeholder_allows_fast_exit")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)
