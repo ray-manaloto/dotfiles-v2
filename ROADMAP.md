@@ -53,9 +53,10 @@
   `5b5513a`), `repotools trust` worktree wiring, and ordered 2-stage
   post-review verification gate (`2eb3410`).
 - [ ] **Follow-up (Herdr rolling restarts & issue-mapped PWF workflow):**
-  - [ ] [#4](https://github.com/ray-manaloto/dotfiles-v2/issues/4) Cut over
+  - [x] [#4](https://github.com/ray-manaloto/dotfiles-v2/issues/4) Cut over
     global `roll:*` `mise` tasks and Herdr skills from legacy `dotfiles` to
-    `dotfiles-v2` (`PLAN_ID` / worktree slug: `herdr-roll-global-cutover`).
+    `dotfiles-v2` (`PLAN_ID` / worktree slug: `herdr-roll-global-cutover`;
+    resolved via `#9` on `main` at `0c24382`).
   - [ ] [#5](https://github.com/ray-manaloto/dotfiles-v2/issues/5) Fix
     `OpenCodeAdapter` session-ID resolution for `opencode --standalone` tabs
     without `-s` (`PLAN_ID` / worktree slug: `herdr-roll-opencode-sid`).
@@ -67,9 +68,10 @@
     nanosecond-timestamped verification evidence, process `lstart`/hook-load
     proof to `roll:verify`, and dialog triage docs (`PLAN_ID` / worktree slug:
     `herdr-roll-verify-proof`; blocked by `#4`).
-  - [ ] [#6](https://github.com/ray-manaloto/dotfiles-v2/issues/6) Enforce
+  - [x] [#6](https://github.com/ray-manaloto/dotfiles-v2/issues/6) Enforce
     GitHub issue -> PWF `PLAN_ID` -> git worktree mapping and nanosecond
-    verification evidence (`PLAN_ID` / worktree slug: `worktree-issue-pwf-map`).
+    verification evidence (`PLAN_ID` / worktree slug: `worktree-issue-pwf-map`;
+    shipped on `main` at `0c24382`).
 - [ ] **Follow-up (Open GitHub PR & credit-backed coding-agent runners):**
   - [ ] [PR #1](https://github.com/ray-manaloto/dotfiles-v2/pull/1) Add manual
     OpenAI PR review (`automation/manual-openai-pr-review`).
@@ -79,14 +81,16 @@
     self-run Claude coding agent using linked API credits.
 - [ ] **Follow-up (Option A cutover, `@vercel/board@0.55.0`, schema-first
   Python & self-healing `/learn`):**
-  - [ ] [#9](https://github.com/ray-manaloto/dotfiles-v2/issues/9) Execute
+  - [x] [#9](https://github.com/ray-manaloto/dotfiles-v2/issues/9) Execute
     zero-debt Option A Mac host cutover (6 active repos) and upgrade
     `@vercel/board` to `0.55.0` (`PLAN_ID` / worktree slug:
-    `option-a-cutover-and-board-055`; also resolves `#4`).
-  - [ ] [#10](https://github.com/ray-manaloto/dotfiles-v2/issues/10) Adopt
+    `option-a-cutover-and-board-055`; also resolves `#4`; shipped on `main` at
+    `0c24382`).
+  - [x] [#10](https://github.com/ray-manaloto/dotfiles-v2/issues/10) Adopt
     aggregated `pyproject.toml` + `[deps.uv]`, schema-first
     `datamodel-codegen`, dual-sink `structlog`, and strict `hk`/doctor
-    prevention gates (`PLAN_ID` / worktree slug: `py-schema-deps-and-gates`).
+    prevention gates (`PLAN_ID` / worktree slug: `py-schema-deps-and-gates`;
+    shipped on `main` at `0c24382`).
   - [ ] [#12](https://github.com/ray-manaloto/dotfiles-v2/issues/12) Build
     self-optimizing/self-healing `agy-learn` ledger, fix 7 Antigravity hook
     bugs, and apply Proposal 8 (`PLAN_ID` / worktree slug:
