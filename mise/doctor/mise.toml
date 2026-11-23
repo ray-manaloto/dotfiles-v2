@@ -3,17 +3,17 @@
 
 [doctor.checks.env-pc]
 description = "pc Ubuntu 26.10 amd64 container passes live doctor"
-run = "../../tasks/env/doctor --target pc"
+run = "mise -C ../.. run env:doctor --target pc"
 timeout = "30s"
 
 [doctor.checks.env-mac]
 description = "Mac Docker Desktop Ubuntu 26.10 arm64 container passes live doctor"
 os = "macos"
-run = "../../tasks/env/doctor --target mac"
+run = "mise -C ../.. run env:doctor --target mac"
 timeout = "30s"
 
 [doctor.checks.env-vm]
 description = "Mac Tart dotfiles-v2-macos VM passes live doctor"
 os = "macos"
-run = "../../tasks/env/doctor --target vm"
+run = "mise -C ../.. run env:doctor --target vm"
 timeout = "30s"
