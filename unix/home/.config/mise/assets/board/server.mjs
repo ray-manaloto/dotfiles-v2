@@ -54,6 +54,19 @@ function resolveVbBinary() {
 }
 
 function findVercelBoardPkgRoot() {
+  const dataDir = process.env.MISE_DATA_DIR || join(homedir(), ".local", "share", "mise");
+  const direct = join(
+    dataDir,
+    "installs",
+    "npm-vercel-board",
+    "latest",
+    "node_modules",
+    "@vercel",
+    "board",
+  );
+  if (existsSync(join(direct, "package.json"))) {
+    return realpathSync(direct);
+  }
   let cur = dirname(realpathSync(resolveVbBinary()));
   for (let i = 0; i < 10; i += 1) {
     const pkgFile = join(cur, "package.json");
