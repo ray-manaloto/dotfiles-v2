@@ -48,6 +48,11 @@ files before explicit user approval.
   progressive-disclosure Skill (`skills/<name>/SKILL.md`) for repeatable
   workflows, debugging checklists, and tool/environment gotchas rather than
   appending runbook details to always-on `AGENTS.md` or rule files.
+- **`SKILL.md` lint preflight (`agnix` + `rumdl`):** When drafting `SKILL.md`
+  files, avoid hardcoded home-directory path prefixes in prose or examples (use
+  `$HOME/...` or `~/` instead to satisfy `agnix` `XP-SK-002`), keep blank lines
+  around fenced blocks and mixed list items (`rumdl` `MD031`/`MD076`), and run
+  `rumdl fmt` + `agnix --strict` on new skills.
 - **Update Existing (Prefer)**: update an active rule, skill, or workflow doc
   when it was outdated, missed an edge case, or diverged from the verified fix.
 - **Classify**:
