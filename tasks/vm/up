@@ -154,10 +154,15 @@ fi
 if [[ ! -x "${HOME}/.opencode/bin/opencode" ]] || [[ "$("${HOME}/.opencode/bin/opencode" --version </dev/null | awk '{print $NF}')" == 1.* ]]; then
   PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path
 fi
-path_line='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"'
+old_path_line='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"'
+path_line='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"'
 env_line='[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"'
 for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc"; do
   touch "${rc}"
+  if grep -Fqx "${old_path_line}" "${rc}"; then
+    grep -Fvx "${old_path_line}" "${rc}" >"${rc}.tmp" || true
+    mv "${rc}.tmp" "${rc}"
+  fi
   if ! grep -Fqx "${path_line}" "${rc}"; then
     printf '%s\n' "${path_line}" >>"${rc}"
   fi

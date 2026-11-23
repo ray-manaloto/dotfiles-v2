@@ -198,18 +198,18 @@ check_vm() {
 	fi
 
 	ts_dest="$(resolve_ts_dest "${want_ts_host}")"
-	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "admin@${ts_dest}" 'zsh -lc "uname -m && id -un && command -v mise >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null"' 2>/dev/null)"; then
+	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "admin@${ts_dest}" 'zsh -lc "uname -m && id -un && command -v mise && command -v claude >/dev/null && command -v opencode >/dev/null"' 2>/dev/null)"; then
 		fail_row "vm" "Tailscale SSH to admin@${ts_dest} failed"
 		return
 	fi
-	if [[ "$(printf '%s\n' "${ssh_out}" | tr '\n' ' ')" != "arm64 admin "* ]]; then
-		fail_row "vm" "Tailscale SSH unexpected identity/arch: ${ssh_out}"
+	if [[ "$(printf '%s\n' "${ssh_out}" | tr '\n' ' ')" != "arm64 admin /usr/local/bin/mise"* ]]; then
+		fail_row "vm" "Tailscale SSH unexpected identity/arch/mise: ${ssh_out}"
 		return
 	fi
 
 	if ! out="$(
 		tart exec -i "${vm_name}" env SMOKE="${smoke}" /bin/bash -euo pipefail <<'GUEST'
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 sm="$(uname -sm)"
 test "${sm}" = "Darwin arm64"
