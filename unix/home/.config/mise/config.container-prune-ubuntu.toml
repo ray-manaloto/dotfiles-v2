@@ -1,9 +1,9 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # Remove stock ubuntu (1000:1000) before config.container.toml creates dev (1000:1000).
+# Ubuntu 26.10 sets USERGROUPS_ENAB yes in /etc/login.defs, so `userdel --remove ubuntu`
+# deletes the eponymous ubuntu group automatically; also declaring [bootstrap.groups.ubuntu]
+# state = "absent" causes mise's pre-planned `groupdel ubuntu` to exit 6.
 
 [bootstrap.users.ubuntu]
 state = "absent"
 remove_home = true
-
-[bootstrap.groups.ubuntu]
-state = "absent"
