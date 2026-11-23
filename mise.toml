@@ -127,6 +127,9 @@ run = '''
 test -f unix/home/.zcode/cli/setting.json
 python3 - <<'PY'
 import json
+import os
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -135,9 +138,19 @@ cfg = tomllib.loads(Path("unix/home/.config/mise/config.toml").read_text(encodin
 dotfiles = cfg.get("dotfiles", {})
 for key in ("~/.zcode/cli/setting.json", "~/.zcode/AGENTS.md"):
     assert key in dotfiles, f"Missing {key} in unix/home/.config/mise/config.toml [dotfiles]"
+if shutil.which("zcode"):
+    env = dict(os.environ)
+    env["ZCODE_CLI_SETTINGS_FILE"] = str(Path("unix/home/.zcode/cli/setting.json").resolve())
+    out = subprocess.check_output(
+        ["zcode", "doctor", "--json"],
+        stdin=subprocess.DEVNULL,
+        env=env,
+        text=True,
+    )
+    zcfg = json.loads(out).get("configuration", {})
+    assert zcfg.get("ok") is True, zcfg
+    assert zcfg.get("user", {}).get("status") == "loaded", zcfg
+    assert zcfg.get("diagnostics") == [], zcfg
 PY
-if command -v zcode >/dev/null 2>&1; then
-  ZCODE_CLI_SETTINGS_FILE="$PWD/unix/home/.zcode/cli/setting.json" zcode doctor --json </dev/null | jq -e '.configuration.ok == true and .configuration.user.status == "loaded" and (.configuration.diagnostics | length == 0)' >/dev/null
-fi
 '''
 hint = "Keep unix/home/.zcode/cli/setting.json valid, registered in [dotfiles] with ~/.zcode/AGENTS.md, and passing zcode doctor --json."

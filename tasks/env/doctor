@@ -171,7 +171,7 @@ test "$(stat -c '%a' "${ZCODE_CREDENTIAL_SECRET_FILE}")" = "600"
 test "$(wc -c < "${ZCODE_CREDENTIAL_SECRET_FILE}")" -ge 32
 zver="$(zcode --version </dev/null | awk '$1 == "zcode-app-cli" {print $2}')"
 test -n "${zver}"
-zcode doctor --json </dev/null | jq -e '.configuration.ok == true and .configuration.user.status == "loaded" and (.configuration.diagnostics | length == 0)' >/dev/null
+zcode doctor --json </dev/null | python3 -c 'import json, sys; cfg = json.load(sys.stdin).get("configuration", {}); assert cfg.get("ok") is True and cfg.get("user", {}).get("status") == "loaded" and cfg.get("diagnostics") == []'
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
 	sout="$(claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null)"
