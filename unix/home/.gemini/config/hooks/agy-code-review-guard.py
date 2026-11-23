@@ -60,6 +60,36 @@ NON_VERIFY_GIT_SUBS = frozenset(
         "worktree",
     }
 )
+NON_VERIFY_UTILS = frozenset(
+    {
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "rg",
+        "grep",
+        "find",
+        "which",
+        "pwd",
+        "echo",
+        "printf",
+        "mkdir",
+        "rm",
+        "cp",
+        "mv",
+        "chmod",
+        "touch",
+        "ln",
+        "readlink",
+        "stat",
+        "wc",
+        "sort",
+        "uniq",
+        "true",
+        "false",
+        "sleep",
+    }
+)
 COMPLETION_CLAIM_RE = re.compile(
     r"\b(?:done|completed|complete|fixed|shipped|merged|pushed|implemented|resolved|ready|all\s+checks\s+passed|passed\s+all)\b",
     re.IGNORECASE,
@@ -70,7 +100,7 @@ BLOCKER_OR_QUESTION_RE = re.compile(
 )
 LEARN_FAST_EXIT_PREFIX = "post-task /learn: no reusable customization updates needed."
 PROOF_METRIC_RE = re.compile(
-    r"\b(?:\d+/\d+|exit(?:\s+code)?\s+0|0\s+(?:failed|errors?|warnings?|diagnostics?)|old_pid|new_pid|pid\s+\d+|result[=:]\s*\"?ok)\b",
+    r"\b(?:\d+/\d+\s+(?:passed|pass|passing|checks?|tests?|ok|green|succeeded)|exit(?:\s+code)?\s+0|0\s+(?:failed|errors?|warnings?|diagnostics?)|old_pid|new_pid|pid\s+\d+|result[=:]\s*\"?ok)\b",
     re.IGNORECASE,
 )
 PROOF_TOOL_RE = re.compile(
@@ -97,6 +127,41 @@ def _deny(reason: str) -> dict[str, Any]:
     return {"decision": "deny", "reason": reason}
 
 
+def _strip_inline_code(line: str) -> str:
+    out: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        if line[i] == "`":
+            j = i
+            while j < n and line[j] == "`":
+                j += 1
+            tick_len = j - i
+            pos = j
+            close_end = -1
+            while pos < n:
+                if line[pos] == "`":
+                    k = pos
+                    while k < n and line[k] == "`":
+                        k += 1
+                    if k - pos == tick_len:
+                        close_end = k
+                        break
+                    pos = k
+                else:
+                    pos += 1
+            if close_end != -1:
+                out.append(" ")
+                i = close_end
+                continue
+            out.append(line[i:j])
+            i = j
+        else:
+            out.append(line[i])
+            i += 1
+    return "".join(out)
+
+
 def _strip_fenced_code(text: str) -> str:
     kept: list[str] = []
     fence_char = ""
@@ -120,7 +185,7 @@ def _strip_fenced_code(text: str) -> str:
                 fence_len = 0
                 continue
         if not fence_char:
-            kept.append(line)
+            kept.append(_strip_inline_code(line))
     return "\n".join(kept)
 
 
@@ -428,6 +493,11 @@ def _verify_receipt(
         )
         raise RuntimeError(msg)
 
+    initial_receipts = _load_receipts(common_dir)
+    initial_recorded_at = str(
+        (initial_receipts.get(commit_sha) or {}).get("recorded_at", "")
+    )
+
     cmd_results: list[dict[str, Any]] = []
     for cmd in clean_runs:
         try:
@@ -457,8 +527,26 @@ def _verify_receipt(
             }
         )
 
+    rc_st_after, dirty_after = _git_output(
+        repo_root, "status", "--porcelain", "--untracked-files=no"
+    )
+    if rc_st_after != 0 or dirty_after:
+        msg = f"Verification modified tracked files in {repo_root}; working tree must stay clean after --run."
+        raise RuntimeError(msg)
+
     receipts = _load_receipts(common_dir)
-    entry = dict(receipts[commit_sha])
+    cur_entry = receipts.get(commit_sha)
+    if (
+        not cur_entry
+        or cur_entry.get("tree_sha") != tree_sha
+        or str(cur_entry.get("recorded_at", "")) != initial_recorded_at
+    ):
+        msg = (
+            f"Stage 1 review receipt for {commit_sha[:7]} changed while verification ran; "
+            "re-run --verify against the updated review receipt."
+        )
+        raise RuntimeError(msg)
+    entry = dict(cur_entry)
     now_iso = datetime.now(UTC).isoformat(timespec="seconds")
     recorded_at = str(entry.get("recorded_at", ""))
     verified_at = max(now_iso, recorded_at)
@@ -728,10 +816,17 @@ def _check_command(command: str, initial_cwd: Path | None = None) -> dict[str, A
     return _allow()
 
 
-def _is_non_doc_repo_edit(target: str, artifact_dir: Path | None) -> bool:
+def _resolve_target_path(target: str, base_cwd: Path) -> Path:
+    raw = Path(os.path.expanduser(target))
+    return (raw if raw.is_absolute() else (base_cwd / raw)).resolve(strict=False)
+
+
+def _is_non_doc_repo_edit(
+    target: str, artifact_dir: Path | None, base_cwd: Path
+) -> bool:
     if not target:
         return False
-    p = Path(os.path.expanduser(target))
+    p = _resolve_target_path(target, base_cwd)
     if p.suffix.lower() in DOC_SUFFIXES:
         return False
     norm = str(p).replace("\\", "/")
@@ -755,7 +850,15 @@ def _is_verification_command(command: str) -> bool:
         if not tokens:
             continue
         exe = Path(tokens[0]).name
-        if exe == "cd":
+        if exe == "cd" or exe in NON_VERIFY_UTILS:
+            continue
+        if (
+            exe in {"python", "python3"}
+            and any(Path(tok).name == "agy-code-review-guard.py" for tok in tokens[1:])
+            and "--verify" not in tokens
+            and "--self-check" not in tokens
+        ):
+            # Recording Stage 1 review or running hooks-json lint alone is not post-edit verification.
             continue
         if exe == "git":
             idx = 1
@@ -779,9 +882,36 @@ def _has_observed_proof_cues(text: str) -> bool:
     stripped = _strip_fenced_code(text)
     if PROOF_METRIC_RE.search(stripped):
         return True
-    has_tool = bool(PROOF_TOOL_RE.search(stripped))
+    has_tool = bool(PROOF_TOOL_RE.search(_strip_inline_code_keep_text(text)))
     has_outcome = bool(PROOF_OUTCOME_RE.search(stripped))
     return has_tool and has_outcome
+
+
+def _strip_inline_code_keep_text(text: str) -> str:
+    kept: list[str] = []
+    fence_char = ""
+    fence_len = 0
+    for line in text.splitlines():
+        match = FENCE_RE.match(line.rstrip("\r"))
+        if match:
+            marker_run, rest = match.group(1), match.group(2)
+            marker = marker_run[0]
+            if not fence_char:
+                if not (marker == "`" and "`" in rest):
+                    fence_char = marker
+                    fence_len = len(marker_run)
+                    continue
+            elif (
+                marker == fence_char
+                and len(marker_run) >= fence_len
+                and rest.strip(" \t") == ""
+            ):
+                fence_char = ""
+                fence_len = 0
+                continue
+        if not fence_char:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def _looks_like_completion_claim(text: str) -> bool:
@@ -790,9 +920,24 @@ def _looks_like_completion_claim(text: str) -> bool:
         return False
     if stripped.lower().startswith(LEARN_FAST_EXIT_PREFIX):
         return False
-    if not COMPLETION_CLAIM_RE.search(stripped):
+    if BLOCKER_OR_QUESTION_RE.search(stripped) or stripped.endswith("?"):
         return False
-    return not (stripped.endswith("?") and BLOCKER_OR_QUESTION_RE.search(stripped))
+    return bool(COMPLETION_CLAIM_RE.search(stripped))
+
+
+def _unquote_truncated(val: Any) -> str:
+    if not isinstance(val, str):
+        return ""
+    if len(val) >= 2 and val.startswith('"') and val.endswith('"'):
+        try:
+            decoded = json.loads(val)
+            if isinstance(decoded, str):
+                return decoded
+        except json.JSONDecodeError:
+            pass
+    if val.startswith('"') and not val.endswith('"'):
+        return val[1:]
+    return val
 
 
 def _read_stop_state(path: Path) -> _VerifyStopState:
@@ -830,21 +975,32 @@ def _write_stop_state(path: Path, state: _VerifyStopState) -> None:
             Path(tmp_name).unlink(missing_ok=True)
 
 
-def _load_full_content(transcript_path: Path, line_idx: int) -> str | None:
+def _load_full_records(
+    transcript_path: Path, needed_indices: set[int]
+) -> dict[int, dict[str, Any]]:
+    if not needed_indices:
+        return {}
     full_path = transcript_path.with_name("transcript_full.jsonl")
     if not full_path.is_file():
-        return None
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    max_idx = max(needed_indices)
     try:
         with full_path.open("r", encoding="utf-8", errors="replace") as handle:
             for idx, raw in enumerate(handle):
-                if idx == line_idx:
+                if idx > max_idx:
+                    break
+                if idx not in needed_indices:
+                    continue
+                try:
                     obj = json.loads(raw)
-                    if isinstance(obj, dict) and isinstance(obj.get("content"), str):
-                        return obj["content"]
-                    return None
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-    return None
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    out[idx] = obj
+    except OSError:
+        return {}
+    return out
 
 
 def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
@@ -873,6 +1029,12 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(artifact_raw, str) and artifact_raw.strip()
         else None
     )
+    payload_cwd_raw = payload.get("cwd")
+    base_cwd = (
+        Path(os.path.expanduser(payload_cwd_raw)).resolve(strict=False)
+        if isinstance(payload_cwd_raw, str) and payload_cwd_raw.strip()
+        else Path.cwd().resolve(strict=False)
+    )
 
     last_user_idx = -1
     entries: list[tuple[int, dict[str, Any]]] = []
@@ -889,33 +1051,33 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
             last_user_idx = idx
             entries = []
             continue
-        if last_user_idx != -1 or idx == len(lines) - 1:
-            entries.append((idx, obj))
+        entries.append((idx, obj))
 
     if not entries:
         return {}
 
-    last_resp_idx = -1
-    last_resp_step = -1
-    last_resp_text = ""
+    needed_full = {
+        line_idx
+        for line_idx, obj in entries
+        if isinstance(obj.get("truncated_fields"), list)
+        and (
+            "tool_calls" in obj["truncated_fields"]
+            or "content" in obj["truncated_fields"]
+        )
+    }
+    full_records = _load_full_records(transcript_path, needed_full)
+
+    final_planner: tuple[int, dict[str, Any]] | None = None
     last_edit_pos: tuple[int, int] | None = None
     last_verify_pos: tuple[int, int] | None = None
     touched_repos: set[Path] = set()
     committed_non_doc_repos: set[Path] = set()
 
-    for line_idx, obj in entries:
+    for line_idx, raw_obj in entries:
+        obj = full_records.get(line_idx, raw_obj)
         if obj.get("type") != "PLANNER_RESPONSE":
             continue
-        content = obj.get("content")
-        if isinstance(content, str) and content.strip():
-            last_resp_idx = line_idx
-            step_val = obj.get("step_index")
-            last_resp_step = (
-                step_val
-                if isinstance(step_val, int) and not isinstance(step_val, bool)
-                else line_idx
-            )
-            last_resp_text = content
+        final_planner = (line_idx, obj)
         tool_calls = obj.get("tool_calls") or []
         if not isinstance(tool_calls, list):
             continue
@@ -928,26 +1090,39 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
             pos = (line_idx, tc_idx)
             if tname in EDIT_TOOLS:
-                target = str(args.get("Path") or args.get("TargetFile") or "")
-                if _is_non_doc_repo_edit(target, artifact_dir):
+                target = _unquote_truncated(
+                    args.get("Path") or args.get("TargetFile") or ""
+                )
+                if _is_non_doc_repo_edit(target, artifact_dir, base_cwd):
                     last_edit_pos = pos
-                    resolved = _resolve_repo_dirs(Path(os.path.expanduser(target)))
+                    resolved = _resolve_repo_dirs(
+                        _resolve_target_path(target, base_cwd)
+                    )
                     if resolved is not None:
                         touched_repos.add(resolved[0])
             elif tname == "run_command":
-                cmd = args.get("CommandLine")
-                if not isinstance(cmd, str) or not cmd.strip():
+                cmd = _unquote_truncated(args.get("CommandLine"))
+                if not cmd.strip():
                     continue
-                cwd_str = args.get("Cwd") or payload.get("cwd")
+                cwd_str = _unquote_truncated(args.get("Cwd")) or ""
                 cmd_cwd = (
-                    Path(os.path.expanduser(cwd_str))
-                    if isinstance(cwd_str, str) and cwd_str.strip()
-                    else None
+                    _resolve_target_path(cwd_str, base_cwd)
+                    if cwd_str.strip()
+                    else base_cwd
                 )
+                seg_cwd = cmd_cwd
                 for seg in _split_shell_segments(cmd):
-                    parsed = _parse_git_segment(
-                        _strip_env_prefix(seg), cmd_cwd or Path.cwd()
-                    )
+                    tokens = _strip_env_prefix(seg)
+                    if not tokens:
+                        continue
+                    if (
+                        tokens[0] == "cd"
+                        and len(tokens) >= 2
+                        and not tokens[1].startswith("-")
+                    ):
+                        seg_cwd = _resolve_target_path(tokens[1], seg_cwd)
+                        continue
+                    parsed = _parse_git_segment(tokens, seg_cwd)
                     if parsed and parsed[4]:
                         resolved = _resolve_repo_dirs(parsed[1])
                         if resolved is not None:
@@ -957,12 +1132,21 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
 
     if last_edit_pos is None and not committed_non_doc_repos:
         return {}
-    if last_resp_idx == -1:
+    if final_planner is None:
         return {}
-    if last_resp_text:
-        full_text = _load_full_content(transcript_path, last_resp_idx)
-        if full_text is not None:
-            last_resp_text = full_text
+    _, final_obj = final_planner
+    final_tools = final_obj.get("tool_calls") or []
+    if isinstance(final_tools, list) and final_tools:
+        return {}
+    last_resp_text = final_obj.get("content")
+    if not isinstance(last_resp_text, str) or not last_resp_text.strip():
+        return {}
+    step_val = final_obj.get("step_index")
+    last_resp_step = (
+        step_val
+        if isinstance(step_val, int) and not isinstance(step_val, bool)
+        else final_planner[0]
+    )
 
     if not _looks_like_completion_claim(last_resp_text):
         return {}
@@ -1377,41 +1561,117 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             evidence="",
             proof="Observed python3 app.py output v2 exit 0",
         )
+        full_transcript = transcript.with_name("transcript_full.jsonl")
+        # Include truncated_fields hydration test + relative path + real final tool_calls=[]
+        full_records_b = [
+            {"type": "USER_INPUT", "content": "Fix app.py v2"},
+            {
+                "type": "PLANNER_RESPONSE",
+                "step_index": 20,
+                "tool_calls": [
+                    {
+                        "name": "edit_file",
+                        "args": {"Path": "app.py"},
+                    }
+                ],
+                "content": "Updated app.py.",
+            },
+            {
+                "type": "PLANNER_RESPONSE",
+                "step_index": 21,
+                "tool_calls": [
+                    {
+                        "name": "run_command",
+                        "args": {
+                            "CommandLine": "python3 app.py",
+                            "Cwd": ".",
+                        },
+                    }
+                ],
+                "content": "Ran verification.",
+            },
+            {
+                "type": "PLANNER_RESPONSE",
+                "step_index": 22,
+                "tool_calls": [],
+                "content": "Done! Fixed app.py and verified with `python3 app.py` (passed, exit code 0, output v2).",
+            },
+        ]
+        _write_transcript(full_transcript, full_records_b)
+        compact_records_b = [
+            full_records_b[0],
+            {
+                **full_records_b[1],
+                "tool_calls": [{"name": "edit_file", "args": {"Path": '"app.py"'}}],
+                "truncated_fields": ["tool_calls"],
+            },
+            full_records_b[2],
+            full_records_b[3],
+        ]
+        _write_transcript(transcript, compact_records_b)
+        stop_payload_with_cwd = {**stop_payload, "cwd": str(repo)}
+        assert _run_hook(stop_payload_with_cwd, event="stop") == {}
+        checks.append("stop_hook_allows_verified_completion_with_proof")
+
+        # Case C: Non-verification ls / --record after edit & date 11/23 still blocks, whereas blocker/question skips!
         _write_transcript(
             transcript,
             [
-                {"type": "USER_INPUT", "content": "Fix app.py v2"},
+                {"type": "USER_INPUT", "content": "Edit again"},
                 {
                     "type": "PLANNER_RESPONSE",
-                    "step_index": 20,
-                    "tool_calls": [
-                        {
-                            "name": "edit_file",
-                            "args": {"Path": str(repo / "app.py")},
-                        }
-                    ],
-                    "content": "Updated app.py.",
+                    "step_index": 25,
+                    "tool_calls": [{"name": "edit_file", "args": {"Path": "app.py"}}],
+                    "content": "Edited.",
                 },
                 {
                     "type": "PLANNER_RESPONSE",
-                    "step_index": 21,
+                    "step_index": 26,
                     "tool_calls": [
                         {
                             "name": "run_command",
                             "args": {
-                                "CommandLine": "python3 app.py",
+                                "CommandLine": "ls -la && python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --summary x",
                                 "Cwd": str(repo),
                             },
                         }
                     ],
-                    "content": "Done! Fixed app.py and verified with `python3 app.py` (passed, exit code 0, output v2).",
+                    "content": "Listed files.",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 27,
+                    "tool_calls": [],
+                    "content": "Done! Fixed on 11/23 cleanly.",
                 },
             ],
         )
-        assert _run_hook(stop_payload, event="stop") == {}
-        checks.append("stop_hook_allows_verified_completion_with_proof")
+        assert (
+            _run_hook(stop_payload_with_cwd, event="stop").get("decision") == "continue"
+        )
+        _write_transcript(
+            transcript,
+            [
+                {"type": "USER_INPUT", "content": "Report blocker"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 28,
+                    "tool_calls": [{"name": "edit_file", "args": {"Path": "app.py"}}],
+                    "content": "Edited.",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 29,
+                    "tool_calls": [],
+                    "content": "I implemented the draft in app.py, but pytest failed and I am blocked.",
+                },
+            ],
+        )
+        assert _run_hook(stop_payload_with_cwd, event="stop") == {}
+        checks.append("stop_hook_rejects_ls_record_and_dates_allows_blockers")
 
-        # Case C: Read-only / docs-only / post-task fast-exit -> allowed
+        # Case D: Read-only / docs-only / post-task fast-exit -> allowed
+        full_transcript.unlink(missing_ok=True)
         _write_transcript(
             transcript,
             [
