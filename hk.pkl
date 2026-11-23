@@ -9,7 +9,11 @@ exclude =
     "unix/home/.config/mise/locks/**",
     "unix/home/.config/mise/mise.lock",
     "mise.lock",
+    "uv.lock",
   )
+
+// Clear git's repository-local hook variables before running scratch git fixtures/tests.
+local const cleanGitEnv = #"unset $(git rev-parse --local-env-vars);"#
 
 // Mise owns formatting for every mise config; tombi lint still validates schemas.
 local const miseConfigGlobs =
@@ -20,7 +24,7 @@ local const miseConfigGlobs =
     "mise/**/mise.*.toml",
     "unix/home/.config/mise/config.toml",
     "unix/home/.config/mise/config.*.toml",
-    "unix/home/.config/mise/conf.d/*.toml",
+    "unix/home/.config/mise/conf.d/**/*.toml",
   )
 
 local const picked =
@@ -42,7 +46,7 @@ local const miseGroup = picked["mise"] as Group
 local const oxfmtStep = picked["oxfmt"] as Step
 local const tombiGroup = picked["tombi"] as Group
 
-steps = (picked) {
+local const fastSteps: Mapping<String, Step | Group> = (picked) {
   ["oxfmt"] = (oxfmtStep) {
     exclude = (oxfmtStep.exclude ?? List()) + List("**/*.yml", "**/*.yaml")
   }
@@ -54,7 +58,7 @@ steps = (picked) {
           List(
             "unix/home/.config/mise/config.toml",
             "unix/home/.config/mise/config.*.toml",
-            "unix/home/.config/mise/conf.d/*.toml",
+            "unix/home/.config/mise/conf.d/**/*.toml",
             "mise/**/mise.toml",
             "mise/**/mise.*.toml",
           )
@@ -75,8 +79,141 @@ steps = (picked) {
     }
   }
   ["ruff"] = Builtins.ruff
-  ["ruff-format"] = Builtins.ruff_format
+  ["ruff-format"] = (Builtins.ruff_format) {
+    // Legacy hooks owned by Issues #6/#12 use pre-PEP-758 `except (...)` syntax until migrated.
+    exclude =
+      List(
+        "unix/home/.gemini/config/hooks/agy-hc-send-guard.py",
+        "unix/home/.gemini/config/hooks/agy-interactive-questions.py",
+        "unix/home/.gemini/config/hooks/agy-pwf-guard.py",
+        "unix/home/.gemini/config/hooks/agy-skill-cutoff.py",
+        "unix/home/.gemini/config/hooks/post-task-learn.py",
+      )
+  }
   ["ryl"] = Builtins.ryl
   ["ryl-format"] = Builtins.ryl_format
-  ["ty"] = Builtins.ty
+  ["py-deps"] = new Step {
+    glob = List("pyproject.toml", "uv.lock")
+    check = "mise deps uv --explain"
+    fix = "mise deps uv"
+  }
+  ["ty"] = (Builtins.ty) {
+    depends = List("py-deps")
+    check = "uv run --offline --locked ty check {{ files }}"
+  }
+  ["codegen-check"] = new Step {
+    depends = List("py-deps")
+    glob =
+      List(
+        "schemas/**",
+        "unix/home/.config/mise/lib/dotfiles_py/generated/**",
+        "**/generated/**",
+        "pyproject.toml",
+      )
+    check = "uv run --offline --locked datamodel-codegen --check"
+    fix = "uv run --offline --locked datamodel-codegen"
+  }
+  ["schema-first-ast"] = new Step {
+    glob = List("**/*.py")
+    check = "python3 -I -B tasks/py/schema_first_ast.py {{ files }}"
+  }
+  ["schema-contract-check"] = new Step {
+    glob = List("schemas/**")
+    check = "python3 -I -B tasks/py/schema_contract_check.py {{ files }}"
+  }
+  ["no-project-tools"] = new Step {
+    glob =
+      List(
+        "mise.toml",
+        "mise.*.toml",
+        ".mise.toml",
+        ".mise.*.toml",
+        "mise/**/mise*.toml",
+        ".tool-versions",
+        "package.json",
+        "mise.lock",
+        "pyproject.toml",
+      )
+    check = "python3 -I -B tasks/py/doctor_checks.py no-project-tools"
+  }
+  ["mise-lock-integrity"] = new Step {
+    glob =
+      List(
+        "unix/home/.config/mise/config*.toml",
+        "unix/home/.config/mise/mise.lock",
+        "unix/home/.config/mise/locks/**",
+      )
+    check = "python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity"
+  }
+  ["private-paths"] = new Step {
+    check = "mise run privacy:scan -- {{ files }}"
+  }
+  ["no-core-worktree"] = new Step {
+    check =
+      #"test -z "$(git config --file "$(git rev-parse --git-common-dir)/config" --get-all core.worktree)" || { echo 'core.worktree is set in shared .git/config' >&2; exit 1; }"#
+  }
+}
+
+local const pytestStep: Step = new Step {
+  depends = List("py-deps")
+  glob = List("**/*.py", "pyproject.toml", "uv.lock", "schemas/**")
+  check = "\(cleanGitEnv) uv run --offline --locked pytest -n auto"
+}
+
+local const checkSteps: Mapping<String, Step | Group> = (fastSteps) {
+  ["pytest"] = pytestStep
+}
+
+steps = fastSteps
+
+hooks {
+  ["pre-commit"] {
+    fix = true
+    stash = "git"
+    steps = fastSteps
+  }
+  ["commit-msg"] {
+    steps {
+      ["typos-msg"] {
+        check = "typos {{ commit_msg_file }}"
+      }
+    }
+  }
+  ["post-commit"] {
+    steps {
+      ["host-sync-advisory"] {
+        check = "python3 -I -B tasks/py/doctor_checks.py post-commit-advisory"
+      }
+    }
+  }
+  ["pre-push"] {
+    steps {
+      ["private-paths-outgoing"] {
+        exclusive = true
+        check = "mise run privacy:scan --outgoing"
+      }
+      ["no-core-worktree"] = (fastSteps["no-core-worktree"] as Step) {
+        exclusive = true
+      }
+      ["py-deps"] = fastSteps["py-deps"]
+      ["codegen-check"] = fastSteps["codegen-check"]
+      ["schema-first-ast"] = fastSteps["schema-first-ast"]
+      ["schema-contract-check"] = fastSteps["schema-contract-check"]
+      ["pytest"] = pytestStep
+    }
+  }
+  ["post-merge"] {
+    steps {
+      ["host-option-a"] {
+        check = "python3 -I -B tasks/py/doctor_checks.py host-option-a"
+      }
+    }
+  }
+  ["check"] {
+    steps = checkSteps
+  }
+  ["fix"] {
+    fix = true
+    steps = fastSteps
+  }
 }

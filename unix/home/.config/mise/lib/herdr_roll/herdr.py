@@ -1,18 +1,22 @@
-"""Subprocess, Herdr (`hc` / `herdr-app`), process tree, and clean relaunch helpers."""
+"""Subprocess, Herdr (`hc` / `herdr-app`), `psutil` process tree, `tenacity` polling, and relaunch helpers."""
 
 from __future__ import annotations
 
-import json
+import datetime as dt
 import os
 import re
 import shlex
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+import orjson
+import psutil
+from tenacity import Retrying, retry_if_result, stop_after_delay, wait_exponential
 
 from herdr_roll.models import HarnessKind
 
@@ -30,7 +34,7 @@ SERVICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# macOS `ps` renders exiting subshells/statusline commands as `(bash)`, `(awk)`, `(git)`, etc.
+# macOS renders exiting subshells/statusline commands as `(bash)`, `(awk)`, `(git)`, etc.
 TRANSIENT_WRAPPED_NAMES = frozenset(
     {
         "(bash)",
@@ -77,9 +81,7 @@ ALLOWLISTED_ENV_KEYS = (
     "SSH_AUTH_SOCK",
 )
 
-PS_LINE_RE = re.compile(
-    r"\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)"
-)
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def raw_env() -> dict[str, str]:
@@ -108,7 +110,7 @@ def run_cmd(
             env=dict(env) if env is not None else None,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+    except OSError, subprocess.TimeoutExpired, ValueError:
         return None
     return completed.stdout if completed.returncode in allowed else None
 
@@ -116,13 +118,13 @@ def run_cmd(
 def run_json(
     argv: Iterable[str], *, env: Mapping[str, str] | None = None, timeout: float = 15.0
 ) -> dict[str, Any]:
-    """Run *argv* and decode a JSON object stdout, returning {} on error."""
+    """Run *argv* and decode a JSON object stdout via `orjson`, returning {} on error."""
     out = run_cmd(argv, env=env, timeout=timeout)
     if not out:
         return {}
     try:
-        decoded = json.loads(out)
-    except json.JSONDecodeError:
+        decoded = orjson.loads(out)
+    except orjson.JSONDecodeError:
         return {}
     return decoded if isinstance(decoded, dict) else {}
 
@@ -204,8 +206,8 @@ def herdr_app_do(
     if not out.strip():
         return {}
     try:
-        decoded = json.loads(out)
-    except json.JSONDecodeError:
+        decoded = orjson.loads(out)
+    except orjson.JSONDecodeError:
         return None
     if not isinstance(decoded, dict) or "error" in decoded:
         return None
@@ -213,29 +215,52 @@ def herdr_app_do(
 
 
 def processes() -> dict[int, tuple[int, str, str]]:
-    """Return mapping `pid -> (ppid, lstart, args)` using `LC_ALL=C`."""
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    text = (
-        run_cmd(["ps", "-axo", "pid=,ppid=,lstart=,args="], env=env, timeout=15.0) or ""
-    )
+    """Return mapping `pid -> (ppid, lstart_str, args)` using C-backed `psutil`."""
     found: dict[int, tuple[int, str, str]] = {}
-    for line in text.splitlines():
-        match = PS_LINE_RE.match(line)
-        if match:
-            found[int(match[1])] = (int(match[2]), match[3], match[4])
+    for proc in psutil.process_iter(["pid", "ppid", "create_time", "cmdline", "name"]):
+        try:
+            info = proc.info
+            pid = int(info["pid"])
+            ppid = int(info.get("ppid") or 0)
+            ctime = float(info.get("create_time") or 0.0)
+            lstart = (
+                dt.datetime.fromtimestamp(ctime, tz=dt.UTC)
+                .astimezone()
+                .strftime("%a %b %e %H:%M:%S %Y")
+            )
+            cmdline = info.get("cmdline") or []
+            args = (
+                shlex.join([str(part) for part in cmdline])
+                if cmdline
+                else str(info.get("name") or "")
+            )
+            found[pid] = (ppid, lstart, args)
+        except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess:
+            continue
     return found
 
 
 def lsof_cwd(pid: int) -> str | None:
-    """Return process working directory via `lsof`, or None if unavailable."""
-    out = (
-        run_cmd(["lsof", "-a", "-d", "cwd", "-p", str(pid), "-Fn"], timeout=10.0) or ""
-    )
-    for line in out.splitlines():
-        if line.startswith("n"):
-            return line[1:]
-    return None
+    """Return process working directory via C-backed `psutil`, or None if unavailable."""
+    try:
+        return psutil.Process(pid).cwd()
+    except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError:
+        return None
+
+
+def open_file_paths(tree_pids: Sequence[int]) -> list[str]:
+    """Return open file paths held by *tree_pids* using C-backed `psutil`."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for pid in tree_pids:
+        try:
+            for item in psutil.Process(pid).open_files():
+                if item.path and item.path not in seen:
+                    seen.add(item.path)
+                    paths.append(item.path)
+        except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError:
+            continue
+    return paths
 
 
 def git_status_porcelain(folder: str | None) -> str | None:
@@ -263,18 +288,24 @@ def adaptive_poll[T](
     min_interval: float = 0.25,
     max_interval: float = 1.0,
 ) -> T | None:
-    """Poll *probe* with smooth backoff from *min_interval* up to *max_interval*."""
-    end = time.monotonic() + max(0.0, deadline_s)
-    delay = max(0.05, min_interval)
-    while True:
-        found = probe()
-        if found is not None or time.monotonic() >= end:
-            return found
-        time.sleep(min(delay, max(0.0, end - time.monotonic())))
-        delay = min(max_interval, delay * 1.6)
+    """Poll *probe* with exponential backoff backed by `tenacity` until non-None or *deadline_s*."""
+    low = max(0.05, float(min_interval))
+    high = max(low, float(max_interval))
+    budget = max(0.0, float(deadline_s))
 
+    def _sleep(seconds: float) -> None:
+        time.sleep(seconds)
 
-ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    retrying = Retrying(
+        stop=stop_after_delay(budget),
+        wait=wait_exponential(multiplier=low, exp_base=1.6, min=low, max=high),
+        retry=retry_if_result(lambda value: value is None),
+        retry_error_callback=lambda state: (
+            state.outcome.result() if state.outcome is not None else None
+        ),
+        sleep=_sleep,
+    )
+    return retrying(probe)
 
 
 def unwrap_launchers(argv: Iterable[str]) -> list[str]:
@@ -306,10 +337,11 @@ def unwrap_launchers(argv: Iterable[str]) -> list[str]:
         if cmd_name == "env":
             rest = words[1:]
             while rest and (rest[0].startswith("-") or "=" in rest[0]):
-                if rest[0] in {"-u", "-C", "-S"} and len(rest) >= 2:
-                    rest = rest[2:]
-                else:
-                    rest = rest[1:]
+                rest = (
+                    rest[2:]
+                    if rest[0] in {"-u", "-C", "-S"} and len(rest) >= 2
+                    else rest[1:]
+                )
             words = rest
             continue
         break
@@ -440,7 +472,7 @@ class LiveClient:
         self.refresh()
 
     def refresh(self) -> None:
-        """Refresh `herdr-app ls`, `hc ls --json`, parallel `hc get --json`, and then `ps`."""
+        """Refresh `herdr-app ls`, `hc ls --json`, parallel `hc get --json`, and then `psutil`."""
         with ThreadPoolExecutor(max_workers=2) as pool:
             f_spaces = pool.submit(herdr_app_ls)
             f_ls = pool.submit(run_json, ["hc", "ls", "--json"])
@@ -471,7 +503,7 @@ class LiveClient:
         else:
             info = {}
 
-        # Read `ps` after `hc get` so newly spawned foreground PIDs are present in `procs`.
+        # Read `psutil` after `hc get` so newly spawned foreground PIDs are present in `procs`.
         procs = processes()
         with self._lock:
             self.spaces = spaces
@@ -481,7 +513,7 @@ class LiveClient:
             self.procs = procs
 
     def refresh_terminal(self, address: str) -> None:
-        """Refresh `hc get <address>`, `hc ls --json`, and `ps` atomically under lock."""
+        """Refresh `hc get <address>`, `hc ls --json`, and `psutil` atomically under lock."""
         addr_info = hc_get(address)
         ls_payload = run_json(["hc", "ls", "--json"])
         procs = processes()

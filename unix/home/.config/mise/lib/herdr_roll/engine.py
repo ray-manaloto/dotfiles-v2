@@ -1,10 +1,8 @@
-"""Core rolling-restart execution engine, locking, wave scheduler, and self-launcher."""
+"""Core rolling-restart execution engine, `filelock` locking, wave scheduler, and dual-sink `structlog`."""
 
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
-import json
 import os
 import shlex
 import sys
@@ -13,10 +11,16 @@ import time
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import orjson
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
+from pydantic import BaseModel, ValidationError
+
+from dotfiles_py.logging import configure_logging, get_logger
+from dotfiles_py.time_ns import format_ns_timestamp, now_ns_pair
 from herdr_roll.adapters import (
     ADAPTERS,
     AdapterSkipError,
@@ -48,20 +52,28 @@ from herdr_roll.herdr import (
 )
 from herdr_roll.models import (
     HarnessKind,
+    HerdrRollErrorCode,
+    HerdrRollErrorEntry,
+    HerdrRollReturnCode,
+    HerdrRollReturnEntry,
+    ReceiptRecord,
     Role,
     RunRecord,
+    SelfPlanResponse,
     SessionOutcome,
+    SnapshotSummary,
     Timing,
+    make_session_outcome,
     write_atomic,
 )
 
 HARNESS_BINARIES: dict[HarnessKind, tuple[str, ...]] = {
-    HarnessKind.agy: ("agy",),
-    HarnessKind.codex: ("codex",),
-    HarnessKind.claude: ("claude",),
-    HarnessKind.opencode: ("opencode",),
-    HarnessKind.hermes: ("hermes",),
-    HarnessKind.zcode: ("zcode",),
+    HarnessKind.AGY: ("agy",),
+    HarnessKind.CODEX: ("codex",),
+    HarnessKind.CLAUDE: ("claude",),
+    HarnessKind.OPENCODE: ("opencode",),
+    HarnessKind.HERMES: ("hermes",),
+    HarnessKind.ZCODE: ("zcode",),
 }
 
 EXIT_DIALOG = "Background work is running"
@@ -94,7 +106,8 @@ def state_dir() -> Path:
 
 
 def now_iso() -> str:
-    return dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+    """Return current zero-padded 9-digit nanosecond timestamp."""
+    return format_ns_timestamp()
 
 
 def new_run_id(step: str) -> str:
@@ -103,27 +116,19 @@ def new_run_id(step: str) -> str:
 
 @contextmanager
 def acquire_lock(lock_path: Path) -> Generator[None]:
-    """Acquire non-blocking exclusive advisory lock or fail closed with `RefusedError`."""
+    """Acquire non-blocking exclusive advisory lock via `filelock` or fail closed with `RefusedError`."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    locked = False
+    lock = FileLock(str(lock_path), timeout=0)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            locked = True
-        except BlockingIOError:
-            raise RefusedError(
-                f"Another roll step holds lock {lock_path}; wait for it to finish."
-            ) from None
-        os.ftruncate(fd, 0)
-        os.write(fd, f"{os.getpid()}\n".encode())
+        lock.acquire(timeout=0)
+    except FileLockTimeout:
+        raise RefusedError(
+            f"Another roll step holds lock {lock_path}; wait for it to finish."
+        ) from None
+    try:
         yield
     finally:
-        try:
-            if locked:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+        lock.release()
 
 
 def read_history(root: Path) -> list[RunRecord]:
@@ -136,8 +141,8 @@ def read_history(root: Path) -> list[RunRecord]:
         if not line.strip():
             continue
         try:
-            out.append(RunRecord.from_dict(json.loads(line)))
-        except (ValueError, KeyError, TypeError):
+            out.append(RunRecord.model_validate(orjson.loads(line)))
+        except ValueError, ValidationError:
             continue
     return out
 
@@ -150,66 +155,108 @@ def last_run_id(root: Path, steps: set[str]) -> str | None:
     return None
 
 
-@dataclass
-class StepRecorder:
-    """Thread-safe JSONL output streamer, per-run logger, and `runs.jsonl` writer."""
+def _dump_compact_json(model: BaseModel) -> str:
+    return orjson.dumps(model.model_dump(mode="json")).decode("utf-8")
 
-    root: Path
-    run_id: str
-    step: str
-    argv: tuple[str, ...]
-    apply: bool
-    started_at: str = ""
-    _lock: threading.Lock = field(
-        default_factory=threading.Lock, init=False, repr=False
+
+def _dump_pretty_json(model: BaseModel) -> str:
+    return (
+        orjson.dumps(model.model_dump(mode="json"), option=orjson.OPT_INDENT_2).decode(
+            "utf-8"
+        )
+        + "\n"
     )
 
-    def __post_init__(self) -> None:
+
+class StepRecorder:
+    """Thread-safe dual-sink `structlog` streamer, stdout JSON emitter, and `runs.jsonl` writer."""
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        run_id: str,
+        step: str,
+        argv: tuple[str, ...],
+        apply: bool,
+    ) -> None:
+        self.root = root
+        self.run_id = run_id
+        self.step = step
+        self.argv = argv
+        self.apply = apply
         self.started_at = now_iso()
         self.run_dir = self.root / self.run_id
-        self.log_path = self.run_dir / f"{self.step}.log"
+        self.log_path = self.run_dir / f"{self.step}.jsonl"
         self.outcomes: list[SessionOutcome] = []
+        self._lock = threading.Lock()
+        configure_logging(
+            jsonl_path=self.log_path if self.apply else None,
+            logger_name="herdr_roll",
+        )
+        self._log = get_logger("herdr_roll")
 
-    def emit(self, payload: dict[str, Any]) -> None:
-        line = json.dumps(payload, separators=(",", ":"))
+    def emit(self, payload: BaseModel, *, event_name: str = "step_summary") -> None:
+        line = _dump_compact_json(payload)
         with self._lock:
-            print(line, flush=True)
-            if self.apply:
-                self.run_dir.mkdir(parents=True, exist_ok=True)
-                with self.log_path.open("a", encoding="utf-8") as handle:
-                    handle.write(f"{line}\n")
+            sys.stdout.write(f"{line}\n")
+            sys.stdout.flush()
+            self._log.info(
+                event_name, run_id=self.run_id, step=self.step, payload=payload
+            )
 
     def add_outcome(self, outcome: SessionOutcome) -> SessionOutcome:
-        line = json.dumps(outcome.to_dict(), separators=(",", ":"))
+        line = _dump_compact_json(outcome)
         with self._lock:
             self.outcomes.append(outcome)
-            print(line, flush=True)
-            if self.apply:
-                self.run_dir.mkdir(parents=True, exist_ok=True)
-                with self.log_path.open("a", encoding="utf-8") as handle:
-                    handle.write(f"{line}\n")
+            sys.stdout.write(f"{line}\n")
+            sys.stdout.flush()
+            self._log.info(
+                "session_outcome",
+                run_id=self.run_id,
+                step=self.step,
+                outcome=outcome,
+            )
         return outcome
 
     def finish(self, rc: int) -> int:
         if self.apply:
             with self._lock:
                 self.run_dir.mkdir(parents=True, exist_ok=True)
+                ts, ns = now_ns_pair()
+                all_errors: list[HerdrRollErrorEntry] = []
+                for item in self.outcomes:
+                    all_errors.extend(item.errors)
+                ret_code = (
+                    HerdrRollReturnCode.RET_OK
+                    if rc == EXIT_OK
+                    else (
+                        HerdrRollReturnCode.RET_REFUSED
+                        if rc == EXIT_REFUSED
+                        else HerdrRollReturnCode.RET_FAILED
+                    )
+                )
                 rec = RunRecord(
                     run_id=self.run_id,
                     step=self.step,
-                    args=self.argv,
+                    args=list(self.argv),
                     started_at=self.started_at,
                     ended_at=now_iso(),
                     rc=rc,
                     log_path=str(self.log_path),
-                    outcomes=tuple(self.outcomes),
+                    outcomes=list(self.outcomes),
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=all_errors,
+                    returns=[HerdrRollReturnEntry(code=ret_code)],
                 )
                 runs_file = self.root / "runs.jsonl"
                 runs_file.parent.mkdir(parents=True, exist_ok=True)
                 with runs_file.open("a", encoding="utf-8") as handle:
-                    handle.write(
-                        json.dumps(rec.to_dict(), separators=(",", ":")) + "\n"
-                    )
+                    handle.write(_dump_compact_json(rec) + "\n")
+                self._log.info(
+                    "step_finished", run_id=self.run_id, step=self.step, rc=rc
+                )
         return rc
 
 
@@ -369,7 +416,7 @@ def _launch_fresh_tab(
         "--focus",
         "false",
         "--argv",
-        json.dumps(launch_argv),
+        orjson.dumps(launch_argv).decode("utf-8"),
     )
     if not resp or not resp.get("terminal"):
         raise SkipStep(
@@ -389,10 +436,7 @@ def verify_target(
     timing: Timing,
     in_place_before_started_at: int | None = None,
 ) -> tuple[int, str]:
-    """Verify relaunched/resumed session with adaptive polling up to `timing.settle`.
-
-    Returns `(new_pid, verified_address)` or raises `SkipStep` on fail-closed checks.
-    """
+    """Verify relaunched/resumed session with adaptive polling up to `timing.settle`."""
     _, _, term = target
     adapter = ADAPTERS[term.kind]
     if not term.session_id:
@@ -417,7 +461,7 @@ def verify_target(
         if modal:
             raise SkipStep("blocked-dialog", modal)
 
-        if in_place_before_started_at is not None and term.kind is HarnessKind.claude:
+        if in_place_before_started_at is not None and term.kind is HarnessKind.CLAUDE:
             rec = claude_record_for_tree(fg_pid, live.tree(address))
             started_at = rec.get("startedAt") if rec else None
             if (
@@ -452,7 +496,7 @@ def verify_target(
         info = live.info.get(address) or {}
         st_obj = info.get("status")
         st_state = str(st_obj.get("state")) if isinstance(st_obj, dict) else None
-        if in_place_before_started_at is not None and term.kind is HarnessKind.claude:
+        if in_place_before_started_at is not None and term.kind is HarnessKind.CLAUDE:
             detail: str | None = (
                 f"in-place /restart startedAt did not advance past {in_place_before_started_at}"
             )
@@ -516,7 +560,7 @@ def restart_one(
         new_pid: int | None = None,
         address_override: str | None = None,
     ) -> SessionOutcome:
-        return SessionOutcome(
+        return make_session_outcome(
             where=where,
             tab_id=tab.id,
             terminal=address_override or term.address,
@@ -645,20 +689,23 @@ def restart_one(
 
         git_before = git_status_porcelain(cwd)
         if run_dir is not None:
-            receipt = {
-                "where": where,
-                "tab_id": tab.id,
-                "terminal": term.address,
-                "kind": term.kind.value,
-                "session_id": term.session_id,
-                "cwd": cwd,
-                "old_pid": fg_pid,
-                "git_status": git_before,
-                "relaunch_argv": argv,
-            }
+            r_ts, r_ns = now_ns_pair()
+            receipt = ReceiptRecord(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                cwd=cwd,
+                old_pid=fg_pid,
+                git_status=git_before,
+                relaunch_argv=argv,
+                timestamp=r_ts,
+                timestamp_unix_ns=r_ns,
+            )
             write_atomic(
                 run_dir / "receipts" / f"{term.address}.json",
-                json.dumps(receipt, indent=2) + "\n",
+                _dump_pretty_json(receipt),
             )
 
         if handshake:
@@ -719,7 +766,6 @@ def restart_one(
                 timing=timing,
             )
             run_optional_verify_turn(verified_addr)
-            # Close old tab ONLY after new tab verified and only for single-pane tabs.
             if len(tab.terminals) == 1 and (
                 herdr_app_do("tab.close", "--id", tab.id, "--confirmed", "true") is None
             ):
@@ -790,7 +836,7 @@ def cmd_snapshot(
             with acquire_lock(root / "roll.lock"):
                 previous = load_graph(graph_file) if graph_file.is_file() else None
                 merged = merge_graph(current, previous)
-                payload = json.dumps(merged.to_dict(), indent=2) + "\n"
+                payload = _dump_pretty_json(merged)
                 stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
                 write_atomic(graph_file, payload)
                 write_atomic(root / f"graph-{stamp}.json", payload)
@@ -820,22 +866,41 @@ def cmd_snapshot(
             for tb in sp.tabs
             if not tb.kept_from_previous_graph
             for term in tb.terminals
-            if term.kind is not HarnessKind.shell
+            if term.kind is not HarnessKind.SHELL
         ]
         missing_sid = [
             f"{t.address} ({t.kind.value})" for t in agents_live if not t.session_id
         ]
-
-        rec.emit(
-            {
-                "run_id": run_id,
-                "apply": apply,
-                "spaces": len(merged.spaces),
-                "agents_live": len(agents_live),
-                "agents_without_session": missing_sid,
-                "selected_targets": len(targets),
-            }
+        s_ts, s_ns = now_ns_pair()
+        errors = (
+            [
+                HerdrRollErrorEntry(
+                    code=HerdrRollErrorCode.ERR_NO_SESSION_ID,
+                    message=f"{len(missing_sid)} live agent(s) without resolved session_id",
+                    detail={"agents": missing_sid},
+                )
+            ]
+            if missing_sid
+            else []
         )
+        ret_code = (
+            HerdrRollReturnCode.RET_SNAPSHOT_CAPTURED
+            if apply
+            else HerdrRollReturnCode.RET_PLANNED
+        )
+        summary = SnapshotSummary(
+            run_id=run_id,
+            apply=apply,
+            spaces=len(merged.spaces),
+            agents_live=len(agents_live),
+            agents_without_session=missing_sid,
+            selected_targets=len(targets),
+            timestamp=s_ts,
+            timestamp_unix_ns=s_ns,
+            errors=errors,
+            returns=[HerdrRollReturnEntry(code=ret_code)],
+        )
+        rec.emit(summary, event_name="snapshot_summary")
     except Exception:
         rec.finish(EXIT_FAILED)
         raise
@@ -886,9 +951,9 @@ def cmd_restart(
             f"Cannot restart own running tab {live.me} directly; run `mise run roll:self --apply` instead."
         )
 
-    wave0 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.coordinator]
-    wave1 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.child]
-    wave2 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.lead]
+    wave0 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.COORDINATOR]
+    wave1 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.CHILD]
+    wave2 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.LEAD]
 
     def run_item(item: TargetTuple) -> SessionOutcome:
         return restart_one(
@@ -917,7 +982,7 @@ def cmd_restart(
             with acquire_lock(root / "roll.lock"):
                 write_atomic(
                     rec.run_dir / "graph.json",
-                    json.dumps(graph.to_dict(), indent=2) + "\n",
+                    _dump_pretty_json(graph),
                 )
                 w0_outcomes = execute_wave(wave0, 1)
                 if any(
@@ -983,24 +1048,24 @@ def cmd_stop(
         t0 = time.monotonic()
         adapter = ADAPTERS.get(term.kind)
         if not adapter or not term.session_id:
-            return SessionOutcome(
-                where,
-                tab.id,
-                term.address,
-                term.kind,
-                term.session_id,
-                "skipped-no-session-id",
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                result="skipped-no-session-id",
             )
         cwd = _resolve_folder(item)
         if not apply:
-            return SessionOutcome(
-                where,
-                tab.id,
-                term.address,
-                term.kind,
-                term.session_id,
-                "planned",
-                term.fg_pid,
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                result="planned",
+                old_pid=term.fg_pid,
                 notes=(f"cmd={adapter.exit_command()}", f"cwd={cwd}"),
             )
         try:
@@ -1068,25 +1133,25 @@ def cmd_stop(
                 if not is_ready_for_stop():
                     raise SkipStep("skipped-busy-after-handshake")
             _wait_for_exit(live, item, timing_cfg)
-            return SessionOutcome(
-                where,
-                tab.id,
-                term.address,
-                term.kind,
-                term.session_id,
-                "stopped",
-                fg_pid or term.fg_pid,
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                result="stopped",
+                old_pid=fg_pid or term.fg_pid,
                 elapsed_s=time.monotonic() - t0,
             )
         except SkipStep as err:
-            return SessionOutcome(
-                where,
-                tab.id,
-                term.address,
-                term.kind,
-                term.session_id,
-                err.result,
-                term.fg_pid,
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                result=err.result,
+                old_pid=term.fg_pid,
                 elapsed_s=time.monotonic() - t0,
                 notes=err.notes,
             )
@@ -1097,7 +1162,7 @@ def cmd_stop(
                 graph_file = root / "graph.json"
                 previous = load_graph(graph_file) if graph_file.is_file() else None
                 merged = merge_graph(graph, previous)
-                payload = json.dumps(merged.to_dict(), indent=2) + "\n"
+                payload = _dump_pretty_json(merged)
                 write_atomic(rec.run_dir / "graph.json", payload)
                 write_atomic(graph_file, payload)
                 for item in targets:
@@ -1170,13 +1235,13 @@ def cmd_start(
         t0 = time.monotonic()
         adapter = ADAPTERS.get(term.kind)
         if not adapter or not term.session_id:
-            return SessionOutcome(
-                where,
-                tab.id,
-                term.address,
-                term.kind,
-                term.session_id,
-                "skipped-no-session-id",
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                result="skipped-no-session-id",
             )
         cwd = _resolve_folder(item)
         try:
@@ -1188,13 +1253,13 @@ def cmd_start(
                 screen_text="",
             )
         except AdapterSkipError as err:
-            return SessionOutcome(
-                where,
-                tab.id,
-                term.address,
-                term.kind,
-                term.session_id,
-                err.code,
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                result=err.code,
                 notes=err.notes,
             )
         extra_env = adapter.extra_env(list(term.term_argv))
@@ -1205,13 +1270,13 @@ def cmd_start(
             extra_env=extra_env,
         )
         if not apply:
-            return SessionOutcome(
-                where,
-                tab.id,
-                term.address,
-                term.kind,
-                term.session_id,
-                "planned",
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                result="planned",
                 notes=(f"cwd={cwd}", f"cmd={relaunch_line}"),
             )
         try:
@@ -1237,31 +1302,31 @@ def cmd_start(
                 expected_git=None,
                 timing=timing_cfg,
             )
-            return SessionOutcome(
-                where,
-                tab.id,
-                verified_addr,
-                term.kind,
-                term.session_id,
-                "started",
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=verified_addr,
+                kind=term.kind,
+                session_id=term.session_id,
+                result="started",
                 new_pid=new_pid,
                 elapsed_s=time.monotonic() - t0,
             )
         except SkipStep as err:
-            return SessionOutcome(
-                where,
-                tab.id,
-                term.address,
-                term.kind,
-                term.session_id,
-                err.result,
+            return make_session_outcome(
+                where=where,
+                tab_id=tab.id,
+                terminal=term.address,
+                kind=term.kind,
+                session_id=term.session_id,
+                result=err.result,
                 elapsed_s=time.monotonic() - t0,
                 notes=err.notes,
             )
 
-    wave0 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.coordinator]
-    wave1 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.child]
-    wave2 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.lead]
+    wave0 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.COORDINATOR]
+    wave1 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.CHILD]
+    wave2 = [t for t in targets if role_of(t[0].name, t[1].name) is Role.LEAD]
 
     def execute_start_wave(
         items: list[TargetTuple], workers: int
@@ -1357,26 +1422,26 @@ def cmd_verify(
                     timing=timing_cfg,
                 )
                 rec.add_outcome(
-                    SessionOutcome(
-                        where,
-                        tab.id,
-                        verified_addr,
-                        term.kind,
-                        term.session_id,
-                        "ok",
+                    make_session_outcome(
+                        where=where,
+                        tab_id=tab.id,
+                        terminal=verified_addr,
+                        kind=term.kind,
+                        session_id=term.session_id,
+                        result="ok",
                         new_pid=new_pid,
                         elapsed_s=time.monotonic() - t0,
                     )
                 )
             except SkipStep as err:
                 rec.add_outcome(
-                    SessionOutcome(
-                        where,
-                        tab.id,
-                        term.address,
-                        term.kind,
-                        term.session_id,
-                        err.result,
+                    make_session_outcome(
+                        where=where,
+                        tab_id=tab.id,
+                        terminal=term.address,
+                        kind=term.kind,
+                        session_id=term.session_id,
+                        result=err.result,
                         elapsed_s=time.monotonic() - t0,
                         notes=err.notes,
                     )
@@ -1409,6 +1474,9 @@ def cmd_self(
     apply: bool = False,
 ) -> int:
     """Spawn a detached parentless `roll` tab in the caller's space to restart `$HC_TERMINAL_ID` safely."""
+    configure_logging(logger_name="herdr_roll")
+    log = get_logger("herdr_roll")
+
     me = os.environ.get("HC_TERMINAL_ID")
     if not me:
         raise RefusedError(
@@ -1435,12 +1503,12 @@ def cmd_self(
         raise RefusedError(
             "Refusing to spawn recursive roll tab from within an existing 'roll' tab."
         )
-    if term.kind is HarnessKind.shell:
+    if term.kind is HarnessKind.SHELL:
         agents = [
             (tb, tm)
             for tb in space.tabs
             for tm in tb.terminals
-            if tm.kind is not HarnessKind.shell
+            if tm.kind is not HarnessKind.SHELL
         ]
         if agents:
             listed = ", ".join(f"{tb.name} ({tm.address})" for tb, tm in agents)
@@ -1479,19 +1547,26 @@ def cmd_self(
     if handshake:
         child_argv.append("--handshake")
 
-    plan = {
-        "action": "tab.new",
-        "space": space_name,
-        "space_id": space_id,
-        "name": "roll",
-        "target_terminal": f"{tab_name} ({me})",
-        "folder": str(Path.home()),
-        "focus": False,
-        "argv": child_argv,
-        "apply": apply,
-    }
+    ts, ns = now_ns_pair()
     if not apply:
-        print(json.dumps(plan, indent=2), flush=True)
+        plan = SelfPlanResponse(
+            action="tab.new",
+            space=space_name,
+            space_id=space_id,
+            name="roll",
+            target_terminal=f"{tab_name} ({me})",
+            folder=str(Path.home()),
+            focus=False,
+            argv=child_argv,
+            apply=False,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[],
+            returns=[HerdrRollReturnEntry(code=HerdrRollReturnCode.RET_PLANNED)],
+        )
+        sys.stdout.write(_dump_pretty_json(plan))
+        sys.stdout.flush()
+        log.info("roll_self_planned", response=plan)
         return EXIT_OK
 
     resp = herdr_app_do(
@@ -1505,18 +1580,33 @@ def cmd_self(
         "--focus",
         "false",
         "--argv",
-        json.dumps(child_argv),
+        orjson.dumps(child_argv).decode("utf-8"),
     )
     if not resp or not resp.get("terminal"):
         raise RefusedError(
             f"Failed to spawn detached `roll` tab in space {space_name} ({space_id})."
         )
 
-    result = {
-        **plan,
-        "spawned_tab_id": resp.get("tab"),
-        "spawned_terminal": resp.get("terminal"),
-        "next": f"End your turn cleanly so roll ({resp.get('terminal')}) restarts {tab_name} ({me}).",
-    }
-    print(json.dumps(result, indent=2), flush=True)
+    r_ts, r_ns = now_ns_pair()
+    result = SelfPlanResponse(
+        action="tab.new",
+        space=space_name,
+        space_id=space_id,
+        name="roll",
+        target_terminal=f"{tab_name} ({me})",
+        folder=str(Path.home()),
+        focus=False,
+        argv=child_argv,
+        apply=True,
+        spawned_tab_id=str(resp.get("tab")) if resp.get("tab") is not None else None,
+        spawned_terminal=str(resp.get("terminal")),
+        next_hint=f"End your turn cleanly so roll ({resp.get('terminal')}) restarts {tab_name} ({me}).",
+        timestamp=r_ts,
+        timestamp_unix_ns=r_ns,
+        errors=[],
+        returns=[HerdrRollReturnEntry(code=HerdrRollReturnCode.RET_SELF_SPAWNED)],
+    )
+    sys.stdout.write(_dump_pretty_json(result))
+    sys.stdout.flush()
+    log.info("roll_self_spawned", response=result)
     return EXIT_OK

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import datetime as dt
-import json
 from pathlib import Path
 
+import orjson
+from pydantic import ValidationError
+
+from dotfiles_py.time_ns import format_ns_timestamp
 from herdr_roll.adapters import ADAPTERS, detect_kind
 from herdr_roll.herdr import LiveClient, hc_read
 from herdr_roll.models import (
@@ -33,10 +35,10 @@ class RefusedError(Exception):
 def role_of(space_name: str, tab_name: str) -> Role:
     """Classify tab scheduling wave role cleanly by name."""
     if space_name == COORDINATOR_SPACE and tab_name in COORDINATOR_TABS:
-        return Role.coordinator
+        return Role.COORDINATOR
     if tab_name.endswith(LEAD_SUFFIXES) or space_name == COORDINATOR_SPACE:
-        return Role.lead
-    return Role.child
+        return Role.LEAD
+    return Role.CHILD
 
 
 def build_terminal(
@@ -70,14 +72,24 @@ def build_terminal(
     )
     cwd_str = str(cwd) if isinstance(cwd, str) and cwd else None
     title = str(info.get("title") or "")
-    turn = int(info["turn"]) if isinstance(info.get("turn"), int) else None
-    root_pid = int(info["pid"]) if isinstance(info.get("pid"), int) else None
+    raw_turn = info.get("turn")
+    turn = (
+        raw_turn
+        if isinstance(raw_turn, int) and not isinstance(raw_turn, bool)
+        else None
+    )
+    raw_root_pid = info.get("pid")
+    root_pid = (
+        raw_root_pid
+        if isinstance(raw_root_pid, int) and not isinstance(raw_root_pid, bool)
+        else None
+    )
 
     kind = detect_kind(status_app_str, fg_argv, term_argv)
     session_id: str | None = None
-    if kind is not HarnessKind.shell:
+    if kind is not HarnessKind.SHELL:
         adapter = ADAPTERS[kind]
-        screen_text = hc_read(address, lines=120) if kind is HarnessKind.hermes else ""
+        screen_text = hc_read(address, lines=120) if kind is HarnessKind.HERMES else ""
         session_id = adapter.session_id(
             address=address,
             tree_pids=live.tree(address),
@@ -93,8 +105,8 @@ def build_terminal(
         kind=kind,
         session_id=session_id,
         cwd=cwd_str,
-        fg_argv=tuple(fg_argv),
-        term_argv=tuple(term_argv),
+        fg_argv=list(fg_argv),
+        term_argv=list(term_argv),
         pid=root_pid,
         fg_pid=fg_pid,
         status_state=status_state_str,
@@ -112,7 +124,7 @@ def _coordinator_address(live: LiveClient) -> str | None:
             if not isinstance(tab, dict):
                 continue
             tname = str(tab.get("name") or "")
-            if role_of(sname, tname) is Role.coordinator:
+            if role_of(sname, tname) is Role.COORDINATOR:
                 for pane in tab.get("terminals") or ():
                     if (
                         isinstance(pane, dict)
@@ -148,7 +160,7 @@ def build_graph(live: LiveClient) -> GraphSnapshot:
                 TabSnapshot(
                     id=str(raw_tab["id"]),
                     name=str(raw_tab["name"]),
-                    terminals=tuple(terms),
+                    terminals=terms,
                 )
             )
         folder = raw_space.get("folder")
@@ -157,12 +169,14 @@ def build_graph(live: LiveClient) -> GraphSnapshot:
                 id=str(raw_space["id"]),
                 name=str(raw_space["name"]),
                 folder=str(folder) if isinstance(folder, str) and folder else None,
-                tabs=tuple(tabs),
+                tabs=tabs,
             )
         )
-    taken_at = dt.datetime.now(dt.UTC).astimezone().isoformat(timespec="seconds")
+    taken_at = format_ns_timestamp()
     return GraphSnapshot(
-        taken_at=taken_at, coordinator=coordinator_addr, spaces=tuple(spaces)
+        taken_at=taken_at,
+        coordinator=coordinator_addr,
+        spaces=spaces,
     )
 
 
@@ -203,11 +217,11 @@ def merge_graph(
         if now_space is None:
             gone_closed_tabs: list[TabSnapshot] = []
             for tab in old_space.tabs:
-                kept_terms = tuple(
+                kept_terms = [
                     t
                     for t in tab.terminals
                     if t.session_id and t.session_id not in all_live_sessions
-                )
+                ]
                 if kept_terms:
                     gone_closed_tabs.append(
                         TabSnapshot(
@@ -223,7 +237,7 @@ def merge_graph(
                         id=old_space.id,
                         name=old_space.name,
                         folder=old_space.folder,
-                        tabs=tuple(gone_closed_tabs),
+                        tabs=gone_closed_tabs,
                         kept_from_previous_graph=True,
                     )
                 )
@@ -235,11 +249,11 @@ def merge_graph(
         for tab in old_space.tabs:
             if tab.name in live_tab_names:
                 continue
-            kept_terms = tuple(
+            kept_terms = [
                 t
                 for t in tab.terminals
                 if t.session_id and t.session_id not in all_live_sessions
-            )
+            ]
             if kept_terms:
                 gone_tabs.append(
                     TabSnapshot(
@@ -254,12 +268,10 @@ def merge_graph(
                 id=cur_merged.id,
                 name=cur_merged.name,
                 folder=cur_merged.folder,
-                tabs=(*cur_merged.tabs, *gone_tabs),
+                tabs=[*cur_merged.tabs, *gone_tabs],
                 kept_from_previous_graph=cur_merged.kept_from_previous_graph,
             )
-    ordered_spaces = tuple(merged_live[s.id] for s in current.spaces) + tuple(
-        kept_spaces
-    )
+    ordered_spaces = [merged_live[s.id] for s in current.spaces] + kept_spaces
     return GraphSnapshot(
         taken_at=current.taken_at,
         coordinator=current.coordinator,
@@ -342,7 +354,7 @@ def select_targets(
             if tab.kept_from_previous_graph and not keep_closed:
                 continue
             for term in tab.terminals:
-                if term.kind is HarnessKind.shell:
+                if term.kind is HarnessKind.SHELL:
                     continue
                 candidates.append((space, tab, term))
 
@@ -379,7 +391,7 @@ def select_targets(
             continue
         selected.append((space, tab, term))
 
-    rank = {Role.coordinator: 0, Role.child: 1, Role.lead: 2}
+    rank = {Role.COORDINATOR: 0, Role.CHILD: 1, Role.LEAD: 2}
     space_order = [s.name for s in graph.spaces]
 
     def sort_key(item: TargetTuple) -> tuple[int, int, str, str]:
@@ -392,9 +404,9 @@ def select_targets(
 
 
 def load_graph(path: Path) -> GraphSnapshot:
-    """Read and validate a saved GraphSnapshot JSON file."""
+    """Read and validate a saved GraphSnapshot JSON file using `orjson` + Pydantic v2."""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        return GraphSnapshot.from_dict(raw)
-    except (OSError, ValueError, KeyError, TypeError) as err:
+        raw = orjson.loads(path.read_bytes())
+        return GraphSnapshot.model_validate(raw)
+    except (OSError, ValueError, ValidationError) as err:
         raise GraphError(f"Unable to read saved graph at {path}: {err}") from None

@@ -13,7 +13,7 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -113,10 +113,17 @@ PROOF_OUTCOME_RE = re.compile(
 )
 
 
-class _VerifyStopState(TypedDict):
-    last_user_idx: int
-    last_blocked_step_idx: int
-    blocks_in_turn: int
+def _make_stop_state(
+    *,
+    last_user_idx: int = -2,
+    last_blocked_step_idx: int = -1,
+    blocks_in_turn: int = 0,
+) -> dict[str, int]:
+    return {
+        "last_user_idx": last_user_idx,
+        "last_blocked_step_idx": last_blocked_step_idx,
+        "blocks_in_turn": blocks_in_turn,
+    }
 
 
 def _allow() -> dict[str, Any]:
@@ -249,7 +256,7 @@ def _git_output(cwd: Path, *args: str) -> tuple[int, str]:
             timeout=5,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return 1, ""
     return proc.returncode, proc.stdout.strip()
 
@@ -328,7 +335,7 @@ def _load_receipts(common_dir: Path) -> dict[str, dict[str, Any]]:
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -940,15 +947,11 @@ def _unquote_truncated(val: Any) -> str:
     return val
 
 
-def _read_stop_state(path: Path) -> _VerifyStopState:
-    out: _VerifyStopState = {
-        "last_user_idx": -2,
-        "last_blocked_step_idx": -1,
-        "blocks_in_turn": 0,
-    }
+def _read_stop_state(path: Path) -> dict[str, int]:
+    out = _make_stop_state()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except OSError, ValueError, TypeError, json.JSONDecodeError:
         return out
     if not isinstance(raw, dict):
         return out
@@ -959,7 +962,7 @@ def _read_stop_state(path: Path) -> _VerifyStopState:
     return out
 
 
-def _write_stop_state(path: Path, state: _VerifyStopState) -> None:
+def _write_stop_state(path: Path, state: dict[str, int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     replaced = False
@@ -1191,7 +1194,7 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     state_path = state_base / VERIFY_STATE_FILENAME
     state = _read_stop_state(state_path)
     if state["last_user_idx"] != last_user_idx:
-        state = _VerifyStopState(
+        state = _make_stop_state(
             last_user_idx=last_user_idx,
             last_blocked_step_idx=-1,
             blocks_in_turn=0,
@@ -1201,7 +1204,7 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
 
     _write_stop_state(
         state_path,
-        _VerifyStopState(
+        _make_stop_state(
             last_user_idx=last_user_idx,
             last_blocked_step_idx=last_resp_step,
             blocks_in_turn=state["blocks_in_turn"] + 1,
@@ -1254,7 +1257,7 @@ def _process_stdin_text(raw_stdin: str, event: str = "auto") -> dict[str, Any]:
     fallback = {} if event == "stop" else _allow()
     try:
         payload = json.loads(raw_stdin)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return fallback
     if not isinstance(payload, dict):
         return fallback
@@ -1310,13 +1313,50 @@ def _check_hooks_json(path: Path) -> None:
         )
 
 
+def _local_git_env_vars() -> tuple[str, ...]:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--local-env-vars"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return tuple(
+                line.strip() for line in proc.stdout.splitlines() if line.strip()
+            )
+    except OSError, subprocess.SubprocessError:
+        pass
+    return (
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_COMMON_DIR",
+    )
+
+
 def _git_exec(cwd: Path, *args: str) -> str:
-    env = {
-        **os.environ,
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": "/dev/null",
-        "HK": "0",
-    }
+    env = dict(os.environ)
+    for var_name in _local_git_env_vars():
+        env.pop(var_name, None)
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "HK": "0",
+        }
+    )
     proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -1328,384 +1368,68 @@ def _git_exec(cwd: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
-def _write_transcript(path: Path, records: list[dict[str, Any]]) -> None:
-    path.write_text(
-        "".join(json.dumps(rec) + "\n" for rec in records), encoding="utf-8"
-    )
-
-
 def _run_self_check(hooks_json_path: Path | None) -> list[str]:
+    """Fast (<50ms) zero-git-subprocess static and parser self-check for `mise doctor project`."""
     checks: list[str] = []
-    py_run = f"{shlex.quote(sys.executable)} -I -B app.py"
-
-    def call_cmd(cmd: str, cwd: Path) -> dict[str, Any]:
-        return _run_hook(
-            {
-                "toolCall": {
-                    "name": "run_command",
-                    "args": {"CommandLine": cmd, "Cwd": str(cwd)},
-                }
-            },
-            event="pre-tool-use",
-        )
 
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        non_git = root / "non_git"
+        non_git = Path(tmp) / "non_git"
         non_git.mkdir()
-        assert call_cmd("git push origin main", non_git) == _allow()
-        checks.append("non_git_allowed")
-
-        remote = root / "origin.git"
-        _git_exec(root, "init", "--bare", "--initial-branch=main", str(remote))
-        repo = root / "repo"
-        _git_exec(root, "clone", str(remote), str(repo))
-        _git_exec(repo, "config", "user.name", "Test User")
-        _git_exec(repo, "config", "user.email", "test@example.com")
-
-        (repo / "README.md").write_text("# Demo\n", encoding="utf-8")
-        _git_exec(repo, "add", "README.md")
-        _git_exec(repo, "commit", "-m", "init")
-        _git_exec(repo, "push", "-u", "origin", "main")
-
-        # Docs-only commit pushed without receipt -> allowed
-        (repo / "NOTES.md").write_text("docs only\n", encoding="utf-8")
-        _git_exec(repo, "add", "NOTES.md")
-        _git_exec(repo, "commit", "-m", "docs")
-        assert call_cmd("git push origin main", repo) == _allow()
-        _git_exec(repo, "push", "origin", "main")
-        checks.append("docs_only_push_allowed")
-
-        # Dry-run and delete push -> allowed
-        assert call_cmd("git push --dry-run origin main", repo) == _allow()
-        assert call_cmd("git push origin :stale-branch", repo) == _allow()
-        checks.append("dry_run_and_delete_allowed")
-
-        # Create worktree with code change
-        wt = root / "repo-wt"
-        _git_exec(repo, "worktree", "add", "-b", "wt/feat", str(wt), "main")
-        (wt / "app.py").write_text("print(42)\n", encoding="utf-8")
-        _git_exec(wt, "add", "app.py")
-        _git_exec(wt, "commit", "-m", "add app")
-
-        # Unreviewed gates denied
-        assert call_cmd("git merge --ff-only wt/feat", repo).get("decision") == "deny"
         assert (
-            call_cmd(f"cd {wt} && git push origin HEAD", repo).get("decision") == "deny"
-        )
-        assert (
-            call_cmd(f"cd {wt}\ngit push origin HEAD", repo).get("decision") == "deny"
-        )
-        assert (
-            call_cmd(f"(cd {wt} && env -u GIT_DIR git push origin HEAD)", repo).get(
-                "decision"
-            )
-            == "deny"
-        )
-        assert call_cmd("git push origin wt/feat", repo).get("decision") == "deny"
-        assert (
-            call_cmd("repotools pr-create --title t --body-file b", wt).get("decision")
-            == "deny"
-        )
-        assert call_cmd("gh pr create --fill", wt).get("decision") == "deny"
-        assert call_cmd("mise run ship", wt).get("decision") == "deny"
-        assert (
-            call_cmd(f"mise --cd={wt} -E dev run ship", repo).get("decision") == "deny"
-        )
-        checks.append("unreviewed_code_gates_denied")
-
-        # Stage 2 --verify BEFORE Stage 1 --record fails
-        try:
-            _verify_receipt(
-                wt,
-                "HEAD",
-                runs=["true"],
-                evidence="",
-                proof="Ran app.py cleanly before review",
-            )
-            raise AssertionError("--verify before --record should fail")
-        except RuntimeError:
-            pass
-        checks.append("verify_before_record_refused")
-
-        # Docs-only branch still allowed even after origin/main receives a code commit
-        doc_wt = root / "repo-doc-wt"
-        _git_exec(repo, "worktree", "add", "-b", "wt/docs", str(doc_wt), "main")
-        (repo / "main_code.py").write_text("x = 1\n", encoding="utf-8")
-        _git_exec(repo, "add", "main_code.py")
-        _git_exec(repo, "commit", "-m", "main code")
-        _git_exec(repo, "push", "origin", "main")
-        (doc_wt / "GUIDE.md").write_text("# Guide\n", encoding="utf-8")
-        _git_exec(doc_wt, "add", "GUIDE.md")
-        _git_exec(doc_wt, "commit", "-m", "docs")
-        assert call_cmd("git push origin wt/docs", doc_wt) == _allow()
-        checks.append("three_dot_merge_base_docs_only_allowed")
-
-        # Reset main so wt/feat merges cleanly; record Stage 1 review ONLY -> push STILL DENIED!
-        _git_exec(repo, "reset", "--hard", "HEAD~1")
-        _record_receipt(wt, "HEAD", "self-check review")
-        deny_no_verify = call_cmd("git merge --ff-only wt/feat", repo)
-        assert deny_no_verify.get("decision") == "deny"
-        assert "--verify" in str(deny_no_verify.get("reason", ""))
-        assert call_cmd("git push origin wt/feat", wt).get("decision") == "deny"
-        checks.append("record_without_verify_denied")
-
-        # Failing --verify command refuses and leaves push DENIED
-        try:
-            _verify_receipt(
-                wt,
-                "HEAD",
-                runs=["exit 1"],
-                evidence="",
-                proof="Command failed deliberately",
-            )
-            raise AssertionError("failing --verify should fail")
-        except RuntimeError:
-            pass
-        assert call_cmd("git push origin wt/feat", wt).get("decision") == "deny"
-        checks.append("failing_verify_leaves_push_denied")
-
-        # Dirty tracked tree (before or after --run) fails --verify
-        (wt / "app.py").write_text("print(99)\n", encoding="utf-8")
-        try:
-            _verify_receipt(
-                wt,
-                "HEAD",
-                runs=["true"],
-                evidence="",
-                proof="Should fail on dirty tracked file",
-            )
-            raise AssertionError("dirty --verify should fail")
-        except RuntimeError:
-            pass
-        _git_exec(wt, "checkout", "--", "app.py")
-        try:
-            _verify_receipt(
-                wt,
-                "HEAD",
-                runs=["echo '# dirty' >> app.py"],
-                evidence="",
-                proof="Should fail when verification dirties tracked file",
-            )
-            raise AssertionError("post-run dirty --verify should fail")
-        except RuntimeError:
-            pass
-        _git_exec(wt, "checkout", "--", "app.py")
-        checks.append("dirty_tree_verify_refused")
-
-        # Successful --verify allows BOTH merge --ff-only AND push of same verified SHA
-        ver_res = _verify_receipt(
-            wt,
-            "HEAD",
-            runs=[py_run],
-            evidence="",
-            proof="Observed app.py output 42 exit 0",
-        )
-        assert ver_res.get("verified") is True
-        assert call_cmd("git merge --ff-only wt/feat", repo) == _allow()
-        _git_exec(repo, "merge", "--ff-only", "wt/feat")
-        assert call_cmd("git push origin main", repo) == _allow()
-        checks.append("verified_receipt_carries_across_ff_only_merge_to_push")
-
-        # Re-running --record clears Stage 2 verification until --verify runs again
-        _record_receipt(repo, "HEAD", "re-review clears verify")
-        assert call_cmd("git push origin main", repo).get("decision") == "deny"
-        checks.append("re_record_clears_prior_verification")
-
-        # Re-verify, then new commit invalidates BOTH receipts
-        _verify_receipt(
-            repo,
-            "HEAD",
-            runs=["true"],
-            evidence="",
-            proof="Re-verified app.py output 42",
-        )
-        assert call_cmd("git push origin main", repo) == _allow()
-        assert (
-            call_cmd("git commit -am msg && git push origin main", repo).get("decision")
-            == "deny"
-        )
-        (repo / "app.py").write_text("print('v2')\n", encoding="utf-8")
-        _git_exec(repo, "add", "app.py")
-        _git_exec(repo, "commit", "-m", "update app")
-        assert call_cmd("git push origin main", repo).get("decision") == "deny"
-        checks.append("new_commit_invalidates_both_receipts")
-
-        # Stop hook enforcement tests
-        transcript = root / "transcript.jsonl"
-        art_dir = root / "artifacts"
-        art_dir.mkdir()
-
-        # Case A: Edited app.py, claimed Done with NO post-edit verification -> continue!
-        _write_transcript(
-            transcript,
-            [
-                {"type": "USER_INPUT", "content": "Fix app.py"},
+            _run_hook(
                 {
-                    "type": "PLANNER_RESPONSE",
-                    "step_index": 10,
-                    "tool_calls": [
-                        {
-                            "name": "edit_file",
-                            "args": {"Path": str(repo / "app.py")},
-                        }
-                    ],
-                    "content": "Editing app.py now.",
-                },
-                {
-                    "type": "PLANNER_RESPONSE",
-                    "step_index": 11,
-                    "tool_calls": [],
-                    "content": "Done! I fixed app.py cleanly.",
-                },
-            ],
-        )
-        stop_payload = {
-            "terminationReason": "NO_TOOL_CALL",
-            "fullyIdle": True,
-            "transcriptPath": str(transcript),
-            "artifactDirectoryPath": str(art_dir),
-        }
-        stop_block = _run_hook(stop_payload, event="stop")
-        assert stop_block.get("decision") == "continue", f"Case A failed: {stop_block}"
-        # Same step_index dedupes cleanly
-        assert _run_hook(stop_payload, event="stop") == {}
-        checks.append("stop_hook_blocks_unverified_completion_and_dedupes")
-
-        # Case B: After running verification command + --record + --verify and citing proof -> allowed!
-        _record_receipt(repo, "HEAD", "reviewed stop-check commit")
-        _verify_receipt(
-            repo,
-            "HEAD",
-            runs=["true"],
-            evidence="",
-            proof="Observed python3 app.py output v2 exit 0",
-        )
-        full_transcript = transcript.with_name("transcript_full.jsonl")
-        # Include truncated_fields hydration test + relative path + real final tool_calls=[]
-        full_records_b = [
-            {"type": "USER_INPUT", "content": "Fix app.py v2"},
-            {
-                "type": "PLANNER_RESPONSE",
-                "step_index": 20,
-                "tool_calls": [
-                    {
-                        "name": "edit_file",
-                        "args": {"Path": "app.py"},
-                    }
-                ],
-                "content": "Updated app.py.",
-            },
-            {
-                "type": "PLANNER_RESPONSE",
-                "step_index": 21,
-                "tool_calls": [
-                    {
+                    "toolCall": {
                         "name": "run_command",
                         "args": {
-                            "CommandLine": "python3 app.py",
-                            "Cwd": ".",
+                            "CommandLine": "git push origin main",
+                            "Cwd": str(non_git),
                         },
                     }
-                ],
-                "content": "Ran verification.",
-            },
-            {
-                "type": "PLANNER_RESPONSE",
-                "step_index": 22,
-                "tool_calls": [],
-                "content": "Done! Fixed app.py and verified with `python3 app.py` (passed, exit code 0, output v2).",
-            },
-        ]
-        _write_transcript(full_transcript, full_records_b)
-        compact_records_b = [
-            full_records_b[0],
-            {
-                **full_records_b[1],
-                "tool_calls": [{"name": "edit_file", "args": {"Path": '"app.py"'}}],
-                "truncated_fields": ["tool_calls"],
-            },
-            full_records_b[2],
-            full_records_b[3],
-        ]
-        _write_transcript(transcript, compact_records_b)
-        stop_payload_with_cwd = {**stop_payload, "cwd": str(repo)}
-        assert _run_hook(stop_payload_with_cwd, event="stop") == {}
-        checks.append("stop_hook_allows_verified_completion_with_proof")
+                },
+                event="pre-tool-use",
+            )
+            == _allow()
+        )
+        checks.append("non_git_allowed")
 
-        # Case C: Non-verification ls / --record after edit & date 11/23 still blocks, whereas blocker/question skips!
-        _write_transcript(
-            transcript,
-            [
-                {"type": "USER_INPUT", "content": "Edit again"},
-                {
-                    "type": "PLANNER_RESPONSE",
-                    "step_index": 25,
-                    "tool_calls": [{"name": "edit_file", "args": {"Path": "app.py"}}],
-                    "content": "Edited.",
-                },
-                {
-                    "type": "PLANNER_RESPONSE",
-                    "step_index": 26,
-                    "tool_calls": [
-                        {
-                            "name": "run_command",
-                            "args": {
-                                "CommandLine": "ls -la && python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --summary x",
-                                "Cwd": str(repo),
-                            },
-                        }
-                    ],
-                    "content": "Listed files.",
-                },
-                {
-                    "type": "PLANNER_RESPONSE",
-                    "step_index": 27,
-                    "tool_calls": [],
-                    "content": "Done! Fixed on 11/23 cleanly.",
-                },
-            ],
-        )
-        assert (
-            _run_hook(stop_payload_with_cwd, event="stop").get("decision") == "continue"
-        )
-        _write_transcript(
-            transcript,
-            [
-                {"type": "USER_INPUT", "content": "Report blocker"},
-                {
-                    "type": "PLANNER_RESPONSE",
-                    "step_index": 28,
-                    "tool_calls": [{"name": "edit_file", "args": {"Path": "app.py"}}],
-                    "content": "Edited.",
-                },
-                {
-                    "type": "PLANNER_RESPONSE",
-                    "step_index": 29,
-                    "tool_calls": [],
-                    "content": "I implemented the draft in app.py, but pytest failed and I am blocked.",
-                },
-            ],
-        )
-        assert _run_hook(stop_payload_with_cwd, event="stop") == {}
-        checks.append("stop_hook_rejects_ls_record_and_dates_allows_blockers")
+    assert _split_shell_segments("cd /tmp && env -u GIT_DIR git push origin HEAD") == [
+        ["cd", "/tmp"],
+        ["env", "-u", "GIT_DIR", "git", "push", "origin", "HEAD"],
+    ]
+    assert _strip_env_prefix(["FOO=1", "env", "-u", "BAR", "git", "push"]) == [
+        "git",
+        "push",
+    ]
+    assert (
+        _parse_git_segment(["git", "push", "--dry-run", "origin", "main"], Path.cwd())
+        is None
+    )
+    assert _parse_git_segment(["git", "push", "origin", ":stale"], Path.cwd()) is None
+    parsed_push = _parse_git_segment(
+        ["git", "-C", ".", "push", "origin", "HEAD"], Path.cwd()
+    )
+    assert parsed_push is not None and parsed_push[0] == "git push"
+    parsed_mise = _parse_mise_or_pr_segment(["mise", "run", "ship"], Path.cwd())
+    assert parsed_mise is not None and parsed_mise[0] == "mise run ship"
+    checks.append("command_parsers_ok")
 
-        # Case D: Read-only / docs-only / post-task fast-exit -> allowed
-        full_transcript.unlink(missing_ok=True)
-        _write_transcript(
-            transcript,
-            [
-                {"type": "USER_INPUT", "content": "Learn check"},
-                {
-                    "type": "PLANNER_RESPONSE",
-                    "step_index": 30,
-                    "tool_calls": [],
-                    "content": "Post-task /learn: no reusable customization updates needed.",
-                },
-            ],
-        )
-        assert _run_hook(stop_payload, event="stop") == {}
-        checks.append("stop_hook_skips_fast_exit_and_read_only")
+    assert not _is_non_doc_repo_edit("README.md", None, Path.cwd())
+    assert not _is_non_doc_repo_edit(".planning/demo/task_plan.md", None, Path.cwd())
+    assert _is_non_doc_repo_edit("tasks/py/check.py", None, Path.cwd())
+    assert not _is_verification_command(
+        "ls -la && python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --summary x"
+    )
+    assert _is_verification_command("pytest -n auto")
+    assert _has_observed_proof_cues("27/27 passed with pytest exit code 0")
+    assert not _has_observed_proof_cues("Done on 11/23 cleanly")
+    assert _looks_like_completion_claim("Done! Fixed app.py.")
+    assert not _looks_like_completion_claim(
+        "I implemented the draft, but pytest failed and I am blocked."
+    )
+    assert _unquote_truncated('"app.py"') == "app.py"
+    assert _process_stdin_text("{bad json", event="pre-tool-use") == _allow()
+    assert _process_stdin_text("{bad json", event="stop") == {}
+    checks.append("stop_classifiers_ok")
 
     if hooks_json_path is not None:
         _check_hooks_json(hooks_json_path)
@@ -1773,7 +1497,7 @@ def main() -> int:
 
     if args.self_check:
         checks = _run_self_check(args.check_hooks_json)
-        print(json.dumps({"ok": True, "checks": checks}))
+        sys.stdout.write(json.dumps({"ok": True, "checks": checks}) + "\n")
         return 0
 
     if args.record and args.verify:
@@ -1785,7 +1509,7 @@ def main() -> int:
 
     if args.record:
         res = _record_receipt(Path(args.repo), args.ref, args.summary)
-        print(json.dumps({"ok": True, **res}))
+        sys.stdout.write(json.dumps({"ok": True, **res}) + "\n")
         return 0
 
     if args.verify:
@@ -1801,11 +1525,11 @@ def main() -> int:
         except RuntimeError as exc:
             sys.stderr.write(json.dumps({"ok": False, "error": str(exc)}) + "\n")
             return 1
-        print(json.dumps({"ok": True, **res}))
+        sys.stdout.write(json.dumps({"ok": True, **res}) + "\n")
         return 0
 
     raw = sys.stdin.read()
-    print(json.dumps(_process_stdin_text(raw, event=args.event)))
+    sys.stdout.write(json.dumps(_process_stdin_text(raw, event=args.event)) + "\n")
     return 0
 
 

@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
 import shutil
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
 from urllib.parse import quote
 
+import orjson
+
 from herdr_roll.herdr import (
     is_bare_shell,
+    open_file_paths,
     owned_by_harness,
     program_name,
     run_cmd,
@@ -37,12 +40,12 @@ CODEX_FOOTER_MODEL_RE = re.compile(
 IDLE_STATES = frozenset({"idle", "done"})
 WAITING_STATES = frozenset({"blocked", "permission", "error"})
 HARNESS_BINARIES: dict[HarnessKind, tuple[str, ...]] = {
-    HarnessKind.agy: ("agy",),
-    HarnessKind.codex: ("codex",),
-    HarnessKind.claude: ("claude",),
-    HarnessKind.opencode: ("opencode",),
-    HarnessKind.hermes: ("hermes",),
-    HarnessKind.zcode: ("zcode",),
+    HarnessKind.AGY: ("agy",),
+    HarnessKind.CODEX: ("codex",),
+    HarnessKind.CLAUDE: ("claude",),
+    HarnessKind.OPENCODE: ("opencode",),
+    HarnessKind.HERMES: ("hermes",),
+    HarnessKind.ZCODE: ("zcode",),
 }
 
 
@@ -134,7 +137,7 @@ def _connect_ro(db_path: Path) -> sqlite3.Connection | None:
         conn = sqlite3.connect(uri, uri=True, timeout=2.0)
         conn.row_factory = sqlite3.Row
         return conn
-    except (OSError, sqlite3.Error):
+    except OSError, sqlite3.Error:
         return None
 
 
@@ -226,6 +229,43 @@ def _filter_by_table(
     return kept
 
 
+def _parse_leading_json_object(raw: str) -> dict[str, Any] | None:
+    """Parse a JSON object via `orjson`, tolerating trailing non-JSON bytes."""
+    stripped = raw.lstrip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        decoded = orjson.loads(stripped)
+        return decoded if isinstance(decoded, dict) else None
+    except orjson.JSONDecodeError:
+        pass
+    depth = 0
+    in_string = False
+    escape = False
+    for idx, ch in enumerate(stripped):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    decoded = orjson.loads(stripped[: idx + 1])
+                    return decoded if isinstance(decoded, dict) else None
+                except orjson.JSONDecodeError:
+                    return None
+    return None
+
+
 class BaseAdapter:
     """Shared base helper methods for adapters."""
 
@@ -269,7 +309,7 @@ class BaseAdapter:
 class AgyAdapter(BaseAdapter):
     """Antigravity CLI (`agy` / `agy-hc`) adapter."""
 
-    kind = HarnessKind.agy
+    kind = HarnessKind.AGY
 
     KEEP: ClassVar[dict[str, int | str]] = {
         "--add-dir": 1,
@@ -328,20 +368,17 @@ class AgyAdapter(BaseAdapter):
             if conv and UUID_RE.fullmatch(conv):
                 return conv
         if tree_pids:
-            held = run_cmd(
-                ["lsof", "-p", ",".join(map(str, tree_pids))],
-                timeout=10.0,
-                ok_codes=(0, 1),
-            )
-            if held:
-                brain_ids = {
-                    m[1]
-                    for m in re.finditer(
-                        rf"/antigravity-cli/brain/({UUID_RE.pattern})/", held
+            brain_ids = {
+                m[1]
+                for path_str in open_file_paths(tree_pids)
+                if (
+                    m := re.search(
+                        rf"/antigravity-cli/brain/({UUID_RE.pattern})/", path_str
                     )
-                }
-                if len(brain_ids) == 1:
-                    return next(iter(brain_ids))
+                )
+            }
+            if len(brain_ids) == 1:
+                return next(iter(brain_ids))
         return None
 
     def resume_argv(
@@ -387,7 +424,7 @@ class AgyAdapter(BaseAdapter):
 class CodexAdapter(BaseAdapter):
     """Codex CLI (`codex` / `codex-hc`) adapter."""
 
-    kind = HarnessKind.codex
+    kind = HarnessKind.CODEX
 
     PAIR_FLAGS = frozenset(
         {
@@ -453,15 +490,12 @@ class CodexAdapter(BaseAdapter):
         del address, fg_argv, term_argv, cwd, title, screen_text
         if not tree_pids:
             return None
-        held = (
-            run_cmd(
-                ["lsof", "-p", ",".join(map(str, tree_pids))],
-                timeout=10.0,
-                ok_codes=(0, 1),
-            )
-            or ""
-        )
-        matches = list(CODEX_ROLLOUT_RE.finditer(held))
+        held_paths = open_file_paths(tree_pids)
+        matches = [
+            match
+            for path_str in held_paths
+            if (match := CODEX_ROLLOUT_RE.search(path_str)) is not None
+        ]
         if not matches:
             return None
         resolved: set[str] = set()
@@ -469,19 +503,19 @@ class CodexAdapter(BaseAdapter):
             rollout_path = Path(match[1])
             root_id: str | None = None
             try:
-                with rollout_path.open("r", encoding="utf-8") as handle:
+                with rollout_path.open("rb") as handle:
                     first_line = handle.readline()
-                meta = json.loads(first_line)
+                meta = orjson.loads(first_line)
                 payload = meta.get("payload") if isinstance(meta, dict) else None
                 cand = payload.get("session_id") if isinstance(payload, dict) else None
                 if isinstance(cand, str) and UUID_RE.fullmatch(cand):
                     root_id = cand
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 pass
             resolved.add(root_id or match[2])
         return next(iter(resolved)) if len(resolved) == 1 else None
 
-    def codex_flags(self, raw_argv: tuple[str, ...], screen_text: str) -> list[str]:
+    def codex_flags(self, raw_argv: Sequence[str], screen_text: str) -> list[str]:
         """Extract clean, deduplicated Codex flags, stripping wrapper `shell_environment_policy.*` duplicates."""
         unwrapped = unwrap_launchers(raw_argv)
         if not unwrapped:
@@ -614,10 +648,10 @@ def claude_record(pid: int | None) -> dict[str, Any] | None:
         return None
     record = Path.home() / f".claude/sessions/{pid}.json"
     try:
-        raw, _ = json.JSONDecoder().raw_decode(record.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw_text = record.read_text(encoding="utf-8")
+    except OSError:
         return None
-    return raw if isinstance(raw, dict) else None
+    return _parse_leading_json_object(raw_text)
 
 
 def claude_record_for_tree(
@@ -637,7 +671,7 @@ def claude_record_for_tree(
 class ClaudeAdapter(BaseAdapter):
     """Claude Code CLI (`claude`) adapter."""
 
-    kind = HarnessKind.claude
+    kind = HarnessKind.CLAUDE
 
     KEEP: ClassVar[dict[str, int | str]] = {
         "--add-dir": "*",
@@ -837,7 +871,7 @@ class ClaudeAdapter(BaseAdapter):
 class OpenCodeAdapter(BaseAdapter):
     """OpenCode CLI (`opencode`) adapter with SQLite fallback for fresh sessions."""
 
-    kind = HarnessKind.opencode
+    kind = HarnessKind.OPENCODE
 
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path
@@ -995,7 +1029,7 @@ class OpenCodeAdapter(BaseAdapter):
 class HermesAdapter(BaseAdapter):
     """Hermes Agent TUI (`hermes chat --tui`) adapter."""
 
-    kind = HarnessKind.hermes
+    kind = HarnessKind.HERMES
 
     KEEP: ClassVar[dict[str, int | str]] = {
         "--accept-hooks": 0,
@@ -1195,7 +1229,7 @@ class HermesAdapter(BaseAdapter):
 class ZCodeAdapter(BaseAdapter):
     """ZCode CLI (`zcode`) adapter with SQLite fallback."""
 
-    kind = HarnessKind.zcode
+    kind = HarnessKind.ZCODE
 
     KEEP: ClassVar[dict[str, int | str]] = {
         "--disallowed-tools": "*",
@@ -1385,11 +1419,11 @@ ADAPTERS: dict[HarnessKind, HarnessAdapter] = {
 def detect_kind(
     status_app: str | None, fg_argv: list[str], term_argv: list[str]
 ) -> HarnessKind:
-    """Identify the running harness kind or fall back to `HarnessKind.shell`."""
+    """Identify the running harness kind or fall back to `HarnessKind.SHELL`."""
     for adapter in ADAPTER_ORDER:
         if adapter.matches(status_app, fg_argv, term_argv):
             return adapter.kind
-    return HarnessKind.shell
+    return HarnessKind.SHELL
 
 
 def harness_running(

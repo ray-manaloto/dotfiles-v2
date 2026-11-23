@@ -1,8 +1,7 @@
-"""Engine tests: 2-sample active_jobs, wave scheduling, flock lock, clean env quoting, git parity, roll:self."""
+"""Engine tests: 2-sample active_jobs, wave scheduling, filelock, clean env quoting, cyclopts CLI, roll:self."""
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
@@ -11,20 +10,31 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from herdr_roll import engine
+import orjson
+
+from dotfiles_py.time_ns import NANOSECOND_TIMESTAMP_RE
+from herdr_roll import cli, engine
 from herdr_roll.graph import RefusedError, merge_graph, select_targets
 from herdr_roll.herdr import (
     LiveClient,
+    adaptive_poll,
     clean_relaunch_command,
     is_transient_or_shell,
+    lsof_cwd,
+    open_file_paths,
     owned_by_harness,
+    processes,
 )
 from herdr_roll.models import (
     GraphSnapshot,
     HarnessKind,
+    HerdrRollErrorCode,
+    HerdrRollReturnCode,
     SpaceSnapshot,
     TabSnapshot,
     TerminalSnapshot,
+    Timing,
+    make_session_outcome,
 )
 
 
@@ -44,7 +54,6 @@ class EngineTests(unittest.TestCase):
         live.spaces = []
         live.terminals = {"t1": {"address": "t1", "state": "live"}}
         live.info = {"t1": {"foreground": {"pid": 100, "argv": ["codex"]}}}
-        # First sample sees both a short-lived script (pid 101) and a long build (pid 102).
         sample1 = {
             100: (1, "Mon", "codex"),
             101: (100, "Mon", "git status"),
@@ -63,13 +72,12 @@ class EngineTests(unittest.TestCase):
         ):
             jobs = live.active_jobs(
                 "t1",
-                HarnessKind.codex,
-                {HarnessKind.codex: ("codex",)},
+                HarnessKind.CODEX,
+                {HarnessKind.CODEX: ("codex",)},
                 confirm_delay=0.1,
             )
         self.assertEqual(jobs, ["cargo build"])
 
-        # Transient only in sample 1 returns empty list on sample 2.
         live.procs = {100: (1, "Mon", "codex"), 101: (100, "Mon", "git status")}
         with (
             mock.patch.object(
@@ -83,11 +91,37 @@ class EngineTests(unittest.TestCase):
         ):
             jobs_empty = live.active_jobs(
                 "t1",
-                HarnessKind.codex,
-                {HarnessKind.codex: ("codex",)},
+                HarnessKind.CODEX,
+                {HarnessKind.CODEX: ("codex",)},
                 confirm_delay=0.1,
             )
         self.assertEqual(jobs_empty, [])
+
+    def test_psutil_process_and_open_files_and_tenacity_poll(self) -> None:
+        procs = processes()
+        self.assertIn(os.getpid(), procs)
+        self.assertEqual(
+            Path(lsof_cwd(os.getpid()) or "").resolve(),
+            Path.cwd().resolve(),
+        )
+        with tempfile.NamedTemporaryFile() as fh:
+            paths = open_file_paths([os.getpid()])
+            self.assertIn(
+                str(Path(fh.name).resolve()), [str(Path(p).resolve()) for p in paths]
+            )
+
+        attempts = {"n": 0}
+
+        def probe() -> str | None:
+            attempts["n"] += 1
+            return "ok" if attempts["n"] >= 3 else None
+
+        with mock.patch("herdr_roll.herdr.time.sleep"):
+            self.assertEqual(
+                adaptive_poll(probe, 5.0, min_interval=0.05, max_interval=0.1),
+                "ok",
+            )
+        self.assertEqual(attempts["n"], 3)
 
     def test_clean_relaunch_command_uses_allowlisted_env_i(self) -> None:
         base_env = {
@@ -123,74 +157,77 @@ class EngineTests(unittest.TestCase):
         self,
     ) -> None:
         graph = GraphSnapshot(
-            taken_at="2026-11-23T12:00:00Z",
+            taken_at="20261123T120000.000000000-0600",
             coordinator="t_coord",
-            spaces=(
+            spaces=[
                 SpaceSnapshot(
                     id="sp1",
                     name="chief-of-staff",
-                    tabs=(
+                    tabs=[
                         TabSnapshot(
                             id="tb_coord",
                             name="chief-of-staff",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t_coord",
-                                    kind=HarnessKind.codex,
+                                    kind=HarnessKind.CODEX,
                                     session_id="s0",
                                     is_coordinator=True,
                                 ),
-                            ),
+                            ],
                         ),
-                    ),
+                    ],
                 ),
                 SpaceSnapshot(
                     id="sp2",
                     name="dotfiles-v2",
-                    tabs=(
+                    tabs=[
                         TabSnapshot(
                             id="tb_lead",
                             name="dotfiles-v2-lead",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t_lead",
-                                    kind=HarnessKind.agy,
+                                    kind=HarnessKind.AGY,
                                     session_id="s2",
                                 ),
-                            ),
+                            ],
                         ),
                         TabSnapshot(
                             id="tb_child",
                             name="worker-1",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t_child",
-                                    kind=HarnessKind.codex,
+                                    kind=HarnessKind.CODEX,
                                     session_id="s1",
                                 ),
-                            ),
+                            ],
                         ),
-                    ),
+                    ],
                 ),
-            ),
+            ],
         )
         ordered = select_targets(graph, all_targets=True)
         self.assertEqual(
             [t[2].address for t in ordered], ["t_coord", "t_child", "t_lead"]
         )
 
-        # When Wave 0 coordinator fails, Wave 1 and Wave 2 are never called.
         calls: list[str] = []
 
-        def fake_restart_one(target, **_kwargs):  # type: ignore[no-untyped-def]
-            addr = target[2].address
+        def fake_restart_one(
+            target: tuple[SpaceSnapshot, TabSnapshot, TerminalSnapshot],
+            **_kwargs: object,
+        ) -> engine.SessionOutcome:
+            sp, tb, tm = target
+            addr = tm.address
             calls.append(addr)
-            return engine.SessionOutcome(
-                where=f"{target[0].name} / {target[1].name}",
-                tab_id=target[1].id,
+            return make_session_outcome(
+                where=f"{sp.name} / {tb.name}",
+                tab_id=tb.id,
                 terminal=addr,
-                kind=target[2].kind,
-                session_id=target[2].session_id,
+                kind=tm.kind,
+                session_id=tm.session_id,
                 result="failed-verify-timeout" if addr == "t_coord" else "ok",
             )
 
@@ -222,7 +259,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(rc, engine.EXIT_FAILED)
         self.assertEqual(calls, ["t_coord"])
 
-    def test_flock_refuses_concurrent_apply(self) -> None:
+    def test_filelock_refuses_concurrent_apply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             lock_path = Path(tmp) / "roll.lock"
             with (
@@ -236,59 +273,59 @@ class EngineTests(unittest.TestCase):
         self,
     ) -> None:
         graph = GraphSnapshot(
-            taken_at="2026-11-23T00:00:00Z",
-            spaces=(
+            taken_at="20261123T000000.000000000-0600",
+            spaces=[
                 SpaceSnapshot(
                     id="sp-df",
                     name="dotfiles-v2",
-                    tabs=(
+                    tabs=[
                         TabSnapshot(
                             id="tb-lead",
                             name="dotfiles-v2-lead",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t3xb",
-                                    kind=HarnessKind.agy,
+                                    kind=HarnessKind.AGY,
                                     session_id="e4b6c8ee-177f-4fc6-8725-861036790dcf",
                                 ),
-                            ),
+                            ],
                         ),
                         TabSnapshot(
                             id="tb-shell",
                             name="2",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t3xg",
-                                    kind=HarnessKind.shell,
+                                    kind=HarnessKind.SHELL,
                                     session_id=None,
                                 ),
-                            ),
+                            ],
                         ),
                         TabSnapshot(
                             id="tb-nosid",
                             name="fresh-codex",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t4x",
-                                    kind=HarnessKind.codex,
+                                    kind=HarnessKind.CODEX,
                                     session_id=None,
                                 ),
-                            ),
+                            ],
                         ),
                         TabSnapshot(
                             id="tb-roll",
                             name="roll",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t99",
-                                    kind=HarnessKind.shell,
+                                    kind=HarnessKind.SHELL,
                                     session_id=None,
                                 ),
-                            ),
+                            ],
                         ),
-                    ),
+                    ],
                 ),
-            ),
+            ],
         )
         fake_live = mock.MagicMock(spec=LiveClient)
         with (
@@ -321,13 +358,13 @@ class EngineTests(unittest.TestCase):
                     return_value={"tab": "tb-new", "terminal": "t-new"},
                 ) as do_mock,
             ):
-                rc = engine.cmd_self(apply=True, busy_wait=25, settle=40)
+                rc = engine.cmd_self(apply=True, busy_wait=25.0, settle=40.0)
                 self.assertEqual(rc, 0)
                 do_mock.assert_called_once()
                 call_args = do_mock.call_args[0]
                 self.assertEqual(call_args[0], "tab.new")
                 argv_idx = call_args.index("--argv") + 1
-                spawned_argv = json.loads(call_args[argv_idx])
+                spawned_argv = orjson.loads(call_args[argv_idx])
                 self.assertEqual(spawned_argv[0], sys.executable)
                 self.assertEqual(spawned_argv[1:3], ["-I", "-B"])
                 self.assertEqual(
@@ -351,24 +388,24 @@ class EngineTests(unittest.TestCase):
             state_root = Path(tmp) / "state"
             target_term = TerminalSnapshot(
                 address="t3xb",
-                kind=HarnessKind.agy,
+                kind=HarnessKind.AGY,
                 session_id="e4b6c8ee-177f-4fc6-8725-861036790dcf",
             )
             graph = GraphSnapshot(
-                taken_at="2026-11-23T00:00:00Z",
-                spaces=(
+                taken_at="20261123T000000.000000000-0600",
+                spaces=[
                     SpaceSnapshot(
                         id="sp-df",
                         name="dotfiles-v2",
-                        tabs=(
+                        tabs=[
                             TabSnapshot(
                                 id="tb-lead",
                                 name="dotfiles-v2-lead",
-                                terminals=(target_term,),
+                                terminals=[target_term],
                             ),
-                        ),
+                        ],
                     ),
-                ),
+                ],
             )
             roll_spaces = [
                 {
@@ -385,22 +422,29 @@ class EngineTests(unittest.TestCase):
             ]
             fake_live = mock.MagicMock(spec=LiveClient)
             fake_live.me = "t3xh"
-            ok_outcome = engine.SessionOutcome(
+            ok_outcome = make_session_outcome(
                 where="dotfiles-v2 / dotfiles-v2-lead",
                 tab_id="tb-lead",
                 terminal="t3xb",
-                kind=HarnessKind.agy,
+                kind=HarnessKind.AGY,
                 session_id=target_term.session_id,
                 result="ok",
             )
-            fail_outcome = engine.SessionOutcome(
+            fail_outcome = make_session_outcome(
                 where="dotfiles-v2 / dotfiles-v2-lead",
                 tab_id="tb-lead",
                 terminal="t3xb",
-                kind=HarnessKind.agy,
+                kind=HarnessKind.AGY,
                 session_id=target_term.session_id,
                 result="failed-verify-timeout",
             )
+            self.assertEqual(
+                fail_outcome.errors[0].code, HerdrRollErrorCode.ERR_VERIFY_TIMEOUT
+            )
+            self.assertEqual(
+                fail_outcome.returns[0].code, HerdrRollReturnCode.RET_FAILED
+            )
+            self.assertRegex(ok_outcome.timestamp, NANOSECOND_TIMESTAMP_RE)
 
             with (
                 mock.patch("herdr_roll.engine.state_dir", return_value=state_root),
@@ -437,16 +481,16 @@ class EngineTests(unittest.TestCase):
         tab = TabSnapshot(id="tb1", name="worker")
         term = TerminalSnapshot(
             address="t8",
-            kind=HarnessKind.codex,
+            kind=HarnessKind.CODEX,
             session_id="01a1f5ba-9341-7890-976e-75cc768f8dd5",
             cwd="/tmp/repo",
             fg_pid=200,
-            fg_argv=("codex",),
+            fg_argv=["codex"],
         )
         with mock.patch("herdr_roll.engine.hc_read", return_value=""):
             clean_plan = engine.restart_one(
                 (space, tab, term),
-                timing=engine.Timing(),
+                timing=Timing(),
                 run_dir=None,
                 apply=False,
                 force_clean_env=True,
@@ -454,7 +498,7 @@ class EngineTests(unittest.TestCase):
             )
             keep_plan = engine.restart_one(
                 (space, tab, term),
-                timing=engine.Timing(),
+                timing=Timing(),
                 run_dir=None,
                 apply=False,
                 force_clean_env=False,
@@ -465,18 +509,20 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("env -i", keep_plan.notes[2])
         self.assertNotIn(engine.VERIFY_PROMPT, clean_plan.notes[2])
         self.assertNotIn(engine.VERIFY_PROMPT, keep_plan.notes[2])
+        self.assertEqual(clean_plan.errors, [])
+        self.assertEqual(clean_plan.returns[0].code, HerdrRollReturnCode.RET_PLANNED)
 
     def test_owned_by_harness_unwraps_launchers_and_ignores_prompt(self) -> None:
         self.assertTrue(
             owned_by_harness(
-                HarnessKind.codex,
+                HarnessKind.CODEX,
                 '/bin/zsh -lic \'"$@"; exec "$0" -li\' /bin/zsh fnox --non-interactive proxy run -- codex',
                 engine.HARNESS_BINARIES,
             )
         )
         self.assertFalse(
             owned_by_harness(
-                HarnessKind.codex,
+                HarnessKind.CODEX,
                 "python3 -c \"print('codex')\"",
                 engine.HARNESS_BINARIES,
             )
@@ -489,7 +535,7 @@ class EngineTests(unittest.TestCase):
         live.procs = {100: (1, "Mon", "codex"), 101: (100, "Mon", "cargo test")}
         live.info = {"t1": {"foreground": {"pid": None, "argv": []}}}
         jobs = live._sample_jobs(
-            "t1", HarnessKind.codex, {HarnessKind.codex: ("codex",)}
+            "t1", HarnessKind.CODEX, {HarnessKind.CODEX: ("codex",)}
         )
         self.assertEqual(jobs, {})
 
@@ -497,37 +543,37 @@ class EngineTests(unittest.TestCase):
         sp = SpaceSnapshot(
             id="sp1",
             name="dotfiles-v2",
-            tabs=(
+            tabs=[
                 TabSnapshot(
                     id="tb1",
                     name="alpha",
-                    terminals=(
+                    terminals=[
                         TerminalSnapshot(
-                            address="t1", kind=HarnessKind.codex, session_id="s1"
+                            address="t1", kind=HarnessKind.CODEX, session_id="s1"
                         ),
-                    ),
+                    ],
                 ),
                 TabSnapshot(
                     id="tb2",
                     name="beta",
-                    terminals=(
+                    terminals=[
                         TerminalSnapshot(
-                            address="t2", kind=HarnessKind.claude, session_id="s2"
+                            address="t2", kind=HarnessKind.CLAUDE, session_id="s2"
                         ),
-                    ),
+                    ],
                 ),
                 TabSnapshot(
                     id="tb3",
                     name="gamma",
-                    terminals=(
+                    terminals=[
                         TerminalSnapshot(
-                            address="t3", kind=HarnessKind.agy, session_id="s3"
+                            address="t3", kind=HarnessKind.AGY, session_id="s3"
                         ),
-                    ),
+                    ],
                 ),
-            ),
+            ],
         )
-        graph = GraphSnapshot(taken_at="2026-11-23T00:00:00Z", spaces=(sp,))
+        graph = GraphSnapshot(taken_at="20261123T000000.000000000-0600", spaces=[sp])
         selected = select_targets(graph, all_targets=True, exclude=("alpha", "t3"))
         self.assertEqual([t[2].address for t in selected], ["t2"])
 
@@ -535,76 +581,75 @@ class EngineTests(unittest.TestCase):
         self,
     ) -> None:
         prev = GraphSnapshot(
-            taken_at="2026-11-23T00:00:00Z",
-            spaces=(
+            taken_at="20261123T000000.000000000-0600",
+            spaces=[
                 SpaceSnapshot(
                     id="sp_a",
                     name="shared",
-                    tabs=(
+                    tabs=[
                         TabSnapshot(
                             id="tb_old_a",
                             name="worker",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t1",
-                                    kind=HarnessKind.codex,
+                                    kind=HarnessKind.CODEX,
                                     session_id="sid-moved",
                                 ),
-                            ),
+                            ],
                         ),
-                    ),
+                    ],
                 ),
                 SpaceSnapshot(
                     id="sp_b",
                     name="shared",
-                    tabs=(
+                    tabs=[
                         TabSnapshot(
                             id="tb_old_b",
                             name="closed",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t2",
-                                    kind=HarnessKind.codex,
+                                    kind=HarnessKind.CODEX,
                                     session_id="sid-moved",
                                 ),
                                 TerminalSnapshot(
                                     address="t3",
-                                    kind=HarnessKind.claude,
+                                    kind=HarnessKind.CLAUDE,
                                     session_id="sid-kept",
                                 ),
-                            ),
+                            ],
                         ),
-                    ),
+                    ],
                 ),
-            ),
+            ],
         )
         cur = GraphSnapshot(
-            taken_at="2026-11-23T01:00:00Z",
-            spaces=(
+            taken_at="20261123T010000.000000000-0600",
+            spaces=[
                 SpaceSnapshot(
                     id="sp_a",
                     name="shared",
-                    tabs=(
+                    tabs=[
                         TabSnapshot(
                             id="tb_new_a",
                             name="worker",
-                            terminals=(
+                            terminals=[
                                 TerminalSnapshot(
                                     address="t10",
-                                    kind=HarnessKind.codex,
+                                    kind=HarnessKind.CODEX,
                                     session_id="sid-moved",
                                 ),
-                            ),
+                            ],
                         ),
-                    ),
+                    ],
                 ),
-            ),
+            ],
         )
         merged = merge_graph(cur, prev)
         self.assertEqual([s.id for s in merged.spaces], ["sp_a", "sp_b"])
         sp_b = merged.spaces[1]
         self.assertTrue(sp_b.kept_from_previous_graph)
-        # Only `sid-kept` should remain in the closed space (`sid-moved` is live in sp_a).
         self.assertEqual([tm.session_id for tm in sp_b.tabs[0].terminals], ["sid-kept"])
 
     def test_restart_one_apply_runs_verify_turn(self) -> None:
@@ -612,11 +657,11 @@ class EngineTests(unittest.TestCase):
         tab = TabSnapshot(id="tb1", name="worker")
         term = TerminalSnapshot(
             address="t8",
-            kind=HarnessKind.codex,
+            kind=HarnessKind.CODEX,
             session_id="01a1f5ba-9341-7890-976e-75cc768f8dd5",
             cwd="/tmp/repo",
             fg_pid=200,
-            fg_argv=("codex",),
+            fg_argv=["codex"],
         )
         fake_client = mock.MagicMock(spec=LiveClient)
         fake_client.info = {"t8": {"status": {"state": "idle", "app": "codex"}}}
@@ -634,7 +679,7 @@ class EngineTests(unittest.TestCase):
         ):
             outcome = engine.restart_one(
                 (space, tab, term),
-                timing=engine.Timing(busy_wait=0.0, settle=1.0),
+                timing=Timing(busy_wait=0.0, settle=1.0),
                 run_dir=None,
                 apply=True,
                 verify_turn=True,
@@ -656,19 +701,21 @@ class EngineTests(unittest.TestCase):
             sp = SpaceSnapshot(
                 id="sp1",
                 name="dotfiles-v2",
-                tabs=(
+                tabs=[
                     TabSnapshot(
                         id="tb1",
                         name="worker",
-                        terminals=(
+                        terminals=[
                             TerminalSnapshot(
-                                address="t1", kind=HarnessKind.codex, session_id="sid-1"
+                                address="t1", kind=HarnessKind.CODEX, session_id="sid-1"
                             ),
-                        ),
+                        ],
                     ),
-                ),
+                ],
             )
-            fake_graph = GraphSnapshot(taken_at="2026-11-23T00:00:00Z", spaces=(sp,))
+            fake_graph = GraphSnapshot(
+                taken_at="20261123T000000.000000000-0600", spaces=[sp]
+            )
             with (
                 mock.patch.dict(os.environ, {"XDG_STATE_HOME": tmp}),
                 mock.patch("herdr_roll.engine.state_dir", return_value=state_root),
@@ -688,13 +735,44 @@ class EngineTests(unittest.TestCase):
                 self.assertEqual(rc_ver, 0)
                 self.assertGreaterEqual(lock_spy.call_count, 2)
                 runs = [
-                    json.loads(line)
+                    orjson.loads(line)
                     for line in (state_root / "runs.jsonl")
                     .read_text(encoding="utf-8")
                     .splitlines()
                 ]
                 self.assertEqual(runs[0]["args"], ["snapshot", "--apply"])
                 self.assertEqual(runs[1]["args"], ["verify", "--apply"])
+                self.assertRegex(runs[0]["timestamp"], NANOSECOND_TIMESTAMP_RE)
+                self.assertIsInstance(runs[0]["timestamp_unix_ns"], int)
+                self.assertEqual(runs[0]["returns"][0]["code"], "RET_OK")
+
+                # Verify dual-sink structlog wrote clean JSONL without internal meta keys.
+                snap_jsonl = state_root / runs[0]["run_id"] / "snapshot.jsonl"
+                self.assertTrue(snap_jsonl.is_file())
+                rows = [
+                    orjson.loads(line)
+                    for line in snap_jsonl.read_text(encoding="utf-8").splitlines()
+                ]
+                self.assertTrue(rows)
+                for row in rows:
+                    self.assertNotIn("_record", row)
+                    self.assertNotIn("_from_structlog", row)
+                    self.assertRegex(row["timestamp"], NANOSECOND_TIMESTAMP_RE)
+
+    def test_cyclopts_cli_dispatches_and_returns_refused_envelope(self) -> None:
+        with mock.patch("herdr_roll.cli.cmd_snapshot", return_value=0) as snap_mock:
+            rc = cli.main(
+                ["snapshot", "--tabs", "t1,t2", "--harnesses", "codex", "--all"]
+            )
+        self.assertEqual(rc, 0)
+        snap_mock.assert_called_once()
+        kwargs = snap_mock.call_args.kwargs
+        self.assertEqual(kwargs["tabs"], ("t1", "t2"))
+        self.assertEqual(kwargs["harnesses"], (HarnessKind.CODEX,))
+        self.assertTrue(kwargs["all_targets"])
+
+        rc_bad = cli.main(["snapshot", "--harnesses", "unknown_agent"])
+        self.assertEqual(rc_bad, engine.EXIT_REFUSED)
 
 
 if __name__ == "__main__":

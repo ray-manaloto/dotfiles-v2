@@ -1,0 +1,691 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/herdr_roll.schema.json",
+  "title": "HerdrRollModels",
+  "description": "Domain schemas, enums, outcomes, run records, and typed response envelopes for herdr_roll.",
+  "$defs": {
+    "HarnessKind": {
+      "type": "string",
+      "description": "Supported Herdr interactive agent harnesses plus plain shells.",
+      "enum": ["agy", "codex", "claude", "opencode", "hermes", "zcode", "shell"]
+    },
+    "Role": {
+      "type": "string",
+      "description": "Scheduling wave role for a Herdr tab.",
+      "enum": ["coordinator", "child", "lead"]
+    },
+    "HerdrRollErrorCode": {
+      "type": "string",
+      "description": "Closed domain error/skip codes for herdr_roll operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_REFUSED",
+        "ERR_GRAPH_INVALID",
+        "ERR_LOCK_CONFLICT",
+        "ERR_IO_FAILURE",
+        "ERR_UNSUPPORTED_HARNESS",
+        "ERR_NO_SESSION_ID",
+        "ERR_UNKNOWN_FLAG",
+        "ERR_DANGLING_FLAG",
+        "ERR_TAB_GONE",
+        "ERR_TAB_MOVED",
+        "ERR_FOREGROUND_CHANGED",
+        "ERR_BLOCKED_DIALOG",
+        "ERR_BUSY",
+        "ERR_BUSY_AFTER_HANDSHAKE",
+        "ERR_HANDSHAKE_NOT_SENT",
+        "ERR_NO_HANDSHAKE_ACK",
+        "ERR_BACKGROUND_WORK",
+        "ERR_EXIT_SEND_FAILED",
+        "ERR_EXIT_TIMEOUT",
+        "ERR_RELAUNCH_SEND_FAILED",
+        "ERR_OPEN_FAILED",
+        "ERR_VERIFY_TIMEOUT",
+        "ERR_WRONG_FOLDER",
+        "ERR_WORKTREE_CHANGED",
+        "ERR_TAB_CLOSE_FAILED",
+        "ERR_IN_PLACE_RESTART_FAILED",
+        "ERR_IN_PLACE_SEND_FAILED",
+        "ERR_VERIFY_TURN_FAILED",
+        "ERR_TAB_BUSY"
+      ]
+    },
+    "HerdrRollReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for herdr_roll operations.",
+      "enum": [
+        "RET_OK",
+        "RET_PLANNED",
+        "RET_RESTARTED",
+        "RET_STOPPED",
+        "RET_STARTED",
+        "RET_SNAPSHOT_CAPTURED",
+        "RET_SELF_SPAWNED",
+        "RET_SKIPPED",
+        "RET_FAILED",
+        "RET_REFUSED"
+      ]
+    },
+    "HerdrRollErrorEntry": {
+      "type": "object",
+      "description": "Typed herdr_roll domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/HerdrRollErrorCode"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "HerdrRollReturnEntry": {
+      "type": "object",
+      "description": "Typed herdr_roll domain return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/HerdrRollReturnCode"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "Timing": {
+      "type": "object",
+      "description": "Timeout, polling, and job-confirmation timings (in seconds).",
+      "additionalProperties": false,
+      "properties": {
+        "wait": {
+          "type": "number",
+          "minimum": 0,
+          "default": 180.0
+        },
+        "settle": {
+          "type": "number",
+          "minimum": 0,
+          "default": 45.0
+        },
+        "poll_min": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.25
+        },
+        "poll_max": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.0
+        },
+        "busy_wait": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.0
+        },
+        "job_confirm_delay": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.5
+        }
+      }
+    },
+    "TerminalSnapshot": {
+      "type": "object",
+      "description": "Observed state of one live or previously saved Herdr terminal.",
+      "additionalProperties": false,
+      "required": ["address", "kind"],
+      "properties": {
+        "address": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "$ref": "#/$defs/HarnessKind"
+        },
+        "session_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "cwd": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "fg_argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "term_argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "pid": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "fg_pid": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "status_state": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "status_app": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "title": {
+          "type": "string",
+          "default": ""
+        },
+        "turn": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "is_coordinator": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "TabSnapshot": {
+      "type": "object",
+      "description": "Observed state of one Herdr tab.",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "terminals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TerminalSnapshot"
+          },
+          "default": []
+        },
+        "kept_from_previous_graph": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "SpaceSnapshot": {
+      "type": "object",
+      "description": "Observed state of one Herdr space.",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "folder": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "tabs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TabSnapshot"
+          },
+          "default": []
+        },
+        "kept_from_previous_graph": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "GraphSnapshot": {
+      "type": "object",
+      "description": "Snapshot of all Herdr spaces, tabs, and terminals.",
+      "additionalProperties": false,
+      "required": ["taken_at"],
+      "properties": {
+        "taken_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "coordinator": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "spaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SpaceSnapshot"
+          },
+          "default": []
+        }
+      }
+    },
+    "SessionOutcome": {
+      "type": "object",
+      "description": "Outcome record for a single targeted session with nanosecond timestamp and typed errors/returns.",
+      "additionalProperties": false,
+      "required": [
+        "where",
+        "tab_id",
+        "terminal",
+        "kind",
+        "session_id",
+        "result",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "where": {
+          "type": "string"
+        },
+        "tab_id": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/HarnessKind"
+        },
+        "session_id": {
+          "type": ["string", "null"]
+        },
+        "result": {
+          "type": "string"
+        },
+        "old_pid": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "new_pid": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "elapsed_s": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.0
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "RunRecord": {
+      "type": "object",
+      "description": "One append-only JSONL entry in runs.jsonl.",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "step",
+        "args",
+        "started_at",
+        "ended_at",
+        "rc",
+        "log_path",
+        "outcomes",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "ended_at": {
+          "type": "string"
+        },
+        "rc": {
+          "type": "integer"
+        },
+        "log_path": {
+          "type": "string"
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionOutcome"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "SnapshotSummary": {
+      "type": "object",
+      "description": "Typed snapshot summary emitted by roll:snapshot.",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "apply",
+        "spaces",
+        "agents_live",
+        "agents_without_session",
+        "selected_targets",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "apply": {
+          "type": "boolean"
+        },
+        "spaces": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agents_live": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agents_without_session": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "selected_targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "ReceiptRecord": {
+      "type": "object",
+      "description": "Pre-restart verification receipt written per target terminal.",
+      "additionalProperties": false,
+      "required": [
+        "where",
+        "tab_id",
+        "terminal",
+        "kind",
+        "session_id",
+        "cwd",
+        "old_pid",
+        "git_status",
+        "relaunch_argv",
+        "timestamp",
+        "timestamp_unix_ns"
+      ],
+      "properties": {
+        "where": {
+          "type": "string"
+        },
+        "tab_id": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/HarnessKind"
+        },
+        "session_id": {
+          "type": ["string", "null"]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "old_pid": {
+          "type": ["integer", "null"]
+        },
+        "git_status": {
+          "type": ["string", "null"]
+        },
+        "relaunch_argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        }
+      }
+    },
+    "SelfPlanResponse": {
+      "type": "object",
+      "description": "Response emitted by roll:self dry-run or apply.",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "space",
+        "space_id",
+        "name",
+        "target_terminal",
+        "folder",
+        "focus",
+        "argv",
+        "apply",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "space": {
+          "type": "string"
+        },
+        "space_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "target_terminal": {
+          "type": "string"
+        },
+        "folder": {
+          "type": "string"
+        },
+        "focus": {
+          "type": "boolean"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "apply": {
+          "type": "boolean"
+        },
+        "spawned_tab_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "spawned_terminal": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "next_hint": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "HerdrRollResponse": {
+      "type": "object",
+      "description": "Top-level response envelope for herdr_roll CLI error/status reporting.",
+      "additionalProperties": false,
+      "required": ["step", "rc", "apply", "timestamp", "timestamp_unix_ns", "errors", "returns"],
+      "properties": {
+        "step": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "rc": {
+          "type": "integer"
+        },
+        "apply": {
+          "type": "boolean"
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionOutcome"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HerdrRollReturnEntry"
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

@@ -10,6 +10,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
 
 args=(snapshot)
 [[ -n ${usage_tabs:-} ]] && args+=(--tabs "${usage_tabs}")
@@ -19,4 +21,7 @@ args=(snapshot)
 [[ -n ${usage_exclude:-} ]] && args+=(--exclude "${usage_exclude}")
 [[ ${usage_apply:-false} == "true" ]] && args+=(--apply)
 
-exec python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+exec uv run --project "${repo_root}" --offline --no-sync python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

@@ -1,294 +1,167 @@
-"""Typed data models and atomic persistence helpers for `herdr_roll`."""
+"""Schema-generated data models, typed error/return helpers, and atomic persistence for `herdr_roll`."""
 
 from __future__ import annotations
 
 import os
 import tempfile
-from dataclasses import dataclass, field
-from enum import StrEnum
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from dotfiles_py.generated import (
+    GraphSnapshot,
+    HarnessKind,
+    HerdrRollErrorCode,
+    HerdrRollErrorEntry,
+    HerdrRollResponse,
+    HerdrRollReturnCode,
+    HerdrRollReturnEntry,
+    ReceiptRecord,
+    Role,
+    RunRecord,
+    SelfPlanResponse,
+    SessionOutcome,
+    SnapshotSummary,
+    SpaceSnapshot,
+    TabSnapshot,
+    TerminalSnapshot,
+    Timing,
+)
+from dotfiles_py.time_ns import now_ns_pair
 
-class HarnessKind(StrEnum):
-    """Supported Herdr interactive agent harnesses plus plain shells."""
+__all__ = [
+    "GraphSnapshot",
+    "HarnessKind",
+    "HerdrRollErrorCode",
+    "HerdrRollErrorEntry",
+    "HerdrRollResponse",
+    "HerdrRollReturnCode",
+    "HerdrRollReturnEntry",
+    "ReceiptRecord",
+    "Role",
+    "RunRecord",
+    "SelfPlanResponse",
+    "SessionOutcome",
+    "SnapshotSummary",
+    "SpaceSnapshot",
+    "TabSnapshot",
+    "TerminalSnapshot",
+    "Timing",
+    "make_session_outcome",
+    "outcome_codes_for_result",
+    "write_atomic",
+]
 
-    agy = "agy"
-    codex = "codex"
-    claude = "claude"
-    opencode = "opencode"
-    hermes = "hermes"
-    zcode = "zcode"
-    shell = "shell"
+_RESULT_ERROR_MAP: dict[str, HerdrRollErrorCode] = {
+    "skipped-unsupported": HerdrRollErrorCode.ERR_UNSUPPORTED_HARNESS,
+    "skipped-no-session-id": HerdrRollErrorCode.ERR_NO_SESSION_ID,
+    "failed-no-session-id": HerdrRollErrorCode.ERR_NO_SESSION_ID,
+    "skipped-unknown-flag": HerdrRollErrorCode.ERR_UNKNOWN_FLAG,
+    "skipped-dangling-flag": HerdrRollErrorCode.ERR_DANGLING_FLAG,
+    "skipped-gone": HerdrRollErrorCode.ERR_TAB_GONE,
+    "skipped-moved": HerdrRollErrorCode.ERR_TAB_MOVED,
+    "skipped-foreground-changed": HerdrRollErrorCode.ERR_FOREGROUND_CHANGED,
+    "blocked-dialog": HerdrRollErrorCode.ERR_BLOCKED_DIALOG,
+    "skipped-busy": HerdrRollErrorCode.ERR_BUSY,
+    "skipped-busy-after-handshake": HerdrRollErrorCode.ERR_BUSY_AFTER_HANDSHAKE,
+    "skipped-handshake-not-sent": HerdrRollErrorCode.ERR_HANDSHAKE_NOT_SENT,
+    "skipped-no-handshake-ack": HerdrRollErrorCode.ERR_NO_HANDSHAKE_ACK,
+    "skipped-background-work": HerdrRollErrorCode.ERR_BACKGROUND_WORK,
+    "skipped-tab-busy": HerdrRollErrorCode.ERR_TAB_BUSY,
+    "failed-exit-send": HerdrRollErrorCode.ERR_EXIT_SEND_FAILED,
+    "failed-exit-timeout": HerdrRollErrorCode.ERR_EXIT_TIMEOUT,
+    "failed-relaunch-send": HerdrRollErrorCode.ERR_RELAUNCH_SEND_FAILED,
+    "failed-open": HerdrRollErrorCode.ERR_OPEN_FAILED,
+    "failed-verify-timeout": HerdrRollErrorCode.ERR_VERIFY_TIMEOUT,
+    "failed-wrong-folder": HerdrRollErrorCode.ERR_WRONG_FOLDER,
+    "failed-worktree-changed": HerdrRollErrorCode.ERR_WORKTREE_CHANGED,
+    "failed-tab-close": HerdrRollErrorCode.ERR_TAB_CLOSE_FAILED,
+    "failed-in-place-restart": HerdrRollErrorCode.ERR_IN_PLACE_RESTART_FAILED,
+    "failed-in-place-send": HerdrRollErrorCode.ERR_IN_PLACE_SEND_FAILED,
+    "failed-verify-turn": HerdrRollErrorCode.ERR_VERIFY_TURN_FAILED,
+}
 
-
-class Role(StrEnum):
-    """Scheduling wave role for a Herdr tab."""
-
-    coordinator = "coordinator"
-    child = "child"
-    lead = "lead"
-
-
-@dataclass(frozen=True, slots=True)
-class Timing:
-    """Timeout, polling, and job-confirmation timings (in seconds)."""
-
-    wait: float = 180.0
-    settle: float = 45.0
-    poll_min: float = 0.25
-    poll_max: float = 1.0
-    busy_wait: float = 0.0
-    job_confirm_delay: float = 1.5
-
-
-@dataclass(frozen=True, slots=True)
-class TerminalSnapshot:
-    """Observed state of one live or previously saved Herdr terminal."""
-
-    address: str
-    kind: HarnessKind
-    session_id: str | None = None
-    cwd: str | None = None
-    fg_argv: tuple[str, ...] = ()
-    term_argv: tuple[str, ...] = ()
-    pid: int | None = None
-    fg_pid: int | None = None
-    status_state: str | None = None
-    status_app: str | None = None
-    title: str = ""
-    turn: int | None = None
-    is_coordinator: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "address": self.address,
-            "kind": self.kind.value,
-            "session_id": self.session_id,
-            "cwd": self.cwd,
-            "fg_argv": list(self.fg_argv),
-            "term_argv": list(self.term_argv),
-            "pid": self.pid,
-            "fg_pid": self.fg_pid,
-            "status_state": self.status_state,
-            "status_app": self.status_app,
-            "title": self.title,
-            "turn": self.turn,
-            "is_coordinator": self.is_coordinator,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TerminalSnapshot:
-        return cls(
-            address=str(data["address"]),
-            kind=HarnessKind(str(data["kind"])),
-            session_id=str(data["session_id"])
-            if data.get("session_id") is not None
-            else None,
-            cwd=str(data["cwd"]) if data.get("cwd") is not None else None,
-            fg_argv=tuple(str(x) for x in data.get("fg_argv") or ()),
-            term_argv=tuple(str(x) for x in data.get("term_argv") or ()),
-            pid=int(data["pid"]) if data.get("pid") is not None else None,
-            fg_pid=int(data["fg_pid"]) if data.get("fg_pid") is not None else None,
-            status_state=str(data["status_state"])
-            if data.get("status_state") is not None
-            else None,
-            status_app=str(data["status_app"])
-            if data.get("status_app") is not None
-            else None,
-            title=str(data.get("title") or ""),
-            turn=int(data["turn"]) if data.get("turn") is not None else None,
-            is_coordinator=bool(data.get("is_coordinator", False)),
-        )
+_SUCCESS_RETURN_MAP: dict[str, HerdrRollReturnCode] = {
+    "ok": HerdrRollReturnCode.RET_OK,
+    "planned": HerdrRollReturnCode.RET_PLANNED,
+    "restarted": HerdrRollReturnCode.RET_RESTARTED,
+    "stopped": HerdrRollReturnCode.RET_STOPPED,
+    "started": HerdrRollReturnCode.RET_STARTED,
+}
 
 
-@dataclass(frozen=True, slots=True)
-class TabSnapshot:
-    """Observed state of one Herdr tab."""
+def outcome_codes_for_result(
+    result: str,
+    notes: Sequence[str] = (),
+) -> tuple[list[HerdrRollErrorEntry], list[HerdrRollReturnEntry]]:
+    """Map an outcome `result` string to closed `HerdrRollErrorCode` and `HerdrRollReturnCode` lists."""
+    note_msg = "; ".join(n for n in notes if n) or None
+    detail: dict[str, Any] | None = {"notes": list(notes)} if notes else None
+    if result in _SUCCESS_RETURN_MAP:
+        return [], [
+            HerdrRollReturnEntry(
+                code=_SUCCESS_RETURN_MAP[result],
+                message=note_msg,
+                detail=detail,
+            )
+        ]
 
-    id: str
-    name: str
-    terminals: tuple[TerminalSnapshot, ...] = ()
-    kept_from_previous_graph: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "id": self.id,
-            "name": self.name,
-            "terminals": [term.to_dict() for term in self.terminals],
-        }
-        if self.kept_from_previous_graph:
-            data["kept_from_previous_graph"] = True
-        return data
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TabSnapshot:
-        return cls(
-            id=str(data["id"]),
-            name=str(data["name"]),
-            terminals=tuple(
-                TerminalSnapshot.from_dict(row) for row in data.get("terminals") or ()
-            ),
-            kept_from_previous_graph=bool(data.get("kept_from_previous_graph", False)),
-        )
+    err_code = _RESULT_ERROR_MAP.get(result, HerdrRollErrorCode.ERR_UNKNOWN)
+    ret_code = (
+        HerdrRollReturnCode.RET_SKIPPED
+        if result.startswith("skipped-")
+        else HerdrRollReturnCode.RET_FAILED
+    )
+    return (
+        [HerdrRollErrorEntry(code=err_code, message=note_msg or result, detail=detail)],
+        [HerdrRollReturnEntry(code=ret_code, message=result)],
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class SpaceSnapshot:
-    """Observed state of one Herdr space."""
-
-    id: str
-    name: str
-    folder: str | None = None
-    tabs: tuple[TabSnapshot, ...] = ()
-    kept_from_previous_graph: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "id": self.id,
-            "name": self.name,
-            "folder": self.folder,
-            "tabs": [tab.to_dict() for tab in self.tabs],
-        }
-        if self.kept_from_previous_graph:
-            data["kept_from_previous_graph"] = True
-        return data
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SpaceSnapshot:
-        return cls(
-            id=str(data["id"]),
-            name=str(data["name"]),
-            folder=str(data["folder"]) if data.get("folder") is not None else None,
-            tabs=tuple(TabSnapshot.from_dict(row) for row in data.get("tabs") or ()),
-            kept_from_previous_graph=bool(data.get("kept_from_previous_graph", False)),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class GraphSnapshot:
-    """Snapshot of all Herdr spaces, tabs, and terminals."""
-
-    taken_at: str
-    coordinator: str | None = None
-    spaces: tuple[SpaceSnapshot, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "taken_at": self.taken_at,
-            "coordinator": self.coordinator,
-            "spaces": [space.to_dict() for space in self.spaces],
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> GraphSnapshot:
-        return cls(
-            taken_at=str(data["taken_at"]),
-            coordinator=str(data["coordinator"])
-            if data.get("coordinator") is not None
-            else None,
-            spaces=tuple(
-                SpaceSnapshot.from_dict(row) for row in data.get("spaces") or ()
-            ),
-        )
+def make_session_outcome(
+    *,
+    where: str,
+    tab_id: str,
+    terminal: str,
+    kind: HarnessKind,
+    session_id: str | None,
+    result: str,
+    old_pid: int | None = None,
+    new_pid: int | None = None,
+    elapsed_s: float = 0.0,
+    notes: Sequence[str] = (),
+) -> SessionOutcome:
+    """Construct an immutable schema-validated `SessionOutcome` with 9-digit ns timestamp."""
+    ts, ns = now_ns_pair()
+    note_list = list(notes)
+    errors, returns = outcome_codes_for_result(result, note_list)
+    return SessionOutcome(
+        where=where,
+        tab_id=tab_id,
+        terminal=terminal,
+        kind=kind,
+        session_id=session_id,
+        result=result,
+        old_pid=old_pid,
+        new_pid=new_pid,
+        elapsed_s=round(float(elapsed_s), 2),
+        notes=note_list,
+        timestamp=ts,
+        timestamp_unix_ns=ns,
+        errors=errors,
+        returns=returns,
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class SessionOutcome:
-    """Outcome record for a single targeted session."""
-
-    where: str
-    tab_id: str
-    terminal: str
-    kind: HarnessKind
-    session_id: str | None
-    result: str
-    old_pid: int | None = None
-    new_pid: int | None = None
-    elapsed_s: float = 0.0
-    notes: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "where": self.where,
-            "tab_id": self.tab_id,
-            "terminal": self.terminal,
-            "kind": self.kind.value,
-            "session_id": self.session_id,
-            "result": self.result,
-            "old_pid": self.old_pid,
-            "new_pid": self.new_pid,
-            "elapsed_s": round(self.elapsed_s, 2),
-            "notes": list(self.notes),
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SessionOutcome:
-        return cls(
-            where=str(data["where"]),
-            tab_id=str(data.get("tab_id") or ""),
-            terminal=str(data["terminal"]),
-            kind=HarnessKind(str(data["kind"])),
-            session_id=str(data["session_id"])
-            if data.get("session_id") is not None
-            else None,
-            result=str(data["result"]),
-            old_pid=int(data["old_pid"]) if data.get("old_pid") is not None else None,
-            new_pid=int(data["new_pid"]) if data.get("new_pid") is not None else None,
-            elapsed_s=float(data.get("elapsed_s") or 0.0),
-            notes=tuple(str(n) for n in data.get("notes") or ()),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class RunRecord:
-    """One append-only JSONL entry in `runs.jsonl`."""
-
-    run_id: str
-    step: str
-    args: tuple[str, ...]
-    started_at: str
-    ended_at: str
-    rc: int
-    log_path: str
-    outcomes: tuple[SessionOutcome, ...] = field(default=())
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "run_id": self.run_id,
-            "step": self.step,
-            "args": list(self.args),
-            "started_at": self.started_at,
-            "ended_at": self.ended_at,
-            "rc": self.rc,
-            "log_path": self.log_path,
-            "outcomes": [item.to_dict() for item in self.outcomes],
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> RunRecord:
-        return cls(
-            run_id=str(data["run_id"]),
-            step=str(data["step"]),
-            args=tuple(str(x) for x in data.get("args") or ()),
-            started_at=str(data["started_at"]),
-            ended_at=str(data["ended_at"]),
-            rc=int(data["rc"]),
-            log_path=str(data.get("log_path") or ""),
-            outcomes=tuple(
-                SessionOutcome.from_dict(item) for item in data.get("outcomes") or ()
-            ),
-        )
-
-
-def write_atomic(path: Path, content: str) -> None:
+def write_atomic(path: Path, content: str | bytes) -> None:
     """Write *content* to *path* atomically via a temporary file in the same directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     tmp_path = Path(tmp_name)
+    raw = content.encode("utf-8") if isinstance(content, str) else content
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
         tmp_path.replace(path)

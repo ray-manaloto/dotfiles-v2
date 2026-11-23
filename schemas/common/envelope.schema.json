@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/common/envelope.schema.json",
+  "title": "CommonEnvelopeDefs",
+  "description": "Shared nanosecond timestamp types and base error/return entry contracts.",
+  "$defs": {
+    "NanosecondTimestamp": {
+      "type": "string",
+      "description": "Zero-padded 9-decimal-place local/UTC nanosecond timestamp (YYYYmmddTHHMMSS.NNNNNNNNN±HHMM).",
+      "pattern": "^[0-9]{8}T[0-9]{6}\\.[0-9]{9}(?:Z|[+-][0-9]{4})$",
+      "examples": ["20261123T154500.000123456-0600"]
+    },
+    "UnixTimestampNs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Epoch nanoseconds from time.time_ns()."
+    },
+    "CommonErrorCode": {
+      "type": "string",
+      "description": "Closed enumeration of shared platform error codes.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_TIMEOUT",
+        "ERR_PRECONDITION_FAILED",
+        "ERR_IO_FAILURE",
+        "ERR_SUBPROCESS_FAILED",
+        "ERR_LOCK_CONFLICT",
+        "ERR_BLOCKED_DIALOG"
+      ]
+    },
+    "CommonReturnCode": {
+      "type": "string",
+      "description": "Closed enumeration of shared platform return codes.",
+      "enum": ["RET_OK", "RET_NOOP", "RET_DRY_RUN", "RET_SKIPPED", "RET_PARTIAL", "RET_DEFERRED"]
+    },
+    "ErrorEntry": {
+      "type": "object",
+      "description": "Typed structured error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/CommonErrorCode"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional human-readable error message."
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional structured diagnostic metadata."
+        }
+      }
+    },
+    "ReturnEntry": {
+      "type": "object",
+      "description": "Typed structured return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/CommonReturnCode"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional human-readable outcome note."
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional structured outcome metadata."
+        }
+      }
+    },
+    "EnvelopeMetadata": {
+      "type": "object",
+      "description": "Canonical response metadata with 9-digit nanosecond timestamps and typed errors/returns.",
+      "additionalProperties": false,
+      "required": ["timestamp", "timestamp_unix_ns", "errors", "returns"],
+      "properties": {
+        "timestamp": {
+          "$ref": "#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReturnEntry"
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

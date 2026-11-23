@@ -6,22 +6,77 @@ min_version = "2026.11.12"
 # User/global developer tools live in unix/home/.config/mise/config.toml so
 # this project config never duplicates project-scoped .agents/.claude skills.
 
+[env]
+PYTEST_XDIST_AUTO_NUM_WORKERS = "4"
+
+[vars]
+private_home = "{{ env.HOME }}"
+private_user = "{{ env.USER }}"
+
 [settings]
 exec_auto_install = false
 experimental = true
 lockfile = true
 lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
+python.uv_venv_auto = "source"
+
+[deps.uv]
+auto = false
+run = "uv sync --locked"
 
 [task_config]
 includes = ["tasks", "unix/home/.config/mise/tasks"]
 
-[hooks]
-postinstall = '[ -n "${CI:-}" ] || hk install --mise'
+[tasks."py:codegen"]
+description = "Generate Pydantic v2 models from schemas/**/*.schema.json (or verify with --check)"
+usage = 'flag "--check" help="Fail if generated models differ from schemas"'
+run = [
+  "mise deps uv",
+  'uv run --offline --locked datamodel-codegen ${usage_check:+--check}',
+]
+
+[tasks."py:test"]
+description = "Run full Python test suite via pytest-xdist in locked .venv"
+run = ["mise deps uv", "uv run --offline --locked pytest -n auto"]
+
+[tasks."privacy:scan"]
+description = "Refuse this machine's home path in tracked files, given files, or outgoing commits"
+env = { PRIVATE_PATTERNS = "{{ vars.private_home }}\n/Users/{{ vars.private_user }}/\n/home/{{ vars.private_user }}/" }
+usage = '''
+flag "--outgoing" help="Scan every commit not yet on a remote, branches and tags (pre-push)"
+arg "[file]" var=#true help="Files to scan; default every tracked file"
+'''
+run = 'repotools privacy-scan --patterns="$PRIVATE_PATTERNS" --files="${usage_file:-}" ${usage_outgoing:+--outgoing}'
 
 [doctor.checks.no-project-tools]
-description = "Root mise.toml declares no project-level [tools]"
-run = '! grep -Eq "^\[tools([.]|\])" mise.toml'
-hint = "Declare global tools in unix/home/.config/mise/config.toml instead of root mise.toml."
+description = "Project mise TOMLs declare zero [tools], no root mise.lock, and slim pyproject.toml"
+run = "python3 -I -B tasks/py/doctor_checks.py no-project-tools"
+hint = "Declare global tools in unix/home/.config/mise/config.toml and keep dev/lint CLI tools out of [project].dependencies."
+
+[doctor.checks.py-deps-fresh]
+description = "Root .venv matches pyproject.toml and uv.lock via mise deps uv --explain"
+run = "mise deps uv --explain"
+hint = "Run 'mise deps uv' to sync .venv with uv.lock."
+
+[doctor.checks.schema-first-ast]
+description = "No hand-written BaseModel/dataclass/Enum/TypedDict DTOs outside generated modules and tests"
+run = "python3 -I -B tasks/py/schema_first_ast.py"
+hint = "Declare DTOs and Enums in schemas/**/*.schema.json and run 'mise run py:codegen'."
+
+[doctor.checks.schema-contract-check]
+description = "All schemas/**/*.schema.json satisfy Draft 2020-12 and envelope contracts"
+run = "python3 -I -B tasks/py/schema_contract_check.py"
+hint = "Ensure every schema declares Draft 2020-12, additionalProperties: false, and envelope fields."
+
+[doctor.checks.mise-lock-integrity]
+description = "unix/home/.config/mise/mise.lock and locks/ match config.toml across all platforms"
+run = "python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity"
+hint = "Run `MISE_CONFIG_DIR=$PWD/unix/home/.config/mise mise lock` and ensure 0644 lockfile permissions."
+
+[doctor.checks.host-option-a]
+description = "Option A host parity, no-legacy-symlinks, roll-ownership, and dotfiles status (pre-cutover aware)"
+run = "python3 -I -B tasks/py/doctor_checks.py host-option-a"
+hint = "Complete Issue #9 Option A host cutover (~/.config/mise -> dotfiles-v2/unix/home/.config/mise) and sync dotfiles."
 
 [doctor.checks.no-repo-skills]
 description = "No duplicated repo-level .agents or .claude skill directories"
@@ -174,9 +229,9 @@ python3 -I -B unix/home/.gemini/config/hooks/agy-hc-send-guard.py --self-check -
 hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md."
 
 [doctor.checks.vercel-board-config]
-description = "jdx tools, @vercel/board, pitchfork.toml, mcp-jdx, bootstrap:skills, and canonical skills are valid"
+description = "jdx tools, @vercel/board, pitchfork config, mcp-jdx, bootstrap:skills, and canonical skills are valid"
 run = '''
-test -f pitchfork.toml
+(test -f pitchfork.toml || test -f unix/home/.config/pitchfork/config.toml)
 test -x unix/home/.config/mise/tasks/bootstrap/skills
 test -x unix/home/.config/mise/assets/board/vb-proxy-wrapper.sh
 test -f unix/home/.agents/skills/vercel-board/SKILL.md
@@ -207,15 +262,15 @@ deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
 PY
 '''
-hint = "Ensure pitchfork.toml, jdx tools, npm:@vercel/board, mcp-jdx, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly."
+hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, mcp-jdx, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly."
 
 [doctor.checks.herdr-roll]
-description = "Clean-room herdr_roll engine unit tests and executable roll:* tasks pass validation"
+description = "Clean-room herdr_roll engine tests and executable roll:* tasks pass validation"
 run = '''
 for task in snapshot restart stop start verify self; do
   test -x "unix/home/.config/mise/tasks/roll/$task"
 done
 test -f "unix/home/.agents/skills/herdr-roll/SKILL.md"
-python3 -I -B -m unittest discover -s unix/home/.config/mise/lib/herdr_roll/tests -t unix/home/.config/mise/lib -v
+.venv/bin/python -I -B -m unittest discover -s unix/home/.config/mise/lib/herdr_roll/tests -t unix/home/.config/mise/lib
 '''
-hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable and herdr_roll unit tests pass."
+hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable, .venv is synced via `mise deps uv`, and herdr_roll unit tests pass."

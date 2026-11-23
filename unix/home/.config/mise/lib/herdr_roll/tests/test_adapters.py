@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import orjson
 
 from herdr_roll.adapters import (
     ADAPTERS,
@@ -38,8 +39,8 @@ def _term(
         kind=kind,
         session_id=session_id,
         cwd=cwd,
-        fg_argv=fg_argv,
-        term_argv=term_argv,
+        fg_argv=list(fg_argv),
+        term_argv=list(term_argv),
         pid=100,
         fg_pid=200,
         status_state="idle",
@@ -64,7 +65,7 @@ class AdapterTests(unittest.TestCase):
             "-i",
             "Initial prompt",
         ]
-        self.assertEqual(detect_kind("antigravity", fg, []), HarnessKind.agy)
+        self.assertEqual(detect_kind("antigravity", fg, []), HarnessKind.AGY)
         adapter = AgyAdapter()
         sid = adapter.session_id(
             address="t3xb",
@@ -77,7 +78,7 @@ class AdapterTests(unittest.TestCase):
         )
         self.assertEqual(sid, "e4b6c8ee-177f-4fc6-8725-861036790dcf")
         assert sid is not None
-        snap = _term(HarnessKind.agy, fg_argv=tuple(fg), session_id=sid)
+        snap = _term(HarnessKind.AGY, fg_argv=tuple(fg), session_id=sid)
         cmd = adapter.resume_argv(
             snap, session_id=sid, is_coordinator=False, prompt=None, screen_text=""
         )
@@ -94,7 +95,7 @@ class AdapterTests(unittest.TestCase):
         )
 
         bad_snap = _term(
-            HarnessKind.agy,
+            HarnessKind.AGY,
             fg_argv=("agy", "--conversation", sid, "--mystery-flag"),
             session_id=sid,
         )
@@ -111,7 +112,6 @@ class AdapterTests(unittest.TestCase):
     def test_codex_deduplicates_wrapper_flags_and_prefers_live_rollout_root(
         self,
     ) -> None:
-        # Simulates cos-shadow (t3fs) with 3x duplicated shell_environment_policy.* flags.
         policy = 'shell_environment_policy.include_only=["PATH","HC_*"]'
         fg = (
             "/opt/fnox",
@@ -149,7 +149,7 @@ class AdapterTests(unittest.TestCase):
             "› Ask Codex to do anything\n  GPT-6.2-Astra medium · /workspace/repo\n"
         )
         snap = _term(
-            HarnessKind.codex,
+            HarnessKind.CODEX,
             fg_argv=fg,
             session_id="01a20000-0000-7000-8000-000000000099",
         )
@@ -178,16 +178,15 @@ class AdapterTests(unittest.TestCase):
                 Path(tmp)
                 / "rollout-2026-11-23-01a1f5ba-9341-7890-976e-75cc768f8ddd.jsonl"
             )
-            rollout.write_text(
-                json.dumps(
+            rollout.write_bytes(
+                orjson.dumps(
                     {"payload": {"session_id": "01a1f5ba-9341-7890-976e-75cc768f8aa0"}}
                 )
-                + "\n",
-                encoding="utf-8",
+                + b"\n",
             )
             with mock.patch(
-                "herdr_roll.adapters.run_cmd",
-                return_value=f"codex 123 txt REG {rollout}\n",
+                "herdr_roll.adapters.open_file_paths",
+                return_value=[str(rollout)],
             ):
                 found = adapter.session_id(
                     address="t3vv",
@@ -248,7 +247,7 @@ class AdapterTests(unittest.TestCase):
                 )
 
                 snap = _term(
-                    HarnessKind.claude,
+                    HarnessKind.CLAUDE,
                     fg_argv=(
                         "claude",
                         "--permission-mode",
@@ -299,7 +298,6 @@ class AdapterTests(unittest.TestCase):
                 "ses_abc",
             )
 
-            # Adding a second unrelated active session makes titleless lookup fail closed.
             conn = sqlite3.connect(db)
             conn.execute(
                 "INSERT INTO session VALUES ('ses_def', 'p1', NULL, ?, 'Another thread', 300, NULL)",
@@ -357,7 +355,7 @@ class AdapterTests(unittest.TestCase):
                 "--model",
                 "qwen/qwen4-max:free",
             ]
-            self.assertEqual(detect_kind(None, fg_argv, term_argv), HarnessKind.hermes)
+            self.assertEqual(detect_kind(None, fg_argv, term_argv), HarnessKind.HERMES)
             self.assertEqual(adapter.exit_command(), "/quit")
             self.assertEqual(
                 adapter.extra_env(term_argv),
@@ -376,7 +374,6 @@ class AdapterTests(unittest.TestCase):
                 screen_text="Session: local-d48355ee\n❯ ",
             )
             self.assertEqual(sid, "local-d48355ee0efe8e9b909b")
-            # Title fallback works when startup banner scrolled off.
             conn = sqlite3.connect(db)
             conn.execute("DROP TABLE sessions")
             conn.execute(
@@ -401,7 +398,7 @@ class AdapterTests(unittest.TestCase):
             )
             assert sid is not None
             snap = _term(
-                HarnessKind.hermes,
+                HarnessKind.HERMES,
                 fg_argv=tuple(fg_argv),
                 term_argv=tuple(term_argv),
                 session_id=sid,
@@ -443,7 +440,7 @@ class AdapterTests(unittest.TestCase):
 
             adapter = ZCodeAdapter(db_path=db)
             fg = ["zcode", "--mode", "yolo"]
-            self.assertEqual(detect_kind(None, fg, []), HarnessKind.zcode)
+            self.assertEqual(detect_kind(None, fg, []), HarnessKind.ZCODE)
             sid = adapter.session_id(
                 address="t9",
                 tree_pids=[],
@@ -454,7 +451,7 @@ class AdapterTests(unittest.TestCase):
                 screen_text="",
             )
             self.assertEqual(sid, "sess_z1")
-            snap = _term(HarnessKind.zcode, fg_argv=tuple(fg), session_id="sess_z1")
+            snap = _term(HarnessKind.ZCODE, fg_argv=tuple(fg), session_id="sess_z1")
             self.assertEqual(
                 adapter.resume_argv(
                     snap,
@@ -466,7 +463,7 @@ class AdapterTests(unittest.TestCase):
                 ["zcode", "--mode", "yolo", "--resume", "sess_z1"],
             )
             self.assertEqual(
-                set(ADAPTERS), {k for k in HarnessKind if k is not HarnessKind.shell}
+                set(ADAPTERS), {k for k in HarnessKind if k is not HarnessKind.SHELL}
             )
 
     def test_codex_positional_break_bottom_footer_and_verify_resumed(self) -> None:
@@ -481,7 +478,7 @@ class AdapterTests(unittest.TestCase):
             adapter = CodexAdapter()
 
             snap = _term(
-                HarnessKind.codex,
+                HarnessKind.CODEX,
                 fg_argv=(
                     "codex",
                     "--model",
@@ -490,7 +487,6 @@ class AdapterTests(unittest.TestCase):
                 ),
                 session_id="01a1f5ba-9341-7890-976e-75cc768f8dd5",
             )
-            # Stops parsing flags once the trailing positional prompt starts.
             cmd = adapter.resume_argv(
                 snap,
                 session_id="01a1f5ba-9341-7890-976e-75cc768f8dd5",
@@ -509,17 +505,11 @@ class AdapterTests(unittest.TestCase):
                 ],
             )
 
-            # Bottom-most footer wins when earlier scrolled history has another model/effort line.
             older_id = "01999999-1111-7890-976e-75cc768f8dd5"
             newer_id = "01a1f5ba-9341-7890-976e-75cc768f8dd5"
-            screen = (
-                "  GPT-5.3-Codex low · 80% left\n"
-                "some output\n"
-                "  GPT-5.4 high · 100% left\n"
-                "› "
-            )
+            screen = "  GPT-5.3-Codex low · 80% left\nsome output\n  GPT-5.4 high · 100% left\n› "
             snap_footer = _term(
-                HarnessKind.codex,
+                HarnessKind.CODEX,
                 fg_argv=("codex", "--model", "o3"),
                 session_id=newer_id,
             )
@@ -542,11 +532,10 @@ class AdapterTests(unittest.TestCase):
                 ],
             )
 
-            # verify_resumed fails when live thread differs from target session_id or rollout is missing.
             wrong_rollout = sessions_dir / f"rollout-2026-11-23-{older_id}.jsonl"
             with mock.patch(
-                "herdr_roll.adapters.run_cmd",
-                return_value=f"n{wrong_rollout}\n",
+                "herdr_roll.adapters.open_file_paths",
+                return_value=[str(wrong_rollout)],
             ):
                 ok, reason = adapter.verify_resumed(
                     old_pid=100,
@@ -560,7 +549,7 @@ class AdapterTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIsNotNone(reason)
 
-            with mock.patch("herdr_roll.adapters.run_cmd", return_value=""):
+            with mock.patch("herdr_roll.adapters.open_file_paths", return_value=[]):
                 ok_missing, _ = adapter.verify_resumed(
                     old_pid=100,
                     new_pid=200,
@@ -572,12 +561,14 @@ class AdapterTests(unittest.TestCase):
                 )
                 self.assertFalse(ok_missing)
 
-    def test_agy_lsof_brain_fallback(self) -> None:
+    def test_agy_psutil_brain_fallback(self) -> None:
         adapter = AgyAdapter()
         brain_uuid = "0e69df85-d730-4acc-89e2-e1d11f2b4c25"
         with mock.patch(
-            "herdr_roll.adapters.run_cmd",
-            return_value=f"n/Users/demo/.gemini/antigravity-cli/brain/{brain_uuid}/task_plan.md\n",
+            "herdr_roll.adapters.open_file_paths",
+            return_value=[
+                f"/Users/demo/.gemini/antigravity-cli/brain/{brain_uuid}/task_plan.md"
+            ],
         ):
             sid = adapter.session_id(
                 address="t3w9",
@@ -644,7 +635,7 @@ class AdapterTests(unittest.TestCase):
             "-r",
             "local-late1234",
         ]
-        self.assertEqual(detect_kind(None, late_fg, []), HarnessKind.hermes)
+        self.assertEqual(detect_kind(None, late_fg, []), HarnessKind.HERMES)
         with mock.patch.object(
             adapter, "_lookup_sqlite", return_value="local-late1234"
         ):
@@ -660,7 +651,6 @@ class AdapterTests(unittest.TestCase):
                 ),
                 "local-late1234",
             )
-        # `--resume latest` must not be accepted as a durable session ID.
         with mock.patch.object(adapter, "_lookup_sqlite", return_value=None):
             self.assertIsNone(
                 adapter.session_id(
@@ -677,7 +667,7 @@ class AdapterTests(unittest.TestCase):
     def test_opencode_auto_and_server_flags_preserved(self) -> None:
         adapter = OpenCodeAdapter()
         snap = _term(
-            HarnessKind.opencode,
+            HarnessKind.OPENCODE,
             fg_argv=(
                 "opencode",
                 "--auto",
