@@ -13,6 +13,13 @@ and C++26 workstation setup.
   (`docker --context desktop-linux`, `ubuntu:26.10` `arm64`), and `vm` (Tart
   `dotfiles-v2-macos` `arm64`). Always run containers with `-e container=docker`
   and never `--privileged`. Never touch `cs-guest`.
+- **Tailscale SSH & VM boundaries:** Pin Tailscale `>= 1.104.4` (Tailworm
+  `TS-2026-014` forwarding fix). Containers run non-root
+  `tailscaled --tun=userspace-networking` (`--init`, state dir `0700`) and
+  accept SSH only as `dev`. The Tart `vm` must use open-source Homebrew
+  `tailscale` (`--operator=admin`, since macOS GUI builds lack Tailscale SSH
+  server support) and cannot run Docker due to no nested virtualization
+  (`kern.hv_support=0`).
 - **Parallel worktrees & `planning-with-files`:** Create isolated task
   worktrees with `mise run worktree:new <slug>` (remove with `worktree:rm`).
   Each worktree pins its own `PLAN_ID` inside git-ignored `mise.local.toml` and
@@ -36,6 +43,10 @@ and C++26 workstation setup.
   `conf.d/<topic>/mise.toml` folder fragments (not single-file
   `conf.d/*.toml`) for additive `[task_config].includes`, since `config.toml`
   overrides single-file `includes`.
+  Never install or keep Homebrew `mise` (`/opt/homebrew/bin/mise`); uninstall
+  any base-image Homebrew `mise` formula (`brew uninstall --force mise`) and
+  use only pinned standalone `mise` (`/usr/local/bin/mise` on VM/containers,
+  `~/.local/bin/mise` on host).
 - **Harnesses & container scripts:** Install AI CLIs via native installers only
   (blocked in global `mise` settings). Omit `--bare` when authenticating Claude
   with `CLAUDE_CODE_OAUTH_TOKEN`, redirect `</dev/null` on interactive/agent
