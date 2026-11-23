@@ -21,7 +21,7 @@
   all 3 environments (`pc`, `mac`, `vm`) before C++ compilers:
   - [x] 2.1 Claude Code (`agent-secrets` OAuth token mount)
   - [x] 2.2 OpenCode (free zero-retention model)
-  - [ ] 2.3 ZCode (`npm:zcode-app-cli`)
+  - [x] 2.3 ZCode (`npm:zcode-app-cli`)
   - [ ] 2.4 Antigravity CLI (`agy`, `Orchestrator (Neon)` default)
   - [ ] 2.5 Codex (`--device-auth`) + `ray-manaloto/skills` + `[dotfile_groups]`
 - [ ] **Step 3:** Declarative C++26 core (`mise.ubuntu.toml`: pinned latest

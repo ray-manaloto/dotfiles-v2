@@ -185,8 +185,15 @@ def _analyze_skill(path: Path) -> dict[str, Any]:
 
 
 def _scan() -> tuple[Path, dict[str, Any]]:
-    records = [_analyze_skill(p) for p in _discover_skill_files()]
+    records: list[dict[str, Any]] = []
+    unreadable: list[dict[str, str]] = []
+    for path in _discover_skill_files():
+        try:
+            records.append(_analyze_skill(path))
+        except OSError as exc:
+            unreadable.append({"path": str(path), "error": str(exc)})
     records.sort(key=lambda r: (r["name"], r["path"]))
+    unreadable.sort(key=lambda r: r["path"])
     truncated = [r for r in records if r["truncated"]]
     near_cap = [
         r for r in records if not r["truncated"] and r["body_bytes"] >= NEAR_CAP_BYTES
@@ -198,9 +205,11 @@ def _scan() -> tuple[Path, dict[str, Any]]:
         "near_cap_bytes": NEAR_CAP_BYTES,
         "tail_context_lines": TAIL_CONTEXT_LINES,
         "scanned_count": len(records),
+        "unreadable_count": len(unreadable),
         "manifest_path": str(manifest_path),
         "truncated": truncated,
         "near_cap": near_cap,
+        "unreadable": unreadable,
     }
     return manifest_path, payload
 

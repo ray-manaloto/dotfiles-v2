@@ -147,7 +147,7 @@ check_container() {
 	fi
 
 	if ! claude_out="$(
-		"${dcmd[@]}" exec -i -w /workspace -e SMOKE="${smoke}" "${name}" /bin/bash -lc 'bash -euo pipefail -s' <<'CONTAINER'
+		"${dcmd[@]}" exec -i -w /workspace -e SMOKE="${smoke}" -e ZCODE_SMOKE_MODEL="${ZCODE_SMOKE_MODEL:-}" "${name}" /bin/bash -lc 'bash -euo pipefail -s' <<'CONTAINER'
 test -s /run/agent-secrets/claude-oauth-token
 test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"
 cpath="$(command -v claude)"
@@ -178,9 +178,33 @@ if [[ "${SMOKE}" == "true" ]]; then
 	[[ "${sout}" == *OK* ]]
 	oc_out="$(opencode --standalone run --archived "Reply with exactly: OK" </dev/null)"
 	[[ "${oc_out}" == *OK* ]]
-	z_out="$(zcode -p "Reply with exactly: OK" </dev/null)"
-	[[ "${z_out}" == *OK* ]]
-	smoke_suffix=", smoke=OK"
+	python3 - <<'PY'
+import json
+import os
+
+path = os.environ.get("ZCODE_CLI_CREDENTIALS_FILE", "").strip() or os.path.expanduser("~/.zcode/v2/credentials.json")
+assert os.path.isfile(path) and os.path.getsize(path) > 0, f"missing ZCode credentials: {path}"
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+assert isinstance(data, dict) and data.get("oauth:active_provider") and data.get("zcodejwttoken"), "missing ZCode OAuth session keys"
+PY
+	z_args=(--prompt="Reply with exactly: OK")
+	if [[ -n "${ZCODE_SMOKE_MODEL:-}" ]]; then
+		z_args+=(--model "${ZCODE_SMOKE_MODEL}")
+	fi
+	z_rc=0
+	z_out="$(zcode "${z_args[@]}" </dev/null 2>&1)" || z_rc=$?
+	if [[ ${z_rc} -eq 0 && "${z_out}" == *OK* ]]; then
+		z_smoke="OK"
+	elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: '1113'"* || "${z_out}" == *"[1113]"* ]]; then
+		z_smoke="AUTH_OK_NO_QUOTA(1113)"
+	elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: 1005"* || "${z_out}" == *"exceed quota limit"* ]]; then
+		z_smoke="AUTH_OK_NO_QUOTA(1005)"
+	else
+		printf '%s\n' "${z_out}" >&2
+		exit 1
+	fi
+	smoke_suffix=", smoke=OK, zcode-smoke=${z_smoke}"
 fi
 printf 'claude=%s, opencode=%s, zcode=%s%s' "${cver}" "${ocver}" "${zver}" "${smoke_suffix}"
 CONTAINER
@@ -239,7 +263,7 @@ check_vm() {
 	fi
 
 	if ! out="$(
-		tart exec -i "${vm_name}" env SMOKE="${smoke}" /bin/bash -euo pipefail <<'GUEST'
+		tart exec -i "${vm_name}" env SMOKE="${smoke}" ZCODE_SMOKE_MODEL="${ZCODE_SMOKE_MODEL:-}" /bin/bash -euo pipefail <<'GUEST'
 export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 sm="$(uname -sm)"
@@ -290,9 +314,29 @@ if [[ "${SMOKE}" == "true" ]]; then
   [[ "${sout}" == *OK* ]]
   oc_out="$(/bin/bash -lc 'opencode --standalone run --archived "Reply with exactly: OK" </dev/null')"
   [[ "${oc_out}" == *OK* ]]
-  z_out="$(/bin/bash -lc 'zcode -p "Reply with exactly: OK" </dev/null')"
-  [[ "${z_out}" == *OK* ]]
-  smoke_suffix=" | smoke=OK"
+  /bin/bash -lc 'python3 - <<'\''PY'\''
+import json
+import os
+
+path = os.environ.get("ZCODE_CLI_CREDENTIALS_FILE", "").strip() or os.path.expanduser("~/.zcode/v2/credentials.json")
+assert os.path.isfile(path) and os.path.getsize(path) > 0, f"missing ZCode credentials: {path}"
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+assert isinstance(data, dict) and data.get("oauth:active_provider") and data.get("zcodejwttoken"), "missing ZCode OAuth session keys"
+PY'
+  z_rc=0
+  z_out="$(/bin/bash -lc 'z_args=(--prompt="Reply with exactly: OK"); if [[ -n "${ZCODE_SMOKE_MODEL:-}" ]]; then z_args+=(--model "${ZCODE_SMOKE_MODEL}"); fi; zcode "${z_args[@]}" </dev/null 2>&1')" || z_rc=$?
+  if [[ ${z_rc} -eq 0 && "${z_out}" == *OK* ]]; then
+    z_smoke="OK"
+  elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: '\''1113'\''"* || "${z_out}" == *"[1113]"* ]]; then
+    z_smoke="AUTH_OK_NO_QUOTA(1113)"
+  elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: 1005"* || "${z_out}" == *"exceed quota limit"* ]]; then
+    z_smoke="AUTH_OK_NO_QUOTA(1005)"
+  else
+    printf '%s\n' "${z_out}" >&2
+    exit 1
+  fi
+  smoke_suffix=" | smoke=OK | zcode-smoke=${z_smoke}"
 fi
 printf '%s | mise=%s | %s | claude=%s | opencode=%s | zcode=%s | tailscale-ssh=OK | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${ocver}" "${zver}" "${smoke_suffix}"
 GUEST

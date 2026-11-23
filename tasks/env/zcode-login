@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+#MISE description="Sign ZCode in with Z.AI OAuth (persisted on per-environment volume/disk) across pc, mac, and vm"
+#USAGE flag "--target <target>" default="all" help="Environment to log in or check: pc, mac, vm, or all"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
+#USAGE flag "--status" help="Check whether a ZCode OAuth login is stored without starting a login flow"
+#USAGE flag "--force" help="Force a fresh Z.AI OAuth login even if an active session is already stored"
+#USAGE flag "--no-open" help="Print the authorize URL without opening it in the local browser"
+set -euo pipefail
+
+target="${usage_target:-all}"
+host="${usage_host:-pc}"
+status_only="${usage_status:-false}"
+force="${usage_force:-false}"
+no_open="${usage_no_open:-false}"
+
+name="dotfiles-v2"
+vm_name="dotfiles-v2-macos"
+fail_count=0
+active_pid=""
+active_tmpdir=""
+
+cleanup() {
+	if [[ -n ${active_pid} ]]; then
+		kill "${active_pid}" >/dev/null 2>&1 || true
+		wait "${active_pid}" >/dev/null 2>&1 || true
+		active_pid=""
+	fi
+	if [[ -n ${active_tmpdir} && -d ${active_tmpdir} ]]; then
+		rm -rf -- "${active_tmpdir}"
+		active_tmpdir=""
+	fi
+}
+
+trap cleanup EXIT INT TERM
+
+is_target_available() {
+	local label="$1"
+	local running=""
+	case "${label}" in
+	pc)
+		running="$(DOCKER_HOST="ssh://${host}" docker container inspect --format '{{.State.Running}}' "${name}" 2>/dev/null || echo false)"
+		[[ ${running} == "true" ]]
+		;;
+	mac)
+		running="$(env -u DOCKER_HOST docker --context desktop-linux container inspect --format '{{.State.Running}}' "${name}" 2>/dev/null || echo false)"
+		[[ ${running} == "true" ]]
+		;;
+	vm)
+		[[ "$(uname -s)" == "Darwin" ]] && command -v tart >/dev/null 2>&1 && tart exec "${vm_name}" true >/dev/null 2>&1
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+status_check_script='
+python3 - <<'\''PY'\''
+import json
+import os
+import sys
+
+path = os.environ.get("ZCODE_CLI_CREDENTIALS_FILE", "").strip()
+if not path:
+    path = os.path.join(os.path.expanduser("~"), ".zcode", "v2", "credentials.json")
+
+try:
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        sys.exit(1)
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        sys.exit(1)
+    if not data.get("oauth:active_provider") or not data.get("zcodejwttoken"):
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+PY
+'
+
+is_logged_in() {
+	local label="$1"
+	case "${label}" in
+	pc)
+		env "DOCKER_HOST=ssh://${host}" docker exec -i "${name}" /bin/bash -lc "${status_check_script}" </dev/null >/dev/null 2>&1
+		;;
+	mac)
+		env -u DOCKER_HOST docker --context desktop-linux exec -i "${name}" /bin/bash -lc "${status_check_script}" </dev/null >/dev/null 2>&1
+		;;
+	vm)
+		tart exec -i "${vm_name}" /bin/bash -lc "${status_check_script}" </dev/null >/dev/null 2>&1
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+check_status_target() {
+	local label="$1"
+	if ! is_target_available "${label}"; then
+		printf 'FAIL  %-6s  environment is not running or unreachable\n' "${label}"
+		fail_count=$((fail_count + 1))
+		return 0
+	fi
+	if is_logged_in "${label}"; then
+		printf 'OK    %-6s  ZCode OAuth login stored\n' "${label}"
+	else
+		printf 'MISS  %-6s  no ZCode OAuth login stored\n' "${label}"
+		fail_count=$((fail_count + 1))
+	fi
+}
+
+login_target() {
+	local label="$1"
+	local fifo="" line="" auth_url="" opened=0 rc=0
+
+	if ! is_target_available "${label}"; then
+		printf 'FAIL  %-6s  environment is not running or unreachable\n' "${label}"
+		fail_count=$((fail_count + 1))
+		return 0
+	fi
+
+	if [[ ${force} != "true" ]] && is_logged_in "${label}"; then
+		printf 'SKIP  %-6s  ZCode OAuth login already stored (use --force to re-authenticate)\n' "${label}"
+		return 0
+	fi
+
+	printf 'AUTH  %-6s  starting Z.AI OAuth login (persisted on %s volume/disk)...\n' "${label}" "${label}"
+
+	active_tmpdir="$(mktemp -d)"
+	fifo="${active_tmpdir}/out.fifo"
+	mkfifo "${fifo}"
+
+	case "${label}" in
+	pc)
+		env "DOCKER_HOST=ssh://${host}" docker exec "${name}" /bin/bash -lc 'zcode login --oauth --no-browser </dev/null' </dev/null >"${fifo}" 2>&1 &
+		;;
+	mac)
+		env -u DOCKER_HOST docker --context desktop-linux exec "${name}" /bin/bash -lc 'zcode login --oauth --no-browser </dev/null' </dev/null >"${fifo}" 2>&1 &
+		;;
+	vm)
+		tart exec "${vm_name}" /bin/bash -lc 'zcode login --oauth --no-browser </dev/null' </dev/null >"${fifo}" 2>&1 &
+		;;
+	esac
+	active_pid=$!
+
+	while IFS= read -r line || [[ -n ${line} ]]; do
+		line="${line%$'\r'}"
+		printf '[%s] %s\n' "${label}" "${line}"
+		if [[ ${opened} -eq 0 && ${line} =~ (https://[^[:space:]]+) ]]; then
+			auth_url="${BASH_REMATCH[1]}"
+			if [[ ${no_open} != "true" && "$(uname -s)" == "Darwin" ]] && command -v open >/dev/null 2>&1; then
+				open "${auth_url}" || true
+				printf '[%s] opened authorization URL in browser; approve in browser to complete login...\n' "${label}"
+			fi
+			opened=1
+		fi
+	done <"${fifo}"
+
+	rc=0
+	wait "${active_pid}" || rc=$?
+	active_pid=""
+	rm -rf -- "${active_tmpdir}"
+	active_tmpdir=""
+
+	if [[ ${rc} -ne 0 ]] || ! is_logged_in "${label}"; then
+		printf 'FAIL  %-6s  ZCode OAuth login did not complete (exit %d)\n' "${label}" "${rc}"
+		fail_count=$((fail_count + 1))
+		return 0
+	fi
+
+	printf 'PASS  %-6s  ZCode OAuth login saved on persistent storage\n' "${label}"
+}
+
+declare -a targets=()
+case "${target}" in
+pc | mac | vm)
+	targets=("${target}")
+	;;
+all)
+	targets=("pc" "mac" "vm")
+	;;
+*)
+	echo "unknown target '${target}' (expected pc, mac, vm, or all)" >&2
+	exit 1
+	;;
+esac
+
+for t in "${targets[@]}"; do
+	if [[ ${status_only} == "true" ]]; then
+		check_status_target "${t}"
+	else
+		login_target "${t}"
+	fi
+done
+
+if [[ ${fail_count} -ne 0 ]]; then
+	if [[ ${status_only} == "true" ]]; then
+		echo "env:zcode-login: ${fail_count} target(s) missing ZCode OAuth login" >&2
+	else
+		echo "env:zcode-login: ${fail_count} target(s) failed login" >&2
+	fi
+	exit 1
+fi
