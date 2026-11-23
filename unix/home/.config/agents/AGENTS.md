@@ -62,3 +62,51 @@ Before writing a custom Python or shell check, search `hk builtins` for a native
 `Go` — such as `betterleaks`, `rg`, `ruff`, `ty`, `tombi`, `jq`, `mise`,
 `agnix`, `jactionlint`, `zizmor`, `typos`, `hk util`) when available in the
 toolchain.
+
+## Watched agents open as herdr-app tabs
+
+Open any agent the owner may watch as a tab in the current `herdr-app` space
+instead of a background popup:
+`herdr-app do tab.new --space <id> --name <name> --folder <dir> --argv '["codex-hc", "<task>"]'`.
+Always start Codex as `codex-hc` (so `fnox` proxy, `--disable daemon_auto_start`,
+and `HC_*` environment variables apply). Pass an initial prompt when opening a
+Claude tab (`--task` or final `--argv` element), verify delivery with
+`hc read <t>`, close temporary tabs when finished, and always refer to terminals
+as `tab-name (id)`.
+
+## Environment credentials and Doppler
+
+Use `fnox --non-interactive proxy run -- <cmd>` when a command requires managed
+provider authentication (`fnox exec`, `fnox get`, and `fnox export` are disabled
+for agents, and avoid `fnox set` on a Doppler provider). Manage Doppler entries
+only through the `secret` mise tasks (`pbpaste | mise run secret set` or the
+corresponding `secret` subcommands `set --replace`, `delete` with owner
+approval, `list`, and `doctor`).
+
+## Claude plugin changes
+
+Install, update, enable, or disable Claude Code plugins via `claude plugin` CLI
+only instead of editing `~/.claude/plugins/**`. Uninstall only with
+`claude plugin uninstall --keep-data` unless the owner explicitly approves data
+deletion, and verify with `claude plugin list --json`.
+
+## Scratch, Spotlight & remote Linux host (`pc`) upgrades
+
+- **Mac Spotlight:** `~/dev` is excluded from Spotlight (`~/dev/tmp/<task>` for
+  scratch); outside `~/dev`, place bulky clones, caches, and build trees inside
+  directories ending in `.noindex`.
+- **Remote Linux host (`pc`) upgrades:** Upgrade `pc` only with owner approval
+  via `OMARCHY_PATH=/usr/share/omarchy omarchy update -y` instead of
+  `pacman -Syu`.
+
+## Large reviews fan out
+
+Split diffs exceeding ~1,000 changed lines across up to 6 parallel read-only
+subagents covering the full `(file, rule)` checklist, verify every reported
+finding directly at `path:line`, and merge deduplicated confirmed findings.
+
+## Context7 docs lookup
+
+When looking up library, framework, SDK, API, or CLI syntax/configuration, call
+Context7 `resolve-library-id` first and run focused `query-docs` calls per
+concept rather than relying on stale memory or generic web search.

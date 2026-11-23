@@ -144,6 +144,7 @@ env = { RUST_LOG = "info,fnox::proxy=warn" }
 "~/.config/agents/AGENTS.md" = { mode = "symlink" }
 "~/.config/fnox/config.toml" = { mode = "symlink" }
 "~/.config/git/config" = { mode = "symlink" }
+"~/.config/jouet/rules/npm-claude-code.toml" = { mode = "symlink" }
 "~/.config/opencode/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
 "~/.config/opencode/opencode.json" = { mode = "symlink" }
 "~/.config/pitchfork/config.toml" = { mode = "symlink" }
@@ -175,6 +176,7 @@ env = { RUST_LOG = "info,fnox::proxy=warn" }
 "~/.claude/skills/post-task-learn" = { source = "../../.agents/skills/post-task-learn", mode = "symlink" }
 "~/.claude/skills/pwf-status" = { source = "../../.agents/skills/pwf-status", mode = "symlink" }
 "~/.claude/skills/vercel-board" = { source = "../../.agents/skills/vercel-board", mode = "symlink" }
+"~/.codex/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
 "~/.codex/config.toml/mcp-jdx" = { source = "../../.codex/mcp-jdx.toml", merge = true, permissions = "0600" }
 "~/.gemini/config/skills" = { source = "~/.agents/skills", mode = "symlink", relative = true }
 "~/.zcode/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }

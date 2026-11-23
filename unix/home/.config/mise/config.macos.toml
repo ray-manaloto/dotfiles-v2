@@ -17,7 +17,6 @@ path = [
 
 [dotfiles]
 "~/.config/herdr-app/programs.json" = { mode = "symlink" }
-"~/.config/mise/apple-bin" = { mode = "symlink" }
 "~/.config/zsh/.zprofile" = { mode = "symlink" }
 "~/.config/zsh/.zshenv" = { source = "../../.zshenv", mode = "symlink" }
 "~/.config/zsh/.zshrc" = { mode = "symlink" }
