@@ -77,6 +77,63 @@ read_local_plan_id() {
 	sed -n 's/^[[:space:]]*PLAN_ID[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${cfg}" | head -n 1
 }
 
+read_local_issue_num() {
+	local cfg="$1/mise.local.toml"
+	[[ -f ${cfg} ]] || return 0
+	sed -nE 's/^[[:space:]]*GITHUB_ISSUE[[:space:]]*=[[:space:]]*"?#?([1-9][0-9]*)"?.*/\1/p' "${cfg}" | head -n 1
+}
+
+read_local_issue_url() {
+	local cfg="$1/mise.local.toml"
+	[[ -f ${cfg} ]] || return 0
+	sed -n 's/^[[:space:]]*GITHUB_ISSUE_URL[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${cfg}" | head -n 1
+}
+
+RESOLVED_ISSUE_NUM=""
+RESOLVED_ISSUE_URL=""
+
+resolve_issue_for_dir() {
+	local dir="$1" pdir="${2:-}"
+	local pfile=""
+
+	RESOLVED_ISSUE_NUM="$(read_local_issue_num "${dir}")"
+	RESOLVED_ISSUE_URL="$(read_local_issue_url "${dir}")"
+
+	if [[ -n ${pdir} && -f "${pdir}/task_plan.md" ]]; then
+		pfile="${pdir}/task_plan.md"
+		if [[ -z ${RESOLVED_ISSUE_NUM} ]]; then
+			RESOLVED_ISSUE_NUM="$(
+				LC_ALL=C awk '
+					NR == 1 { sub(/^\357\273\277/, "") }
+					/^#[[:space:]]*Task Plan:[[:space:]]*#[1-9][0-9]*([[:space:]]|$)/ {
+						if (match($0, /#[1-9][0-9]*/)) {
+							print substr($0, RSTART + 1, RLENGTH - 1)
+							exit
+						}
+					}
+				' <"${pfile}"
+			)"
+		fi
+		if [[ -z ${RESOLVED_ISSUE_URL} ]]; then
+			RESOLVED_ISSUE_URL="$(
+				LC_ALL=C awk '
+					NR == 1 { sub(/^\357\273\277/, "") }
+					/^##[[:space:]]+Goal[[:space:]]*$/ { in_goal = 1; next }
+					in_goal && /^##?[[:space:]]+/ { in_goal = 0 }
+					in_goal && match($0, /https?:\/\/github\.com\/[^\/[:space:]]+\/[^\/[:space:]]+\/issues\/[1-9][0-9]*/) {
+						print substr($0, RSTART, RLENGTH)
+						exit
+					}
+				' <"${pfile}"
+			)"
+		fi
+	fi
+
+	if [[ -z ${RESOLVED_ISSUE_NUM} && -n ${RESOLVED_ISSUE_URL} ]]; then
+		RESOLVED_ISSUE_NUM="$(printf '%s' "${RESOLVED_ISSUE_URL}" | sed -nE 's|.*/issues/([1-9][0-9]*)$|\1|p' | head -n 1)"
+	fi
+}
+
 read_mode() {
 	local dir="$1" pdir="${2:-}" mfile
 	if [[ -n ${pdir} && -f "${pdir}/.mode" ]]; then
@@ -358,7 +415,17 @@ print_primary() {
 
 	branch="$(git -C "${dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf '(not a git repo)')"
 	resolve_plan_for_dir "${dir}" "${eff_plan_id}" "${proot}"
+	resolve_issue_for_dir "${dir}" "${RESOLVED_PLAN_DIR}"
 	mode_val="$(read_mode "${dir}" "${RESOLVED_PLAN_DIR}")"
+
+	local issue_display="(unlinked)"
+	if [[ -n ${RESOLVED_ISSUE_NUM} && -n ${RESOLVED_ISSUE_URL} ]]; then
+		issue_display="#${RESOLVED_ISSUE_NUM} (${RESOLVED_ISSUE_URL})"
+	elif [[ -n ${RESOLVED_ISSUE_NUM} ]]; then
+		issue_display="#${RESOLVED_ISSUE_NUM}"
+	elif [[ -n ${RESOLVED_ISSUE_URL} ]]; then
+		issue_display="${RESOLVED_ISSUE_URL}"
+	fi
 
 	printf 'PWF Status\n'
 	printf '  Directory:    %s\n' "${dir}"
@@ -369,6 +436,7 @@ print_primary() {
 	else
 		printf '  PLAN_ID:      (unset)\n'
 	fi
+	printf '  GitHub Issue: %s\n' "${issue_display}"
 	if [[ -n ${proot} ]]; then
 		printf '  PWF_PLAN_ROOT:%s\n' " ${proot}"
 	fi
@@ -442,9 +510,17 @@ print_worktrees() {
 			pid="$(read_local_plan_id "${cpath}")"
 		fi
 		resolve_plan_for_dir "${cpath}" "${pid}" ""
+		resolve_issue_for_dir "${cpath}" "${RESOLVED_PLAN_DIR}"
 		status_str="$(compact_status "${RESOLVED_STATE}" "${RESOLVED_PLAN_DIR}")"
-		printf '  %s %-20s  %-26s  %-22s  %s\n' \
-			"${mark}" "${branch:-unknown}" "${pid:-(unset)}" "${status_str}" "${cpath}"
+		local issue_col="(unlinked)" url_suffix=""
+		if [[ -n ${RESOLVED_ISSUE_NUM} ]]; then
+			issue_col="#${RESOLVED_ISSUE_NUM}"
+		fi
+		if [[ -n ${RESOLVED_ISSUE_URL} ]]; then
+			url_suffix="  ${RESOLVED_ISSUE_URL}"
+		fi
+		printf '  %s %-20s  %-26s  %-10s  %-22s  %s%s\n' \
+			"${mark}" "${branch:-unknown}" "${pid:-(unset)}" "${issue_col}" "${status_str}" "${cpath}" "${url_suffix}"
 	}
 
 	while IFS= read -r line || [[ -n ${line} ]]; do

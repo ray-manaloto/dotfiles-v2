@@ -10,6 +10,8 @@ import os
 import re
 import shlex
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,18 @@ EDIT_TOOLS = frozenset(
 )
 SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 PLAN_ID_LINE_RE = re.compile(r'^\s*PLAN_ID\s*=\s*"([^"\r\n]+)"')
+GITHUB_ISSUE_LINE_RE = re.compile(
+    r'^\s*GITHUB_ISSUE\s*=\s*"?([^"#\r\n]*#?[0-9]+|[^"\r\n]*)"?'
+)
+GITHUB_ISSUE_URL_LINE_RE = re.compile(r'^\s*GITHUB_ISSUE_URL\s*=\s*"([^"\r\n]+)"')
+ISSUE_NUM_RE = re.compile(r"^#?([1-9][0-9]*)$")
+TASK_PLAN_ISSUE_RE = re.compile(r"^#\s*Task Plan:\s*(?:.*?\s)?#([1-9][0-9]*)(?:\b|$)")
+ISSUE_URL_RE = re.compile(
+    r"https?://github\.com/[^/\s]+/[^/\s]+/issues/([1-9][0-9]*)\b"
+)
+NS_TIMESTAMP_RE = re.compile(r"^\d{8}T\d{6}\.\d{9}[+-]\d{4}$")
+DOCS_BYPASS_FILES = frozenset({"ROADMAP.md", "README.md", "CHANGELOG.md"})
+DOCS_BYPASS_SUFFIXES = frozenset({".md", ".mdx", ".markdown", ".rst", ".adoc", ".txt"})
 WORKTREE_RM_RE = re.compile(
     r"\bmise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+worktree:rm\b([^\n;&|]*)"
 )
@@ -40,13 +54,20 @@ DENY_REASON = (
     "PWF guard: this repository enforces planning-with-files (.mode present), "
     "but no unambiguous active PWF plan was resolved. Initialize and attest "
     ".planning/<PLAN_ID>/task_plan.md (and pin PLAN_ID in mise.local.toml or use "
-    "'mise run worktree:new <slug>') before editing repository files."
+    "'mise run worktree:new <slug> --issue <N>') before editing repository files."
 )
 COMPLETE_DENY_REASON = (
     "PWF guard: the active planning-with-files plan has all phases marked "
-    "complete. Start a new PLAN_ID (e.g. 'mise run worktree:new <slug>' or a "
+    "complete. Start a new PLAN_ID (e.g. 'mise run worktree:new <slug> --issue <N>' or a "
     "new plan in mise.local.toml) or mark the next phase 'in_progress' before "
     "editing tracked repository files."
+)
+ISSUE_DENY_REASON = (
+    "PWF guard: active repo edits require GitHub issue-linked metadata "
+    "(GITHUB_ISSUE in mise.local.toml, or '# Task Plan: #<N>' / "
+    "'## Goal: Implement https://github.com/.../issues/<N>' in task_plan.md). "
+    "Use 'mise run worktree:new <slug> --issue <N>' (only ROADMAP.md / docs/** "
+    "with an active plan are exempt)."
 )
 
 
@@ -126,8 +147,186 @@ def _read_plan_id_from_mise_local(repo_root: Path) -> tuple[bool, str]:
     return False, ""
 
 
+def _format_ns_timestamp(ns: int | None = None) -> str:
+    raw_ns = time.time_ns() if ns is None else ns
+    sec, rem = divmod(raw_ns, 1_000_000_000)
+    dt = datetime.fromtimestamp(sec, UTC).astimezone()
+    return f"{dt:%Y%m%dT%H%M%S}.{rem:09d}{dt:%z}"
+
+
 def _valid_slug(slug: str) -> bool:
     return bool(slug and SAFE_SLUG_RE.match(slug) and slug not in (".", ".."))
+
+
+def _read_issue_from_mise_local(repo_root: Path) -> tuple[bool, str]:
+    local_cfg = repo_root / "mise.local.toml"
+    if not local_cfg.is_file():
+        return False, ""
+    try:
+        text = local_cfg.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True, ""
+
+    try:
+        import tomllib  # type: ignore[import-not-found]
+    except ImportError:
+        tomllib = None
+
+    raw_issue: Any = None
+    raw_url: Any = None
+    if tomllib is not None:
+        try:
+            parsed = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return True, ""
+        if isinstance(parsed, dict):
+            env_tbl = parsed.get("env")
+            if isinstance(env_tbl, dict):
+                if "GITHUB_ISSUE" in env_tbl:
+                    raw_issue = env_tbl.get("GITHUB_ISSUE")
+                if "GITHUB_ISSUE_URL" in env_tbl:
+                    raw_url = env_tbl.get("GITHUB_ISSUE_URL")
+    else:
+        for line in text.splitlines():
+            stripped = line.split("#", 1)[0]
+            m_issue = GITHUB_ISSUE_LINE_RE.match(stripped)
+            if m_issue:
+                raw_issue = m_issue.group(1)
+            m_url = GITHUB_ISSUE_URL_LINE_RE.match(stripped)
+            if m_url:
+                raw_url = m_url.group(1)
+
+    has_any = raw_issue is not None or raw_url is not None
+    if not has_any:
+        return False, ""
+
+    issue_num = ""
+    if raw_issue is not None:
+        if isinstance(raw_issue, bool):
+            return True, ""
+        if isinstance(raw_issue, int):
+            if raw_issue <= 0:
+                return True, ""
+            issue_num = str(raw_issue)
+        elif isinstance(raw_issue, str):
+            m = ISSUE_NUM_RE.match(raw_issue.strip())
+            if not m:
+                return True, ""
+            issue_num = m.group(1)
+        else:
+            return True, ""
+
+    url_num = ""
+    if raw_url is not None:
+        if not isinstance(raw_url, str):
+            return True, ""
+        m_url = ISSUE_URL_RE.search(raw_url.strip())
+        if not m_url:
+            return True, ""
+        url_num = m_url.group(1)
+
+    if issue_num and url_num and issue_num != url_num:
+        return True, ""
+    return True, issue_num or url_num
+
+
+def _extract_task_plan_issue(plan_path: Path) -> tuple[bool, str]:
+    try:
+        lines = plan_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False, ""
+    if lines and lines[0].startswith("\ufeff"):
+        lines[0] = lines[0][1:]
+
+    heading_num = ""
+    goal_num = ""
+    in_goal = False
+    for raw in lines:
+        line = raw.rstrip("\r")
+        if not heading_num and line.startswith("# "):
+            m_head = TASK_PLAN_ISSUE_RE.match(line)
+            if m_head:
+                heading_num = m_head.group(1)
+            continue
+        if re.match(r"^##\s+Goal\s*$", line):
+            in_goal = True
+            continue
+        if in_goal and re.match(r"^##?\s+", line):
+            in_goal = False
+        if in_goal and not goal_num:
+            m_goal = ISSUE_URL_RE.search(line)
+            if m_goal:
+                goal_num = m_goal.group(1)
+
+    if heading_num and goal_num and heading_num != goal_num:
+        return True, ""
+    if heading_num:
+        return True, heading_num
+    if goal_num:
+        return True, goal_num
+    return False, ""
+
+
+def _parse_head_branch(head_path: Path) -> str:
+    try:
+        raw = head_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return "unknown"
+    if raw.startswith("ref:"):
+        ref = raw[4:].strip()
+        if ref.startswith("refs/heads/"):
+            return ref[len("refs/heads/") :]
+        return ref or "unknown"
+    return "detached" if raw else "unknown"
+
+
+def _check_linked_worktree(repo_root: Path) -> tuple[bool, str]:
+    dot_git = repo_root / ".git"
+    if dot_git.is_dir():
+        head_file = dot_git / "HEAD"
+        branch = _parse_head_branch(head_file) if head_file.is_file() else "main"
+        return False, branch
+    if dot_git.is_file():
+        try:
+            raw = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return False, "unknown"
+        if not raw.lower().startswith("gitdir:"):
+            return False, "unknown"
+        gitdir = Path(raw.split(":", 1)[1].strip())
+        if not gitdir.is_absolute():
+            gitdir = (repo_root / gitdir).resolve(strict=False)
+        if not gitdir.is_dir():
+            return False, "unknown"
+        is_wt_dir = (
+            gitdir / "commondir"
+        ).is_file() or gitdir.parent.name == "worktrees"
+        if not is_wt_dir:
+            return False, "unknown"
+        head_file = gitdir / "HEAD"
+        if not head_file.is_file():
+            return False, "unknown"
+        branch = _parse_head_branch(head_file)
+        if branch in ("main", "master", "", "unknown"):
+            return False, branch or "unknown"
+        return True, branch
+    return False, "unknown"
+
+
+def _is_docs_or_roadmap_bypass(target_path: Path, repo_root: Path) -> bool:
+    try:
+        rel = target_path.resolve(strict=False).relative_to(
+            repo_root.resolve(strict=False)
+        )
+    except (ValueError, OSError):
+        return False
+    if rel.as_posix() in DOCS_BYPASS_FILES:
+        return True
+    return bool(
+        len(rel.parts) >= 2
+        and rel.parts[0] == "docs"
+        and rel.suffix.lower() in DOCS_BYPASS_SUFFIXES
+    )
 
 
 def _is_plan_all_complete(plan_path: Path) -> bool:
@@ -474,6 +673,31 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         return _deny()
     if _is_plan_all_complete(plan_path):
         return _deny(COMPLETE_DENY_REASON)
+    if _is_docs_or_roadmap_bypass(target_path, repo_root):
+        return _allow()
+
+    is_linked, branch = _check_linked_worktree(repo_root)
+    if not is_linked:
+        return _deny(
+            f"PWF guard: active repo edits in PWF-adopted repos must run in a "
+            f"non-main linked worktree (current branch={branch}). Create one with "
+            "'mise run worktree:new <slug> --issue <N>' (only ROADMAP.md / docs/** "
+            "with an active plan are exempt)."
+        )
+
+    has_local_issue, local_issue = _read_issue_from_mise_local(repo_root)
+    if has_local_issue and not local_issue:
+        return _deny(ISSUE_DENY_REASON)
+    has_plan_issue, plan_issue = _extract_task_plan_issue(plan_path)
+    if has_plan_issue and not plan_issue:
+        return _deny(ISSUE_DENY_REASON)
+    if has_local_issue and has_plan_issue and local_issue != plan_issue:
+        return _deny(
+            f"PWF guard: GITHUB_ISSUE (#{local_issue}) in mise.local.toml "
+            f"disagrees with task_plan.md (#{plan_issue}). Reconcile the link."
+        )
+    if not local_issue and not plan_issue:
+        return _deny(ISSUE_DENY_REASON)
     return _allow()
 
 
@@ -606,15 +830,34 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             assert res.get("decision") == "deny", f"ambiguous plans should deny: {res}"
             checks.append("ambiguous_plans_denied")
 
-            # 6. Pinning PLAN_ID in mise.local.toml allows edits
-            (pwf_repo / "mise.local.toml").write_text(
+            # 6. Pinning PLAN_ID in mise.local.toml allows edits in an issue-linked worktree
+            wt_active = root / "pwf-repo-active"
+            wt_active.mkdir()
+            (wt_active / ".mode").write_text("autonomous\n", encoding="utf-8")
+            wt_active_gitdir = pwf_repo / ".git" / "worktrees" / "active"
+            wt_active_gitdir.mkdir(parents=True)
+            (wt_active_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+            (wt_active_gitdir / "HEAD").write_text(
+                "ref: refs/heads/wt/active\n", encoding="utf-8"
+            )
+            (wt_active / ".git").write_text(
+                f"gitdir: {wt_active_gitdir}\n", encoding="utf-8"
+            )
+            for slug, issue_num in (("plan-a", "6"), ("plan-b", "7")):
+                pdir = wt_active / ".planning" / slug
+                pdir.mkdir(parents=True)
+                (pdir / "task_plan.md").write_text(
+                    f"# Task Plan: #{issue_num} Work\n\n### Phase 1: Work\n**Status:** in_progress\n",
+                    encoding="utf-8",
+                )
+            (wt_active / "mise.local.toml").write_text(
                 '[env]\nPLAN_ID = "plan-a"\n', encoding="utf-8"
             )
             res = _run_hook(
                 {
                     "toolCall": {
                         "name": "edit_file",
-                        "args": {"Path": str(pwf_repo / "AGENTS.md")},
+                        "args": {"Path": str(wt_active / "AGENTS.md")},
                     }
                 }
             )
@@ -622,13 +865,13 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             checks.append("mise_local_pin_allowed")
 
             # 7. Env PLAN_ID overrides and validates exact slug
-            (pwf_repo / "mise.local.toml").unlink()
+            (wt_active / "mise.local.toml").unlink()
             os.environ["PLAN_ID"] = "plan-b"
             res = _run_hook(
                 {
                     "toolCall": {
                         "name": "edit_file",
-                        "args": {"Path": str(pwf_repo / "AGENTS.md")},
+                        "args": {"Path": str(wt_active / "AGENTS.md")},
                     }
                 }
             )
@@ -638,7 +881,7 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 {
                     "toolCall": {
                         "name": "edit_file",
-                        "args": {"Path": str(pwf_repo / "AGENTS.md")},
+                        "args": {"Path": str(wt_active / "AGENTS.md")},
                     }
                 }
             )
@@ -747,14 +990,14 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
 
             # 10. mise.local.toml pin overrides stale completed os.environ["PLAN_ID"]
             os.environ["PLAN_ID"] = "plan-done"
-            (pwf_repo / "mise.local.toml").write_text(
+            (wt_active / "mise.local.toml").write_text(
                 '[env]\nPLAN_ID = "plan-a"\n', encoding="utf-8"
             )
             res = _run_hook(
                 {
                     "toolCall": {
                         "name": "edit_file",
-                        "args": {"Path": str(pwf_repo / "AGENTS.md")},
+                        "args": {"Path": str(wt_active / "AGENTS.md")},
                     }
                 }
             )
@@ -885,6 +1128,144 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             )
             checks.append("worktree_rm_date_prefixed_and_wt_layout_gate")
 
+            # 13. Primary main checkout denies code/AGENTS edits even with issue-linked plan,
+            # while allowing narrow ROADMAP.md and docs/** bypass when active plan exists.
+            (pwf_repo / ".git" / "HEAD").write_text(
+                "ref: refs/heads/main\n", encoding="utf-8"
+            )
+            main_plan_dir = pwf_repo / ".planning" / "main-issue-6"
+            main_plan_dir.mkdir(parents=True)
+            (main_plan_dir / "task_plan.md").write_text(
+                "# Task Plan: #6 Main\n\n### Phase 1: Do\n**Status:** in_progress\n",
+                encoding="utf-8",
+            )
+            (pwf_repo / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "main-issue-6"\nGITHUB_ISSUE = "6"\n',
+                encoding="utf-8",
+            )
+            res_main_code = _run_hook(
+                {
+                    "toolCall": {
+                        "name": "edit_file",
+                        "args": {"Path": str(pwf_repo / "tasks" / "worktree" / "new")},
+                    }
+                }
+            )
+            assert res_main_code.get("decision") == "deny", (
+                f"main checkout must deny code edits: {res_main_code}"
+            )
+            for bypass_rel in ("ROADMAP.md", "docs/guide.md"):
+                res_bypass = _run_hook(
+                    {
+                        "toolCall": {
+                            "name": "edit_file",
+                            "args": {"Path": str(pwf_repo / bypass_rel)},
+                        }
+                    }
+                )
+                assert res_bypass == _allow(), (
+                    f"{bypass_rel} with active plan should allow: {res_bypass}"
+                )
+            checks.append("main_checkout_denied_docs_roadmap_bypass_allowed")
+
+            # 14. Linked worktree enforces issue-linked metadata (mise.local.toml or task_plan.md)
+            unlinked_dir = wt_active / ".planning" / "plan-unlinked"
+            unlinked_dir.mkdir(parents=True)
+            (unlinked_dir / "task_plan.md").write_text(
+                "# Task Plan: Unlinked\n\n## Goal\nDo work\n\n### Phase 1: Do\n**Status:** in_progress\n",
+                encoding="utf-8",
+            )
+            (wt_active / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "plan-unlinked"\n', encoding="utf-8"
+            )
+            res_unlinked = _run_hook(
+                {
+                    "toolCall": {
+                        "name": "edit_file",
+                        "args": {"Path": str(wt_active / "src.py")},
+                    }
+                }
+            )
+            assert res_unlinked.get("decision") == "deny", (
+                f"unlinked worktree plan must deny code edit: {res_unlinked}"
+            )
+            assert (
+                _run_hook(
+                    {
+                        "toolCall": {
+                            "name": "edit_file",
+                            "args": {"Path": str(wt_active / "ROADMAP.md")},
+                        }
+                    }
+                )
+                == _allow()
+            )
+
+            # GITHUB_ISSUE in mise.local.toml satisfies issue link
+            (wt_active / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "plan-unlinked"\nGITHUB_ISSUE = "42"\n',
+                encoding="utf-8",
+            )
+            assert (
+                _run_hook(
+                    {
+                        "toolCall": {
+                            "name": "edit_file",
+                            "args": {"Path": str(wt_active / "src.py")},
+                        }
+                    }
+                )
+                == _allow()
+            )
+
+            # ## Goal URL in task_plan.md satisfies issue link
+            goal_url_dir = wt_active / ".planning" / "plan-goal-url"
+            goal_url_dir.mkdir(parents=True)
+            (goal_url_dir / "task_plan.md").write_text(
+                "# Task Plan: Via URL\n\n## Goal\nImplement https://github.com/org/repo/issues/19\n\n### Phase 1: Do\n**Status:** in_progress\n",
+                encoding="utf-8",
+            )
+            (wt_active / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "plan-goal-url"\n', encoding="utf-8"
+            )
+            assert (
+                _run_hook(
+                    {
+                        "toolCall": {
+                            "name": "edit_file",
+                            "args": {"Path": str(wt_active / "src.py")},
+                        }
+                    }
+                )
+                == _allow()
+            )
+
+            # Mismatched GITHUB_ISSUE vs task_plan.md fails closed
+            (wt_active / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "plan-goal-url"\nGITHUB_ISSUE = "99"\n',
+                encoding="utf-8",
+            )
+            res_mismatch = _run_hook(
+                {
+                    "toolCall": {
+                        "name": "edit_file",
+                        "args": {"Path": str(wt_active / "src.py")},
+                    }
+                }
+            )
+            assert res_mismatch.get("decision") == "deny", (
+                f"mismatched issue must deny: {res_mismatch}"
+            )
+            checks.append("linked_worktree_issue_mapping_enforced")
+
+            # 15. Nanosecond timestamp formatting (zero-padded 9 decimals)
+            sample_ts = _format_ns_timestamp(1_700_000_000_000_000_007)
+            assert ".000000007" in sample_ts, f"expected 9-digit zero pad: {sample_ts}"
+            assert NS_TIMESTAMP_RE.match(sample_ts), (
+                f"timestamp format mismatch: {sample_ts}"
+            )
+            checks.append("nanosecond_timestamp_format")
+
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)
             checks.append("hooks_json_portable")
@@ -915,13 +1296,29 @@ def main() -> int:
 
     if args.self_check:
         checks = _run_self_check(args.check_hooks_json)
-        sys.stdout.write(json.dumps({"status": "ok", "checks": checks}) + "\n")
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "verified_at": _format_ns_timestamp(),
+                    "checks": checks,
+                }
+            )
+            + "\n"
+        )
         return 0
 
     if args.check_hooks_json is not None:
         _check_hooks_json(args.check_hooks_json)
         sys.stdout.write(
-            json.dumps({"status": "ok", "checks": ["hooks_json_portable"]}) + "\n"
+            json.dumps(
+                {
+                    "status": "ok",
+                    "verified_at": _format_ns_timestamp(),
+                    "checks": ["hooks_json_portable"],
+                }
+            )
+            + "\n"
         )
         return 0
 

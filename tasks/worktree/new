@@ -2,14 +2,65 @@
 #MISE description="Create a sibling git worktree with an isolated planning-with-files PLAN_ID pinned in mise.local.toml"
 #USAGE arg "<slug>" help="Worktree and plan slug (lowercase alphanumeric, dashes, underscores)"
 #USAGE flag "--base <ref>" default="HEAD" help="Git ref to branch from"
+#USAGE flag "--issue <issue>" help="GitHub issue number to link with this worktree and PLAN_ID"
 set -euo pipefail
 
 slug="${usage_slug:-}"
 base="${usage_base:-HEAD}"
+issue="${usage_issue:-}"
 
 if [[ ! ${slug} =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
 	echo "invalid slug '${slug}': use lowercase alphanumeric, '-', or '_' starting with alphanumeric" >&2
 	exit 1
+fi
+
+root="$(git rev-parse --show-toplevel)"
+common_dir="$(git -C "${root}" rev-parse --git-common-dir)"
+if [[ ${common_dir} != /* ]]; then
+	common_dir="${root}/${common_dir}"
+fi
+main_root="$(cd "$(dirname "${common_dir}")" && pwd -P)"
+repo_name="$(basename "${main_root}")"
+
+issue_json=""
+issue_num=""
+issue_url=""
+if [[ -n ${issue} ]]; then
+	if [[ ! ${issue} =~ ^[1-9][0-9]*$ ]]; then
+		echo "invalid --issue '${issue}': must be a positive integer" >&2
+		exit 1
+	fi
+	if ! command -v gh >/dev/null 2>&1; then
+		echo "gh CLI is required when --issue is specified" >&2
+		exit 1
+	fi
+	if ! issue_json="$(cd "${root}" && gh issue view "${issue}" --json number,title,url)"; then
+		echo "failed to fetch GitHub issue #${issue} via gh issue view" >&2
+		exit 1
+	fi
+	issue_fields="$(
+		ISSUE_JSON="${issue_json}" python3 -I -B - <<'PY'
+import json
+import os
+import sys
+
+try:
+    data = json.loads(os.environ["ISSUE_JSON"])
+except (KeyError, ValueError) as exc:
+    sys.exit(f"invalid JSON from gh issue view: {exc}")
+
+if not isinstance(data, dict):
+    sys.exit("unexpected non-object JSON from gh issue view")
+
+num = data.get("number")
+title = " ".join(str(data.get("title", "")).split())
+url = str(data.get("url", "")).strip()
+if isinstance(num, bool) or not isinstance(num, int) or num <= 0 or not title or not url:
+    sys.exit("incomplete issue metadata from gh issue view (need number, title, url)")
+print(f"{num}\t{url}")
+PY
+	)"
+	IFS=$'\t' read -r issue_num issue_url <<<"${issue_fields}"
 fi
 
 rel_json="${HOME}/.local/share/agy-pwf/current/.agy-pwf-release.json"
@@ -30,8 +81,7 @@ if [[ ! -f "${pwf_dir}/scripts/init-session.sh" ]]; then
 	exit 1
 fi
 
-root="$(git rev-parse --show-toplevel)"
-wt_dir="$(dirname "${root}")/dotfiles-v2-${slug}"
+wt_dir="$(dirname "${main_root}")/${repo_name}-${slug}"
 branch="wt/${slug}"
 
 if [[ -e ${wt_dir} ]]; then
@@ -45,7 +95,7 @@ else
 	git worktree add -b "${branch}" "${wt_dir}" "${base}"
 fi
 
-(cd "${wt_dir}" && sh "${pwf_dir}/scripts/init-session.sh" "${slug}")
+(cd "${wt_dir}" && env -u PWF_PLAN_ROOT -u PLAN_ID sh "${pwf_dir}/scripts/init-session.sh" "${slug}")
 
 active_file="${wt_dir}/.planning/.active_plan"
 if [[ ! -f ${active_file} ]]; then
@@ -54,12 +104,74 @@ if [[ ! -f ${active_file} ]]; then
 fi
 plan_id="$(tr -d '\r\n[:space:]' <"${active_file}")"
 
-cat >"${wt_dir}/mise.local.toml" <<EOF
+resolved="$(cd "${wt_dir}" && env -u PWF_PLAN_ROOT PLAN_ID="${plan_id}" sh "${pwf_dir}/scripts/resolve-plan-dir.sh")"
+if [[ -z ${resolved} || ! -f "${resolved}/task_plan.md" ]]; then
+	echo "resolve-plan-dir.sh failed for PLAN_ID=${plan_id} in ${wt_dir}" >&2
+	exit 1
+fi
+
+if [[ -n ${issue} ]]; then
+	ISSUE_JSON="${issue_json}" TASK_PLAN_PATH="${resolved}/task_plan.md" python3 -I -B - <<'PY'
+import json
+import os
+import re
+from pathlib import Path
+
+data = json.loads(os.environ["ISSUE_JSON"])
+num = int(data["number"])
+title = " ".join(str(data["title"]).split())
+url = str(data["url"]).strip()
+
+plan_path = Path(os.environ["TASK_PLAN_PATH"])
+lines = plan_path.read_text(encoding="utf-8").splitlines()
+if not lines:
+    lines = [""]
+
+lines[0] = f"# Task Plan: #{num} {title}"
+
+goal_idx = None
+for idx, line in enumerate(lines):
+    if re.match(r"^##\s+Goal\s*$", line):
+        goal_idx = idx
+        break
+
+if goal_idx is not None:
+    end_idx = len(lines)
+    for idx in range(goal_idx + 1, len(lines)):
+        if re.match(r"^##?\s+", lines[idx]):
+            end_idx = idx
+            break
+    lines = (
+        lines[: goal_idx + 1]
+        + [f"Implement {url}", ""]
+        + lines[end_idx:]
+    )
+else:
+    lines = [lines[0], "", "## Goal", f"Implement {url}", ""] + lines[1:]
+
+plan_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+PY
+
+	(cd "${wt_dir}" && env -u PWF_PLAN_ROOT -u PLAN_ID sh "${pwf_dir}/scripts/attest-plan.sh" --target "${plan_id}")
+fi
+
+if [[ -n ${issue} ]]; then
+	cat >"${wt_dir}/mise.local.toml" <<EOF
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[env]
+PLAN_ID = "${plan_id}"
+GITHUB_ISSUE = "${issue_num}"
+GITHUB_ISSUE_URL = "${issue_url}"
+EOF
+else
+	cat >"${wt_dir}/mise.local.toml" <<EOF
 #:schema https://mise.jdx.dev/schema/mise.json
 
 [env]
 PLAN_ID = "${plan_id}"
 EOF
+fi
 
 mise trust "${wt_dir}"
 
@@ -67,17 +179,52 @@ if command -v repotools >/dev/null 2>&1; then
 	(cd "${root}" && repotools trust)
 fi
 
-resolved="$(cd "${wt_dir}" && PLAN_ID="${plan_id}" sh "${pwf_dir}/scripts/resolve-plan-dir.sh")"
-if [[ -z ${resolved} || ! -f "${resolved}/task_plan.md" ]]; then
-	echo "resolve-plan-dir.sh failed for PLAN_ID=${plan_id} in ${wt_dir}" >&2
-	exit 1
-fi
-
-doc_out="$(cd "${wt_dir}" && PLAN_ID="${plan_id}" sh "${pwf_dir}/scripts/plan-doctor.sh")"
+doc_out="$(cd "${wt_dir}" && env -u PWF_PLAN_ROOT PLAN_ID="${plan_id}" sh "${pwf_dir}/scripts/plan-doctor.sh")"
 printf '%s\n' "${doc_out}"
-if printf '%s\n' "${doc_out}" | grep -q '^FAIL '; then
-	echo "plan-doctor reported FAIL in ${wt_dir}" >&2
+if printf '%s\n' "${doc_out}" | grep -qE '^FAIL |PLAN TAMPERED|hash mismatches'; then
+	echo "plan-doctor reported failure in ${wt_dir}" >&2
 	exit 1
 fi
 
-echo "Worktree ready: ${wt_dir} (branch=${branch}, PLAN_ID=${plan_id})"
+verified_at="$(
+	WT_EVIDENCE_PATH="${resolved}/worktree-evidence.json" \
+		WT_DIR="${wt_dir}" \
+		WT_BRANCH="${branch}" \
+		WT_PLAN_ID="${plan_id}" \
+		WT_ISSUE="${issue_num}" \
+		WT_ISSUE_URL="${issue_url}" \
+		python3 -I -B - <<'PY'
+import datetime
+import json
+import os
+import time
+from pathlib import Path
+
+ns = time.time_ns()
+sec, rem = divmod(ns, 1_000_000_000)
+dt = datetime.datetime.fromtimestamp(sec, datetime.timezone.utc).astimezone()
+ts = f"{dt:%Y%m%dT%H%M%S}.{rem:09d}{dt:%z}"
+
+payload = {
+    "verified_at": ts,
+    "worktree": os.environ["WT_DIR"],
+    "branch": os.environ["WT_BRANCH"],
+    "plan_id": os.environ["WT_PLAN_ID"],
+}
+if os.environ.get("WT_ISSUE"):
+    payload["github_issue"] = int(os.environ["WT_ISSUE"])
+if os.environ.get("WT_ISSUE_URL"):
+    payload["github_issue_url"] = os.environ["WT_ISSUE_URL"]
+
+Path(os.environ["WT_EVIDENCE_PATH"]).write_text(
+    json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+)
+print(ts)
+PY
+)"
+
+if [[ -n ${issue_num} ]]; then
+	echo "Worktree ready: ${wt_dir} (branch=${branch}, PLAN_ID=${plan_id}, issue=#${issue_num}, verified_at=${verified_at})"
+else
+	echo "Worktree ready: ${wt_dir} (branch=${branch}, PLAN_ID=${plan_id}, verified_at=${verified_at})"
+fi
