@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Verify live state, isolation, symlinks, tools, Claude Code, OpenCode, and project doctor across pc, mac, and vm"
+#MISE description="Verify live state, isolation, symlinks, tools, Claude Code, OpenCode, Tailscale SSH, and project doctor across pc, mac, and vm"
 #USAGE flag "--target <target>" default="all" help="Environment to check: pc, mac, vm, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
 #USAGE flag "--smoke" help="Run live Claude Code and OpenCode prompt tests across requested targets"
@@ -26,12 +26,31 @@ version_ge() {
 	[[ "$(printf '%s\n%s\n' "${want}" "${have}" | sort -V | head -n 1)" == "${want}" ]]
 }
 
+resolve_ts_dest() {
+	local want="$1" status_json dest
+	if command -v tailscale >/dev/null 2>&1; then
+		if status_json="$(tailscale status --json 2>/dev/null)"; then
+			dest="$(printf '%s' "${status_json}" | jq -r --arg h "${want}" '
+				[.Peer[]? | select(.HostName == $h and .Online == true)
+				| ((.DNSName // "" | sub("\\.$"; "")) | if length > 0 then . else empty end) // (.TailscaleIPs[0] // "")]
+				| map(select(length > 0)) | first // empty
+			')"
+			if [[ -n ${dest} ]]; then
+				printf '%s' "${dest}"
+				return 0
+			fi
+		fi
+	fi
+	printf '%s' "${want}"
+}
+
 check_container() {
 	local label="$1" want_arch="$2"
 	shift 2
 	local -a dcmd=("$@")
 
-	local running privileged secrets_rw env_c arch mise_ver link_target missing_cnt hk_ver claude_out
+	local running privileged init_enabled secrets_rw env_c arch mise_ver link_target missing_cnt hk_ver claude_out
+	local want_ts_host="${name}-${label}" ts_json ts_state ts_host ts_ssh ts_dest ssh_out
 	running="$("${dcmd[@]}" container inspect --format '{{.State.Running}}' "${name}" 2>/dev/null || echo false)"
 	if [[ ${running} != "true" ]]; then
 		fail_row "${label}" "container ${name} is not running"
@@ -41,6 +60,12 @@ check_container() {
 	privileged="$("${dcmd[@]}" container inspect --format '{{.HostConfig.Privileged}}' "${name}")"
 	if [[ ${privileged} != "false" ]]; then
 		fail_row "${label}" "Privileged=${privileged} (expected false)"
+		return
+	fi
+
+	init_enabled="$("${dcmd[@]}" container inspect --format '{{.HostConfig.Init}}' "${name}")"
+	if [[ ${init_enabled} != "true" ]]; then
+		fail_row "${label}" "Init=${init_enabled} (expected true)"
 		return
 	fi
 
@@ -59,6 +84,29 @@ check_container() {
 	arch="$("${dcmd[@]}" exec "${name}" uname -m)"
 	if [[ ${arch} != "${want_arch}" ]]; then
 		fail_row "${label}" "arch=${arch} (expected ${want_arch})"
+		return
+	fi
+
+	ts_json="$("${dcmd[@]}" exec "${name}" tailscale status --json 2>/dev/null || true)"
+	ts_state="$(printf '%s' "${ts_json}" | jq -r '.BackendState // empty' 2>/dev/null || true)"
+	ts_host="$(printf '%s' "${ts_json}" | jq -r '.Self.HostName // empty' 2>/dev/null || true)"
+	ts_ssh="$("${dcmd[@]}" exec "${name}" tailscale debug prefs 2>/dev/null | jq -r '.RunSSH // false' 2>/dev/null || echo false)"
+	if [[ ${ts_state} != "Running" || ${ts_host} != "${want_ts_host}" || ${ts_ssh} != "true" ]]; then
+		fail_row "${label}" "Tailscale state='${ts_state}' host='${ts_host}' RunSSH='${ts_ssh}'"
+		return
+	fi
+	if ! printf '%s' "${ts_json}" | jq -e '(.Self.Tags // []) | index("tag:dev-env") != null' >/dev/null 2>&1; then
+		fail_row "${label}" "Tailscale node ${ts_host} missing tag:dev-env"
+		return
+	fi
+
+	ts_dest="$(resolve_ts_dest "${want_ts_host}")"
+	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "dev@${ts_dest}" 'bash -lc "uname -m && id -un && command -v mise >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null"' 2>/dev/null)"; then
+		fail_row "${label}" "Tailscale SSH to dev@${ts_dest} failed"
+		return
+	fi
+	if [[ "$(printf '%s\n' "${ssh_out}" | tr '\n' ' ')" != "${want_arch} dev "* ]]; then
+		fail_row "${label}" "Tailscale SSH unexpected identity/arch: ${ssh_out}"
 		return
 	fi
 
@@ -121,7 +169,7 @@ CONTAINER
 		return
 	fi
 
-	pass_row "${label}" "${arch}, Privileged=false, container=docker, mise=${mise_ver}, ${hk_ver}, ${claude_out}, 0 missing tools"
+	pass_row "${label}" "${arch}, Privileged=false, container=docker, mise=${mise_ver}, ${hk_ver}, ${claude_out}, tailscale-ssh=OK, 0 missing tools"
 }
 
 check_vm() {
@@ -135,10 +183,33 @@ check_vm() {
 		return
 	fi
 
-	local out
+	local want_ts_host="dotfiles-v2-vm" ts_json ts_state ts_host ts_ssh ts_dest ssh_out out
+	ts_json="$(tart exec "${vm_name}" /opt/homebrew/bin/tailscale status --json 2>/dev/null || true)"
+	ts_state="$(printf '%s' "${ts_json}" | jq -r '.BackendState // empty' 2>/dev/null || true)"
+	ts_host="$(printf '%s' "${ts_json}" | jq -r '.Self.HostName // empty' 2>/dev/null || true)"
+	ts_ssh="$(tart exec "${vm_name}" sudo /opt/homebrew/bin/tailscale debug prefs 2>/dev/null | jq -r '.RunSSH // false' 2>/dev/null || echo false)"
+	if [[ ${ts_state} != "Running" || ${ts_host} != "${want_ts_host}" || ${ts_ssh} != "true" ]]; then
+		fail_row "vm" "Tailscale state='${ts_state}' host='${ts_host}' RunSSH='${ts_ssh}'"
+		return
+	fi
+	if ! printf '%s' "${ts_json}" | jq -e '(.Self.Tags // []) | index("tag:dev-env") != null' >/dev/null 2>&1; then
+		fail_row "vm" "Tailscale node ${ts_host} missing tag:dev-env"
+		return
+	fi
+
+	ts_dest="$(resolve_ts_dest "${want_ts_host}")"
+	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "admin@${ts_dest}" 'zsh -lc "uname -m && id -un && command -v mise >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null"' 2>/dev/null)"; then
+		fail_row "vm" "Tailscale SSH to admin@${ts_dest} failed"
+		return
+	fi
+	if [[ "$(printf '%s\n' "${ssh_out}" | tr '\n' ' ')" != "arm64 admin "* ]]; then
+		fail_row "vm" "Tailscale SSH unexpected identity/arch: ${ssh_out}"
+		return
+	fi
+
 	if ! out="$(
 		tart exec -i "${vm_name}" env SMOKE="${smoke}" /bin/bash -euo pipefail <<'GUEST'
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 sm="$(uname -sm)"
 test "${sm}" = "Darwin arm64"
@@ -175,7 +246,7 @@ if [[ "${SMOKE}" == "true" ]]; then
   [[ "${oc_out}" == *OK* ]]
   smoke_suffix=" | smoke=OK"
 fi
-printf '%s | mise=%s | %s | claude=%s | opencode=%s | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${ocver}" "${smoke_suffix}"
+printf '%s | mise=%s | %s | claude=%s | opencode=%s | tailscale-ssh=OK | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${ocver}" "${smoke_suffix}"
 GUEST
 	)"; then
 		fail_row "vm" "guest verification failed"
@@ -201,7 +272,7 @@ all)
 	check_vm
 	;;
 *)
-	echo "unknown target '${target}' (expected pc, mac, vm, or all)" >&2
+	echo "unknown target '${target}' (expected pc, mac, or all)" >&2
 	exit 1
 	;;
 esac

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-#MISE description="Provision, start, and prepare the dotfiles-v2-macos Tart VM with pinned mise, Claude Code, and agent-secrets"
+#MISE description="Provision, start, and prepare the dotfiles-v2-macos Tart VM with pinned mise, Claude Code, OpenCode, agent-secrets, and Tailscale SSH"
 #USAGE flag "--ref <ref>" help="Git branch or ref to check out in VM (default: current branch)"
 set -euo pipefail
 
 VM_NAME="dotfiles-v2-macos"
+TS_HOSTNAME="dotfiles-v2-vm"
 BASE_IMAGE="ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fbac071c663bf249007b9b387e16b7d576144588acb1d93f9"
 MISE_VER="2026.11.12"
 MISE_SHA256_MACOS_ARM64="f7bd19aa4e6b7a58d7296f98e2c6af68b2e2643dfd608b0bc46c2b5fdbc8749b"
@@ -24,6 +25,37 @@ resolve_ref() {
 		exit 1
 	fi
 	printf '%s' "${r}"
+}
+
+mint_tailscale_authkey() {
+	local desc="$1" payload curl_cmd resp key
+	payload="$(jq -cn --arg desc "${desc}" '{
+		capabilities: {
+			devices: {
+				create: {
+					reusable: false,
+					ephemeral: true,
+					preauthorized: true,
+					tags: ["tag:dev-env"]
+				}
+			}
+		},
+		expirySeconds: 300,
+		description: $desc
+	}')"
+	# shellcheck disable=SC2016
+	curl_cmd='curl -fsS -m 15 -X POST -H "Authorization: Bearer ${TAILSCALE_API_KEY}" -H "Content-Type: application/json" -d @- https://api.tailscale.com/api/v2/tailnet/-/keys'
+	if [[ -n ${TAILSCALE_API_KEY:-} && -n ${HTTPS_PROXY:-} ]]; then
+		resp="$(printf '%s' "${payload}" | /bin/bash -c "${curl_cmd}")"
+	else
+		resp="$(printf '%s' "${payload}" | fnox --non-interactive --config "${HOME}/.config/fnox/config.toml" proxy run -- /bin/bash -c "${curl_cmd}")"
+	fi
+	key="$(printf '%s' "${resp}" | jq -er '.key')"
+	if [[ -z ${key} ]]; then
+		echo "failed to mint Tailscale auth key for ${desc}" >&2
+		return 1
+	fi
+	printf '%s' "${key}"
 }
 
 if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
@@ -122,7 +154,7 @@ fi
 if [[ ! -x "${HOME}/.opencode/bin/opencode" ]] || [[ "$("${HOME}/.opencode/bin/opencode" --version </dev/null | awk '{print $NF}')" == 1.* ]]; then
   PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path
 fi
-path_line='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"'
+path_line='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"'
 env_line='[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"'
 for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc"; do
   touch "${rc}"
@@ -135,4 +167,58 @@ for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/
 done
 GUEST
 
-echo "VM ready: ${VM_NAME}"
+# Install and start open-source Homebrew tailscale (provides tailscaled + Tailscale SSH on macOS).
+tart exec -i "${VM_NAME}" /bin/bash -euo pipefail <<'GUEST'
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
+if ! /opt/homebrew/bin/brew list --versions tailscale >/dev/null 2>&1; then
+  /opt/homebrew/bin/brew install tailscale
+fi
+sudo /opt/homebrew/bin/brew services start tailscale >/dev/null
+ready=0
+for _ in $(seq 1 20); do
+  if /opt/homebrew/bin/tailscale status --json >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [[ ${ready} -ne 1 ]]; then
+  echo "tailscaled did not become ready in VM; check /opt/homebrew/var/log/tailscaled.log" >&2
+  exit 1
+fi
+GUEST
+
+status_json="$(tart exec "${VM_NAME}" /opt/homebrew/bin/tailscale status --json 2>/dev/null || true)"
+ts_state="$(printf '%s' "${status_json}" | jq -r '.BackendState // empty' 2>/dev/null || true)"
+if [[ ${ts_state} == "Running" ]]; then
+	cur_hostname="$(printf '%s' "${status_json}" | jq -r '.Self.HostName // empty')"
+	run_ssh="$(tart exec "${VM_NAME}" sudo /opt/homebrew/bin/tailscale debug prefs 2>/dev/null | jq -r '.RunSSH // false' 2>/dev/null || echo false)"
+	if [[ ${cur_hostname} != "${TS_HOSTNAME}" || ${run_ssh} != "true" ]]; then
+		tart exec "${VM_NAME}" sudo /opt/homebrew/bin/tailscale set --ssh --hostname="${TS_HOSTNAME}" --accept-dns=false --operator=admin
+	fi
+else
+	key="$(mint_tailscale_authkey "${TS_HOSTNAME}")"
+	# shellcheck disable=SC2016
+	printf '%s' "${key}" | tart exec -i "${VM_NAME}" env TS_HOSTNAME="${TS_HOSTNAME}" /bin/bash -euo pipefail -c '
+		keyfile="$(mktemp)"
+		trap "rm -f \"\${keyfile}\"" EXIT
+		chmod 0600 "${keyfile}"
+		cat >"${keyfile}"
+		sudo /opt/homebrew/bin/tailscale up --auth-key="file:${keyfile}" --ssh --hostname="${TS_HOSTNAME}" --accept-dns=false --operator=admin --timeout=30s
+	'
+	unset key
+fi
+
+status_json="$(tart exec "${VM_NAME}" /opt/homebrew/bin/tailscale status --json)"
+ts_state="$(printf '%s' "${status_json}" | jq -r '.BackendState // empty')"
+cur_hostname="$(printf '%s' "${status_json}" | jq -r '.Self.HostName // empty')"
+if [[ ${ts_state} != "Running" || ${cur_hostname} != "${TS_HOSTNAME}" ]]; then
+	echo "unexpected Tailscale state in ${VM_NAME}: BackendState=${ts_state} HostName=${cur_hostname}" >&2
+	exit 1
+fi
+if ! printf '%s' "${status_json}" | jq -e '(.Self.Tags // []) | index("tag:dev-env") != null' >/dev/null; then
+	echo "Tailscale node ${cur_hostname} missing tag:dev-env" >&2
+	exit 1
+fi
+
+echo "VM ready: ${VM_NAME} (tailscale=${TS_HOSTNAME})"

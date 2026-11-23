@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build the bare Ubuntu 26.10 mise image, sync checkout, and start non-privileged container(s)"
+#MISE description="Build the Ubuntu 26.10 mise image with userspace Tailscale SSH, sync checkout, and start non-privileged container(s)"
 #USAGE flag "--target <target>" default="pc" help="Target environment: pc, mac, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
 #USAGE flag "--tag <tag>" default="dotfiles-v2:dev" help="Docker image tag"
@@ -29,22 +29,110 @@ resolve_ref() {
 	printf '%s' "${r}"
 }
 
-needs_recreate() {
-	local want_image="$1" want_keys="$2"
-	shift 2
+mint_tailscale_authkey() {
+	local desc="$1" payload curl_cmd resp key
+	payload="$(jq -cn --arg desc "${desc}" '{
+		capabilities: {
+			devices: {
+				create: {
+					reusable: false,
+					ephemeral: true,
+					preauthorized: true,
+					tags: ["tag:dev-env"]
+				}
+			}
+		},
+		expirySeconds: 300,
+		description: $desc
+	}')"
+	# shellcheck disable=SC2016
+	curl_cmd='curl -fsS -m 15 -X POST -H "Authorization: Bearer ${TAILSCALE_API_KEY}" -H "Content-Type: application/json" -d @- https://api.tailscale.com/api/v2/tailnet/-/keys'
+	if [[ -n ${TAILSCALE_API_KEY:-} && -n ${HTTPS_PROXY:-} ]]; then
+		resp="$(printf '%s' "${payload}" | /bin/bash -c "${curl_cmd}")"
+	else
+		resp="$(printf '%s' "${payload}" | fnox --non-interactive --config "${HOME}/.config/fnox/config.toml" proxy run -- /bin/bash -c "${curl_cmd}")"
+	fi
+	key="$(printf '%s' "${resp}" | jq -er '.key')"
+	if [[ -z ${key} ]]; then
+		echo "failed to mint Tailscale auth key for ${desc}" >&2
+		return 1
+	fi
+	printf '%s' "${key}"
+}
+
+ensure_tailscale_container() {
+	local ts_hostname="$1"
+	shift
 	local -a dcmd=("$@")
-	local have_image have_secrets_src have_claude_dst have_opencode_dst
+	local status_json state cur_hostname run_ssh key ready=0
+
+	for _ in $(seq 1 15); do
+		status_json="$("${dcmd[@]}" exec "${name}" tailscale status --json 2>/dev/null || true)"
+		if [[ -n ${status_json} ]]; then
+			state="$(printf '%s' "${status_json}" | jq -r '.BackendState // empty' 2>/dev/null || true)"
+			if [[ -n ${state} && ${state} != "NoState" && ${state} != "Starting" ]]; then
+				ready=1
+				break
+			fi
+		fi
+		sleep 1
+	done
+	if [[ ${ready} -ne 1 ]]; then
+		echo "tailscaled did not become ready in ${name}" >&2
+		return 1
+	fi
+
+	if [[ ${state} == "Running" ]]; then
+		cur_hostname="$(printf '%s' "${status_json}" | jq -r '.Self.HostName // empty')"
+		run_ssh="$("${dcmd[@]}" exec "${name}" tailscale debug prefs 2>/dev/null | jq -r '.RunSSH // false' 2>/dev/null || echo false)"
+		if [[ ${cur_hostname} != "${ts_hostname}" || ${run_ssh} != "true" ]]; then
+			"${dcmd[@]}" exec "${name}" tailscale set --ssh --hostname="${ts_hostname}" --accept-dns=false
+		fi
+	else
+		key="$(mint_tailscale_authkey "${ts_hostname}")"
+		# shellcheck disable=SC2016
+		printf '%s' "${key}" | "${dcmd[@]}" exec -i "${name}" env TS_HOSTNAME="${ts_hostname}" /bin/bash -euo pipefail -c '
+			keyfile="$(mktemp)"
+			trap "rm -f \"\${keyfile}\"" EXIT
+			chmod 0600 "${keyfile}"
+			cat >"${keyfile}"
+			tailscale up --auth-key="file:${keyfile}" --ssh --hostname="${TS_HOSTNAME}" --accept-dns=false --timeout=30s
+		'
+		unset key
+	fi
+
+	status_json="$("${dcmd[@]}" exec "${name}" tailscale status --json)"
+	state="$(printf '%s' "${status_json}" | jq -r '.BackendState // empty')"
+	cur_hostname="$(printf '%s' "${status_json}" | jq -r '.Self.HostName // empty')"
+	if [[ ${state} != "Running" || ${cur_hostname} != "${ts_hostname}" ]]; then
+		echo "unexpected Tailscale state in ${name}: BackendState=${state} HostName=${cur_hostname}" >&2
+		return 1
+	fi
+	if ! printf '%s' "${status_json}" | jq -e '(.Self.Tags // []) | index("tag:dev-env") != null' >/dev/null; then
+		echo "Tailscale node ${cur_hostname} missing tag:dev-env" >&2
+		return 1
+	fi
+}
+
+needs_recreate() {
+	local want_image="$1" want_keys="$2" want_hostname="$3"
+	shift 3
+	local -a dcmd=("$@")
+	local have_image have_secrets_src have_claude_dst have_opencode_dst have_ts_dst have_init have_hostname
 	have_image="$("${dcmd[@]}" container inspect --format '{{.Image}}' "${name}" 2>/dev/null || true)"
 	have_secrets_src="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/run/agent-secrets"}}{{.Source}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_claude_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.claude"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_opencode_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.local/share/opencode"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
-	[[ ${have_image} != "${want_image}" || ${have_secrets_src} != "${want_keys}" || ${have_claude_dst} != "/home/dev/.claude" || ${have_opencode_dst} != "/home/dev/.local/share/opencode" ]]
+	have_ts_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.local/state/tailscale"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
+	have_init="$("${dcmd[@]}" container inspect --format '{{.HostConfig.Init}}' "${name}" 2>/dev/null || true)"
+	have_hostname="$("${dcmd[@]}" container inspect --format '{{.Config.Hostname}}' "${name}" 2>/dev/null || true)"
+	[[ ${have_image} != "${want_image}" || ${have_secrets_src} != "${want_keys}" || ${have_claude_dst} != "/home/dev/.claude" || ${have_opencode_dst} != "/home/dev/.local/share/opencode" || ${have_ts_dst} != "/home/dev/.local/state/tailscale" || ${have_init} != "true" || ${have_hostname} != "${want_hostname}" ]]
 }
 
 ref="$(resolve_ref)"
 
 up_pc() {
-	local remote_home remote_dir keys want_image
+	local remote_home remote_dir keys want_image ts_hostname="${name}-pc"
 	remote_home="$(ssh -o BatchMode=yes "${host}" 'printf "%s" "$HOME"')"
 	remote_dir="${remote_home}/dev/containers/${name}"
 
@@ -60,27 +148,30 @@ up_pc() {
 	fi
 
 	want_image="$(DOCKER_HOST="ssh://${host}" docker image inspect --format '{{.Id}}' "${tag}")"
-	if needs_recreate "${want_image}" "${keys}" env "DOCKER_HOST=ssh://${host}" docker; then
+	if needs_recreate "${want_image}" "${keys}" "${ts_hostname}" env "DOCKER_HOST=ssh://${host}" docker; then
 		DOCKER_HOST="ssh://${host}" docker rm -f "${name}" >/dev/null 2>&1 || true
 		DOCKER_HOST="ssh://${host}" docker run -d \
+			--init \
 			--name "${name}" \
-			--hostname "${name}" \
+			--hostname "${ts_hostname}" \
 			-e container=docker \
 			--restart unless-stopped \
 			-v "${remote_dir}:/workspace" \
 			-v "${keys}:/run/agent-secrets:ro" \
 			-v "${name}-claude:/home/dev/.claude" \
 			-v "${name}-opencode:/home/dev/.local/share/opencode" \
+			-v "${name}-tailscale:/home/dev/.local/state/tailscale" \
 			"${tag}" >/dev/null
 	else
 		DOCKER_HOST="ssh://${host}" docker start "${name}" >/dev/null
 	fi
 
+	ensure_tailscale_container "${ts_hostname}" env "DOCKER_HOST=ssh://${host}" docker
 	DOCKER_HOST="ssh://${host}" docker ps --filter "name=^${name}$" --format 'pc: {{.Names}} {{.Status}} {{.Image}}'
 }
 
 up_mac() {
-	local local_dir secrets_running keys want_image
+	local local_dir secrets_running keys want_image ts_hostname="${name}-mac"
 	if [[ "$(uname -s)" != "Darwin" ]]; then
 		echo "mac Docker Desktop target must run on macOS" >&2
 		exit 1
@@ -109,22 +200,25 @@ up_mac() {
 	env -u DOCKER_HOST docker --context desktop-linux build --progress=plain -t "${tag}" -f "${root}/docker/ubuntu/Dockerfile" "${root}/docker/ubuntu"
 
 	want_image="$(env -u DOCKER_HOST docker --context desktop-linux image inspect --format '{{.Id}}' "${tag}")"
-	if needs_recreate "${want_image}" "${keys}" env -u DOCKER_HOST docker --context desktop-linux; then
+	if needs_recreate "${want_image}" "${keys}" "${ts_hostname}" env -u DOCKER_HOST docker --context desktop-linux; then
 		env -u DOCKER_HOST docker --context desktop-linux rm -f "${name}" >/dev/null 2>&1 || true
 		env -u DOCKER_HOST docker --context desktop-linux run -d \
+			--init \
 			--name "${name}" \
-			--hostname "${name}" \
+			--hostname "${ts_hostname}" \
 			-e container=docker \
 			--restart unless-stopped \
 			-v "${local_dir}:/workspace" \
 			-v "${keys}:/run/agent-secrets:ro" \
 			-v "${name}-claude:/home/dev/.claude" \
 			-v "${name}-opencode:/home/dev/.local/share/opencode" \
+			-v "${name}-tailscale:/home/dev/.local/state/tailscale" \
 			"${tag}" >/dev/null
 	else
 		env -u DOCKER_HOST docker --context desktop-linux start "${name}" >/dev/null
 	fi
 
+	ensure_tailscale_container "${ts_hostname}" env -u DOCKER_HOST docker --context desktop-linux
 	env -u DOCKER_HOST docker --context desktop-linux ps --filter "name=^${name}$" --format 'mac: {{.Names}} {{.Status}} {{.Image}}'
 }
 

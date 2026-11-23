@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#MISE description="Open a Tailscale SSH session (or run a command) on pc, mac, or vm"
+#USAGE arg "<target>" help="Target environment: pc, mac, or vm"
+#USAGE arg "[remote_cmd]" help="Optional remote shell command to run over Tailscale SSH"
+set -euo pipefail
+
+target="${usage_target:-}"
+remote_cmd="${usage_remote_cmd:-}"
+
+case "${target}" in
+pc)
+	ssh_user="dev"
+	ts_name="dotfiles-v2-pc"
+	;;
+mac)
+	ssh_user="dev"
+	ts_name="dotfiles-v2-mac"
+	;;
+vm)
+	ssh_user="admin"
+	ts_name="dotfiles-v2-vm"
+	;;
+*)
+	echo "unknown target '${target}' (expected pc, mac, or vm)" >&2
+	exit 1
+	;;
+esac
+
+resolve_dest() {
+	local want="$1" status_json dest
+	if command -v tailscale >/dev/null 2>&1; then
+		if status_json="$(tailscale status --json 2>/dev/null)"; then
+			dest="$(printf '%s' "${status_json}" | jq -r --arg h "${want}" '
+				[.Peer[]? | select(.HostName == $h and .Online == true)
+				| ((.DNSName // "" | sub("\\.$"; "")) | if length > 0 then . else empty end) // (.TailscaleIPs[0] // "")]
+				| map(select(length > 0)) | first // empty
+			')"
+			if [[ -n ${dest} ]]; then
+				printf '%s' "${dest}"
+				return 0
+			fi
+		fi
+	fi
+	printf '%s' "${want}"
+}
+
+ssh_dest="$(resolve_dest "${ts_name}")"
+
+if [[ -n ${remote_cmd} ]]; then
+	exec ssh -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${remote_cmd}"
+else
+	exec ssh -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}"
+fi
