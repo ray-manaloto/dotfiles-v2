@@ -26,7 +26,7 @@ path = [
 "~/.config/zsh/path.zsh" = { mode = "symlink" }
 "~/.gitconfig/gh-doctor" = { block = '''
 [hook "gh-doctor-pre-push"]
-	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" doctor project
+	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE sh -c 'exec \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" doctor project'
 	event = pre-push
 ''' }
 "~/.gitconfig/hk" = { block = '''
