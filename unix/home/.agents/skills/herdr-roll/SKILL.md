@@ -16,9 +16,11 @@ and **ZCode (`zcode`)**.
 ## Safety Rules
 
 1. **Dry-run first:** Mutating commands (`roll:snapshot`, `roll:restart`, `roll:stop`, `roll:start`, `roll:self`) print their exact plan and change nothing unless `--apply` is passed (`roll:verify` runs read-only checks either way, writing logs only with `--apply`).
-2. **Self-restarts:** Never run `roll:restart --tabs "$HC_TERMINAL_ID"` from
-   inside the tab being restarted. Run `mise run roll:self --apply` and then end
-   your turn cleanly so the detached `roll` tab can stop and resume you.
+2. **Self-restarts vs restarting from another tab:** Run
+   `mise run roll:self --apply` only **from inside** the active agent tab
+   (`$HC_TERMINAL_ID`) you want restarted, then end your turn cleanly so the
+   detached `roll` tab stops, resumes, and closes itself. From a separate shell
+   tab, run `mise run roll:restart --tabs <tab> --apply` instead.
 3. **Fail closed on dialogs:** If verification reports `blocked-dialog` (for
    example `"Trust this folder"` or `"Hooks need review"`), never auto-approve it;
    report `tab-name (id)` to the owner.
@@ -39,8 +41,8 @@ mise run roll:restart --all --exclude cpp-standard
 # 3. Execute live restart after reviewing dry-run output
 mise run roll:restart --spaces chief-of-staff --apply
 
-# 4. Restart the caller's own Herdr tab via a detached parentless roll tab
-mise run roll:self          # dry-run preview
+# 4. Restart the caller's own active agent tab via a self-closing roll tab
+mise run roll:self          # dry-run preview (run inside the agent tab)
 mise run roll:self --apply  # spawns roll tab, then end your turn
 
 # 5. Reboot shutdown / restore lifecycle

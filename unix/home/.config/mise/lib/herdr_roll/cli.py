@@ -104,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep current shell env instead of clean env -i",
     )
+    p_restart.add_argument(
+        "--close-self-on-ok",
+        action="store_true",
+        help="Close caller's detached 'roll' tab automatically when restart succeeds",
+    )
 
     p_stop = subparsers.add_parser(
         "stop", help="Safely stop targeted tabs to bare shells"
@@ -187,6 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 verify_turn=ns.verify_turn,
                 fresh_tab=ns.fresh_tab,
                 force_clean_env=not ns.keep_env,
+                close_self_on_ok=ns.close_self_on_ok,
                 apply=ns.apply,
                 argv=tuple(arg_list),
             )

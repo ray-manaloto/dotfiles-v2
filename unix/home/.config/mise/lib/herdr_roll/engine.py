@@ -855,6 +855,7 @@ def cmd_restart(
     verify_turn: bool = False,
     fresh_tab: bool = False,
     force_clean_env: bool = True,
+    close_self_on_ok: bool = False,
     apply: bool = False,
     argv: tuple[str, ...] = (),
 ) -> int:
@@ -935,7 +936,12 @@ def cmd_restart(
         raise
     if any(o.result.startswith(("failed-", "blocked-")) for o in rec.outcomes):
         rc = EXIT_FAILED
-    return rec.finish(rc)
+    rc = rec.finish(rc)
+    if apply and close_self_on_ok and rc == EXIT_OK and live.me:
+        self_loc = find_terminal_in_spaces(herdr_app_ls(), live.me)
+        if self_loc and self_loc[2] == "roll":
+            herdr_app_do("tab.close", "--id", self_loc[1], "--confirmed", "true")
+    return rc
 
 
 def cmd_stop(
@@ -1409,22 +1415,45 @@ def cmd_self(
             "HC_TERMINAL_ID is not set; roll:self must run inside a Herdr terminal."
         )
 
-    spaces = herdr_app_ls()
-    loc: tuple[str, str, str] | None = None
-    space_id: str | None = None
-    for sp in spaces:
-        found = find_terminal_in_spaces([sp], me)
-        if found:
-            loc = found
-            space_id = str(sp["id"])
-            break
-
-    if not loc or not space_id:
+    live = LiveClient()
+    graph = build_graph(live)
+    found = next(
+        (
+            (sp, tb, tm)
+            for sp in graph.spaces
+            for tb in sp.tabs
+            for tm in tb.terminals
+            if tm.address == me
+        ),
+        None,
+    )
+    if not found:
         raise RefusedError(f"Unable to locate terminal {me} in `herdr-app ls`.")
-    space_name, _tab_id, tab_name = loc
+    space, tab, term = found
+    space_id, space_name, tab_name = space.id, space.name, tab.name
     if tab_name == "roll":
         raise RefusedError(
             "Refusing to spawn recursive roll tab from within an existing 'roll' tab."
+        )
+    if term.kind is HarnessKind.shell:
+        agents = [
+            (tb, tm)
+            for tb in space.tabs
+            for tm in tb.terminals
+            if tm.kind is not HarnessKind.shell
+        ]
+        if agents:
+            listed = ", ".join(f"{tb.name} ({tm.address})" for tb, tm in agents)
+            hint = f"Run `mise run roll:restart --tabs {agents[0][1].address} --apply` (live agent tabs in {space_name}: {listed})."
+        else:
+            hint = "Run `mise run roll:restart --tabs <tab> --apply` instead."
+        raise RefusedError(
+            f"Terminal {tab_name} ({me}) is a bare shell tab, not an agent session; "
+            f"`roll:self` only restarts the active agent tab itself. {hint}"
+        )
+    if not term.session_id:
+        raise RefusedError(
+            f"Cannot self-restart {tab_name} ({me}) ({term.kind.value}): unable to resolve a resumable session ID."
         )
 
     lib_root = str(Path(__file__).resolve().parent.parent)
@@ -1442,54 +1471,9 @@ def cmd_self(
         f"{busy_wait:g}",
         "--settle",
         f"{settle:g}",
+        "--close-self-on-ok",
         "--apply",
     ]
-    if fresh_tab:
-        child_argv.append("--fresh-tab")
-    if handshake:
-        child_argv.append("--handshake")
-
-    plan = {
-        "action": "tab.new",
-        "space": space_name,
-        "space_id": space_id,
-        "name": "roll",
-        "target_terminal": f"{tab_name} ({me})",
-        "folder": str(Path.home()),
-        "focus": False,
-        "argv": child_argv,
-        "apply": apply,
-    }
-    if not apply:
-        print(json.dumps(plan, indent=2), flush=True)
-        return EXIT_OK
-
-    resp = herdr_app_do(
-        "tab.new",
-        "--space",
-        space_id,
-        "--name",
-        "roll",
-        "--folder",
-        str(Path.home()),
-        "--focus",
-        "false",
-        "--argv",
-        json.dumps(child_argv),
-    )
-    if not resp or not resp.get("terminal"):
-        raise RefusedError(
-            f"Failed to spawn detached `roll` tab in space {space_name} ({space_id})."
-        )
-
-    result = {
-        **plan,
-        "spawned_tab_id": resp.get("tab"),
-        "spawned_terminal": resp.get("terminal"),
-        "next": f"End your turn cleanly so roll ({resp.get('terminal')}) restarts {tab_name} ({me}).",
-    }
-    print(json.dumps(result, indent=2), flush=True)
-    return EXIT_OK
     if fresh_tab:
         child_argv.append("--fresh-tab")
     if handshake:

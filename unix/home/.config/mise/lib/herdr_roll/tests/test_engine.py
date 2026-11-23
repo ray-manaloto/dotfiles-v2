@@ -235,33 +235,81 @@ class EngineTests(unittest.TestCase):
     def test_roll_self_refuses_recursive_roll_tab_and_builds_detached_plan(
         self,
     ) -> None:
-        spaces = [
-            {
-                "id": "sp-df",
-                "name": "dotfiles-v2",
-                "tabs": [
-                    {
-                        "id": "tb-lead",
-                        "name": "dotfiles-v2-lead",
-                        "terminals": [{"terminal": "t3xb"}],
-                    }
-                ],
-            },
-            {
-                "id": "sp-roll",
-                "name": "dotfiles-v2",
-                "tabs": [
-                    {
-                        "id": "tb-roll",
-                        "name": "roll",
-                        "terminals": [{"terminal": "t99"}],
-                    }
-                ],
-            },
-        ]
-        with mock.patch("herdr_roll.engine.herdr_app_ls", return_value=spaces):
+        graph = GraphSnapshot(
+            taken_at="2026-11-23T00:00:00Z",
+            spaces=(
+                SpaceSnapshot(
+                    id="sp-df",
+                    name="dotfiles-v2",
+                    tabs=(
+                        TabSnapshot(
+                            id="tb-lead",
+                            name="dotfiles-v2-lead",
+                            terminals=(
+                                TerminalSnapshot(
+                                    address="t3xb",
+                                    kind=HarnessKind.agy,
+                                    session_id="e4b6c8ee-177f-4fc6-8725-861036790dcf",
+                                ),
+                            ),
+                        ),
+                        TabSnapshot(
+                            id="tb-shell",
+                            name="2",
+                            terminals=(
+                                TerminalSnapshot(
+                                    address="t3xg",
+                                    kind=HarnessKind.shell,
+                                    session_id=None,
+                                ),
+                            ),
+                        ),
+                        TabSnapshot(
+                            id="tb-nosid",
+                            name="fresh-codex",
+                            terminals=(
+                                TerminalSnapshot(
+                                    address="t4x",
+                                    kind=HarnessKind.codex,
+                                    session_id=None,
+                                ),
+                            ),
+                        ),
+                        TabSnapshot(
+                            id="tb-roll",
+                            name="roll",
+                            terminals=(
+                                TerminalSnapshot(
+                                    address="t99",
+                                    kind=HarnessKind.shell,
+                                    session_id=None,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        fake_live = mock.MagicMock(spec=LiveClient)
+        with (
+            mock.patch("herdr_roll.engine.LiveClient", return_value=fake_live),
+            mock.patch("herdr_roll.engine.build_graph", return_value=graph),
+        ):
             with (
                 mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t99"}),
+                self.assertRaises(RefusedError),
+            ):
+                engine.cmd_self(apply=False)
+
+            with (
+                mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t3xg"}),
+                self.assertRaises(RefusedError) as shell_ctx,
+            ):
+                engine.cmd_self(apply=False)
+            self.assertIn("roll:restart --tabs t3xb --apply", str(shell_ctx.exception))
+
+            with (
+                mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t4x"}),
                 self.assertRaises(RefusedError),
             ):
                 engine.cmd_self(apply=False)
@@ -293,9 +341,96 @@ class EngineTests(unittest.TestCase):
                         "25",
                         "--settle",
                         "40",
+                        "--close-self-on-ok",
                         "--apply",
                     ],
                 )
+
+    def test_cmd_restart_close_self_on_ok_only_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = Path(tmp) / "state"
+            target_term = TerminalSnapshot(
+                address="t3xb",
+                kind=HarnessKind.agy,
+                session_id="e4b6c8ee-177f-4fc6-8725-861036790dcf",
+            )
+            graph = GraphSnapshot(
+                taken_at="2026-11-23T00:00:00Z",
+                spaces=(
+                    SpaceSnapshot(
+                        id="sp-df",
+                        name="dotfiles-v2",
+                        tabs=(
+                            TabSnapshot(
+                                id="tb-lead",
+                                name="dotfiles-v2-lead",
+                                terminals=(target_term,),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            roll_spaces = [
+                {
+                    "id": "sp-df",
+                    "name": "dotfiles-v2",
+                    "tabs": [
+                        {
+                            "id": "tb-roll",
+                            "name": "roll",
+                            "terminals": [{"terminal": "t3xh"}],
+                        }
+                    ],
+                }
+            ]
+            fake_live = mock.MagicMock(spec=LiveClient)
+            fake_live.me = "t3xh"
+            ok_outcome = engine.SessionOutcome(
+                where="dotfiles-v2 / dotfiles-v2-lead",
+                tab_id="tb-lead",
+                terminal="t3xb",
+                kind=HarnessKind.agy,
+                session_id=target_term.session_id,
+                result="ok",
+            )
+            fail_outcome = engine.SessionOutcome(
+                where="dotfiles-v2 / dotfiles-v2-lead",
+                tab_id="tb-lead",
+                terminal="t3xb",
+                kind=HarnessKind.agy,
+                session_id=target_term.session_id,
+                result="failed-verify-timeout",
+            )
+
+            with (
+                mock.patch("herdr_roll.engine.state_dir", return_value=state_root),
+                mock.patch("herdr_roll.engine.LiveClient", return_value=fake_live),
+                mock.patch("herdr_roll.engine.build_graph", return_value=graph),
+                mock.patch("herdr_roll.engine.herdr_app_ls", return_value=roll_spaces),
+                mock.patch("herdr_roll.engine.herdr_app_do") as do_mock,
+                mock.patch("herdr_roll.engine.restart_one", return_value=ok_outcome),
+            ):
+                rc_ok = engine.cmd_restart(
+                    tabs=("t3xb",), apply=True, close_self_on_ok=True
+                )
+                self.assertEqual(rc_ok, 0)
+                do_mock.assert_called_once_with(
+                    "tab.close", "--id", "tb-roll", "--confirmed", "true"
+                )
+
+            with (
+                mock.patch("herdr_roll.engine.state_dir", return_value=state_root),
+                mock.patch("herdr_roll.engine.LiveClient", return_value=fake_live),
+                mock.patch("herdr_roll.engine.build_graph", return_value=graph),
+                mock.patch("herdr_roll.engine.herdr_app_ls", return_value=roll_spaces),
+                mock.patch("herdr_roll.engine.herdr_app_do") as do_mock,
+                mock.patch("herdr_roll.engine.restart_one", return_value=fail_outcome),
+            ):
+                rc_fail = engine.cmd_restart(
+                    tabs=("t3xb",), apply=True, close_self_on_ok=True
+                )
+                self.assertEqual(rc_fail, 1)
+                do_mock.assert_not_called()
 
     def test_restart_one_keep_env_and_single_verify_turn(self) -> None:
         space = SpaceSnapshot(id="sp1", name="dotfiles-v2")
