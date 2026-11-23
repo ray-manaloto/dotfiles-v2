@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#MISE description="Sync mise/jdx tool skills and dotfiles-v2 skills across Claude, Codex, AGY, and OpenCode"
+set -euo pipefail
+
+# Never bake temporary Docker Phase 1b paths into image layers.
+if [[ ${MISE_CONFIG_DIR:-} == "/tmp/phase1b" ]]; then
+	exit 0
+fi
+
+agents_dir="${HOME}/.agents/skills"
+claude_dir="${HOME}/.claude/skills"
+gemini_dir="${HOME}/.gemini/config/skills"
+
+mkdir -p "${agents_dir}" "${claude_dir}"
+mise skills sync --global --dir "${agents_dir}" --prune
+
+python3 - "${agents_dir}" "${claude_dir}" "${gemini_dir}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+agents_dir = Path(sys.argv[1])
+claude_dir = Path(sys.argv[2])
+gemini_dir = Path(sys.argv[3])
+
+def is_skill_dir(entry: Path) -> bool:
+    return (entry.is_dir() or entry.is_symlink()) and (entry / "SKILL.md").is_file()
+
+def link_safe(src: Path, dst: Path, *, rel_target: str | None = None) -> None:
+    desired = rel_target if rel_target is not None else str(src.resolve())
+    if dst.is_symlink():
+        try:
+            if os.readlink(dst) == desired:
+                return
+        except OSError:
+            pass
+        dst.unlink()
+    elif dst.exists():
+        # Preserve manually created real skill directories.
+        return
+    os.symlink(desired, dst)
+
+agents_real = agents_dir.resolve()
+gemini_real = gemini_dir.resolve() if gemini_dir.exists() else None
+same_agents_gemini = gemini_real is not None and gemini_real == agents_real
+
+if not same_agents_gemini and gemini_dir.is_dir():
+    for entry in sorted(gemini_dir.iterdir()):
+        if not is_skill_dir(entry):
+            continue
+        link_safe(entry, agents_dir / entry.name)
+    for entry in sorted(agents_dir.iterdir()):
+        if not is_skill_dir(entry):
+            continue
+        dst = gemini_dir / entry.name
+        if not dst.exists() and not dst.is_symlink():
+            link_safe(entry, dst)
+
+for entry in sorted(agents_dir.iterdir()):
+    if not is_skill_dir(entry):
+        continue
+    dst = claude_dir / entry.name
+    if dst.exists() and not dst.is_symlink():
+        continue
+    # Only create or update symlinks owned by ~/.agents/skills; leave legacy dotfiles/cpp-standard links intact.
+    if dst.is_symlink():
+        raw = os.readlink(dst)
+        if not raw.startswith("../../.agents/skills/") and dst.resolve(strict=False) != entry.resolve(strict=False):
+            continue
+    link_safe(entry, dst, rel_target=f"../../.agents/skills/{entry.name}")
+PY

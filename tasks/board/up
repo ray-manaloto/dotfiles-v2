@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#MISE description="Start pitchfork-supervised @vercel/board daemon, configure tailscale serve, and sync env to pc/mac/vm"
+#USAGE flag "--no-tailscale" help="Run loopback-only without configuring tailscale serve or syncing remote containers/VM"
+set -euo pipefail
+
+no_ts="${usage_no_tailscale:-false}"
+port="${BOARD_PORT:-4100}"
+cfg_dir="${HOME}/.config/board"
+token_file="${BOARD_TOKEN_FILE:-${cfg_dir}/agent-token}"
+env_file="${cfg_dir}/env.sh"
+
+mkdir -p "${cfg_dir}"
+chmod 0700 "${cfg_dir}"
+if [[ ! -s ${token_file} ]]; then
+	(
+		umask 077
+		tmp="${token_file}.tmp.$$"
+		python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_hex(32))' >"${tmp}"
+		chmod 0600 "${tmp}"
+		mv -n "${tmp}" "${token_file}" 2>/dev/null || rm -f "${tmp}"
+	)
+fi
+
+pitchfork start vercel-board
+
+ts_host=""
+if [[ ${no_ts} != "true" ]] && command -v tailscale >/dev/null 2>&1; then
+	ts_host="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty | sub("\\.$"; "")' || true)"
+	if [[ -n ${ts_host} ]]; then
+		tailscale serve --bg "${port}"
+		mise run board:sync-envs --target all
+	else
+		echo "tailscale is not online; skipping tailscale serve and remote env sync" >&2
+	fi
+fi
+
+printf 'Local API:      http://127.0.0.1:%s/api/board\n' "${port}"
+printf 'Web Inspector:  http://127.0.0.1:%s\n' "${port}"
+if [[ -n ${ts_host} ]]; then
+	printf 'Tailnet API:    https://%s/api/board\n' "${ts_host}"
+	printf 'Tailnet UI:     https://%s\n' "${ts_host}"
+fi
+printf 'Local env file: %s\n' "${env_file}"

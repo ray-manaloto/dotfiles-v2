@@ -23,6 +23,10 @@ if [ -r "${HOME}/.config/agent-secrets/env.sh" ]; then
 	# shellcheck source=/dev/null
 	. "${HOME}/.config/agent-secrets/env.sh"
 fi
+if [ -r "${HOME}/.config/board/env.sh" ]; then
+	# shellcheck source=/dev/null
+	. "${HOME}/.config/board/env.sh"
+fi
 tailscale() {
 	/opt/homebrew/bin/tailscale --socket="${HOME}/.local/state/tailscale/tailscaled.sock" "$@"
 }

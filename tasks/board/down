@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Stop pitchfork-supervised @vercel/board daemon (and optionally turn off tailscale serve)"
+#USAGE flag "--unserve" help="Also disable tailscale serve HTTPS proxy"
+set -euo pipefail
+
+unserve="${usage_unserve:-false}"
+
+pitchfork stop vercel-board || true
+
+if [[ ${unserve} == "true" ]] && command -v tailscale >/dev/null 2>&1; then
+	tailscale serve --https=443 off || true
+fi

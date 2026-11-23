@@ -64,7 +64,11 @@ and C++26 workstation setup.
   send payloads via `hc send`, and never touch `ANTIGRAVITY_CSRF_TOKEN`. Queue
   all OpenWiki / `knowledge-base-v2` addition requests to
   `knowledge-base-lead-agy` via this hybrid protocol; never mutate
-  `knowledge-base-v2` directly from `dotfiles-v2`.
+  `knowledge-base-v2` directly from `dotfiles-v2`. For multi-harness async
+  collaboration across `pc`, `mac`, `vm`, and Mac host (`claude`, `codex`,
+  `agy`, `opencode`, `zcode`), run `mise run board:up` (`pitchfork`-supervised
+  `@vercel/board`) and use `vb` via the `vercel-board` skill synced by
+  `bootstrap:skills` (`mise skills sync --global --prune`).
 - **Schemas, hooks & verification:** Declare public `$schema` / `#:schema`
   headers on config files. Prefer `mise` / `jdx` ecosystem tools, native
   compiled `hk` builtins, `mise fmt` for mise configs, and `mise doctor project`

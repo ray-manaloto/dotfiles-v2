@@ -94,6 +94,29 @@ url = "https://github.com/zizmorcore/zizmor/releases/download/v1.33.0/zizmor-aar
 url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/779717768"
 provenance = "github-attestations"
 
+[[tools.aube]]
+version = "2.10.1"
+backend = "packslip:github.com/aubepkg/aube"
+specifiers = ["2.10.1"]
+
+[tools.aube."platforms.linux-arm64"]
+checksum = "sha256:c64f55a43ee7ca4a19fbbf3be0eed161c24c9858bdcdaea024b69eafbc71ad15"
+url = "https://github.com/aubepkg/aube/releases/download/v2.10.1/aube-v2.10.1-aarch64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/aubepkg/aube/.github/workflows/release.yml"
+repository_ids = { repository = "1214542327" }
+
+[tools.aube."platforms.linux-x64"]
+checksum = "sha256:2e7206a50cf3dc97b8381ce168a2639f2cf80e17b681a5c47a68ab763fac0b68"
+url = "https://github.com/aubepkg/aube/releases/download/v2.10.1/aube-v2.10.1-x86_64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/aubepkg/aube/.github/workflows/release.yml"
+repository_ids = { repository = "1214542327" }
+
+[tools.aube."platforms.macos-arm64"]
+checksum = "sha256:28019c741c28bd90314aa679312d4dc887c2e5a6cb59d018e7624ed9f457f5c8"
+url = "https://github.com/aubepkg/aube/releases/download/v2.10.1/aube-v2.10.1-aarch64-apple-darwin.tar.gz"
+signer = "sigstore-oidc:https://github.com/aubepkg/aube/.github/workflows/release.yml"
+repository_ids = { repository = "1214542327" }
+
 [[tools.betterleaks]]
 version = "1.10.1"
 backend = "aqua:betterleaks/betterleaks"
@@ -116,6 +139,29 @@ checksum = "sha256:ca91eb3b006f15478411f235b5e2712fb15cea74f6701ebadc2364efe0af1
 url = "https://github.com/betterleaks/betterleaks/releases/download/v1.10.1/betterleaks_1.10.1_darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/betterleaks/betterleaks/releases/assets/740237732"
 provenance = "cosign"
+
+[[tools.communique]]
+version = "1.8.0"
+backend = "packslip:github.com/jdx/communique"
+specifiers = ["1.8.0"]
+
+[tools.communique."platforms.linux-arm64"]
+checksum = "sha256:365f67f2bb21f31966d265ad42516fb14e423411e36fadab8f99002046a6310e"
+url = "https://github.com/jdx/communique/releases/download/v1.8.0/communique-aarch64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/communique/.github/workflows/release.yml"
+repository_ids = { repository = "1155542902" }
+
+[tools.communique."platforms.linux-x64"]
+checksum = "sha256:a600a3a26ef66e5695e1ac7bf57b3d30fdf6d075dc8349d054711a605a311199"
+url = "https://github.com/jdx/communique/releases/download/v1.8.0/communique-x86_64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/communique/.github/workflows/release.yml"
+repository_ids = { repository = "1155542902" }
+
+[tools.communique."platforms.macos-arm64"]
+checksum = "sha256:e22c3a05649241fa0e7ffd27d32a436ecde19a23e09f39ff00686ea8d71a5f9b"
+url = "https://github.com/jdx/communique/releases/download/v1.8.0/communique-aarch64-apple-darwin.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/communique/.github/workflows/release.yml"
+repository_ids = { repository = "1155542902" }
 
 [[tools.fnox]]
 version = "1.50.0"
@@ -249,6 +295,12 @@ url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-x64.tar.gz"
 checksum = "sha256:aec2514ea1ceb2ba52455e9ec65986f6749a06dd759e5db2a72e6889668c9735"
 url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-arm64.tar.gz"
 
+[[tools."npm:@vercel/board"]]
+version = "0.54.1"
+aube = { path = "locks/npm-vercel-board/0.54.1", digest = "sha256:f6d12160dfb882c32c104275a7653f5e88733861f4f77ff6b00b6f8eaa62c0a3" }
+backend = "npm:@vercel/board"
+specifiers = ["0.54.1"]
+
 [[tools."npm:openwiki"]]
 version = "0.9.0"
 aube = { path = "locks/npm-openwiki/0.9.0~db21a3e0", digest = "sha256:0b2dfb32e509d7dd11625205819a5bd7262d3d13ef8423aea9e1c70663031e16" }
@@ -266,6 +318,29 @@ version = "3.18.2-48"
 aube = { path = "locks/npm-zcode-app-cli/3.18.2-48", digest = "sha256:6acc4b9bd2bf4371d5983a878f9943e71fa80c8efabb27062c8369c216ea483d" }
 backend = "npm:zcode-app-cli"
 specifiers = ["3.18.2-48"]
+
+[[tools.pitchfork]]
+version = "2.36.0"
+backend = "packslip:github.com/jdx/pitchfork"
+specifiers = ["2.36.0"]
+
+[tools.pitchfork."platforms.linux-arm64"]
+checksum = "sha256:02cabdcf64dfd91d638364d961fa92cfe1005f12038c11ef56352d63781748c5"
+url = "https://github.com/jdx/pitchfork/releases/download/v2.36.0/pitchfork-aarch64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/pitchfork/.github/workflows/release.yml"
+repository_ids = { repository = "899500793" }
+
+[tools.pitchfork."platforms.linux-x64"]
+checksum = "sha256:55e12b9467d86d9aeda468e586d603a2107962de0305dc92c9fe84b7a3b35a17"
+url = "https://github.com/jdx/pitchfork/releases/download/v2.36.0/pitchfork-x86_64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/pitchfork/.github/workflows/release.yml"
+repository_ids = { repository = "899500793" }
+
+[tools.pitchfork."platforms.macos-arm64"]
+checksum = "sha256:f85a855e814dd5918ea955d934594b2d3703fd066c087bf6bb5add97d59daee4"
+url = "https://github.com/jdx/pitchfork/releases/download/v2.36.0/pitchfork-aarch64-apple-darwin.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/pitchfork/.github/workflows/release.yml"
+repository_ids = { repository = "899500793" }
 
 [[tools.pkl]]
 version = "0.33.1"
@@ -483,6 +558,29 @@ checksum = "sha256:b8e7b8b81f28cc808fd763b6d935536e15ba1ef72613bbb6d628b58a891da
 checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/typos/releases/download/v1.52.2/typos-v1.52.2-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/733789873"
+
+[[tools.usage]]
+version = "7.4.0"
+backend = "packslip:github.com/jdx/usage"
+specifiers = ["7.4.0"]
+
+[tools.usage."platforms.linux-arm64"]
+checksum = "sha256:63ec67fd6bc8c54ad9e2775e95d6eea565565a30568d65c75be8423b3dd842ea"
+url = "https://github.com/jdx/usage/releases/download/v7.4.0/usage-aarch64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/usage/.github/workflows/publish-cli.yml"
+repository_ids = { repository = "677629099" }
+
+[tools.usage."platforms.linux-x64"]
+checksum = "sha256:c66011f163619cf3946182498eedd16966bf3d32a6c6cf28c73c8034dfe467d6"
+url = "https://github.com/jdx/usage/releases/download/v7.4.0/usage-x86_64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/usage/.github/workflows/publish-cli.yml"
+repository_ids = { repository = "677629099" }
+
+[tools.usage."platforms.macos-arm64"]
+checksum = "sha256:606dbdda615111940c6b39e1cb64dbf4871839304146e8e40e7302312be095d6"
+url = "https://github.com/jdx/usage/releases/download/v7.4.0/usage-universal-apple-darwin.tar.gz"
+signer = "sigstore-oidc:https://github.com/jdx/usage/.github/workflows/publish-cli.yml"
+repository_ids = { repository = "677629099" }
 
 [[tools.uv]]
 version = "0.13.9"

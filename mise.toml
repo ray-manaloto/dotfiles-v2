@@ -163,3 +163,26 @@ test -f unix/home/.gemini/config/rules/agy-peer-messaging.md
 python3 -I -B unix/home/.gemini/config/hooks/agy-hc-send-guard.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
 '''
 hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md."
+
+[doctor.checks.vercel-board-config]
+description = "jdx tools, @vercel/board, pitchfork.toml, bootstrap:skills, and vercel-board skill are valid"
+run = '''
+test -f pitchfork.toml
+test -x unix/home/.config/mise/tasks/bootstrap/skills
+test -x unix/home/.config/mise/assets/board/vb-proxy-wrapper.sh
+test -f unix/home/.gemini/config/skills/vercel-board/SKILL.md
+node --check unix/home/.config/mise/assets/board/server.mjs
+python3 - <<'PY'
+import tomllib
+from pathlib import Path
+
+cfg = tomllib.loads(Path("unix/home/.config/mise/config.toml").read_text(encoding="utf-8"))
+tools = set(cfg.get("tools", {}))
+for tool in ("aube", "communique", "npm:@vercel/board", "pitchfork", "usage"):
+    assert tool in tools, f"Missing {tool} in unix/home/.config/mise/config.toml [tools]"
+assert "~/.gemini/config/skills/vercel-board/SKILL.md" in cfg.get("dotfiles", {}), "vercel-board SKILL.md not registered in [dotfiles]"
+deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
+assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
+PY
+'''
+hint = "Ensure pitchfork.toml, jdx tools, npm:@vercel/board, bootstrap:skills, server.mjs, and vercel-board/SKILL.md are configured cleanly."

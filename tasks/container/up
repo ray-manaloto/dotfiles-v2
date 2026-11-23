@@ -143,9 +143,10 @@ needs_recreate() {
 	local want_image="$1" want_keys="$2" want_hostname="$3"
 	shift 3
 	local -a dcmd=("$@")
-	local have_image have_secrets_src have_claude_dst have_opencode_dst have_zcode_dst have_ts_dst have_init have_hostname have_mise_env
+	local have_image have_secrets_src have_board_dst have_claude_dst have_opencode_dst have_zcode_dst have_ts_dst have_init have_hostname have_mise_env
 	have_image="$("${dcmd[@]}" container inspect --format '{{.Image}}' "${name}" 2>/dev/null || true)"
 	have_secrets_src="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/run/agent-secrets"}}{{.Source}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
+	have_board_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.config/board"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_claude_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.claude"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_opencode_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.local/share/opencode"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_zcode_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.zcode"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
@@ -153,7 +154,7 @@ needs_recreate() {
 	have_init="$("${dcmd[@]}" container inspect --format '{{.HostConfig.Init}}' "${name}" 2>/dev/null || true)"
 	have_hostname="$("${dcmd[@]}" container inspect --format '{{.Config.Hostname}}' "${name}" 2>/dev/null || true)"
 	have_mise_env="$("${dcmd[@]}" container inspect --format '{{range .Config.Env}}{{if eq . "MISE_ENV=container"}}{{.}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
-	[[ ${have_image} != "${want_image}" || ${have_secrets_src} != "${want_keys}" || ${have_claude_dst} != "/home/dev/.claude" || ${have_opencode_dst} != "/home/dev/.local/share/opencode" || ${have_zcode_dst} != "/home/dev/.zcode" || ${have_ts_dst} != "/home/dev/.local/state/tailscale" || ${have_init} != "true" || ${have_hostname} != "${want_hostname}" || ${have_mise_env} != "MISE_ENV=container" ]]
+	[[ ${have_image} != "${want_image}" || ${have_secrets_src} != "${want_keys}" || ${have_board_dst} != "/home/dev/.config/board" || ${have_claude_dst} != "/home/dev/.claude" || ${have_opencode_dst} != "/home/dev/.local/share/opencode" || ${have_zcode_dst} != "/home/dev/.zcode" || ${have_ts_dst} != "/home/dev/.local/state/tailscale" || ${have_init} != "true" || ${have_hostname} != "${want_hostname}" || ${have_mise_env} != "MISE_ENV=container" ]]
 }
 
 ref="$(resolve_ref)"
@@ -192,6 +193,7 @@ up_pc() {
 			--restart unless-stopped \
 			-v "${remote_dir}:/workspace" \
 			-v "${keys}:/run/agent-secrets:ro" \
+			-v "${name}-board:/home/dev/.config/board" \
 			-v "${name}-claude:/home/dev/.claude" \
 			-v "${name}-opencode:/home/dev/.local/share/opencode" \
 			-v "${name}-zcode:/home/dev/.zcode" \
@@ -247,6 +249,7 @@ up_mac() {
 			--restart unless-stopped \
 			-v "${local_dir}:/workspace" \
 			-v "${keys}:/run/agent-secrets:ro" \
+			-v "${name}-board:/home/dev/.config/board" \
 			-v "${name}-claude:/home/dev/.claude" \
 			-v "${name}-opencode:/home/dev/.local/share/opencode" \
 			-v "${name}-zcode:/home/dev/.zcode" \

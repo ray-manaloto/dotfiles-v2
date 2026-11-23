@@ -8,15 +8,19 @@ min_version = "2026.11.12"
 "aqua:owenlamont/ryl" = "0.30.0"
 "aqua:oxc-project/oxc/oxfmt" = "0.79.0"
 "aqua:zizmorcore/zizmor" = "1.33.0"
+aube = "2.10.1"
 betterleaks = "1.10.1"
+communique = "1.8.0"
 fnox = "1.50.0"
 "github:agent-sh/agnix" = "0.61.0"
 github-cli = "2.105.0"
 hadolint = "2.15.1"
 hk = "2.13.0"
 node = "26.13.1"
+"npm:@vercel/board" = "0.54.1"
 "npm:openwiki" = { version = "0.9.0", allow_builds = ["better-sqlite3"] }
 "npm:zcode-app-cli" = "3.18.2-48"
+pitchfork = "2.36.0"
 pkl = "0.33.1"
 python = "3.15.2"
 ruff = "0.17.6"
@@ -27,6 +31,7 @@ tailscale = { version = "1.104.7", os = ["linux"] }
 tombi = "1.11.3"
 ty = "0.0.108"
 typos = "1.52.2"
+usage = "7.4.0"
 uv = "0.13.9"
 
 [vars]
@@ -62,8 +67,12 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.gemini/config/skills/mise-bootstrap-ops/SKILL.md" = { mode = "symlink" }
 "~/.gemini/config/skills/post-task-learn/SKILL.md" = { mode = "symlink" }
 "~/.gemini/config/skills/pwf-status/SKILL.md" = { mode = "symlink" }
+"~/.gemini/config/skills/vercel-board/SKILL.md" = { mode = "symlink" }
 "~/.zcode/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
 "~/.zcode/cli/setting.json" = { mode = "symlink" }
+
+[bootstrap.directories."~/.config/board"]
+mode = "0700"
 
 [bootstrap.directories."~/.config/last30days"]
 mode = "0700"
@@ -82,6 +91,14 @@ os = "linux"
 [bootstrap.directories."~/.local/state/tailscale"]
 mode = "0700"
 
+[bootstrap.directories."~/.local/state/vercel-board.noindex"]
+mode = "0700"
+os = "macos"
+
+[bootstrap.directories."~/.local/state/vercel-board"]
+mode = "0700"
+os = "linux"
+
 [bootstrap.directories."~/.opencode/bin"]
 mode = "0755"
 
@@ -96,7 +113,12 @@ mode = "0700"
 
 [tasks.bootstrap]
 description = "Install idempotent native AI harness CLIs"
-depends = ["bootstrap:claude", "bootstrap:opencode", "bootstrap:zcode"]
+depends = [
+  "bootstrap:claude",
+  "bootstrap:opencode",
+  "bootstrap:zcode",
+  "bootstrap:skills",
+]
 
 [settings]
 auto_install_disable_tools = [

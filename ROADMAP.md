@@ -38,10 +38,11 @@
 - [ ] **Follow-up (`packslip v1.11.5`):** Switch `tasks/vm/up` from
   `packslip verify --pin` back to `packslip install github.com/jdx/mise` once
   `jdx/packslip` `v1.11.5` (PR `#337`, fixing `#346`) releases.
-- [ ] **Follow-up (Local `vercel/board` multi-harness messaging):** Package
-  `npm:@vercel/board` (`vb serve` + `--tailscale` local mode, zero model auth
-  touch) and a shared `board` skill so Claude Code, Codex, `agy`, and free-only
-  OpenCode v2 share durable async cross-repo threads and status.
+- [x] **Follow-up (Local `vercel/board` multi-harness messaging + `jdx` skills):**
+  Package `npm:@vercel/board`, `pitchfork`, `aube`, `communique`, and `usage`
+  globally via `mise`, sync `jdx` + `vercel-board` skills across all harnesses
+  via `bootstrap:skills`, and run a `pitchfork`-supervised local/tailnet board
+  shared across host, `pc`, `mac`, and `vm`.
 - [ ] **Follow-up (`knowledge-base-v2` container readiness):** Evaluate running
   `knowledge-base-v2` inside `dotfiles-v2` containers (`jq` in container toolset,
   `:ro` `~/.config/agents/private-patterns.txt` mount, persistent `kb.noindex` /

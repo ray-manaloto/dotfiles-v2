@@ -1,0 +1,8 @@
+#:schema https://pitchfork.jdx.dev/schema.json
+
+[daemons.vercel-board]
+run = "mise run board:serve"
+mise = true
+port = 4100
+ready_http = { url = "http://127.0.0.1:4100/healthz", timeout = "30s" }
+retry = 3

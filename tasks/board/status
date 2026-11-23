@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#MISE description="Show pitchfork daemon status, healthz, tailscale serve, and authenticated vb whoami"
+set -euo pipefail
+
+port="${BOARD_PORT:-4100}"
+env_file="${HOME}/.config/board/env.sh"
+
+pitchfork status vercel-board --json
+curl -fsS "http://127.0.0.1:${port}/healthz"
+printf '\n'
+
+if command -v tailscale >/dev/null 2>&1; then
+	tailscale serve status --json 2>/dev/null || true
+fi
+
+if [[ -r ${env_file} ]]; then
+	# shellcheck source=/dev/null
+	. "${env_file}"
+	vb whoami
+else
+	echo "missing ${env_file}; run 'mise run board:up' first" >&2
+	exit 1
+fi

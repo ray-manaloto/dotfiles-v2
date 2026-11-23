@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#MISE description="Run foreground @vercel/board HTTP + Web Inspector server (supervised by pitchfork)"
+set -euo pipefail
+
+port="${BOARD_PORT:-4100}"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	board_dir="${BOARD_DIR:-${HOME}/.local/state/vercel-board.noindex}"
+else
+	board_dir="${BOARD_DIR:-${HOME}/.local/state/vercel-board}"
+fi
+cfg_dir="${HOME}/.config/board"
+token_file="${BOARD_TOKEN_FILE:-${cfg_dir}/agent-token}"
+env_file="${cfg_dir}/env.sh"
+
+mkdir -p "${cfg_dir}" "${board_dir}"
+chmod 0700 "${cfg_dir}" "${board_dir}"
+
+if [[ ! -s ${token_file} ]]; then
+	(
+		umask 077
+		tmp="${token_file}.tmp.$$"
+		python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_hex(32))' >"${tmp}"
+		chmod 0600 "${tmp}"
+		mv -n "${tmp}" "${token_file}" 2>/dev/null || rm -f "${tmp}"
+	)
+else
+	chmod 0600 "${token_file}"
+fi
+
+ts_host=""
+if command -v tailscale >/dev/null 2>&1; then
+	ts_host="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty | sub("\\.$"; "")' || true)"
+fi
+
+(
+	umask 077
+	cat >"${env_file}.tmp.$$" <<EOF
+# shellcheck shell=sh
+export BOARD_URL="http://127.0.0.1:${port}/api/board"
+if [ -r "${token_file}" ]; then
+	BOARD_TOKEN="\$(tr -d '\r\n' <"${token_file}")"
+	export BOARD_TOKEN
+fi
+EOF
+	chmod 0600 "${env_file}.tmp.$$"
+	mv "${env_file}.tmp.$$" "${env_file}"
+)
+
+root="$(git rev-parse --show-toplevel)"
+export BOARD_PORT="${port}"
+export BOARD_DIR="${board_dir}"
+export BOARD_TOKEN_FILE="${token_file}"
+export BOARD_TAILSCALE_HOST="${ts_host}"
+
+exec node "${root}/unix/home/.config/mise/assets/board/server.mjs"

@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#MISE description="Sync runtime BOARD_URL and 0600 agent-token cleanly to running pc, mac, and vm environments"
+#USAGE flag "--target <target>" default="all" help="Environment to sync: pc, mac, vm, or all"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
+set -euo pipefail
+
+target="${usage_target:-all}"
+host="${usage_host:-pc}"
+name="dotfiles-v2"
+vm_name="dotfiles-v2-macos"
+token_file="${BOARD_TOKEN_FILE:-${HOME}/.config/board/agent-token}"
+
+if [[ ! -s ${token_file} ]]; then
+	echo "missing board token at ${token_file}; run 'mise run board:up' first" >&2
+	exit 1
+fi
+
+ts_host="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty | sub("\\.$"; "")' || true)"
+if [[ -z ${ts_host} ]]; then
+	echo "could not resolve local Tailscale DNSName; ensure tailscale is running" >&2
+	exit 1
+fi
+board_url="https://${ts_host}/api/board"
+
+sync_container() {
+	local label="$1"
+	shift
+	local -a dcmd=("$@")
+	local running
+	running="$("${dcmd[@]}" container inspect --format '{{.State.Running}}' "${name}" 2>/dev/null || echo false)"
+	if [[ ${running} != "true" ]]; then
+		echo "SKIP  ${label} (container ${name} is not running)"
+		return 0
+	fi
+	# shellcheck disable=SC2016
+	"${dcmd[@]}" exec -i "${name}" env BOARD_URL="${board_url}" /bin/bash -euo pipefail -c '
+		umask 077
+		mkdir -p "${HOME}/.config/board"
+		chmod 0700 "${HOME}/.config/board"
+		cat >"${HOME}/.config/board/agent-token.tmp.$$"
+		chmod 0600 "${HOME}/.config/board/agent-token.tmp.$$"
+		mv "${HOME}/.config/board/agent-token.tmp.$$" "${HOME}/.config/board/agent-token"
+		cat >"${HOME}/.config/board/env.sh.tmp.$$" <<ENV
+# shellcheck shell=sh
+export BOARD_URL="${BOARD_URL}"
+if [ -r "\${HOME}/.config/board/agent-token" ]; then
+	BOARD_TOKEN="\$(tr -d "\r\n" <"\${HOME}/.config/board/agent-token")"
+	export BOARD_TOKEN
+fi
+ENV
+		chmod 0600 "${HOME}/.config/board/env.sh.tmp.$$"
+		mv "${HOME}/.config/board/env.sh.tmp.$$" "${HOME}/.config/board/env.sh"
+	' <"${token_file}"
+	echo "OK    ${label} (${board_url})"
+}
+
+sync_vm() {
+	if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+		echo "SKIP  vm (requires macOS with tart)"
+		return 0
+	fi
+	if ! tart exec "${vm_name}" true >/dev/null 2>&1; then
+		echo "SKIP  vm (Tart VM ${vm_name} is not running)"
+		return 0
+	fi
+	# shellcheck disable=SC2016
+	tart exec -i "${vm_name}" env BOARD_URL="${board_url}" /bin/bash -euo pipefail -c '
+		umask 077
+		mkdir -p "${HOME}/.config/board"
+		chmod 0700 "${HOME}/.config/board"
+		cat >"${HOME}/.config/board/agent-token.tmp.$$"
+		chmod 0600 "${HOME}/.config/board/agent-token.tmp.$$"
+		mv "${HOME}/.config/board/agent-token.tmp.$$" "${HOME}/.config/board/agent-token"
+		cat >"${HOME}/.config/board/env.sh.tmp.$$" <<ENV
+# shellcheck shell=sh
+export BOARD_URL="${BOARD_URL}"
+if [ -r "\${HOME}/.config/board/agent-token" ]; then
+	BOARD_TOKEN="\$(tr -d "\r\n" <"\${HOME}/.config/board/agent-token")"
+	export BOARD_TOKEN
+fi
+ENV
+		chmod 0600 "${HOME}/.config/board/env.sh.tmp.$$"
+		mv "${HOME}/.config/board/env.sh.tmp.$$" "${HOME}/.config/board/env.sh"
+	' <"${token_file}"
+	echo "OK    vm (${board_url})"
+}
+
+case "${target}" in
+pc) sync_container "pc" env "DOCKER_HOST=ssh://${host}" docker ;;
+mac) sync_container "mac" env -u DOCKER_HOST docker --context desktop-linux ;;
+vm) sync_vm ;;
+all)
+	sync_container "pc" env "DOCKER_HOST=ssh://${host}" docker
+	sync_container "mac" env -u DOCKER_HOST docker --context desktop-linux
+	sync_vm
+	;;
+*)
+	echo "unknown target '${target}' (expected pc, mac, vm, or all)" >&2
+	exit 1
+	;;
+esac

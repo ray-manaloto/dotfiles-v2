@@ -37,6 +37,11 @@ owner = "dev"
 group = "dev"
 mode = "0755"
 
+[bootstrap.directories."/home/dev/.config/board"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
 [bootstrap.directories."/home/dev/.config"]
 owner = "dev"
 group = "dev"
@@ -122,3 +127,5 @@ block = """
 
 [dotfiles]
 "~/.bashrc/dotfiles-v2" = { line = ". /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-secrets.sh", position = "prepend" }
+"~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink" }
+"~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink" }
