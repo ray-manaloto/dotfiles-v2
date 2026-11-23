@@ -10,7 +10,25 @@ fi
 agents_dir="${HOME}/.agents/skills"
 claude_dir="${HOME}/.claude/skills"
 
+# Ensure ~/.claude/skills is a real directory, never a symlink to ~/.agents/skills.
+if [[ -L ${claude_dir} ]]; then
+	rm -f "${claude_dir}"
+fi
+
 mkdir -p "${agents_dir}" "${claude_dir}"
+
+# Clear any self-referential ../../.agents/skills/ loops left by prior symlinked claude dirs.
+python3 - "${agents_dir}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+agents_dir = Path(sys.argv[1])
+for entry in sorted(agents_dir.iterdir()):
+    if entry.is_symlink() and os.readlink(entry).startswith("../../.agents/skills/"):
+        entry.unlink()
+PY
+
 mise skills sync --global --prune
 
 python3 - "${agents_dir}" "${claude_dir}" <<'PY'
@@ -20,6 +38,9 @@ from pathlib import Path
 
 agents_dir = Path(sys.argv[1])
 claude_dir = Path(sys.argv[2])
+
+if claude_dir.resolve() == agents_dir.resolve():
+    sys.exit(0)
 
 def is_skill_dir(entry: Path) -> bool:
     return (entry.is_dir() or entry.is_symlink()) and (entry / "SKILL.md").is_file()

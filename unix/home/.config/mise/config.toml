@@ -84,7 +84,7 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.zcode/cli/setting.json" = { mode = "symlink" }
 
 [bootstrap.hooks.pre-dotfiles]
-run = 'mkdir -p ~/.agents/skills ~/.claude/skills && if [ -d ~/.gemini/config/skills ] && [ ! -L ~/.gemini/config/skills ]; then rm -rf ~/.gemini/config/skills; fi'
+run = 'if [ -L ~/.claude/skills ]; then rm -f ~/.claude/skills; fi && if [ -d ~/.gemini/config/skills ] && [ ! -L ~/.gemini/config/skills ]; then rm -rf ~/.gemini/config/skills; fi && mkdir -p ~/.agents/skills ~/.claude/skills'
 
 [bootstrap.directories."~/.config/board"]
 mode = "0700"
