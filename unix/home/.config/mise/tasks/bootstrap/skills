@@ -12,7 +12,7 @@ claude_dir="${HOME}/.claude/skills"
 gemini_dir="${HOME}/.gemini/config/skills"
 
 mkdir -p "${agents_dir}" "${claude_dir}"
-mise skills sync --global --dir "${agents_dir}" --prune
+mise skills sync --global --prune
 
 python3 - "${agents_dir}" "${claude_dir}" "${gemini_dir}" <<'PY'
 import os
