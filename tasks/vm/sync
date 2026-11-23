@@ -40,5 +40,5 @@ git -C "${HOME}/dev/dotfiles-v2" checkout -q -B "${REF}" "origin/${REF}"
 mise -C "${HOME}/dev/dotfiles-v2" trust --all
 MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise" \
 MISE_YES=1 \
-mise -C "${HOME}/dev/dotfiles-v2" bootstrap --only dotfiles,tools --force-dotfiles --yes
+mise -C "${HOME}/dev/dotfiles-v2" bootstrap --only files,dotfiles,tools --force-dotfiles --yes
 GUEST

@@ -32,7 +32,7 @@ sync_pc() {
 	remote_dir="$(ssh -o BatchMode=yes "${host}" 'printf "%s/dev/containers/dotfiles-v2" "$HOME"')"
 	ssh -o BatchMode=yes "${host}" \
 		"git -C '${remote_dir}' -c core.hooksPath=/dev/null fetch -q origin '${ref}' && git -C '${remote_dir}' -c core.hooksPath=/dev/null checkout -q -B '${ref}' 'origin/${ref}'"
-	DOCKER_HOST="ssh://${host}" docker exec -w /workspace "${name}" mise bootstrap --only dotfiles,tools --force-dotfiles --yes
+	DOCKER_HOST="ssh://${host}" docker exec -w /workspace "${name}" mise bootstrap --only files,dotfiles,tools --force-dotfiles --yes
 }
 
 sync_mac() {
@@ -45,7 +45,7 @@ sync_mac() {
 	local_dir="${HOME}/dev/containers/${name}"
 	git -C "${local_dir}" -c core.hooksPath=/dev/null fetch -q origin "${ref}"
 	git -C "${local_dir}" -c core.hooksPath=/dev/null checkout -q -B "${ref}" "origin/${ref}"
-	env -u DOCKER_HOST docker --context desktop-linux exec -w /workspace "${name}" mise bootstrap --only dotfiles,tools --force-dotfiles --yes
+	env -u DOCKER_HOST docker --context desktop-linux exec -w /workspace "${name}" mise bootstrap --only files,dotfiles,tools --force-dotfiles --yes
 }
 
 case "${target}" in

@@ -42,11 +42,10 @@ and C++26 workstation setup.
   --all` / `MISE_TRUSTED_CONFIG_PATHS`) and prepend shims to `PATH`. Use
   `conf.d/<topic>/mise.toml` folder fragments (not single-file
   `conf.d/*.toml`) for additive `[task_config].includes`, since `config.toml`
-  overrides single-file `includes`.
-  Never install or keep Homebrew `mise` (`/opt/homebrew/bin/mise`); uninstall
-  any base-image Homebrew `mise` formula (`brew uninstall --force mise`) and
-  use only pinned standalone `mise` (`/usr/local/bin/mise` on VM/containers,
-  `~/.local/bin/mise` on host).
+  overrides single-file `includes`. Use only pinned standalone `mise`
+  (`/usr/local/bin/mise` on VM/containers, `~/.local/bin/mise` on host) instead
+  of Homebrew `mise`; uninstall any base-image Homebrew `mise` formula
+  (`brew uninstall --force mise`) so `/opt/homebrew/bin/mise` stays absent.
 - **Harnesses & container scripts:** Install AI CLIs via native installers only
   (blocked in global `mise` settings). Omit `--bare` when authenticating Claude
   with `CLAUDE_CODE_OAUTH_TOKEN`, redirect `</dev/null` on interactive/agent

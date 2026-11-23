@@ -1,6 +1,6 @@
-amends "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.0.1/presets.pkl"
+amends "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.1.0/presets.pkl"
 
-import "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.0.1/helpers.pkl"
+import "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.1.0/helpers.pkl"
 import "package://github.com/jdx/hk/releases/download/v2.13.0/hk@2.13.0#/Builtins.pkl"
 
 exclude =
@@ -25,6 +25,7 @@ local const miseConfigGlobs =
 
 local const picked =
   helpers.pick(new Listing {
+    "agnix"
     "betterleaks"
     "hadolint"
     "hk"

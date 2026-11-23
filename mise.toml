@@ -23,9 +23,11 @@ lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
 "~/.config/opencode/AGENTS.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
 "~/.config/opencode/opencode.json" = { mode = "symlink" }
 "~/.gemini/GEMINI.md" = { source = "unix/home/.config/agents/AGENTS.md", mode = "symlink" }
+"~/.gemini/config/hooks/agy-skill-cutoff.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink" }
 "~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
 "~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
+"~/.gemini/config/rules/skill-cutoff-agy.md" = { mode = "symlink" }
 "~/.gemini/config/skills/post-task-learn/SKILL.md" = { mode = "symlink" }
 "~/.gemini/config/skills/pwf-status/SKILL.md" = { mode = "symlink" }
 
@@ -75,3 +77,13 @@ test -n "$resolved" && test -f "$resolved/task_plan.md"
 ! sh "$pwf_dir/scripts/plan-doctor.sh" | grep -q "^FAIL "
 '''
 hint = "Run 'mise run worktree:new <slug>' or verify .planning/$PLAN_ID."
+
+[doctor.checks.agy-skill-cutoff]
+description = "Antigravity 24 KB skill cutoff hook and universal rule are valid and replace hardcoded last30days rule"
+run = '''
+test -x unix/home/.gemini/config/hooks/agy-skill-cutoff.py
+test -f unix/home/.gemini/config/rules/skill-cutoff-agy.md
+test ! -e unix/home/.gemini/config/rules/last30days-agy.md
+python3 -I -B unix/home/.gemini/config/hooks/agy-skill-cutoff.py --check --no-write --json >/dev/null
+'''
+hint = "Ensure unix/home/.gemini/config/hooks/agy-skill-cutoff.py is executable and skill-cutoff-agy.md replaces last30days-agy.md."
