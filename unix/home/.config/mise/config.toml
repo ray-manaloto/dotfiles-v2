@@ -19,18 +19,34 @@ typos = "1.52.2"
 
 [settings]
 auto_install_disable_tools = [
+  "aqua:anomalyco/opencode",
   "aqua:anthropics/claude-code",
+  "aqua:sst/opencode",
   "claude",
   "claude-code",
+  "github:anomalyco/opencode",
   "github:anthropics/claude-code",
+  "github:sst/opencode",
   "npm:@anthropic-ai/claude-code",
+  "npm:@opencode-ai/cli",
+  "npm:@opencode/cli",
+  "npm:opencode-ai",
+  "opencode",
 ]
 disable_tools = [
+  "aqua:anomalyco/opencode",
   "aqua:anthropics/claude-code",
+  "aqua:sst/opencode",
   "claude",
   "claude-code",
+  "github:anomalyco/opencode",
   "github:anthropics/claude-code",
+  "github:sst/opencode",
   "npm:@anthropic-ai/claude-code",
+  "npm:@opencode-ai/cli",
+  "npm:@opencode/cli",
+  "npm:opencode-ai",
+  "opencode",
 ]
 exec_auto_install = false
 experimental = true

@@ -13,7 +13,7 @@ ENV container=docker \
     MISE_CACHE_DIR=/opt/mise/cache \
     MISE_YES=1 \
     MISE_TRUSTED_CONFIG_PATHS=/workspace:/home/dev/.config/mise \
-    PATH=/home/dev/.local/bin:/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/home/dev/.local/bin:/home/dev/.opencode/bin:/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -39,7 +39,7 @@ RUN case "${TARGETARCH}" in \
 RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
     && if getent group ubuntu >/dev/null 2>&1; then groupdel ubuntu; fi \
     && useradd -m -u 1000 -s /bin/bash dev \
-    && install -d -o dev -g dev /opt/mise /workspace /home/dev/.claude /home/dev/.local /home/dev/.local/bin /home/dev/.local/share \
+    && install -d -o dev -g dev /opt/mise /workspace /home/dev/.claude /home/dev/.config /home/dev/.config/opencode /home/dev/.local /home/dev/.local/bin /home/dev/.local/share /home/dev/.local/share/opencode /home/dev/.opencode /home/dev/.opencode/bin \
     && printf '\n. /etc/profile.d/agent-secrets.sh\n' >> /etc/bash.bashrc
 
 COPY --chmod=644 agent-secrets-profile.sh /etc/profile.d/agent-secrets.sh
@@ -49,6 +49,10 @@ USER 1000:1000
 RUN export PATH=/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin \
     && curl -fsSL https://claude.ai/install.sh | bash \
     && /home/dev/.local/bin/claude --version
+
+RUN export PATH=/home/dev/.opencode/bin:/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin \
+    && curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
+    && /home/dev/.opencode/bin/opencode --version
 
 WORKDIR /workspace
 CMD ["sleep", "infinity"]

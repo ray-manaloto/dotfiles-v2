@@ -33,11 +33,12 @@ needs_recreate() {
 	local want_image="$1" want_keys="$2"
 	shift 2
 	local -a dcmd=("$@")
-	local have_image have_secrets_src have_claude_dst
+	local have_image have_secrets_src have_claude_dst have_opencode_dst
 	have_image="$("${dcmd[@]}" container inspect --format '{{.Image}}' "${name}" 2>/dev/null || true)"
 	have_secrets_src="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/run/agent-secrets"}}{{.Source}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_claude_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.claude"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
-	[[ ${have_image} != "${want_image}" || ${have_secrets_src} != "${want_keys}" || ${have_claude_dst} != "/home/dev/.claude" ]]
+	have_opencode_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.local/share/opencode"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
+	[[ ${have_image} != "${want_image}" || ${have_secrets_src} != "${want_keys}" || ${have_claude_dst} != "/home/dev/.claude" || ${have_opencode_dst} != "/home/dev/.local/share/opencode" ]]
 }
 
 ref="$(resolve_ref)"
@@ -69,6 +70,7 @@ up_pc() {
 			-v "${remote_dir}:/workspace" \
 			-v "${keys}:/run/agent-secrets:ro" \
 			-v "${name}-claude:/home/dev/.claude" \
+			-v "${name}-opencode:/home/dev/.local/share/opencode" \
 			"${tag}" >/dev/null
 	else
 		DOCKER_HOST="ssh://${host}" docker start "${name}" >/dev/null
@@ -117,6 +119,7 @@ up_mac() {
 			-v "${local_dir}:/workspace" \
 			-v "${keys}:/run/agent-secrets:ro" \
 			-v "${name}-claude:/home/dev/.claude" \
+			-v "${name}-opencode:/home/dev/.local/share/opencode" \
 			"${tag}" >/dev/null
 	else
 		env -u DOCKER_HOST docker --context desktop-linux start "${name}" >/dev/null

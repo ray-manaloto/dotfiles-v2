@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-#MISE description="Verify live state, isolation, symlinks, tools, Claude Code, and project doctor across pc, mac, and vm"
+#MISE description="Verify live state, isolation, symlinks, tools, Claude Code, OpenCode, and project doctor across pc, mac, and vm"
 #USAGE flag "--target <target>" default="all" help="Environment to check: pc, mac, vm, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
-#USAGE flag "--smoke" help="Run live Claude Code subscription prompt test across requested targets"
+#USAGE flag "--smoke" help="Run live Claude Code and OpenCode prompt tests across requested targets"
 set -euo pipefail
 
 target="${usage_target:-all}"
@@ -99,16 +99,25 @@ cpath="$(command -v claude)"
 test "${cpath}" = "/home/dev/.local/bin/claude"
 cver="$(claude --version </dev/null | awk '{print $1}')"
 claude doctor </dev/null 2>&1 | grep -Fq "Running: native"
+test -w /home/dev/.local/share/opencode
+test "$(readlink -f /home/dev/.config/opencode/opencode.json)" = "/workspace/unix/home/.config/opencode/opencode.json"
+test "$(readlink -f /home/dev/.config/opencode/AGENTS.md)" = "/workspace/unix/home/.config/agents/AGENTS.md"
+ocpath="$(command -v opencode)"
+test "${ocpath}" = "/home/dev/.opencode/bin/opencode"
+ocver="$(opencode --version </dev/null | awk '{print $NF}')"
+[[ "${ocver}" == v2.* || "${ocver}" == 2.* ]]
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
 	sout="$(claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null)"
 	[[ "${sout}" == *OK* ]]
+	oc_out="$(opencode --standalone run --archived "Reply with exactly: OK" </dev/null)"
+	[[ "${oc_out}" == *OK* ]]
 	smoke_suffix=", smoke=OK"
 fi
-printf 'claude=%s%s' "${cver}" "${smoke_suffix}"
+printf 'claude=%s, opencode=%s%s' "${cver}" "${ocver}" "${smoke_suffix}"
 CONTAINER
 	)" || [[ -z ${claude_out} ]]; then
-		fail_row "${label}" "Claude Code / agent-secrets verification failed"
+		fail_row "${label}" "Claude Code / OpenCode / agent-secrets verification failed"
 		return
 	fi
 
@@ -129,7 +138,7 @@ check_vm() {
 	local out
 	if ! out="$(
 		tart exec -i "${vm_name}" env SMOKE="${smoke}" /bin/bash -euo pipefail <<'GUEST'
-export PATH="${HOME}/.local/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 sm="$(uname -sm)"
 test "${sm}" = "Darwin arm64"
@@ -138,6 +147,12 @@ test "$(printf '%s\n%s\n' "2026.11.12" "${mv}" | sort -V | head -n 1)" = "2026.1
 link="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.config/mise/config.toml")"
 want="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/mise/config.toml")"
 test "${link}" = "${want}"
+link_oc="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.config/opencode/opencode.json")"
+want_oc="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/opencode/opencode.json")"
+test "${link_oc}" = "${want_oc}"
+link_oc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.config/opencode/AGENTS.md")"
+want_oc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/agents/AGENTS.md")"
+test "${link_oc_agents}" = "${want_oc_agents}"
 miss="$(mise -C "${HOME}/dev/dotfiles-v2" ls --missing | grep -vc '^Tool[[:space:]]' || true)"
 test "${miss}" -eq 0
 mise -C "${HOME}/dev/dotfiles-v2" doctor project >/dev/null
@@ -148,13 +163,19 @@ test "${cpath}" = "${HOME}/.local/bin/claude"
 cver="$(/bin/bash -lc 'claude --version </dev/null' | awk '{print $1}')"
 /bin/bash -lc 'claude doctor </dev/null' 2>&1 | grep -Fq 'Running: native'
 /bin/bash -lc 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"'
+ocpath="$(/bin/bash -lc 'command -v opencode')"
+test "${ocpath}" = "${HOME}/.opencode/bin/opencode"
+ocver="$(/bin/bash -lc 'opencode --version </dev/null' | awk '{print $NF}')"
+[[ "${ocver}" == v2.* || "${ocver}" == 2.* ]]
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
   sout="$(/bin/bash -lc 'claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null')"
   [[ "${sout}" == *OK* ]]
+  oc_out="$(/bin/bash -lc 'opencode --standalone run --archived "Reply with exactly: OK" </dev/null')"
+  [[ "${oc_out}" == *OK* ]]
   smoke_suffix=" | smoke=OK"
 fi
-printf '%s | mise=%s | %s | claude=%s | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${smoke_suffix}"
+printf '%s | mise=%s | %s | claude=%s | opencode=%s | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${ocver}" "${smoke_suffix}"
 GUEST
 	)"; then
 		fail_row "vm" "guest verification failed"

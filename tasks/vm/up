@@ -113,13 +113,16 @@ else
 fi
 GUEST
 
-# Install native Claude Code when missing and wire shell profiles for PATH + agent-secrets.
+# Install native Claude Code & OpenCode v2 when missing and wire shell profiles for PATH + agent-secrets.
 tart exec -i "${VM_NAME}" /bin/bash -euo pipefail <<'GUEST'
-mkdir -p "${HOME}/.local/bin"
+mkdir -p "${HOME}/.local/bin" "${HOME}/.opencode/bin"
 if [[ ! -x "${HOME}/.local/bin/claude" ]]; then
   PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" curl -fsSL https://claude.ai/install.sh | bash
 fi
-path_line='export PATH="${HOME}/.local/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"'
+if [[ ! -x "${HOME}/.opencode/bin/opencode" ]] || [[ "$("${HOME}/.opencode/bin/opencode" --version </dev/null | awk '{print $NF}')" == 1.* ]]; then
+  PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path
+fi
+path_line='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"'
 env_line='[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"'
 for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc"; do
   touch "${rc}"
