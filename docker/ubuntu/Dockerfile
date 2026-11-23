@@ -25,6 +25,7 @@ RUN apt-get update \
       ca-certificates=20260816ubuntu0.26.10.2 \
       curl=8.20.0-2ubuntu11.1 \
       git=1:2.55.0-1ubuntu1.1 \
+      libatomic1=16.2.0-3ubuntu1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN case "${TARGETARCH}" in \

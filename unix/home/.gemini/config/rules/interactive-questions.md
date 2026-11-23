@@ -8,9 +8,10 @@ description: Always use interactive questions with recommendations and concise p
 When asking the user to make a decision, clarify requirements, or choose next
 steps:
 
-1. **Research first before asking**: inspect available skills, OpenWiki, docs,
-   and upstream or offline code first so every option and trade-off is grounded
-   in verified facts rather than guesswork.
+1. **Research first before asking**: explore the codebase, available skills,
+   OpenWiki, docs, and upstream or offline source to resolve everything code
+   can settle upfront, so every option and trade-off is grounded in verified
+   facts instead of guesswork.
 2. **Always ask interactively** using `ask_question` (including when surfacing
    blockers or planning choices) rather than leaving options only in plain prose.
 3. **State a clear recommendation** first (`(Recommended)` on the leading option).
@@ -21,3 +22,7 @@ steps:
    turn (Plan Mode off) and user decisions or next-step choices are needed,
    hand back via `enter_plan_mode` (or call `ask_question` in a dedicated
    short turn) rather than ending a long summary with prose options.
+6. **Branch coupled decisions (`/grill-me` style)**: when later choices depend
+   on earlier answers, resolve them iteratively (one focused branch at a time)
+   instead of dumping a speculative matrix; suggest `/grill-me` or
+   `/plan /grill-me` when a broad design needs a full upfront interview.
