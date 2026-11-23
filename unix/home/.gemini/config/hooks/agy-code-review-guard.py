@@ -502,7 +502,7 @@ def _verify_receipt(
     for cmd in clean_runs:
         try:
             proc = subprocess.run(
-                ["bash", "-lc", cmd],
+                ["bash", "-c", cmd],
                 cwd=repo_root,
                 capture_output=True,
                 text=True,
@@ -1311,9 +1311,16 @@ def _check_hooks_json(path: Path) -> None:
 
 
 def _git_exec(cwd: Path, *args: str) -> str:
+    env = {
+        **os.environ,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "HK": "0",
+    }
     proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         check=True,
@@ -1329,6 +1336,7 @@ def _write_transcript(path: Path, records: list[dict[str, Any]]) -> None:
 
 def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     checks: list[str] = []
+    py_run = f"{shlex.quote(sys.executable)} -I -B app.py"
 
     def call_cmd(cmd: str, cwd: Path) -> dict[str, Any]:
         return _run_hook(
@@ -1411,7 +1419,7 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             _verify_receipt(
                 wt,
                 "HEAD",
-                runs=["python3 app.py"],
+                runs=["true"],
                 evidence="",
                 proof="Ran app.py cleanly before review",
             )
@@ -1457,17 +1465,29 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         assert call_cmd("git push origin wt/feat", wt).get("decision") == "deny"
         checks.append("failing_verify_leaves_push_denied")
 
-        # Dirty tracked tree fails --verify
+        # Dirty tracked tree (before or after --run) fails --verify
         (wt / "app.py").write_text("print(99)\n", encoding="utf-8")
         try:
             _verify_receipt(
                 wt,
                 "HEAD",
-                runs=["python3 app.py"],
+                runs=["true"],
                 evidence="",
                 proof="Should fail on dirty tracked file",
             )
             raise AssertionError("dirty --verify should fail")
+        except RuntimeError:
+            pass
+        _git_exec(wt, "checkout", "--", "app.py")
+        try:
+            _verify_receipt(
+                wt,
+                "HEAD",
+                runs=["echo '# dirty' >> app.py"],
+                evidence="",
+                proof="Should fail when verification dirties tracked file",
+            )
+            raise AssertionError("post-run dirty --verify should fail")
         except RuntimeError:
             pass
         _git_exec(wt, "checkout", "--", "app.py")
@@ -1477,7 +1497,7 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         ver_res = _verify_receipt(
             wt,
             "HEAD",
-            runs=["python3 app.py"],
+            runs=[py_run],
             evidence="",
             proof="Observed app.py output 42 exit 0",
         )
@@ -1496,7 +1516,7 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         _verify_receipt(
             repo,
             "HEAD",
-            runs=["python3 app.py"],
+            runs=["true"],
             evidence="",
             proof="Re-verified app.py output 42",
         )
@@ -1557,7 +1577,7 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         _verify_receipt(
             repo,
             "HEAD",
-            runs=["python3 app.py"],
+            runs=["true"],
             evidence="",
             proof="Observed python3 app.py output v2 exit 0",
         )
