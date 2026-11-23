@@ -38,11 +38,12 @@
 - [ ] **Follow-up (`packslip v1.11.5`):** Switch `tasks/vm/up` from
   `packslip verify --pin` back to `packslip install github.com/jdx/mise` once
   `jdx/packslip` `v1.11.5` (PR `#337`, fixing `#346`) releases.
-- [x] **Follow-up (Local `vercel/board` multi-harness messaging + `jdx` skills):**
-  Package `npm:@vercel/board`, `pitchfork`, `aube`, `communique`, and `usage`
-  globally via `mise`, sync `jdx` + `vercel-board` skills across all harnesses
-  via `bootstrap:skills`, and run a `pitchfork`-supervised local/tailnet board
-  shared across host, `pc`, `mac`, and `vm`.
+- [x] **Follow-up (Phase 0 local `vercel/board` + `jdx` skills prototype):**
+  Packaged `npm:@vercel/board` (`0.54.1`), `pitchfork`, `aube`, `communique`,
+  and `usage` in repo config (`147cba6`), synced `jdx` + `vercel-board` skills,
+  and verified `pitchfork`-supervised local board on MacBook/containers/VM
+  (global Option A host cutover + `0.55.0` tracked in `#9`; always-on `pc`
+  orchestration in `#11`).
 - [ ] **Follow-up (`knowledge-base-v2` container readiness):** Evaluate running
   `knowledge-base-v2` inside `dotfiles-v2` containers (`jq` in container toolset,
   `:ro` `~/.config/agents/private-patterns.txt` mount, persistent `kb.noindex` /
@@ -69,3 +70,29 @@
   - [ ] [#6](https://github.com/ray-manaloto/dotfiles-v2/issues/6) Enforce
     GitHub issue -> PWF `PLAN_ID` -> git worktree mapping and nanosecond
     verification evidence (`PLAN_ID` / worktree slug: `worktree-issue-pwf-map`).
+- [ ] **Follow-up (Open GitHub PR & credit-backed coding-agent runners):**
+  - [ ] [PR #1](https://github.com/ray-manaloto/dotfiles-v2/pull/1) Add manual
+    OpenAI PR review (`automation/manual-openai-pr-review`).
+  - [ ] [#2](https://github.com/ray-manaloto/dotfiles-v2/issues/2) Add an OpenAI
+    Responses coding-agent profile using linked API credits.
+  - [ ] [#3](https://github.com/ray-manaloto/dotfiles-v2/issues/3) Add a
+    self-run Claude coding agent using linked API credits.
+- [ ] **Follow-up (Option A cutover, `@vercel/board@0.55.0`, schema-first
+  Python & self-healing `/learn`):**
+  - [ ] [#9](https://github.com/ray-manaloto/dotfiles-v2/issues/9) Execute
+    zero-debt Option A Mac host cutover (6 active repos) and upgrade
+    `@vercel/board` to `0.55.0` (`PLAN_ID` / worktree slug:
+    `option-a-cutover-and-board-055`; also resolves `#4`).
+  - [ ] [#10](https://github.com/ray-manaloto/dotfiles-v2/issues/10) Adopt
+    aggregated `pyproject.toml` + `[deps.uv]`, schema-first
+    `datamodel-codegen`, dual-sink `structlog`, and strict `hk`/doctor
+    prevention gates (`PLAN_ID` / worktree slug: `py-schema-deps-and-gates`).
+  - [ ] [#12](https://github.com/ray-manaloto/dotfiles-v2/issues/12) Build
+    self-optimizing/self-healing `agy-learn` ledger, fix 7 Antigravity hook
+    bugs, and apply Proposal 8 (`PLAN_ID` / worktree slug:
+    `self-healing-agy-learn`; blocked by `#10`).
+  - [ ] [#11](https://github.com/ray-manaloto/dotfiles-v2/issues/11) Host
+    `@vercel/board` always-on on remote Linux host (`pc`) and adopt
+    `templates/swarm` + `factory` orchestration (`PLAN_ID` / worktree slug:
+    `vercel-board-pc-orchestration`; blocked by `#9` and OpenWiki
+    `vercel/board` mapping).
