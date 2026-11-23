@@ -4,10 +4,12 @@ Portable user-level agent conventions managed by `dotfiles-v2` across macOS
 hosts, Linux containers, and macOS VMs.
 
 - **Agent communication:** For `agy <-> agy`, send full structured payloads via
-  native `send_message`, check `hc get <tab-id> --json`, and send a 1-line
-  `hc send <tab-id>` wake doorbell only when `status.state == "idle"`
-  (respecting `draft_wait`). Never send payloads via `hc send`, and never touch
-  `ANTIGRAVITY_CSRF_TOKEN`.
+  native `send_message`, discover live peer tabs dynamically by matching
+  `--conversation <uuid>` in `hc ls --json` / `hc get <id> --json` (never
+  hardcode stale tab IDs across `agy-hc` restarts), and send a 1-line
+  `hc send <tab-id> "Wake doorbell: ..."` (`<= 220` chars) only when
+  `status.state` is `"idle"` or `"done"` (omit `--if idle` when `"done"`). Never
+  send payloads via `hc send`, and never touch `ANTIGRAVITY_CSRF_TOKEN`.
 - **Containers:** Always pass `-e container=docker`; never pass `--privileged`.
 - **Privacy and git hygiene:** Stage changed files explicitly by name (never
   `git add -A` or `git add .`). Never commit secrets, tokens, private

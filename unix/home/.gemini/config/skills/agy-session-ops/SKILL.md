@@ -31,34 +31,35 @@ description: >-
 4. Verify after resume: run a blocked/allowed check such as `fnox --version` for
    `settings.json` and a live research query for `fnox` proxy Doppler tokens.
 
-## 2. Hybrid `agy <-> agy` Peer Messaging (Native + Idle Doorbell)
+## 2. Hybrid `agy <-> agy` Peer Messaging (Native + Idle/Done Doorbell)
 
 1. Deliver the full structured payload (including your `conversationId` and an
    explicit receipt request) via native `send_message` to the peer's
    `conversationId`. Never send full payloads via `hc send`, and never touch or
    read `ANTIGRAVITY_CSRF_TOKEN`.
 
-2. Immediately inspect peer state with `hc get <tab-id> --json`. If
-   `status.state == "idle"`, send a single 1-line Herdr wake doorbell so the
-   idle CLI flushes `<SYSTEM_MESSAGE>`:
+2. Discover the live peer tab dynamically by matching `--conversation <uuid>` via
+   `hc ls --json` and `hc get <tab-id> --json` (do not reuse hardcoded pre-restart
+   tab IDs after `agy-hc`). If `status.state` is `"idle"` or `"done"`, send a
+   single 1-line Herdr wake doorbell (`<= 220` chars, omitting `--if idle` when
+   `state == "done"`):
 
    ```sh
-   hc send <tab-id> "New message queued via native send_message from <sender> (<id>) — check incoming <SYSTEM_MESSAGE> and confirm receipt."
+   hc send <tab-id> "Wake doorbell: check incoming native send_message from <sender> (<id>)."
    ```
 
-   If `status.state != "idle"` (e.g., `working`), do not send `hc send` or
-   interrupt an active turn.
+   If `status.state` is `"working"` (or `"blocked"`), do not send `hc send`.
 
 3. Verify delivery via explicit peer reply or a follow-up `hc get <tab-id> --json`
    turn transition.
 
 4. When reporting to the owner, identify peer terminals as `tab-name (id)`,
-   state the channel (`native send_message`, plus `hc send` idle doorbell if
+   state the channel (`native send_message`, plus `hc send` wake doorbell if
    sent), and distinguish **dispatched (receipt pending)** from **receipt
    confirmed**.
 
 ## 3. Hook Self-Checks Before Shipping Changes
 
-- Run `mise doctor project` (`agy-pwf-guard`, `agy-interactive-questions`,
-  `post-task-learn`, `agy-skill-cutoff`, `host-gemini-sync`) after editing any
-  managed `.gemini/config/` file.
+- Run `mise doctor project` (`agy-hc-send-guard`, `agy-pwf-guard`,
+  `agy-interactive-questions`, `post-task-learn`, `agy-skill-cutoff`,
+  `host-gemini-sync`) after editing any managed `.gemini/config/` file.

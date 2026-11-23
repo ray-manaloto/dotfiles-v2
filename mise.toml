@@ -154,3 +154,12 @@ if shutil.which("zcode"):
 PY
 '''
 hint = "Keep unix/home/.zcode/cli/setting.json valid, registered in [dotfiles] with ~/.zcode/AGENTS.md, and passing zcode doctor --json."
+
+[doctor.checks.agy-hc-send-guard]
+description = "Antigravity hc-send PreToolUse guard hook, always-on peer-messaging rule, and hooks.json registration are valid"
+run = '''
+test -x unix/home/.gemini/config/hooks/agy-hc-send-guard.py
+test -f unix/home/.gemini/config/rules/agy-peer-messaging.md
+python3 -I -B unix/home/.gemini/config/hooks/agy-hc-send-guard.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
+'''
+hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md."

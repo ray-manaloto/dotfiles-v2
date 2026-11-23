@@ -56,8 +56,11 @@ and C++26 workstation setup.
   `ROADMAP.md` stays the sole-writer tracked milestone index on `main`.
 - **Agent communication:** For `agy <-> agy`, deliver full durable payloads via
   native `send_message` (include sender `conversationId` and request explicit
-  receipt confirmation), then check `hc get <tab-id> --json` and send a 1-line
-  `hc send <tab-id>` wake doorbell only when `status.state == "idle"`. Never
+  receipt confirmation), discover the live peer tab dynamically with
+  `hc ls --json` / `hc get <id> --json` matching `--conversation <uuid>`
+  (never hardcode stale tab IDs across `agy-hc` restarts), and send a 1-line
+  `hc send <tab-id> "Wake doorbell: ..."` (`<= 220` chars) only when
+  `status.state` is `"idle"` or `"done"` (omit `--if idle` when `"done"`). Never
   send payloads via `hc send`, and never touch `ANTIGRAVITY_CSRF_TOKEN`. Queue
   all OpenWiki / `knowledge-base-v2` addition requests to
   `knowledge-base-lead-agy` via this hybrid protocol; never mutate

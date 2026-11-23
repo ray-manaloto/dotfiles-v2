@@ -48,10 +48,12 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.config/opencode/opencode.json" = { mode = "symlink" }
 "~/.gemini/GEMINI.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
 "~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
+"~/.gemini/config/hooks/agy-hc-send-guard.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/agy-interactive-questions.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/agy-pwf-guard.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/agy-skill-cutoff.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink" }
+"~/.gemini/config/rules/agy-peer-messaging.md" = { mode = "symlink" }
 "~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
 "~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
 "~/.gemini/config/rules/research-due-diligence.md" = { mode = "symlink" }
