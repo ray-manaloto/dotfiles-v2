@@ -118,8 +118,15 @@ if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
 	fi
 fi
 
-# Install pinned mise v2026.11.12 with SHA-256 verification when missing or stale.
+# Remove any pre-installed Homebrew mise and install pinned mise v2026.11.12 with SHA-256 verification.
 tart exec -i "${VM_NAME}" env MISE_VER="${MISE_VER}" MISE_SHA="${MISE_SHA256_MACOS_ARM64}" /bin/bash -euo pipefail <<'GUEST'
+if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --versions mise >/dev/null 2>&1; then
+  /opt/homebrew/bin/brew uninstall --force mise
+fi
+if [[ -e /opt/homebrew/bin/mise ]]; then
+  echo "unexpected /opt/homebrew/bin/mise still present after brew uninstall" >&2
+  exit 1
+fi
 have=""
 if [[ -x /usr/local/bin/mise ]]; then
   have="$(/usr/local/bin/mise --version | awk '{print $1}')"

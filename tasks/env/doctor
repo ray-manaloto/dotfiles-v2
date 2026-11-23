@@ -213,6 +213,8 @@ export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 sm="$(uname -sm)"
 test "${sm}" = "Darwin arm64"
+test ! -e /opt/homebrew/bin/mise
+! /opt/homebrew/bin/brew list --versions mise >/dev/null 2>&1
 mv="$(/usr/local/bin/mise --version | awk '{print $1}')"
 test "$(printf '%s\n%s\n' "2026.11.12" "${mv}" | sort -V | head -n 1)" = "2026.11.12"
 link="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.config/mise/config.toml")"
