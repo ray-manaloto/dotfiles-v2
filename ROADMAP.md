@@ -13,6 +13,10 @@
   `dotfiles-v2-macos` `arm64`): tool-free root `mise.toml`, global tools in
   `unix/home/.config/mise/`, public config schemas, 100% native compiled `hk.pkl`
   with `mise fmt`, worktree `planning-with-files`, and live `env:doctor`.
+- [x] **Step 1.7:** Direct Tailscale SSH (`tag:dev-env`) across all 3 live
+  environments (`dotfiles-v2-pc`, `dotfiles-v2-mac`, `dotfiles-v2-vm`),
+  non-root userspace `tailscaled` in Ubuntu containers, Homebrew `tailscaled`
+  in Tart VM, `mise run env:ssh`, and live Tailscale SSH checks in `env:doctor`.
 - [ ] **Step 2:** Subscriptions-only AI harnesses added and live-verified across
   all 3 environments (`pc`, `mac`, `vm`) before C++ compilers:
   - [x] 2.1 Claude Code (`agent-secrets` OAuth token mount)
