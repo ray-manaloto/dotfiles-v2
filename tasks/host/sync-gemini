@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-#MISE description="Sync or verify unix/home/.gemini/config/ hooks, rules, skills, and hooks.json against local ~/.gemini/config/"
-#USAGE flag "--check" help="Verify local ~/.gemini/config/ matches repo without modifying files"
+#MISE description="Sync or verify unix/home/.gemini/config/ hooks/rules/hooks.json and unix/home/.agents/skills/ across ~/.agents, ~/.claude, and ~/.gemini"
+#USAGE flag "--check" help="Verify local ~/.gemini/config/, ~/.agents/skills/, and ~/.claude/skills/ match repo without modifying files"
 set -euo pipefail
 
 check_mode="${usage_check:-false}"
 exec python3 - "${check_mode}" <<'PY'
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,12 +34,15 @@ main_root = common_dir.parent if common_dir.name == ".git" else repo_root
 
 src_cfg = repo_root / "unix" / "home" / ".gemini" / "config"
 main_src_cfg = main_root / "unix" / "home" / ".gemini" / "config"
+src_skills = repo_root / "unix" / "home" / ".agents" / "skills"
+main_src_skills = main_root / "unix" / "home" / ".agents" / "skills"
+
 mise_cfg_path = repo_root / "unix" / "home" / ".config" / "mise" / "config.toml"
 parsed = tomllib.loads(mise_cfg_path.read_text(encoding="utf-8"))
 dotfiles_tbl = parsed.get("dotfiles", {})
 
 managed_rels: list[str] = []
-for sub in ("hooks", "rules", "skills"):
+for sub in ("hooks", "rules"):
     base = src_cfg / sub
     if not base.is_dir():
         continue
@@ -49,17 +53,34 @@ for sub in ("hooks", "rules", "skills"):
             continue
         managed_rels.append(p.relative_to(src_cfg).as_posix())
 
+skill_names: list[str] = []
+if src_skills.is_dir():
+    for entry in sorted(src_skills.iterdir()):
+        if entry.is_dir() and (entry / "SKILL.md").is_file():
+            skill_names.append(entry.name)
+
 missing_dotfiles: list[str] = []
 for rel in managed_rels:
     key = f"~/.gemini/config/{rel}"
     if key not in dotfiles_tbl:
         missing_dotfiles.append(key)
-if "~/.gemini/config/hooks.json/dotfiles-v2" not in dotfiles_tbl:
-    missing_dotfiles.append("~/.gemini/config/hooks.json/dotfiles-v2")
+for key in (
+    "~/.gemini/config/hooks.json/dotfiles-v2",
+    "~/.gemini/config/skills",
+    "~/.claude.json/mcp-jdx",
+    "~/.codex/config.toml/mcp-jdx",
+):
+    if key not in dotfiles_tbl:
+        missing_dotfiles.append(key)
+for sk in skill_names:
+    for prefix in ("~/.agents/skills", "~/.claude/skills"):
+        key = f"{prefix}/{sk}"
+        if key not in dotfiles_tbl:
+            missing_dotfiles.append(key)
 
 if missing_dotfiles:
     print(
-        "Unregistered ~/.gemini/config entries in unix/home/.config/mise/config.toml [dotfiles]: "
+        "Unregistered entries in unix/home/.config/mise/config.toml [dotfiles]: "
         + ", ".join(missing_dotfiles),
         file=sys.stderr,
     )
@@ -68,7 +89,10 @@ if missing_dotfiles:
 if os.environ.get("CI") and check_only:
     sys.exit(0)
 
-host_cfg = Path.home() / ".gemini" / "config"
+host_home = Path.home()
+host_cfg = host_home / ".gemini" / "config"
+host_agents_skills = host_home / ".agents" / "skills"
+host_claude_skills = host_home / ".claude" / "skills"
 repo_hooks_path = src_cfg / "hooks.json"
 repo_hooks = json.loads(repo_hooks_path.read_text(encoding="utf-8"))
 host_hooks_path = host_cfg / "hooks.json"
@@ -83,6 +107,20 @@ if check_only:
             continue
         if dst.resolve() not in allowed_srcs:
             errors.append(f"drifted symlink {dst} -> {dst.resolve()}")
+
+    gemini_skills = host_cfg / "skills"
+    if not gemini_skills.is_symlink() or gemini_skills.resolve(strict=False) != host_agents_skills.resolve(strict=False):
+        errors.append(f"{gemini_skills} must symlink to {host_agents_skills}")
+
+    for sk in skill_names:
+        allowed_skill_srcs = {(src_skills / sk).resolve(), (main_src_skills / sk).resolve()}
+        for root_dir in (host_agents_skills, host_claude_skills):
+            dst = root_dir / sk
+            if not dst.is_symlink():
+                errors.append(f"missing or non-symlink skill dir {dst}")
+                continue
+            if dst.resolve(strict=False) not in allowed_skill_srcs:
+                errors.append(f"drifted skill symlink {dst} -> {dst.resolve(strict=False)}")
 
     if not host_hooks_path.is_file():
         errors.append(f"missing {host_hooks_path}")
@@ -101,7 +139,8 @@ if check_only:
             print(f"FAIL  {err}", file=sys.stderr)
         sys.exit(1)
     print(
-        f"OK: {len(managed_rels)} ~/.gemini/config file(s) and {len(repo_hooks)} hooks.json key(s) synced"
+        f"OK: {len(managed_rels)} ~/.gemini/config file(s), {len(skill_names)} canonical skill dir(s), "
+        f"and {len(repo_hooks)} hooks.json key(s) synced"
     )
     sys.exit(0)
 
@@ -119,6 +158,44 @@ for rel in managed_rels:
     os.symlink(src, dst)
     linked += 1
 
+host_agents_skills.mkdir(parents=True, exist_ok=True)
+host_claude_skills.mkdir(parents=True, exist_ok=True)
+gemini_skills = host_cfg / "skills"
+if gemini_skills.is_symlink():
+    if gemini_skills.resolve(strict=False) != host_agents_skills.resolve(strict=False):
+        gemini_skills.unlink()
+        os.symlink("../../.agents/skills", gemini_skills)
+elif gemini_skills.exists():
+    shutil.rmtree(gemini_skills)
+    os.symlink("../../.agents/skills", gemini_skills)
+else:
+    gemini_skills.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink("../../.agents/skills", gemini_skills)
+
+def link_skill_dir(src: Path, dst: Path, *, raw_target: str | None = None) -> int:
+    target = raw_target or str(src)
+    if dst.is_symlink():
+        if os.readlink(dst) == target and dst.resolve(strict=False) == src:
+            return 0
+        dst.unlink()
+    elif dst.is_dir():
+        children = [c.name for c in dst.iterdir() if c.name != ".DS_Store"]
+        skill_md = dst / "SKILL.md"
+        if children == ["SKILL.md"] and skill_md.is_symlink():
+            shutil.rmtree(dst)
+        else:
+            raise RuntimeError(f"Refusing to overwrite non-legacy directory {dst}")
+    elif dst.exists():
+        dst.unlink()
+    os.symlink(target, dst)
+    return 1
+
+skills_linked = 0
+for sk in skill_names:
+    src = (src_skills / sk).resolve()
+    skills_linked += link_skill_dir(src, host_agents_skills / sk)
+    skills_linked += link_skill_dir(src, host_claude_skills / sk, raw_target=f"../../.agents/skills/{sk}")
+
 host_cfg.mkdir(parents=True, exist_ok=True)
 host_hooks = {}
 if host_hooks_path.is_file():
@@ -134,7 +211,8 @@ if hooks_changed or not host_hooks_path.is_file():
     host_hooks_path.write_text(json.dumps(host_hooks, indent=2) + "\n", encoding="utf-8")
 
 print(
-    f"Synced {len(managed_rels)} ~/.gemini/config file(s) ({linked} updated) "
+    f"Synced {len(managed_rels)} ~/.gemini/config file(s) ({linked} updated), "
+    f"{len(skill_names)} canonical skill dir(s) ({skills_linked} link(s) updated), "
     f"and {len(repo_hooks)} hooks.json key(s) (changed={hooks_changed})"
 )
 PY

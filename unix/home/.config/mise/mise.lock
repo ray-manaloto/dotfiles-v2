@@ -319,6 +319,29 @@ aube = { path = "locks/npm-zcode-app-cli/3.18.2-48", digest = "sha256:6acc4b9bd2
 backend = "npm:zcode-app-cli"
 specifiers = ["3.18.2-48"]
 
+[[tools."packslip:grafana/flint"]]
+version = "0.22.15"
+backend = "packslip:grafana/flint"
+specifiers = ["0.22.15"]
+
+[tools."packslip:grafana/flint"."platforms.linux-arm64"]
+checksum = "sha256:1a266d19a688bf4a67c75a8c8af9928459d8c6aace907a17afcdb39938a4254b"
+url = "https://github.com/grafana/flint/releases/download/v0.22.15/flint-aarch64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/grafana/flint/.github/workflows/release.yml"
+repository_ids = { repository = "1157902094" }
+
+[tools."packslip:grafana/flint"."platforms.linux-x64"]
+checksum = "sha256:fa3cb260778fa5a3ddebb3a8f789adee04b8fcc56cc4c38b49fcdb396d7854f4"
+url = "https://github.com/grafana/flint/releases/download/v0.22.15/flint-x86_64-unknown-linux-gnu.tar.gz"
+signer = "sigstore-oidc:https://github.com/grafana/flint/.github/workflows/release.yml"
+repository_ids = { repository = "1157902094" }
+
+[tools."packslip:grafana/flint"."platforms.macos-arm64"]
+checksum = "sha256:70a54889a9ddda5368a8e304154a396ebcfeb3acb28bdf94281b1efe7b6b6b04"
+url = "https://github.com/grafana/flint/releases/download/v0.22.15/flint-aarch64-apple-darwin.tar.gz"
+signer = "sigstore-oidc:https://github.com/grafana/flint/.github/workflows/release.yml"
+repository_ids = { repository = "1157902094" }
+
 [[tools.pitchfork]]
 version = "2.36.0"
 backend = "packslip:github.com/jdx/pitchfork"

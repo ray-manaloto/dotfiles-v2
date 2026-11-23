@@ -172,7 +172,21 @@ test "$(wc -c < "${ZCODE_CREDENTIAL_SECRET_FILE}")" -ge 32
 zver="$(zcode --version </dev/null | awk '$1 == "zcode-app-cli" {print $2}')"
 test -n "${zver}"
 zcode doctor --json </dev/null | python3 -c 'import json, sys; cfg = json.load(sys.stdin).get("configuration", {}); assert cfg.get("ok") is True and cfg.get("user", {}).get("status") == "loaded" and cfg.get("diagnostics") == []'
-for _sk in aube communique fnox hk-configure hk-debug pitchfork usage vercel-board; do
+test -L /home/dev/.gemini/config/skills
+test "$(readlink -f /home/dev/.gemini/config/skills)" = "/home/dev/.agents/skills"
+python3 - <<'PY'
+import json
+import tomllib
+from pathlib import Path
+
+c = json.loads(Path("/home/dev/.claude.json").read_text(encoding="utf-8"))
+for srv in ("mise", "hk", "pitchfork", "usage-mise"):
+    assert srv in c.get("mcpServers", {}), f"Missing claude mcpServers.{srv}"
+cx = tomllib.loads(Path("/home/dev/.codex/config.toml").read_text(encoding="utf-8"))
+for srv in ("mise", "hk", "pitchfork", "usage-mise"):
+    assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
+PY
+for _sk in aube communique flint fnox hk-configure hk-debug pitchfork usage vercel-board; do
 	test -f "/home/dev/.agents/skills/${_sk}/SKILL.md"
 	test -f "/home/dev/.claude/skills/${_sk}/SKILL.md"
 	test -f "/home/dev/.gemini/config/skills/${_sk}/SKILL.md"
@@ -318,7 +332,22 @@ test "${zpath}" = "${HOME}/.local/share/mise/shims/zcode"
 zver="$(/bin/bash -lc 'zcode --version </dev/null' | awk '$1 == "zcode-app-cli" {print $2}')"
 test -n "${zver}"
 /bin/bash -lc 'zcode doctor --json </dev/null' | jq -e '.configuration.ok == true and .configuration.user.status == "loaded" and (.configuration.diagnostics | length == 0)' >/dev/null
-for _sk in aube communique fnox hk-configure hk-debug pitchfork usage vercel-board; do
+test -L "${HOME}/.gemini/config/skills"
+python3 - <<'PY'
+import json
+import os
+import tomllib
+from pathlib import Path
+
+assert os.path.realpath(os.path.expanduser("~/.gemini/config/skills")) == os.path.realpath(os.path.expanduser("~/.agents/skills")), "~/.gemini/config/skills must resolve to ~/.agents/skills"
+c = json.loads(Path(os.path.expanduser("~/.claude.json")).read_text(encoding="utf-8"))
+for srv in ("mise", "hk", "pitchfork", "usage-mise"):
+    assert srv in c.get("mcpServers", {}), f"Missing claude mcpServers.{srv}"
+cx = tomllib.loads(Path(os.path.expanduser("~/.codex/config.toml")).read_text(encoding="utf-8"))
+for srv in ("mise", "hk", "pitchfork", "usage-mise"):
+    assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
+PY
+for _sk in aube communique flint fnox hk-configure hk-debug pitchfork usage vercel-board; do
   test -f "${HOME}/.agents/skills/${_sk}/SKILL.md"
   test -f "${HOME}/.claude/skills/${_sk}/SKILL.md"
   test -f "${HOME}/.gemini/config/skills/${_sk}/SKILL.md"

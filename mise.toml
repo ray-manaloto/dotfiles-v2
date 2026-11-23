@@ -90,7 +90,7 @@ hint = "Ensure unix/home/.gemini/config/hooks/agy-interactive-questions.py passe
 description = "Antigravity post-task-learn Stop hook, skill, and hooks.json registration are valid"
 run = '''
 test -x unix/home/.gemini/config/hooks/post-task-learn.py
-test -f unix/home/.gemini/config/skills/post-task-learn/SKILL.md
+test -f unix/home/.agents/skills/post-task-learn/SKILL.md
 python3 -I -B unix/home/.gemini/config/hooks/post-task-learn.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
 '''
 hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-check and registers in hooks.json."
@@ -165,24 +165,37 @@ python3 -I -B unix/home/.gemini/config/hooks/agy-hc-send-guard.py --self-check -
 hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md."
 
 [doctor.checks.vercel-board-config]
-description = "jdx tools, @vercel/board, pitchfork.toml, bootstrap:skills, and vercel-board skill are valid"
+description = "jdx tools, @vercel/board, pitchfork.toml, mcp-jdx, bootstrap:skills, and canonical skills are valid"
 run = '''
 test -f pitchfork.toml
 test -x unix/home/.config/mise/tasks/bootstrap/skills
 test -x unix/home/.config/mise/assets/board/vb-proxy-wrapper.sh
-test -f unix/home/.gemini/config/skills/vercel-board/SKILL.md
+test -f unix/home/.agents/skills/vercel-board/SKILL.md
+test -f unix/home/.claude.mcp-jdx.json
+test -f unix/home/.codex/mcp-jdx.toml
 node --check unix/home/.config/mise/assets/board/server.mjs
 python3 - <<'PY'
+import json
 import tomllib
 from pathlib import Path
 
+json.loads(Path("unix/home/.claude.mcp-jdx.json").read_text(encoding="utf-8"))
+tomllib.loads(Path("unix/home/.codex/mcp-jdx.toml").read_text(encoding="utf-8"))
 cfg = tomllib.loads(Path("unix/home/.config/mise/config.toml").read_text(encoding="utf-8"))
 tools = set(cfg.get("tools", {}))
-for tool in ("aube", "communique", "npm:@vercel/board", "pitchfork", "usage"):
+for tool in ("aube", "communique", "fnox", "hk", "npm:@vercel/board", "packslip:grafana/flint", "pitchfork", "usage"):
     assert tool in tools, f"Missing {tool} in unix/home/.config/mise/config.toml [tools]"
-assert "~/.gemini/config/skills/vercel-board/SKILL.md" in cfg.get("dotfiles", {}), "vercel-board SKILL.md not registered in [dotfiles]"
+dotfiles = cfg.get("dotfiles", {})
+for key in (
+    "~/.agents/skills/vercel-board",
+    "~/.claude/skills/vercel-board",
+    "~/.gemini/config/skills",
+    "~/.claude.json/mcp-jdx",
+    "~/.codex/config.toml/mcp-jdx",
+):
+    assert key in dotfiles, f"Missing {key} in unix/home/.config/mise/config.toml [dotfiles]"
 deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
 PY
 '''
-hint = "Ensure pitchfork.toml, jdx tools, npm:@vercel/board, bootstrap:skills, server.mjs, and vercel-board/SKILL.md are configured cleanly."
+hint = "Ensure pitchfork.toml, jdx tools, npm:@vercel/board, mcp-jdx, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly."

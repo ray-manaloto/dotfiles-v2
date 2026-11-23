@@ -1,6 +1,6 @@
 .DS_Store
-.agents/
-.claude/
+/.agents/
+/.claude/
 .planning/
 __pycache__/
 *.local.*

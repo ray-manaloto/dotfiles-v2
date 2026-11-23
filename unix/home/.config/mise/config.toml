@@ -8,19 +8,23 @@ min_version = "2026.11.12"
 "aqua:owenlamont/ryl" = "0.30.0"
 "aqua:oxc-project/oxc/oxfmt" = "0.79.0"
 "aqua:zizmorcore/zizmor" = "1.33.0"
-aube = "2.10.1"
+aube = { version = "2.10.1", workflow = [
+  "release-plz.yml@refs/heads/main",
+  "release.yml@refs/heads/main",
+] }
 betterleaks = "1.10.1"
-communique = "1.8.0"
-fnox = "1.50.0"
+communique = { version = "1.8.0", workflow = "release.yml@refs/heads/main" }
+fnox = { version = "1.50.0", workflow = "release.yml" }
 "github:agent-sh/agnix" = "0.61.0"
 github-cli = "2.105.0"
 hadolint = "2.15.1"
-hk = "2.13.0"
+hk = { version = "2.13.0", workflow = "release.yml" }
 node = "26.13.1"
 "npm:@vercel/board" = "0.54.1"
 "npm:openwiki" = { version = "0.9.0", allow_builds = ["better-sqlite3"] }
 "npm:zcode-app-cli" = "3.18.2-48"
-pitchfork = "2.36.0"
+"packslip:grafana/flint" = "0.22.15"
+pitchfork = { version = "2.36.0", workflow = "release.yml@refs/heads/main" }
 pkl = "0.33.1"
 python = "3.15.2"
 ruff = "0.17.6"
@@ -31,7 +35,7 @@ tailscale = { version = "1.104.7", os = ["linux"] }
 tombi = "1.11.3"
 ty = "0.0.108"
 typos = "1.52.2"
-usage = "7.4.0"
+usage = { version = "7.4.0", workflow = "publish-cli.yml" }
 uv = "0.13.9"
 
 [vars]
@@ -63,13 +67,24 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
 "~/.gemini/config/rules/research-due-diligence.md" = { mode = "symlink" }
 "~/.gemini/config/rules/skill-cutoff-agy.md" = { mode = "symlink" }
-"~/.gemini/config/skills/agy-session-ops/SKILL.md" = { mode = "symlink" }
-"~/.gemini/config/skills/mise-bootstrap-ops/SKILL.md" = { mode = "symlink" }
-"~/.gemini/config/skills/post-task-learn/SKILL.md" = { mode = "symlink" }
-"~/.gemini/config/skills/pwf-status/SKILL.md" = { mode = "symlink" }
-"~/.gemini/config/skills/vercel-board/SKILL.md" = { mode = "symlink" }
+"~/.agents/skills/agy-session-ops" = { mode = "symlink" }
+"~/.agents/skills/mise-bootstrap-ops" = { mode = "symlink" }
+"~/.agents/skills/post-task-learn" = { mode = "symlink" }
+"~/.agents/skills/pwf-status" = { mode = "symlink" }
+"~/.agents/skills/vercel-board" = { mode = "symlink" }
+"~/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true, permissions = "0600" }
+"~/.claude/skills/agy-session-ops" = { source = "../../.agents/skills/agy-session-ops", mode = "symlink" }
+"~/.claude/skills/mise-bootstrap-ops" = { source = "../../.agents/skills/mise-bootstrap-ops", mode = "symlink" }
+"~/.claude/skills/post-task-learn" = { source = "../../.agents/skills/post-task-learn", mode = "symlink" }
+"~/.claude/skills/pwf-status" = { source = "../../.agents/skills/pwf-status", mode = "symlink" }
+"~/.claude/skills/vercel-board" = { source = "../../.agents/skills/vercel-board", mode = "symlink" }
+"~/.codex/config.toml/mcp-jdx" = { source = "../../.codex/mcp-jdx.toml", merge = true, permissions = "0600" }
+"~/.gemini/config/skills" = { source = "~/.agents/skills", mode = "symlink", relative = true }
 "~/.zcode/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
 "~/.zcode/cli/setting.json" = { mode = "symlink" }
+
+[bootstrap.hooks.pre-dotfiles]
+run = 'mkdir -p ~/.agents/skills ~/.claude/skills && if [ -d ~/.gemini/config/skills ] && [ ! -L ~/.gemini/config/skills ]; then rm -rf ~/.gemini/config/skills; fi'
 
 [bootstrap.directories."~/.config/board"]
 mode = "0700"
@@ -178,6 +193,8 @@ exec_auto_install = false
 experimental = true
 lockfile = true
 lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
+pin = true
+task.history = true
 
 [settings.npm]
 package_manager = "aube"

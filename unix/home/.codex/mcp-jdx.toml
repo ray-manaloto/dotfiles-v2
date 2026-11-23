@@ -1,0 +1,27 @@
+[mcp_servers.mise]
+command = "/bin/sh"
+args = [
+  "-c",
+  'm="$(command -v mise 2>/dev/null || echo "$HOME/.local/bin/mise")"; exec "$m" mcp',
+]
+
+[mcp_servers.hk]
+command = "/bin/sh"
+args = [
+  "-c",
+  'm="$(command -v mise 2>/dev/null || echo "$HOME/.local/bin/mise")"; exec "$m" exec -- hk mcp --root .',
+]
+
+[mcp_servers.pitchfork]
+command = "/bin/sh"
+args = [
+  "-c",
+  'm="$(command -v mise 2>/dev/null || echo "$HOME/.local/bin/mise")"; exec "$m" exec -- pitchfork mcp --local',
+]
+
+[mcp_servers.usage-mise]
+command = "/bin/sh"
+args = [
+  "-c",
+  'm="$(command -v mise 2>/dev/null || echo "$HOME/.local/bin/mise")"; d="$HOME/.cache/mise"; mkdir -p "$d" && t=$(mktemp "$d/usage-mise.XXXXXX") && "$m" usage > "$t" && mv "$t" "$d/usage-mise.kdl" && exec "$m" exec -- usage mcp -f "$d/usage-mise.kdl"',
+]
