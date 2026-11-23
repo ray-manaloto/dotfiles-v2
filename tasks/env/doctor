@@ -101,7 +101,7 @@ check_container() {
 	fi
 
 	ts_dest="$(resolve_ts_dest "${want_ts_host}")"
-	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "dev@${ts_dest}" 'bash -lc "uname -m && id -un && command -v mise >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null"' 2>/dev/null)"; then
+	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "dev@${ts_dest}" 'uname -m && id -un && test "${MISE_DATA_DIR:-}" = /opt/mise && command -v mise >/dev/null && command -v hk >/dev/null && command -v python3 >/dev/null && command -v agnix >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null && test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' 2>/dev/null)"; then
 		fail_row "${label}" "Tailscale SSH to dev@${ts_dest} failed"
 		return
 	fi
@@ -198,7 +198,7 @@ check_vm() {
 	fi
 
 	ts_dest="$(resolve_ts_dest "${want_ts_host}")"
-	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "admin@${ts_dest}" 'zsh -lc "uname -m && id -un && command -v mise && command -v claude >/dev/null && command -v opencode >/dev/null"' 2>/dev/null)"; then
+	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "admin@${ts_dest}" 'uname -m && id -un && command -v mise && command -v hk >/dev/null && command -v python3 >/dev/null && command -v agnix >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null && test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' 2>/dev/null)"; then
 		fail_row "vm" "Tailscale SSH to admin@${ts_dest} failed"
 		return
 	fi

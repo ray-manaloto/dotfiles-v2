@@ -57,6 +57,9 @@ RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
     && useradd -m -u 1000 -s /bin/bash dev \
     && install -d -o dev -g dev /opt/mise /run/tailscale /workspace /home/dev/.claude /home/dev/.config /home/dev/.config/opencode /home/dev/.local /home/dev/.local/bin /home/dev/.local/share /home/dev/.local/share/opencode /home/dev/.local/state /home/dev/.local/state/tailscale /home/dev/.opencode /home/dev/.opencode/bin \
     && chmod 0700 /home/dev/.local/state/tailscale \
+    && { printf '. /etc/profile.d/dotfiles-v2-env.sh\n. /etc/profile.d/agent-secrets.sh\n\n'; cat /home/dev/.bashrc; } > /home/dev/.bashrc.tmp \
+    && mv /home/dev/.bashrc.tmp /home/dev/.bashrc \
+    && chown dev:dev /home/dev/.bashrc \
     && printf '\n. /etc/profile.d/dotfiles-v2-env.sh\n. /etc/profile.d/agent-secrets.sh\n' >> /etc/bash.bashrc
 
 COPY --chmod=644 dotfiles-v2-env.sh /etc/profile.d/dotfiles-v2-env.sh

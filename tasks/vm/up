@@ -161,21 +161,41 @@ fi
 if [[ ! -x "${HOME}/.opencode/bin/opencode" ]] || [[ "$("${HOME}/.opencode/bin/opencode" --version </dev/null | awk '{print $NF}')" == 1.* ]]; then
   PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path
 fi
-old_path_line='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"'
-path_line='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"'
-env_line='[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"'
+legacy_line_1='export PATH="${HOME}/.local/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"'
+legacy_line_2='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:${PATH}"'
+legacy_line_3='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"'
+legacy_line_4='export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"'
+legacy_env_line='[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"'
 for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc"; do
   touch "${rc}"
-  if grep -Fqx "${old_path_line}" "${rc}"; then
-    grep -Fvx "${old_path_line}" "${rc}" >"${rc}.tmp" || true
-    mv "${rc}.tmp" "${rc}"
-  fi
-  if ! grep -Fqx "${path_line}" "${rc}"; then
-    printf '%s\n' "${path_line}" >>"${rc}"
-  fi
-  if ! grep -Fqx "${env_line}" "${rc}"; then
-    printf '%s\n' "${env_line}" >>"${rc}"
-  fi
+  awk '/^# >>> dotfiles-v2 >>>$/{skip=1;next} /^# <<< dotfiles-v2 <<<$/{skip=0;next} !skip' "${rc}" \
+    | grep -Fvx -e "${legacy_line_1}" -e "${legacy_line_2}" -e "${legacy_line_3}" -e "${legacy_line_4}" -e "${legacy_env_line}" \
+    >"${rc}.tmp" || true
+  mv "${rc}.tmp" "${rc}"
+  cat <<'BLOCK' >>"${rc}"
+# >>> dotfiles-v2 >>>
+_df_prepend_path() {
+	_df_new="$1"
+	_df_old=":${PATH}:"
+	while :; do
+		case "${_df_old}" in
+		*":${_df_new}:"*) _df_old="${_df_old%%":${_df_new}:"*}:${_df_old#*":${_df_new}:"}" ;;
+		*) break ;;
+		esac
+	done
+	_df_old="${_df_old#:}"
+	_df_old="${_df_old%:}"
+	PATH="${_df_new}${_df_old:+:${_df_old}}"
+}
+for _df_p in /opt/homebrew/sbin /opt/homebrew/bin /usr/local/bin "${HOME}/.local/share/mise/shims" "${HOME}/.opencode/bin" "${HOME}/.local/bin"; do
+	_df_prepend_path "${_df_p}"
+done
+unset _df_p _df_new _df_old
+unset -f _df_prepend_path
+export PATH
+[ -r "${HOME}/.config/agent-secrets/env.sh" ] && . "${HOME}/.config/agent-secrets/env.sh"
+# <<< dotfiles-v2 <<<
+BLOCK
 done
 GUEST
 

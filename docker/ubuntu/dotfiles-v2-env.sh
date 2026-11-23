@@ -5,7 +5,22 @@ export MISE_DATA_DIR=/opt/mise
 export MISE_CACHE_DIR=/opt/mise/cache
 export MISE_YES=1
 export MISE_TRUSTED_CONFIG_PATHS=/workspace:/home/dev/.config/mise
-case ":${PATH}:" in
-*":/opt/mise/shims:"*) ;;
-*) export PATH="/home/dev/.local/bin:/home/dev/.opencode/bin:/opt/mise/shims:${PATH}" ;;
-esac
+_df_prepend_path() {
+	_df_new="$1"
+	_df_old=":${PATH}:"
+	while :; do
+		case "${_df_old}" in
+		*":${_df_new}:"*) _df_old="${_df_old%%":${_df_new}:"*}:${_df_old#*":${_df_new}:"}" ;;
+		*) break ;;
+		esac
+	done
+	_df_old="${_df_old#:}"
+	_df_old="${_df_old%:}"
+	PATH="${_df_new}${_df_old:+:${_df_old}}"
+}
+for _df_p in /opt/mise/shims /home/dev/.opencode/bin /home/dev/.local/bin; do
+	_df_prepend_path "${_df_p}"
+done
+unset _df_p _df_new _df_old
+unset -f _df_prepend_path
+export PATH
