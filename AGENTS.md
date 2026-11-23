@@ -114,10 +114,11 @@ and C++26 workstation setup.
   pros/cons).
 - **Prototype workflow & privacy:** Direct push to `main` during prototyping,
   guarded locally by `hk check --all` (includes `betterleaks`) and
-  `agy-code-review-guard.py` (run `/code-review:code-review` +
-  `code-review-commons`, fix `CRITICAL`/`HIGH`/`MEDIUM` findings, and record
-  the `HEAD` receipt via `--record` before non-doc `push` / `merge --ff-only`
-  / `pr-create`; use `/code-review:pr-code-review` on open PRs). Stage files
+  `agy-code-review-guard.py` (run Stage 1 `/code-review:code-review` +
+  `code-review-commons`, fix `CRITICAL`/`HIGH`/`MEDIUM` findings, record
+  Stage 1 via `--record`, then run Stage 2 post-review behavioral verification
+  via `--verify --run ... --proof ...` before non-doc `push` / `merge --ff-only`
+  / `pr-create` or claiming completion; use `/code-review:pr-code-review` on open PRs). Stage files
   explicitly by name; never `git add -A` or `git add .`. Never commit secrets,
   tokens, private hostnames (use `pc` or "remote Linux host"), or local OS
   home directory paths.

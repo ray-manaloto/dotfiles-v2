@@ -1,31 +1,36 @@
 ---
 trigger: always_on
-description: Require /code-review:code-review (+ code-review-commons) and HEAD receipt before git push, merge --ff-only into main, or PR creation on non-doc diffs, plus /code-review:pr-code-review on open PRs.
+description: Require ordered /code-review:code-review (--record) followed by post-review behavioral verification (--verify) and observed proof before pushing, merging into main, opening PRs, or claiming completion.
 ---
 
-# Code Review Protocol
+# Code Review & Post-Review Verification Protocol
 
-1. **Pre-ship `/code-review:code-review` (`+ code-review-commons`) gate (mandatory):**
+1. **Ordered 2-stage pre-ship gate (mandatory on all non-doc diffs):**
    Before running `git push`, `git merge --ff-only` into `main`/`master`,
    `repotools pr-create`, `mise run ship`, or `gh pr create` for any change that
    touches non-documentation files:
-   - Run `/code-review:code-review` (which activates `code-review-commons`) over
-     `git diff -U5 --merge-base origin/HEAD` (or `main..HEAD` in a linked
-     worktree).
-   - Fan out diffs larger than ~1,000 changed lines across parallel read-only
-     subagent slices by file group, then verify every finding at `path:line`.
-   - Fix confirmed `CRITICAL`, `HIGH`, and `MEDIUM` findings and re-run repo
-     checks before shipping.
-   - Record the HEAD receipt immediately via:
-     `python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --summary "<summary>"`
+   - **Stage 1 — `/code-review:code-review` (`+ code-review-commons`):**
+     - Run `/code-review:code-review` over `git diff -U5 --merge-base origin/HEAD`
+       (or `main..HEAD` in a linked worktree); fan out diffs >~1,000 lines across
+       parallel read-only subagent slices and verify every finding at `path:line`.
+     - Fix confirmed `CRITICAL`, `HIGH`, and `MEDIUM` findings and commit cleanly.
+     - Record Stage 1 immediately (`--record` clears any prior Stage 2 receipt):
+       `python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --summary "<summary>"`
+   - **Stage 2 — Mandatory post-review verification (`--verify`):**
+     - **After** Stage 1 `--record`, run concrete behavioral/runtime verification
+       against the exact committed tree and record Stage 2 proof:
+       `python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --verify --run "<verify-cmd>" --proof "<observed result>"`
+     - Never claim a task is done, fixed, working, or shipped until post-edit
+       and post-review verification passes and concrete observed output/proof is
+       reported.
    - Documentation-only diffs (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`,
      `.txt`) auto-pass without a receipt.
 
 2. **Open pull requests (`/code-review:pr-code-review`):**
    When reviewing or updating an open GitHub pull request, follow
-   `/code-review:pr-code-review` (`+ code-review-commons`).
+   `/code-review:pr-code-review` (`+ code-review-commons`) and verify live.
 
 3. **Distinction from human PR review:**
-   This local automated agent self-review gate enforces quality before code
-   leaves a branch or worktree and does not alter the owner ruling (2026-11-17)
-   that external/human PR approval is not required to merge.
+   This local automated gate enforces review and observed verification before
+   code leaves a branch or completion is claimed, without altering the owner
+   ruling (2026-11-17) that external/human PR approval is not required to merge.

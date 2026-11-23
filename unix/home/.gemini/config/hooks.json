@@ -11,6 +11,13 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 -I -B ./hooks/agy-code-review-guard.py --event stop",
+        "timeout": 10
+      }
     ]
   },
   "agy-hc-send-guard": {

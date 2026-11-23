@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Antigravity PreToolUse guard requiring /code-review receipt before pushing or merging."""
+"""Antigravity PreToolUse & Stop guard enforcing /code-review (--record) -> post-review verification (--verify) -> observed-proof completion."""
 
 from __future__ import annotations
 
@@ -13,18 +13,80 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 DOC_SUFFIXES = frozenset({".md", ".mdx", ".markdown", ".rst", ".adoc", ".txt"})
+EDIT_TOOLS = frozenset(
+    {
+        "edit_file",
+        "write_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+        "write_to_file",
+    }
+)
 RECEIPT_FILENAME = "agy-code-review-receipt.json"
+VERIFY_STATE_FILENAME = ".agy-verify-gate-state.json"
 MAX_STORED_RECEIPTS = 32
+MAX_OUTPUT_TAIL = 800
+MIN_PROOF_LEN = 15
+MIN_EVIDENCE_LEN = 20
 SEPARATORS = frozenset(
     {";", "&&", "||", "|", "&", "\n", "then", "do", "else", "elif", "{", "}", "(", ")"}
 )
 MUTATING_GIT_SUBS = frozenset(
     {"commit", "merge", "rebase", "cherry-pick", "am", "revert", "reset"}
 )
+NON_VERIFY_GIT_SUBS = frozenset(
+    {
+        "add",
+        "status",
+        "diff",
+        "log",
+        "show",
+        "branch",
+        "rev-parse",
+        "commit",
+        "merge",
+        "push",
+        "rebase",
+        "cherry-pick",
+        "stash",
+        "reset",
+        "checkout",
+        "switch",
+        "worktree",
+    }
+)
+COMPLETION_CLAIM_RE = re.compile(
+    r"\b(?:done|completed|complete|fixed|shipped|merged|pushed|implemented|resolved|ready|all\s+checks\s+passed|passed\s+all)\b",
+    re.IGNORECASE,
+)
+BLOCKER_OR_QUESTION_RE = re.compile(
+    r"\b(?:blocked|failed|failing|still\s+fails|cannot|unable\s+to|error|waiting\s+on)\b",
+    re.IGNORECASE,
+)
+LEARN_FAST_EXIT_PREFIX = "post-task /learn: no reusable customization updates needed."
+PROOF_METRIC_RE = re.compile(
+    r"\b(?:\d+/\d+|exit(?:\s+code)?\s+0|0\s+(?:failed|errors?|warnings?|diagnostics?)|old_pid|new_pid|pid\s+\d+|result[=:]\s*\"?ok)\b",
+    re.IGNORECASE,
+)
+PROOF_TOOL_RE = re.compile(
+    r"\b(?:unittest|pytest|cargo\s+test|mise\s+doctor|hk\s+check|ruff|ty\s+check|agnix|--self-check|roll:(?:restart|snapshot|self|verify)|shfmt|shellcheck)\b",
+    re.IGNORECASE,
+)
+PROOF_OUTCOME_RE = re.compile(
+    r"\b(?:passed|pass|verified|clean|green|succeeded|allowed|denied)\b",
+    re.IGNORECASE,
+)
+
+
+class _VerifyStopState(TypedDict):
+    last_user_idx: int
+    last_blocked_step_idx: int
+    blocks_in_turn: int
 
 
 def _allow() -> dict[str, Any]:
@@ -33,6 +95,33 @@ def _allow() -> dict[str, Any]:
 
 def _deny(reason: str) -> dict[str, Any]:
     return {"decision": "deny", "reason": reason}
+
+
+def _strip_fenced_code(text: str) -> str:
+    kept: list[str] = []
+    fence_char = ""
+    fence_len = 0
+    for line in text.splitlines():
+        match = FENCE_RE.match(line.rstrip("\r"))
+        if match:
+            marker_run, rest = match.group(1), match.group(2)
+            marker = marker_run[0]
+            if not fence_char:
+                if not (marker == "`" and "`" in rest):
+                    fence_char = marker
+                    fence_len = len(marker_run)
+                    continue
+            elif (
+                marker == fence_char
+                and len(marker_run) >= fence_len
+                and rest.strip(" \t") == ""
+            ):
+                fence_char = ""
+                fence_len = 0
+                continue
+        if not fence_char:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def _split_shell_segments(command: str) -> list[list[str]]:
@@ -168,7 +257,7 @@ def _receipt_path(common_dir: Path) -> Path:
     return common_dir / RECEIPT_FILENAME
 
 
-def _load_receipts(common_dir: Path) -> dict[str, dict[str, str]]:
+def _load_receipts(common_dir: Path) -> dict[str, dict[str, Any]]:
     path = _receipt_path(common_dir)
     if not path.is_file():
         return {}
@@ -181,26 +270,85 @@ def _load_receipts(common_dir: Path) -> dict[str, dict[str, str]]:
     receipts = raw.get("receipts")
     if not isinstance(receipts, dict):
         return {}
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for k, v in receipts.items():
         if isinstance(k, str) and isinstance(v, dict):
             commit_sha = v.get("commit_sha")
             tree_sha = v.get("tree_sha")
             if isinstance(commit_sha, str) and isinstance(tree_sha, str):
-                out[k] = {
+                entry: dict[str, Any] = {
                     "commit_sha": commit_sha,
                     "tree_sha": tree_sha,
                     "recorded_at": str(v.get("recorded_at", "")),
                     "summary": str(v.get("summary", "")),
                 }
+                verification = v.get("verification")
+                if isinstance(verification, dict):
+                    entry["verification"] = verification
+                out[k] = entry
     return out
 
 
-def _has_valid_receipt(common_dir: Path, commit_sha: str, tree_sha: str) -> bool:
+def _write_receipts(
+    common_dir: Path, latest_sha: str, receipts: dict[str, dict[str, Any]]
+) -> Path:
+    keys = list(receipts.keys())
+    if len(keys) > MAX_STORED_RECEIPTS:
+        for old_key in keys[:-MAX_STORED_RECEIPTS]:
+            receipts.pop(old_key, None)
+
+    path = _receipt_path(common_dir)
+    payload = {"latest": latest_sha, "receipts": receipts}
+    data = json.dumps(payload, indent=2) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{RECEIPT_FILENAME}.", dir=common_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+        os.replace(tmp_name, path)
+    except Exception:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _has_valid_review_receipt(common_dir: Path, commit_sha: str, tree_sha: str) -> bool:
     entry = _load_receipts(common_dir).get(commit_sha)
     if not entry:
         return False
     return entry.get("commit_sha") == commit_sha and entry.get("tree_sha") == tree_sha
+
+
+def _has_valid_verification_receipt(
+    common_dir: Path, commit_sha: str, tree_sha: str
+) -> bool:
+    entry = _load_receipts(common_dir).get(commit_sha)
+    if (
+        not entry
+        or entry.get("commit_sha") != commit_sha
+        or entry.get("tree_sha") != tree_sha
+    ):
+        return False
+    ver = entry.get("verification")
+    if not isinstance(ver, dict):
+        return False
+    recorded_at = str(entry.get("recorded_at", ""))
+    verified_at = ver.get("verified_at")
+    if not isinstance(verified_at, str) or not verified_at:
+        return False
+    if recorded_at and verified_at < recorded_at:
+        return False
+    proof = ver.get("proof")
+    if not isinstance(proof, str) or len(proof.strip()) < MIN_PROOF_LEN:
+        return False
+    commands = ver.get("commands")
+    has_passing_cmd = isinstance(commands, list) and any(
+        isinstance(item, dict) and item.get("exit_code") == 0 for item in commands
+    )
+    evidence = ver.get("evidence")
+    has_evidence = (
+        isinstance(evidence, str) and len(evidence.strip()) >= MIN_EVIDENCE_LEN
+    )
+    return has_passing_cmd or has_evidence
 
 
 def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
@@ -216,33 +364,120 @@ def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
     commit_sha, tree_sha = target
 
     receipts = _load_receipts(common_dir)
+    # Stage 1 always clears any stale Stage 2 verification so verification must run AFTER review.
     receipts[commit_sha] = {
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
         "recorded_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "summary": summary.strip(),
     }
-    keys = list(receipts.keys())
-    if len(keys) > MAX_STORED_RECEIPTS:
-        for old_key in keys[:-MAX_STORED_RECEIPTS]:
-            receipts.pop(old_key, None)
-
-    path = _receipt_path(common_dir)
-    payload = {"latest": commit_sha, "receipts": receipts}
-    data = json.dumps(payload, indent=2) + "\n"
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{RECEIPT_FILENAME}.", dir=common_dir)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(data)
-        os.replace(tmp_name, path)
-    except Exception:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+    path = _write_receipts(common_dir, commit_sha, receipts)
     return {
         "repo_root": str(repo_root),
         "receipt_file": str(path),
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
+    }
+
+
+def _verify_receipt(
+    repo: Path,
+    ref: str,
+    *,
+    runs: list[str],
+    evidence: str,
+    proof: str,
+    timeout: int = 300,
+) -> dict[str, Any]:
+    resolved = _resolve_repo_dirs(repo)
+    if resolved is None:
+        msg = f"Not inside a git repository: {repo}"
+        raise RuntimeError(msg)
+    repo_root, common_dir = resolved
+    target = _resolve_target_commit(repo_root, ref)
+    if target is None:
+        msg = f"Could not resolve git commit/tree for ref '{ref}' in {repo_root}"
+        raise RuntimeError(msg)
+    commit_sha, tree_sha = target
+
+    if not _has_valid_review_receipt(common_dir, commit_sha, tree_sha):
+        msg = (
+            f"Stage 1 /code-review receipt missing for {commit_sha[:7]} in {repo_root}; "
+            "run /code-review:code-review and --record BEFORE --verify."
+        )
+        raise RuntimeError(msg)
+
+    rc_st, tracked_dirty = _git_output(
+        repo_root, "status", "--porcelain", "--untracked-files=no"
+    )
+    if rc_st != 0 or tracked_dirty:
+        msg = f"Tracked working-tree changes present in {repo_root}; commit clean changes before --verify."
+        raise RuntimeError(msg)
+
+    clean_proof = proof.strip()
+    if len(clean_proof) < MIN_PROOF_LEN:
+        msg = f"--proof must be at least {MIN_PROOF_LEN} non-whitespace characters describing observed results."
+        raise RuntimeError(msg)
+
+    clean_runs = [cmd.strip() for cmd in runs if cmd.strip()]
+    clean_evidence = evidence.strip()
+    if not clean_runs and len(clean_evidence) < MIN_EVIDENCE_LEN:
+        msg = (
+            f"--verify requires at least one --run command or --evidence (>= {MIN_EVIDENCE_LEN} chars "
+            "for live/external proof)."
+        )
+        raise RuntimeError(msg)
+
+    cmd_results: list[dict[str, Any]] = []
+    for cmd in clean_runs:
+        try:
+            proc = subprocess.run(
+                ["bash", "-lc", cmd],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=max(1, timeout),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"Verification command timed out after {timeout}s: {cmd}"
+            raise RuntimeError(msg) from exc
+        combined = "\n".join(
+            part for part in (proc.stdout.strip(), proc.stderr.strip()) if part
+        )
+        tail = combined[-MAX_OUTPUT_TAIL:]
+        if proc.returncode != 0:
+            msg = f"Verification command failed (exit {proc.returncode}): {cmd}\n{tail}".strip()
+            raise RuntimeError(msg)
+        cmd_results.append(
+            {
+                "cmd": cmd,
+                "exit_code": 0,
+                "output": tail,
+            }
+        )
+
+    receipts = _load_receipts(common_dir)
+    entry = dict(receipts[commit_sha])
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    recorded_at = str(entry.get("recorded_at", ""))
+    verified_at = max(now_iso, recorded_at)
+    entry["verification"] = {
+        "verified_at": verified_at,
+        "proof": clean_proof,
+        "commands": cmd_results,
+        "evidence": clean_evidence,
+    }
+    receipts[commit_sha] = entry
+    path = _write_receipts(common_dir, commit_sha, receipts)
+    return {
+        "repo_root": str(repo_root),
+        "receipt_file": str(path),
+        "commit_sha": commit_sha,
+        "tree_sha": tree_sha,
+        "verified": True,
+        "commands": len(cmd_results),
+        "proof": clean_proof,
     }
 
 
@@ -454,7 +689,7 @@ def _check_command(command: str, initial_cwd: Path | None = None) -> dict[str, A
                 return _deny(
                     f"code-review-guard (code-review-protocol.md): '{op_label}' follows an earlier "
                     f"commit/history mutation in the same command for {repo_root}. Commit first, run "
-                    "/code-review:code-review (+ code-review-commons), and record the HEAD receipt via --record "
+                    "/code-review:code-review (--record), then run post-review verification (--verify) "
                     "before pushing or creating a PR."
                 )
             target = _resolve_target_commit(repo_root, target_ref)
@@ -469,23 +704,342 @@ def _check_command(command: str, initial_cwd: Path | None = None) -> dict[str, A
                 if all(Path(path).suffix.lower() in DOC_SUFFIXES for path in changed):
                     continue
 
-            if _has_valid_receipt(common_dir, target_sha, target_tree_sha):
-                continue
+            if not _has_valid_review_receipt(common_dir, target_sha, target_tree_sha):
+                return _deny(
+                    f"code-review-guard (code-review-protocol.md): '{op_label}' requires Stage 1 "
+                    f"/code-review:code-review (+ code-review-commons) receipt for {target_sha[:7]} "
+                    f"in {repo_root}. Run review, fix CRITICAL/HIGH/MEDIUM findings, record with:\n"
+                    f'python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --repo "{repo_root}" --summary "<summary>"\n'
+                    "then run Stage 2 --verify before shipping."
+                )
 
-            return _deny(
-                f"code-review-guard (code-review-protocol.md): '{op_label}' requires a "
-                f"/code-review:code-review (+ code-review-commons) receipt for {target_sha[:7]} "
-                f"in {repo_root}. Run the review, fix confirmed CRITICAL/HIGH/MEDIUM findings, "
-                "then run:\n"
-                f'python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --repo "{repo_root}" --summary "<summary>"'
-            )
+            if not _has_valid_verification_receipt(
+                common_dir, target_sha, target_tree_sha
+            ):
+                return _deny(
+                    f"code-review-guard (code-review-protocol.md): '{op_label}' has a review receipt for "
+                    f"{target_sha[:7]} in {repo_root}, but lacks Stage 2 post-review verification! "
+                    "Run concrete behavioral/test verification AFTER code review and record proof with:\n"
+                    f'python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --verify --repo "{repo_root}" --run "<verify-cmd>" --proof "<observed result>"'
+                )
 
         if is_mutator:
             mutated_repos.add(repo_root)
     return _allow()
 
 
-def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
+def _is_non_doc_repo_edit(target: str, artifact_dir: Path | None) -> bool:
+    if not target:
+        return False
+    p = Path(os.path.expanduser(target))
+    if p.suffix.lower() in DOC_SUFFIXES:
+        return False
+    norm = str(p).replace("\\", "/")
+    if "/.planning/" in norm or norm.startswith(".planning/"):
+        return False
+    if artifact_dir is not None:
+        try:
+            if p.resolve(strict=False).is_relative_to(
+                artifact_dir.resolve(strict=False)
+            ):
+                return False
+        except OSError:
+            pass
+    return True
+
+
+def _is_verification_command(command: str) -> bool:
+    segments = _split_shell_segments(command)
+    for seg in segments:
+        tokens = _strip_env_prefix(seg)
+        if not tokens:
+            continue
+        exe = Path(tokens[0]).name
+        if exe == "cd":
+            continue
+        if exe == "git":
+            idx = 1
+            while idx < len(tokens):
+                tok = tokens[idx]
+                if tok in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}:
+                    idx += 2
+                    continue
+                if tok.startswith("-"):
+                    idx += 1
+                    continue
+                break
+            sub = tokens[idx] if idx < len(tokens) else ""
+            if sub in NON_VERIFY_GIT_SUBS:
+                continue
+        return True
+    return False
+
+
+def _has_observed_proof_cues(text: str) -> bool:
+    stripped = _strip_fenced_code(text)
+    if PROOF_METRIC_RE.search(stripped):
+        return True
+    has_tool = bool(PROOF_TOOL_RE.search(stripped))
+    has_outcome = bool(PROOF_OUTCOME_RE.search(stripped))
+    return has_tool and has_outcome
+
+
+def _looks_like_completion_claim(text: str) -> bool:
+    stripped = _strip_fenced_code(text).strip()
+    if not stripped:
+        return False
+    if stripped.lower().startswith(LEARN_FAST_EXIT_PREFIX):
+        return False
+    if not COMPLETION_CLAIM_RE.search(stripped):
+        return False
+    return not (stripped.endswith("?") and BLOCKER_OR_QUESTION_RE.search(stripped))
+
+
+def _read_stop_state(path: Path) -> _VerifyStopState:
+    out: _VerifyStopState = {
+        "last_user_idx": -2,
+        "last_blocked_step_idx": -1,
+        "blocks_in_turn": 0,
+    }
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return out
+    if not isinstance(raw, dict):
+        return out
+    for key in ("last_user_idx", "last_blocked_step_idx", "blocks_in_turn"):
+        val = raw.get(key)
+        if isinstance(val, int) and not isinstance(val, bool):
+            out[key] = val
+    return out
+
+
+def _write_stop_state(path: Path, state: _VerifyStopState) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    replaced = False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(state) + "\n")
+        os.replace(tmp_name, path)
+        replaced = True
+    except OSError:
+        return
+    finally:
+        if not replaced:
+            Path(tmp_name).unlink(missing_ok=True)
+
+
+def _load_full_content(transcript_path: Path, line_idx: int) -> str | None:
+    full_path = transcript_path.with_name("transcript_full.jsonl")
+    if not full_path.is_file():
+        return None
+    try:
+        with full_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for idx, raw in enumerate(handle):
+                if idx == line_idx:
+                    obj = json.loads(raw)
+                    if isinstance(obj, dict) and isinstance(obj.get("content"), str):
+                        return obj["content"]
+                    return None
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    return None
+
+
+def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
+    if os.environ.get("AGY_DISABLE_CODE_REVIEW_GUARD") == "1":
+        return {}
+    if payload.get("terminationReason") != "NO_TOOL_CALL" or not payload.get(
+        "fullyIdle"
+    ):
+        return {}
+    transcript_raw = payload.get("transcriptPath")
+    if not isinstance(transcript_raw, str) or not transcript_raw.strip():
+        return {}
+    transcript_path = Path(os.path.expanduser(transcript_raw))
+    if not transcript_path.is_file():
+        return {}
+    try:
+        lines = transcript_path.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()
+    except OSError:
+        return {}
+
+    artifact_raw = payload.get("artifactDirectoryPath")
+    artifact_dir = (
+        Path(os.path.expanduser(artifact_raw))
+        if isinstance(artifact_raw, str) and artifact_raw.strip()
+        else None
+    )
+
+    last_user_idx = -1
+    entries: list[tuple[int, dict[str, Any]]] = []
+    for idx, raw in enumerate(lines):
+        if not raw.strip():
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("type") == "USER_INPUT":
+            last_user_idx = idx
+            entries = []
+            continue
+        if last_user_idx != -1 or idx == len(lines) - 1:
+            entries.append((idx, obj))
+
+    if not entries:
+        return {}
+
+    last_resp_idx = -1
+    last_resp_step = -1
+    last_resp_text = ""
+    last_edit_pos: tuple[int, int] | None = None
+    last_verify_pos: tuple[int, int] | None = None
+    touched_repos: set[Path] = set()
+    committed_non_doc_repos: set[Path] = set()
+
+    for line_idx, obj in entries:
+        if obj.get("type") != "PLANNER_RESPONSE":
+            continue
+        content = obj.get("content")
+        if isinstance(content, str) and content.strip():
+            last_resp_idx = line_idx
+            step_val = obj.get("step_index")
+            last_resp_step = (
+                step_val
+                if isinstance(step_val, int) and not isinstance(step_val, bool)
+                else line_idx
+            )
+            last_resp_text = content
+        tool_calls = obj.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            continue
+        for tc_idx, tc in enumerate(tool_calls):
+            if not isinstance(tc, dict):
+                continue
+            tname = tc.get("name")
+            args = tc.get("args")
+            if not isinstance(args, dict):
+                continue
+            pos = (line_idx, tc_idx)
+            if tname in EDIT_TOOLS:
+                target = str(args.get("Path") or args.get("TargetFile") or "")
+                if _is_non_doc_repo_edit(target, artifact_dir):
+                    last_edit_pos = pos
+                    resolved = _resolve_repo_dirs(Path(os.path.expanduser(target)))
+                    if resolved is not None:
+                        touched_repos.add(resolved[0])
+            elif tname == "run_command":
+                cmd = args.get("CommandLine")
+                if not isinstance(cmd, str) or not cmd.strip():
+                    continue
+                cwd_str = args.get("Cwd") or payload.get("cwd")
+                cmd_cwd = (
+                    Path(os.path.expanduser(cwd_str))
+                    if isinstance(cwd_str, str) and cwd_str.strip()
+                    else None
+                )
+                for seg in _split_shell_segments(cmd):
+                    parsed = _parse_git_segment(
+                        _strip_env_prefix(seg), cmd_cwd or Path.cwd()
+                    )
+                    if parsed and parsed[4]:
+                        resolved = _resolve_repo_dirs(parsed[1])
+                        if resolved is not None:
+                            committed_non_doc_repos.add(resolved[0])
+                if _is_verification_command(cmd):
+                    last_verify_pos = pos
+
+    if last_edit_pos is None and not committed_non_doc_repos:
+        return {}
+    if last_resp_idx == -1:
+        return {}
+    if last_resp_text:
+        full_text = _load_full_content(transcript_path, last_resp_idx)
+        if full_text is not None:
+            last_resp_text = full_text
+
+    if not _looks_like_completion_claim(last_resp_text):
+        return {}
+
+    reasons: list[str] = []
+    if last_edit_pos is not None and (
+        last_verify_pos is None or last_verify_pos < last_edit_pos
+    ):
+        reasons.append(
+            "Non-documentation files were edited in this turn with no verification command run after the final edit."
+        )
+
+    for repo_root in sorted(touched_repos | committed_non_doc_repos):
+        resolved = _resolve_repo_dirs(repo_root)
+        if resolved is None:
+            continue
+        r_root, common_dir = resolved
+        target = _resolve_target_commit(r_root, "HEAD")
+        if target is None:
+            continue
+        sha, tree_sha = target
+        changed = _changed_files(r_root, sha)
+        if changed and not all(Path(p).suffix.lower() in DOC_SUFFIXES for p in changed):
+            if not _has_valid_review_receipt(common_dir, sha, tree_sha):
+                reasons.append(
+                    f"Unpushed commit {sha[:7]} in {r_root} has non-doc changes without Stage 1 --record."
+                )
+            elif not _has_valid_verification_receipt(common_dir, sha, tree_sha):
+                reasons.append(
+                    f"Unpushed commit {sha[:7]} in {r_root} lacks Stage 2 post-review `--verify --run ... --proof ...` receipt."
+                )
+
+    if not _has_observed_proof_cues(last_resp_text):
+        reasons.append(
+            "Final response claims completion without citing concrete observed verification proof (passing test/command counts, exit 0, or runtime output)."
+        )
+
+    if not reasons:
+        return {}
+
+    state_base = artifact_dir if artifact_dir is not None else transcript_path.parent
+    state_path = state_base / VERIFY_STATE_FILENAME
+    state = _read_stop_state(state_path)
+    if state["last_user_idx"] != last_user_idx:
+        state = _VerifyStopState(
+            last_user_idx=last_user_idx,
+            last_blocked_step_idx=-1,
+            blocks_in_turn=0,
+        )
+    if state["last_blocked_step_idx"] == last_resp_step or state["blocks_in_turn"] >= 2:
+        return {}
+
+    _write_stop_state(
+        state_path,
+        _VerifyStopState(
+            last_user_idx=last_user_idx,
+            last_blocked_step_idx=last_resp_step,
+            blocks_in_turn=state["blocks_in_turn"] + 1,
+        ),
+    )
+    return {
+        "decision": "continue",
+        "reason": "Verification gate (code-review-protocol.md): "
+        + " ".join(reasons)
+        + " Run behavioral/runtime verification, run `--verify --run ... --proof ...` for committed changes, and cite observed output before claiming completion.",
+    }
+
+
+def _run_hook(payload: dict[str, Any], event: str = "auto") -> dict[str, Any]:
+    if event == "stop" or (
+        event == "auto"
+        and "toolCall" not in payload
+        and "tool_input" not in payload
+        and ("terminationReason" in payload or "transcriptPath" in payload)
+    ):
+        return _run_stop_hook(payload)
+
     if os.environ.get("AGY_DISABLE_CODE_REVIEW_GUARD") == "1":
         return _allow()
 
@@ -512,27 +1066,26 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     return _check_command(cmd, initial_cwd=cwd)
 
 
-def _process_stdin_text(raw_stdin: str) -> dict[str, Any]:
+def _process_stdin_text(raw_stdin: str, event: str = "auto") -> dict[str, Any]:
+    fallback = {} if event == "stop" else _allow()
     try:
         payload = json.loads(raw_stdin)
     except (json.JSONDecodeError, ValueError):
-        return _allow()
+        return fallback
     if not isinstance(payload, dict):
-        return _allow()
-    return _run_hook(payload)
+        return fallback
+    return _run_hook(payload, event=event)
 
 
 def _check_hooks_json(path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        msg = f"invalid hooks.json root in {path}"
-        raise TypeError(msg)
-    if "agy-code-review-guard" not in data:
+    if not isinstance(data, dict) or "agy-code-review-guard" not in data:
         raise AssertionError(f"missing 'agy-code-review-guard' in {path}")
     block = data["agy-code-review-guard"]
     if not isinstance(block, dict):
         msg = f"invalid agy-code-review-guard block in {path}"
         raise TypeError(msg)
+
     pre_handlers = block.get("PreToolUse")
     if not isinstance(pre_handlers, list) or not pre_handlers:
         raise AssertionError(f"missing PreToolUse handlers in {path}")
@@ -545,10 +1098,31 @@ def _check_hooks_json(path: Path) -> None:
         raise AssertionError(f"missing PreToolUse hooks list in {path}")
     cmd = inner[0].get("command", "") if isinstance(inner[0], dict) else ""
     if not isinstance(cmd, str) or "agy-code-review-guard.py" not in cmd:
-        raise AssertionError(f"unexpected hook command: {cmd!r}")
+        raise AssertionError(f"unexpected PreToolUse hook command: {cmd!r}")
     if cmd.startswith("/") or "/Users/" in cmd:
         raise AssertionError(
-            f"hook command must be portable relative path, got: {cmd!r}"
+            f"PreToolUse hook command must be portable relative path, got: {cmd!r}"
+        )
+
+    stop_handlers = block.get("Stop")
+    if not isinstance(stop_handlers, list) or not stop_handlers:
+        raise AssertionError(
+            f"missing Stop handlers for agy-code-review-guard in {path}"
+        )
+    stop_cmd = (
+        stop_handlers[0].get("command", "")
+        if isinstance(stop_handlers[0], dict)
+        else ""
+    )
+    if (
+        not isinstance(stop_cmd, str)
+        or "agy-code-review-guard.py" not in stop_cmd
+        or "--event stop" not in stop_cmd
+    ):
+        raise AssertionError(f"unexpected Stop hook command: {stop_cmd!r}")
+    if stop_cmd.startswith("/") or "/Users/" in stop_cmd:
+        raise AssertionError(
+            f"Stop hook command must be portable relative path, got: {stop_cmd!r}"
         )
 
 
@@ -563,6 +1137,12 @@ def _git_exec(cwd: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _write_transcript(path: Path, records: list[dict[str, Any]]) -> None:
+    path.write_text(
+        "".join(json.dumps(rec) + "\n" for rec in records), encoding="utf-8"
+    )
+
+
 def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     checks: list[str] = []
 
@@ -573,7 +1153,8 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     "name": "run_command",
                     "args": {"CommandLine": cmd, "Cwd": str(cwd)},
                 }
-            }
+            },
+            event="pre-tool-use",
         )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -611,11 +1192,11 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         # Create worktree with code change
         wt = root / "repo-wt"
         _git_exec(repo, "worktree", "add", "-b", "wt/feat", str(wt), "main")
-        (wt / "app.py").write_text("print('hi')\n", encoding="utf-8")
+        (wt / "app.py").write_text("print(42)\n", encoding="utf-8")
         _git_exec(wt, "add", "app.py")
         _git_exec(wt, "commit", "-m", "add app")
 
-        # Unreviewed merge --ff-only, push, pr-create, ship (incl. multiline, subshell, env -u, refspec, mise -E) -> denied
+        # Unreviewed gates denied
         assert call_cmd("git merge --ff-only wt/feat", repo).get("decision") == "deny"
         assert (
             call_cmd(f"cd {wt} && git push origin HEAD", repo).get("decision") == "deny"
@@ -641,6 +1222,20 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         )
         checks.append("unreviewed_code_gates_denied")
 
+        # Stage 2 --verify BEFORE Stage 1 --record fails
+        try:
+            _verify_receipt(
+                wt,
+                "HEAD",
+                runs=["python3 app.py"],
+                evidence="",
+                proof="Ran app.py cleanly before review",
+            )
+            raise AssertionError("--verify before --record should fail")
+        except RuntimeError:
+            pass
+        checks.append("verify_before_record_refused")
+
         # Docs-only branch still allowed even after origin/main receives a code commit
         doc_wt = root / "repo-doc-wt"
         _git_exec(repo, "worktree", "add", "-b", "wt/docs", str(doc_wt), "main")
@@ -654,28 +1249,183 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         assert call_cmd("git push origin wt/docs", doc_wt) == _allow()
         checks.append("three_dot_merge_base_docs_only_allowed")
 
-        # Record receipt in wt -> allows merge --ff-only AND push of same SHA on main
-        # Reset repo to match wt base first so --ff-only is valid
+        # Reset main so wt/feat merges cleanly; record Stage 1 review ONLY -> push STILL DENIED!
         _git_exec(repo, "reset", "--hard", "HEAD~1")
         _record_receipt(wt, "HEAD", "self-check review")
+        deny_no_verify = call_cmd("git merge --ff-only wt/feat", repo)
+        assert deny_no_verify.get("decision") == "deny"
+        assert "--verify" in str(deny_no_verify.get("reason", ""))
+        assert call_cmd("git push origin wt/feat", wt).get("decision") == "deny"
+        checks.append("record_without_verify_denied")
+
+        # Failing --verify command refuses and leaves push DENIED
+        try:
+            _verify_receipt(
+                wt,
+                "HEAD",
+                runs=["exit 1"],
+                evidence="",
+                proof="Command failed deliberately",
+            )
+            raise AssertionError("failing --verify should fail")
+        except RuntimeError:
+            pass
+        assert call_cmd("git push origin wt/feat", wt).get("decision") == "deny"
+        checks.append("failing_verify_leaves_push_denied")
+
+        # Dirty tracked tree fails --verify
+        (wt / "app.py").write_text("print(99)\n", encoding="utf-8")
+        try:
+            _verify_receipt(
+                wt,
+                "HEAD",
+                runs=["python3 app.py"],
+                evidence="",
+                proof="Should fail on dirty tracked file",
+            )
+            raise AssertionError("dirty --verify should fail")
+        except RuntimeError:
+            pass
+        _git_exec(wt, "checkout", "--", "app.py")
+        checks.append("dirty_tree_verify_refused")
+
+        # Successful --verify allows BOTH merge --ff-only AND push of same verified SHA
+        ver_res = _verify_receipt(
+            wt,
+            "HEAD",
+            runs=["python3 app.py"],
+            evidence="",
+            proof="Observed app.py output 42 exit 0",
+        )
+        assert ver_res.get("verified") is True
         assert call_cmd("git merge --ff-only wt/feat", repo) == _allow()
         _git_exec(repo, "merge", "--ff-only", "wt/feat")
         assert call_cmd("git push origin main", repo) == _allow()
-        checks.append("receipt_carries_across_ff_only_merge_to_push")
+        checks.append("verified_receipt_carries_across_ff_only_merge_to_push")
 
-        # Chained commit + push in same invocation -> denied
+        # Re-running --record clears Stage 2 verification until --verify runs again
+        _record_receipt(repo, "HEAD", "re-review clears verify")
+        assert call_cmd("git push origin main", repo).get("decision") == "deny"
+        checks.append("re_record_clears_prior_verification")
+
+        # Re-verify, then new commit invalidates BOTH receipts
+        _verify_receipt(
+            repo,
+            "HEAD",
+            runs=["python3 app.py"],
+            evidence="",
+            proof="Re-verified app.py output 42",
+        )
+        assert call_cmd("git push origin main", repo) == _allow()
         assert (
             call_cmd("git commit -am msg && git push origin main", repo).get("decision")
             == "deny"
         )
-        checks.append("chained_mutator_and_push_denied")
-
-        # New code commit invalidates previous SHA receipt
         (repo / "app.py").write_text("print('v2')\n", encoding="utf-8")
         _git_exec(repo, "add", "app.py")
         _git_exec(repo, "commit", "-m", "update app")
         assert call_cmd("git push origin main", repo).get("decision") == "deny"
-        checks.append("new_commit_requires_new_receipt")
+        checks.append("new_commit_invalidates_both_receipts")
+
+        # Stop hook enforcement tests
+        transcript = root / "transcript.jsonl"
+        art_dir = root / "artifacts"
+        art_dir.mkdir()
+
+        # Case A: Edited app.py, claimed Done with NO post-edit verification -> continue!
+        _write_transcript(
+            transcript,
+            [
+                {"type": "USER_INPUT", "content": "Fix app.py"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 10,
+                    "tool_calls": [
+                        {
+                            "name": "edit_file",
+                            "args": {"Path": str(repo / "app.py")},
+                        }
+                    ],
+                    "content": "Editing app.py now.",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 11,
+                    "tool_calls": [],
+                    "content": "Done! I fixed app.py cleanly.",
+                },
+            ],
+        )
+        stop_payload = {
+            "terminationReason": "NO_TOOL_CALL",
+            "fullyIdle": True,
+            "transcriptPath": str(transcript),
+            "artifactDirectoryPath": str(art_dir),
+        }
+        stop_block = _run_hook(stop_payload, event="stop")
+        assert stop_block.get("decision") == "continue", f"Case A failed: {stop_block}"
+        # Same step_index dedupes cleanly
+        assert _run_hook(stop_payload, event="stop") == {}
+        checks.append("stop_hook_blocks_unverified_completion_and_dedupes")
+
+        # Case B: After running verification command + --record + --verify and citing proof -> allowed!
+        _record_receipt(repo, "HEAD", "reviewed stop-check commit")
+        _verify_receipt(
+            repo,
+            "HEAD",
+            runs=["python3 app.py"],
+            evidence="",
+            proof="Observed python3 app.py output v2 exit 0",
+        )
+        _write_transcript(
+            transcript,
+            [
+                {"type": "USER_INPUT", "content": "Fix app.py v2"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 20,
+                    "tool_calls": [
+                        {
+                            "name": "edit_file",
+                            "args": {"Path": str(repo / "app.py")},
+                        }
+                    ],
+                    "content": "Updated app.py.",
+                },
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 21,
+                    "tool_calls": [
+                        {
+                            "name": "run_command",
+                            "args": {
+                                "CommandLine": "python3 app.py",
+                                "Cwd": str(repo),
+                            },
+                        }
+                    ],
+                    "content": "Done! Fixed app.py and verified with `python3 app.py` (passed, exit code 0, output v2).",
+                },
+            ],
+        )
+        assert _run_hook(stop_payload, event="stop") == {}
+        checks.append("stop_hook_allows_verified_completion_with_proof")
+
+        # Case C: Read-only / docs-only / post-task fast-exit -> allowed
+        _write_transcript(
+            transcript,
+            [
+                {"type": "USER_INPUT", "content": "Learn check"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 30,
+                    "tool_calls": [],
+                    "content": "Post-task /learn: no reusable customization updates needed.",
+                },
+            ],
+        )
+        assert _run_hook(stop_payload, event="stop") == {}
+        checks.append("stop_hook_skips_fast_exit_and_read_only")
 
     if hooks_json_path is not None:
         _check_hooks_json(hooks_json_path)
@@ -685,15 +1435,52 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Code review PreToolUse guard")
-    parser.add_argument(
-        "--record", action="store_true", help="Record review receipt for target commit"
+    parser = argparse.ArgumentParser(
+        description="Code review + post-review verification PreToolUse & Stop guard"
     )
     parser.add_argument(
-        "--repo", default=".", help="Repository path for --record (default: .)"
+        "--event",
+        choices=("auto", "pre-tool-use", "stop"),
+        default="auto",
+        help="Hook lifecycle event mode when reading stdin",
     )
     parser.add_argument(
-        "--ref", default="HEAD", help="Git ref to record (default: HEAD)"
+        "--record",
+        action="store_true",
+        help="Stage 1: Record /code-review receipt for target commit",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Stage 2: Run post-review verification commands/evidence and record proof receipt",
+    )
+    parser.add_argument(
+        "--run",
+        action="append",
+        default=[],
+        help="Shell verification command to run in --verify mode (repeatable)",
+    )
+    parser.add_argument(
+        "--evidence",
+        default="",
+        help="Supplemental verified live/external output evidence for --verify when no single command captures it",
+    )
+    parser.add_argument(
+        "--proof",
+        default="",
+        help="Concise summary of concrete observed verification proof (required for --verify)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Per-command timeout seconds for --verify (default: 300)",
+    )
+    parser.add_argument(
+        "--repo", default=".", help="Repository path for --record/--verify (default: .)"
+    )
+    parser.add_argument(
+        "--ref", default="HEAD", help="Git ref for --record/--verify (default: HEAD)"
     )
     parser.add_argument("--summary", default="", help="Short review summary note")
     parser.add_argument(
@@ -709,13 +1496,36 @@ def main() -> int:
         print(json.dumps({"ok": True, "checks": checks}))
         return 0
 
+    if args.record and args.verify:
+        sys.stderr.write(
+            json.dumps({"ok": False, "error": "Pass --record first, then --verify."})
+            + "\n"
+        )
+        return 1
+
     if args.record:
         res = _record_receipt(Path(args.repo), args.ref, args.summary)
         print(json.dumps({"ok": True, **res}))
         return 0
 
+    if args.verify:
+        try:
+            res = _verify_receipt(
+                Path(args.repo),
+                args.ref,
+                runs=args.run,
+                evidence=args.evidence,
+                proof=args.proof,
+                timeout=args.timeout,
+            )
+        except RuntimeError as exc:
+            sys.stderr.write(json.dumps({"ok": False, "error": str(exc)}) + "\n")
+            return 1
+        print(json.dumps({"ok": True, **res}))
+        return 0
+
     raw = sys.stdin.read()
-    print(json.dumps(_process_stdin_text(raw)))
+    print(json.dumps(_process_stdin_text(raw, event=args.event)))
     return 0
 
 
