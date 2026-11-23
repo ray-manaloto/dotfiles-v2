@@ -3,8 +3,11 @@
 Portable user-level agent conventions managed by `dotfiles-v2` across macOS
 hosts, Linux containers, and macOS VMs.
 
-- **Agent communication:** Use native `agy <-> agy` commands between Antigravity
-  sessions; never use `hc` for `agy <-> agy`.
+- **Agent communication:** For `agy <-> agy`, send full structured payloads via
+  native `send_message`, check `hc get <tab-id> --json`, and send a 1-line
+  `hc send <tab-id>` wake doorbell only when `status.state == "idle"`
+  (respecting `draft_wait`). Never send payloads via `hc send`, and never touch
+  `ANTIGRAVITY_CSRF_TOKEN`.
 - **Containers:** Always pass `-e container=docker`; never pass `--privileged`.
 - **Privacy and git hygiene:** Stage changed files explicitly by name (never
   `git add -A` or `git add .`). Never commit secrets, tokens, private
@@ -17,9 +20,10 @@ hosts, Linux containers, and macOS VMs.
   `hk` builtins (`Rust`, `Go`, `Haskell`, `Pkl`), and `mise fmt` for mise
   configs.
 - **Schemas and verification:** Declare public `$schema` / `#:schema` headers on
-  supported config files. Prefer `mise doctor project` and `hk` checks/hooks over
-  unit tests for setup verification, and always inspect current docs or source
-  before acting.
+  supported config files. Prefer `mise doctor project` and `hk` checks/hooks
+  over unit tests for upstream tools, git hooks, or config/setup verification
+  (reserve unit tests for project code), and always inspect current docs or
+  source before acting.
 - **Research gate & error resolution:** Run multi-source research (local
   offline repos/docs, session/git history, OpenWiki, Context7, Exa, Firecrawl,
   Last30Days, and GitHub issues/PRs/discussions/code) before proposing custom
@@ -32,8 +36,9 @@ hosts, Linux containers, and macOS VMs.
 - **Reporting peer messages & receipt confirmation:** Always request explicit
   receipt confirmation when sending a message to another agent. When reporting
   peer messages to the owner, name the target as `tab-name (id)`, state the
-  channel (native `send_message`), and clearly distinguish **dispatched (receipt
-  pending)** from **receipt confirmed**.
+  channel (`native send_message`, plus `hc send` idle doorbell if sent), and
+  clearly distinguish **dispatched (receipt pending)** from **receipt
+  confirmed**.
 - **OpenWiki search routing:** Use the `openwiki_search` / `openwiki_read` MCP
   tools for workspace-scoped queries (`--workspace` is not an `openwiki` CLI
   flag).

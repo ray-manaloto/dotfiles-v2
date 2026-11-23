@@ -55,6 +55,9 @@ files before explicit user approval.
   `rumdl fmt` + `agnix --strict` on new skills.
 - **Update Existing (Prefer)**: update an active rule, skill, or workflow doc
   when it was outdated, missed an edge case, or diverged from the verified fix.
+- **No meta-tests for tooling/config:** Do not propose unit tests for upstream
+  CLI behavior, git hooks, or doctor shell snippets; prefer
+  `mise doctor project` and `hk check` (reserve unit tests for project code).
 - **Classify**:
   - **Rule**: universal behavioral guardrails, constraints, or formatting
     invariants (`AGENTS.md` / `GEMINI.md` are always active with no frontmatter;

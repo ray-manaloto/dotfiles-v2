@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
-"""Antigravity Stop hook enforcing interactive ask_question calls when prose presents options."""
+"""Antigravity PreToolUse/Stop hook enforcing interactive ask_question calls and inline trade-offs."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+
+
+class _HookState(TypedDict):
+    last_user_idx: int
+    last_blocked_step_idx: int
+    blocks_in_turn: int
+    pre_denied_fps: list[str]
+
 
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 RECOMMENDED_RE = re.compile(r"\(recommended\)", re.IGNORECASE)
@@ -29,6 +38,50 @@ BLOCK_REASON = (
     "Do NOT repeat the prose — call `ask_question` right now with `(Recommended)` first "
     "(or hand back via `enter_plan_mode` if you are on the execution model)."
 )
+
+
+def _allow() -> dict[str, Any]:
+    return {"decision": "allow"}
+
+
+def _deny(reason: str) -> dict[str, Any]:
+    return {"decision": "deny", "reason": reason}
+
+
+def _strip_inline_code(line: str) -> str:
+    """Strip CommonMark single-line inline backtick spans in linear time."""
+    out: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        if line[i] == "`":
+            j = i
+            while j < n and line[j] == "`":
+                j += 1
+            tick_len = j - i
+            pos = j
+            close_end = -1
+            while pos < n:
+                if line[pos] == "`":
+                    k = pos
+                    while k < n and line[k] == "`":
+                        k += 1
+                    if k - pos == tick_len:
+                        close_end = k
+                        break
+                    pos = k
+                else:
+                    pos += 1
+            if close_end != -1:
+                out.append(" ")
+                i = close_end
+                continue
+            out.append(line[i:j])
+            i = j
+        else:
+            out.append(line[i])
+            i += 1
+    return "".join(out)
 
 
 def _strip_fenced_code(text: str) -> str:
@@ -54,7 +107,7 @@ def _strip_fenced_code(text: str) -> str:
                 fence_len = 0
                 continue
         if not fence_char:
-            kept.append(line)
+            kept.append(_strip_inline_code(line))
     return "\n".join(kept)
 
 
@@ -82,23 +135,35 @@ def _looks_like_unasked_options(text: str) -> bool:
     return pros_hits >= 2 and cons_hits >= 2
 
 
-def _read_state(state_path: Path) -> dict[str, int]:
-    default = {"last_user_idx": -2, "last_blocked_step_idx": -1, "blocks_in_turn": 0}
+def _read_state(state_path: Path) -> _HookState:
+    out: _HookState = {
+        "last_user_idx": -2,
+        "last_blocked_step_idx": -1,
+        "blocks_in_turn": 0,
+        "pre_denied_fps": [],
+    }
     try:
         raw = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return default
+        return out
     if not isinstance(raw, dict):
-        return default
-    out = dict(default)
-    for key in default:
-        val = raw.get(key)
-        if isinstance(val, int) and not isinstance(val, bool):
-            out[key] = val
+        return out
+    last_user = raw.get("last_user_idx")
+    if isinstance(last_user, int) and not isinstance(last_user, bool):
+        out["last_user_idx"] = last_user
+    last_step = raw.get("last_blocked_step_idx")
+    if isinstance(last_step, int) and not isinstance(last_step, bool):
+        out["last_blocked_step_idx"] = last_step
+    blocks = raw.get("blocks_in_turn")
+    if isinstance(blocks, int) and not isinstance(blocks, bool):
+        out["blocks_in_turn"] = blocks
+    raw_fps = raw.get("pre_denied_fps")
+    if isinstance(raw_fps, list):
+        out["pre_denied_fps"] = [fp for fp in raw_fps if isinstance(fp, str)][-16:]
     return out
 
 
-def _write_state(state_path: Path, state: dict[str, int]) -> None:
+def _write_state(state_path: Path, state: _HookState) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         dir=state_path.parent, prefix=f".{state_path.name}."
@@ -131,6 +196,143 @@ def _load_full_content(transcript_path: Path, line_idx: int) -> str | None:
     except (OSError, json.JSONDecodeError, ValueError):
         return None
     return None
+
+
+def _scan_last_user_idx(transcript_path: Path) -> int | None:
+    if not transcript_path.is_file():
+        return None
+    try:
+        lines = transcript_path.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()
+    except OSError:
+        return None
+    last_user_idx = -1
+    for idx, raw in enumerate(lines):
+        if not raw.strip():
+            continue
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "USER_INPUT":
+            last_user_idx = idx
+    return last_user_idx
+
+
+def _resolve_state_path(payload: dict[str, Any]) -> Path | None:
+    artifact_dir = payload.get("artifactDirectoryPath")
+    if isinstance(artifact_dir, str) and artifact_dir:
+        return (
+            Path(os.path.expanduser(artifact_dir))
+            / ".agy-interactive-questions-state.json"
+        )
+    transcript_raw = payload.get("transcriptPath")
+    if isinstance(transcript_raw, str) and transcript_raw:
+        return (
+            Path(os.path.expanduser(transcript_raw)).parent
+            / ".agy-interactive-questions-state.json"
+        )
+    return None
+
+
+def _run_pre_tool_use_hook(payload: dict[str, Any]) -> dict[str, Any]:
+    if os.environ.get("AGY_DISABLE_INTERACTIVE_QUESTION_GUARD") == "1":
+        return _allow()
+
+    tool_call = payload.get("toolCall")
+    if isinstance(tool_call, dict):
+        tool_name = tool_call.get("name")
+        args = tool_call.get("args")
+    else:
+        tool_name = payload.get("tool_name")
+        args = payload.get("tool_input")
+
+    if tool_name != "ask_question" or not isinstance(args, dict):
+        return _allow()
+
+    questions = args.get("questions")
+    if not isinstance(questions, list) or not questions:
+        return _allow()
+
+    violations: list[str] = []
+    normalized_qs: list[dict[str, Any]] = []
+    for q_idx, q in enumerate(questions, start=1):
+        if not isinstance(q, dict):
+            continue
+        options = q.get("options")
+        if not isinstance(options, list) or len(options) < 2:
+            continue
+        is_multi = bool(q.get("is_multi_select", False))
+        str_opts = [opt for opt in options if isinstance(opt, str) and opt.strip()]
+        normalized_qs.append(
+            {
+                "question": q.get("question", "")
+                if isinstance(q.get("question"), str)
+                else "",
+                "is_multi_select": is_multi,
+                "options": str_opts,
+            }
+        )
+        if len(str_opts) != len(options):
+            violations.append(f"Q{q_idx}: all options must be non-empty strings")
+            continue
+        if not is_multi and not RECOMMENDED_RE.search(str_opts[0]):
+            violations.append(
+                f"Q{q_idx}: leading option must include '(Recommended)' first"
+            )
+        for o_idx, opt in enumerate(str_opts, start=1):
+            missing: list[str] = []
+            if not PROS_RE.search(opt):
+                missing.append("Pros:")
+            if not CONS_RE.search(opt):
+                missing.append("Cons:")
+            if missing:
+                violations.append(
+                    f"Q{q_idx} option {o_idx}: missing inline {' and '.join(missing)}"
+                )
+
+    if not violations:
+        return _allow()
+
+    state_path = _resolve_state_path(payload)
+    if state_path is None:
+        return _allow()
+
+    transcript_raw = payload.get("transcriptPath")
+    user_idx = (
+        _scan_last_user_idx(Path(os.path.expanduser(transcript_raw)))
+        if isinstance(transcript_raw, str) and transcript_raw
+        else None
+    )
+    user_turn_id = str(user_idx) if user_idx is not None else "no-transcript"
+    q_sha = hashlib.sha256(
+        json.dumps(normalized_qs, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    fp = f"{user_turn_id}:{q_sha}"
+
+    state = _read_state(state_path)
+    if user_idx is not None and state["last_user_idx"] != user_idx:
+        state = _HookState(
+            last_user_idx=user_idx,
+            last_blocked_step_idx=-1,
+            blocks_in_turn=0,
+            pre_denied_fps=[],
+        )
+
+    pre_fps = list(state["pre_denied_fps"])
+    if fp in pre_fps:
+        return _allow()
+
+    pre_fps.append(fp)
+    state["pre_denied_fps"] = pre_fps[-16:]
+    _write_state(state_path, state)
+    return _deny(
+        "Rule enforcement (interactive-questions.md): "
+        + "; ".join(violations)
+        + ". Fix once (include '(Recommended)' on option 1 for single-select "
+        + "questions and compact 'Pros: ... | Cons: ...' in each option) and retry."
+    )
 
 
 def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
@@ -210,33 +412,39 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     state_path = state_base / ".agy-interactive-questions-state.json"
     state = _read_state(state_path)
     if state["last_user_idx"] != last_user_idx:
-        state = {
-            "last_user_idx": last_user_idx,
-            "last_blocked_step_idx": -1,
-            "blocks_in_turn": 0,
-        }
+        state = _HookState(
+            last_user_idx=last_user_idx,
+            last_blocked_step_idx=-1,
+            blocks_in_turn=0,
+            pre_denied_fps=[],
+        )
 
     if state["last_blocked_step_idx"] == step_idx or state["blocks_in_turn"] >= 2:
         return {}
 
     _write_state(
         state_path,
-        {
-            "last_user_idx": last_user_idx,
-            "last_blocked_step_idx": step_idx,
-            "blocks_in_turn": state["blocks_in_turn"] + 1,
-        },
+        _HookState(
+            last_user_idx=last_user_idx,
+            last_blocked_step_idx=step_idx,
+            blocks_in_turn=state["blocks_in_turn"] + 1,
+            pre_denied_fps=state["pre_denied_fps"],
+        ),
     )
     return {"decision": "continue", "reason": BLOCK_REASON}
 
 
-def _process_stdin_text(raw_stdin: str) -> dict[str, Any]:
+def _process_stdin_text(raw_stdin: str, event: str = "auto") -> dict[str, Any]:
     try:
         payload = json.loads(raw_stdin)
     except (json.JSONDecodeError, ValueError):
-        return {}
+        return _allow() if event == "pre-tool-use" else {}
     if not isinstance(payload, dict):
-        return {}
+        return _allow() if event == "pre-tool-use" else {}
+    if event == "pre-tool-use" or (
+        event == "auto" and ("toolCall" in payload or "tool_input" in payload)
+    ):
+        return _run_pre_tool_use_hook(payload)
     return _run_hook(payload)
 
 
@@ -245,7 +453,35 @@ def _check_hooks_json(path: Path) -> None:
     if not isinstance(data, dict) or "agy-interactive-questions" not in data:
         raise AssertionError(f"missing 'agy-interactive-questions' in {path}")
     block = data["agy-interactive-questions"]
-    stop_handlers = block.get("Stop") if isinstance(block, dict) else None
+    if not isinstance(block, dict):
+        msg = f"invalid agy-interactive-questions block in {path}"
+        raise TypeError(msg)
+
+    pre_handlers = block.get("PreToolUse")
+    if not isinstance(pre_handlers, list) or not pre_handlers:
+        raise AssertionError(
+            f"missing PreToolUse handlers for agy-interactive-questions in {path}"
+        )
+    first_pre = pre_handlers[0]
+    matcher = first_pre.get("matcher", "") if isinstance(first_pre, dict) else ""
+    if not isinstance(matcher, str) or "ask_question" not in matcher:
+        raise AssertionError(f"unexpected PreToolUse matcher: {matcher!r}")
+    inner = first_pre.get("hooks") if isinstance(first_pre, dict) else None
+    if not isinstance(inner, list) or not inner:
+        raise AssertionError(f"missing PreToolUse inner hooks list in {path}")
+    pre_cmd = inner[0].get("command", "") if isinstance(inner[0], dict) else ""
+    if (
+        not isinstance(pre_cmd, str)
+        or "agy-interactive-questions.py" not in pre_cmd
+        or "--event pre-tool-use" not in pre_cmd
+    ):
+        raise AssertionError(f"unexpected PreToolUse hook command: {pre_cmd!r}")
+    if pre_cmd.startswith("/") or "/Users/" in pre_cmd:
+        raise AssertionError(
+            f"PreToolUse hook command must be portable relative path, got: {pre_cmd!r}"
+        )
+
+    stop_handlers = block.get("Stop")
     if not isinstance(stop_handlers, list) or not stop_handlers:
         raise AssertionError(
             f"missing Stop handlers for agy-interactive-questions in {path}"
@@ -256,10 +492,10 @@ def _check_hooks_json(path: Path) -> None:
         else ""
     )
     if not isinstance(cmd, str) or "agy-interactive-questions.py" not in cmd:
-        raise AssertionError(f"unexpected hook command: {cmd!r}")
+        raise AssertionError(f"unexpected Stop hook command: {cmd!r}")
     if cmd.startswith("/") or "/Users/" in cmd:
         raise AssertionError(
-            f"hook command must be portable relative path, got: {cmd!r}"
+            f"Stop hook command must be portable relative path, got: {cmd!r}"
         )
 
 
@@ -373,7 +609,149 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         # 6. Non-NO_TOOL_CALL & malformed JSON -> {}
         assert _run_hook(base_payload(terminationReason="MAX_INVOCATIONS")) == {}
         assert _process_stdin_text("{not valid json") == {}
+        assert _process_stdin_text("{not valid json", event="pre-tool-use") == _allow()
         checks.append("non_idle_and_malformed_ignored")
+
+        # 7. Inline backtick status report quoting `(Recommended)` / `Pros:` / `Cons:` -> {}
+        _write_transcript(
+            transcript,
+            [
+                {"type": "USER_INPUT", "content": "Status?"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 40,
+                    "tool_calls": [],
+                    "content": (
+                        "Completed updates:\n"
+                        "1. Enforced `(Recommended)` and `Pros:` / `Cons:` inside `ask_question`.\n"
+                        "2. Verified `hk check --all` passes."
+                    ),
+                },
+            ],
+        )
+        res7 = _run_hook(base_payload())
+        assert res7 == {}, f"case 7 inline-code status report failed: {res7}"
+        checks.append("inline_code_status_report_allowed")
+
+        # 8. PreToolUse non-ask_question tool allowed
+        pre_other = _run_pre_tool_use_hook(
+            {
+                "artifactDirectoryPath": str(artifact_dir),
+                "transcriptPath": str(transcript),
+                "toolCall": {"name": "edit_file", "args": {"Path": "foo.md"}},
+            }
+        )
+        assert pre_other == _allow(), f"case 8 failed: {pre_other}"
+        checks.append("pre_tool_use_non_ask_question_allowed")
+
+        # 9. PreToolUse valid single-select ask_question allowed
+        pre_valid = _run_pre_tool_use_hook(
+            {
+                "artifactDirectoryPath": str(artifact_dir),
+                "transcriptPath": str(transcript),
+                "toolCall": {
+                    "name": "ask_question",
+                    "args": {
+                        "questions": [
+                            {
+                                "question": "Which option?",
+                                "is_multi_select": False,
+                                "options": [
+                                    "Option A (Recommended) — Pros: fast | Cons: scope",
+                                    "Option B — Pros: tiny | Cons: slower",
+                                ],
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+        assert pre_valid == _allow(), f"case 9 failed: {pre_valid}"
+        checks.append("pre_tool_use_valid_single_select_allowed")
+
+        # 10. PreToolUse missing (Recommended) or Pros:/Cons: denies ONCE then allows same payload
+        bad_pre_payload = {
+            "artifactDirectoryPath": str(artifact_dir),
+            "transcriptPath": str(transcript),
+            "toolCall": {
+                "name": "ask_question",
+                "args": {
+                    "questions": [
+                        {
+                            "question": "Pick one",
+                            "is_multi_select": False,
+                            "options": ["Option A", "Option B"],
+                        }
+                    ]
+                },
+            },
+        }
+        pre_deny_1 = _process_stdin_text(
+            json.dumps(bad_pre_payload), event="pre-tool-use"
+        )
+        assert pre_deny_1.get("decision") == "deny", f"case 10a failed: {pre_deny_1}"
+        pre_retry_2 = _process_stdin_text(
+            json.dumps(bad_pre_payload), event="pre-tool-use"
+        )
+        assert pre_retry_2 == _allow(), f"case 10b 1-shot allow failed: {pre_retry_2}"
+        checks.append(
+            "pre_tool_use_missing_recommended_or_pros_cons_denied_once_then_allowed"
+        )
+
+        # 11. PreToolUse multi-select without (Recommended) allowed when Pros:/Cons: present
+        multi_ok = _run_pre_tool_use_hook(
+            {
+                "artifactDirectoryPath": str(artifact_dir),
+                "transcriptPath": str(transcript),
+                "toolCall": {
+                    "name": "ask_question",
+                    "args": {
+                        "questions": [
+                            {
+                                "question": "Select any",
+                                "is_multi_select": True,
+                                "options": [
+                                    "Item 1 — Pros: clean | Cons: none",
+                                    "Item 2 — Pros: flexible | Cons: extra edit",
+                                ],
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+        assert multi_ok == _allow(), f"case 11 failed: {multi_ok}"
+        checks.append(
+            "pre_tool_use_multi_select_without_recommended_allowed_when_pros_cons_present"
+        )
+
+        # 12. PreToolUse multi-select missing Pros:/Cons: denied once then allowed
+        multi_bad_payload = {
+            "artifactDirectoryPath": str(artifact_dir),
+            "transcriptPath": str(transcript),
+            "toolCall": {
+                "name": "ask_question",
+                "args": {
+                    "questions": [
+                        {
+                            "question": "Select any",
+                            "is_multi_select": True,
+                            "options": [
+                                "Item 1 — Pros: clean",
+                                "Item 2 — Cons: extra edit",
+                            ],
+                        }
+                    ]
+                },
+            },
+        }
+        multi_deny_1 = _run_pre_tool_use_hook(multi_bad_payload)
+        assert multi_deny_1.get("decision") == "deny", (
+            f"case 12a failed: {multi_deny_1}"
+        )
+        multi_allow_2 = _run_pre_tool_use_hook(multi_bad_payload)
+        assert multi_allow_2 == _allow(), f"case 12b failed: {multi_allow_2}"
+        checks.append("pre_tool_use_multi_select_missing_pros_cons_denied_once")
 
     if hooks_json_path is not None:
         _check_hooks_json(hooks_json_path)
@@ -384,6 +762,12 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--event",
+        choices=("auto", "stop", "pre-tool-use"),
+        default="auto",
+        help="Hook lifecycle event mode.",
+    )
     parser.add_argument(
         "--self-check",
         action="store_true",
@@ -409,7 +793,7 @@ def main() -> int:
         )
         return 0
 
-    result = _process_stdin_text(sys.stdin.read())
+    result = _process_stdin_text(sys.stdin.read(), event=args.event)
     sys.stdout.write(json.dumps(result) + "\n")
     return 0
 

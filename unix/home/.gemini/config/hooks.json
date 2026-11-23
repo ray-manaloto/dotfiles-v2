@@ -1,5 +1,17 @@
 {
   "agy-interactive-questions": {
+    "PreToolUse": [
+      {
+        "matcher": "ask_question",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -B ./hooks/agy-interactive-questions.py --event pre-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "type": "command",

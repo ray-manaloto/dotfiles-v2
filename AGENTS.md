@@ -54,10 +54,14 @@ and C++26 workstation setup.
   `.mode` (`autonomous`). `agy-pwf-guard.py` (`PreToolUse`) enforces an active
   `PLAN_ID` before editing repo files in `.mode`-adopted repositories.
   `ROADMAP.md` stays the sole-writer tracked milestone index on `main`.
-- **Agent communication:** Use native `agy <-> agy` commands only between
-  Antigravity sessions; never use `hc` for `agy <-> agy`. Queue all OpenWiki /
-  `knowledge-base-v2` addition requests to `knowledge-base-lead-agy` via native
-  `agy` messaging; never mutate `knowledge-base-v2` directly from `dotfiles-v2`.
+- **Agent communication:** For `agy <-> agy`, deliver full durable payloads via
+  native `send_message` (include sender `conversationId` and request explicit
+  receipt confirmation), then check `hc get <tab-id> --json` and send a 1-line
+  `hc send <tab-id>` wake doorbell only when `status.state == "idle"`. Never
+  send payloads via `hc send`, and never touch `ANTIGRAVITY_CSRF_TOKEN`. Queue
+  all OpenWiki / `knowledge-base-v2` addition requests to
+  `knowledge-base-lead-agy` via this hybrid protocol; never mutate
+  `knowledge-base-v2` directly from `dotfiles-v2`.
 - **Schemas, hooks & verification:** Declare public `$schema` / `#:schema`
   headers on config files. Prefer `mise` / `jdx` ecosystem tools, native
   compiled `hk` builtins, `mise fmt` for mise configs, and `mise doctor project`

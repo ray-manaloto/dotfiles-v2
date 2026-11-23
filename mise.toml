@@ -78,7 +78,7 @@ python3 -I -B unix/home/.gemini/config/hooks/agy-pwf-guard.py --self-check --che
 hint = "Ensure unix/home/.gemini/config/hooks/agy-pwf-guard.py is executable, passes --self-check, and registers in hooks.json."
 
 [doctor.checks.agy-interactive-questions]
-description = "Antigravity interactive-questions Stop hook, rule, and hooks.json registration are valid"
+description = "Antigravity interactive-questions PreToolUse/Stop hook, rule, and hooks.json registration are valid"
 run = '''
 test -x unix/home/.gemini/config/hooks/agy-interactive-questions.py
 test -f unix/home/.gemini/config/rules/interactive-questions.md

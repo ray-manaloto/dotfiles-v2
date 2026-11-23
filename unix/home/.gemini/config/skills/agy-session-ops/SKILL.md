@@ -2,8 +2,9 @@
 name: agy-session-ops
 description: >-
   Use when restarting or resuming an Antigravity CLI session with agy-hc,
-  reloading settings.json or the fnox proxy, coordinating via native
-  send_message with peer agy sessions, or verifying host ~/.gemini/config/ sync.
+  reloading settings.json or the fnox proxy, coordinating via hybrid native
+  send_message and idle Herdr wake doorbells with peer agy sessions, or
+  verifying host ~/.gemini/config/ sync.
 ---
 
 # Antigravity Session & Peer Coordination Checklist
@@ -30,15 +31,31 @@ description: >-
 4. Verify after resume: run a blocked/allowed check such as `fnox --version` for
    `settings.json` and a live research query for `fnox` proxy Doppler tokens.
 
-## 2. Native `agy <-> agy` Peer Messaging
+## 2. Hybrid `agy <-> agy` Peer Messaging (Native + Idle Doorbell)
 
-- Never use `hc` for `agy <-> agy`; use native `send_message` to the peer's
-  `conversationId`.
-- Always request explicit receipt confirmation when sending a message to
-  another agent.
-- Identify peer terminals as `tab-name (id)` alongside the channel (`native
-  send_message`), and distinguish **dispatched (receipt pending)** from
-  **receipt confirmed** when reporting to the owner.
+1. Deliver the full structured payload (including your `conversationId` and an
+   explicit receipt request) via native `send_message` to the peer's
+   `conversationId`. Never send full payloads via `hc send`, and never touch or
+   read `ANTIGRAVITY_CSRF_TOKEN`.
+
+2. Immediately inspect peer state with `hc get <tab-id> --json`. If
+   `status.state == "idle"`, send a single 1-line Herdr wake doorbell so the
+   idle CLI flushes `<SYSTEM_MESSAGE>`:
+
+   ```sh
+   hc send <tab-id> "New message queued via native send_message from <sender> (<id>) — check incoming <SYSTEM_MESSAGE> and confirm receipt."
+   ```
+
+   If `status.state != "idle"` (e.g., `working`), do not send `hc send` or
+   interrupt an active turn.
+
+3. Verify delivery via explicit peer reply or a follow-up `hc get <tab-id> --json`
+   turn transition.
+
+4. When reporting to the owner, identify peer terminals as `tab-name (id)`,
+   state the channel (`native send_message`, plus `hc send` idle doorbell if
+   sent), and distinguish **dispatched (receipt pending)** from **receipt
+   confirmed**.
 
 ## 3. Hook Self-Checks Before Shipping Changes
 

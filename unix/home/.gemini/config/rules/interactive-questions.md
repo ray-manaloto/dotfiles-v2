@@ -12,12 +12,17 @@ steps:
    OpenWiki, docs, and upstream or offline source to resolve everything code
    can settle upfront, so every option and trade-off is grounded in verified
    facts instead of guesswork.
-2. **Always ask interactively** using `ask_question` (including when surfacing
-   blockers or planning choices) rather than leaving options only in plain prose.
-3. **State a clear recommendation** first (`(Recommended)` on the leading option).
-4. **Include concise Pros and Cons** for every option in the accompanying
-   response immediately above the `ask_question` prompt so trade-offs are clear
-   before choosing.
+2. **Always ask interactively** using `ask_question` in the **same single
+   turn** as the recommendation and trade-offs (never stop with prose options
+   and wait to ask in a later turn), including when surfacing blockers or
+   planning choices.
+3. **State a clear recommendation** first (`(Recommended)` on the leading
+   option for single-select questions).
+4. **Include concise Pros and Cons** for every option **both** in the
+   accompanying response immediately above the `ask_question` prompt **and**
+   inline as a compact `Pros: ... | Cons: ...` suffix inside each
+   `ask_question` option string so trade-offs stay visible inside the
+   interactive selector.
 5. **Orchestrator plan/execute hand-back**: when running on an execution
    turn (Plan Mode off) and user decisions or next-step choices are needed,
    hand back via `enter_plan_mode` (or call `ask_question` in a dedicated

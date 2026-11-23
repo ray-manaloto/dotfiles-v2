@@ -49,3 +49,22 @@ description: >-
   `brew services` or `sudo`.
 - LaunchAgents run outside login shells without `mise` `PATH`; use absolute
   paths, `gui/$(id -u)` domain checks, and `~/.local/state/tailscale/tailscaled.sock`.
+
+## 5. Multi-Environment Checks, Worktree Sync & Headless Harnesses
+
+- Use stdlib `python3` instead of `jq` inside minimal Ubuntu container checks
+  (`pc`, `mac` omit `jq`).
+- Place explanatory comments on a separate line above bare `# hadolint
+  ignore=<RULE>` lines (`hadolint` parses every token after `=` as a rule ID).
+- After running `mise run host:sync-gemini` from a task worktree, re-run
+  `mise -C <main-repo> run host:sync-gemini` after merging to `main` so
+  pre-push `host-gemini-sync` sees symlinks pointing at `main`.
+- Keep container secret files (such as `ZCODE_CREDENTIAL_SECRET_FILE`) out of
+  Docker image layers via `MISE_CONFIG_DIR != "/tmp/phase1b"` runtime guards
+  on persistent named volumes (`~/.zcode`).
+- For headless `zcode-app-cli`, invoke `zcode login --oauth --no-browser`
+  without a positional `zai` arg (`classifyZaiOAuthInvocation`) and pass
+  `--prompt=...` rather than `-p --model ...`.
+- Skip unit tests for upstream CLI behavior, git hooks, or doctor shell
+  snippets; verify toolchain/config invariants via `mise doctor project` and
+  `hk check` (reserve unit tests for project code).

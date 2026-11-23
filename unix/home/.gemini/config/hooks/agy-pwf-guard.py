@@ -311,6 +311,32 @@ def _git_common_parent(repo_root: Path) -> Path | None:
     return None
 
 
+def _plans_for_worktree_dir(wt_dir: Path, slug: str) -> list[Path]:
+    if not wt_dir.is_dir():
+        return []
+    found: list[Path] = []
+    has_local_pin, local_plan_id = _read_plan_id_from_mise_local(wt_dir)
+    if has_local_pin and _valid_slug(local_plan_id):
+        found.append(wt_dir / ".planning" / local_plan_id / "task_plan.md")
+    planning_dir = wt_dir / ".planning"
+    active_file = planning_dir / ".active_plan"
+    if active_file.is_file():
+        try:
+            active_id = active_file.read_text(
+                encoding="utf-8", errors="replace"
+            ).strip()
+        except OSError:
+            active_id = ""
+        if _valid_slug(active_id):
+            found.append(planning_dir / active_id / "task_plan.md")
+    found.append(planning_dir / slug / "task_plan.md")
+    if planning_dir.is_dir():
+        for candidate in sorted(planning_dir.glob(f"*-{slug}/task_plan.md")):
+            if candidate.parent.name != ".archive":
+                found.append(candidate)
+    return [p for p in found if p.is_file()]
+
+
 def _candidate_worktree_plans(base_dir: Path | None, slug: str) -> list[Path]:
     roots: list[Path] = []
     pwf_root_raw = os.environ.get("PWF_PLAN_ROOT", "").strip()
@@ -328,17 +354,17 @@ def _candidate_worktree_plans(base_dir: Path | None, slug: str) -> list[Path]:
     plans: list[Path] = []
     seen: set[str] = set()
     for r in roots:
-        for candidate in (
-            r / ".planning" / slug / "task_plan.md",
-            r.parent / f"{r.name}-{slug}" / ".planning" / slug / "task_plan.md",
-            r.parent
-            / f"{r.name}-worktrees"
-            / slug
-            / ".planning"
-            / slug
-            / "task_plan.md",
+        candidates: list[Path] = [r / ".planning" / slug / "task_plan.md"]
+        if (r / ".planning").is_dir():
+            candidates.extend(sorted((r / ".planning").glob(f"*-{slug}/task_plan.md")))
+        for wt_dir in (
+            r.parent / f"{r.name}-{slug}",
+            r.parent / f"{r.name}-worktrees" / slug,
+            r.parent / f"{r.name}-wt" / slug,
         ):
-            if candidate.is_file():
+            candidates.extend(_plans_for_worktree_dir(wt_dir, slug))
+        for candidate in candidates:
+            if candidate.parent.name != ".archive" and candidate.is_file():
                 try:
                     key = str(candidate.resolve())
                 except OSError:
@@ -757,6 +783,107 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             (pwf_repo / "mise.local.toml").unlink()
             os.environ.pop("PLAN_ID", None)
             checks.append("invalid_mise_local_fails_closed_despite_env")
+
+            # 12. worktree:rm resolves date-prefixed .planning/YYYY-MM-DD-<slug> and -wt/ layouts
+            wt_dated = root / "pwf-repo-dated"
+            wt_dated_plan_dir = wt_dated / ".planning" / "2026-11-23-dated"
+            wt_dated_plan_dir.mkdir(parents=True)
+            wt_dated_plan = wt_dated_plan_dir / "task_plan.md"
+            wt_dated_plan.write_text(
+                "# Dated\n\n### Phase 1: Do\n**Status:** complete\n",
+                encoding="utf-8",
+            )
+            (wt_dated / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "2026-11-23-dated"\n', encoding="utf-8"
+            )
+            res12a = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "artifactDirectoryPath": str(art_dir),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm dated"},
+                    },
+                }
+            )
+            assert res12a.get("decision") == "deny", (
+                f"unlearned dated worktree:rm should deny: {res12a}"
+            )
+            (art_dir / ".post-task-learn-state.json").write_text(
+                json.dumps(
+                    {
+                        "last_line": 1,
+                        "learned_plans": {
+                            str(wt_dated_plan.resolve()): hashlib.sha256(
+                                wt_dated_plan.read_bytes()
+                            ).hexdigest()
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assert (
+                _run_hook(
+                    {
+                        "cwd": str(pwf_repo),
+                        "artifactDirectoryPath": str(art_dir),
+                        "toolCall": {
+                            "name": "run_command",
+                            "args": {"CommandLine": "mise run worktree:rm dated"},
+                        },
+                    }
+                )
+                == _allow()
+            )
+
+            wt_kb = root / "pwf-repo-wt" / "kb-dated"
+            wt_kb_plan_dir = wt_kb / ".planning" / "2026-11-23-kb-dated"
+            wt_kb_plan_dir.mkdir(parents=True)
+            wt_kb_plan = wt_kb_plan_dir / "task_plan.md"
+            wt_kb_plan.write_text(
+                "# KB\n\n### Phase 1: Do\n**Status:** complete\n",
+                encoding="utf-8",
+            )
+            res12b = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "artifactDirectoryPath": str(art_dir),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm kb-dated"},
+                    },
+                }
+            )
+            assert res12b.get("decision") == "deny", (
+                f"unlearned -wt worktree:rm should deny: {res12b}"
+            )
+            (art_dir / ".post-task-learn-state.json").write_text(
+                json.dumps(
+                    {
+                        "last_line": 1,
+                        "learned_plans": {
+                            str(wt_kb_plan.resolve()): hashlib.sha256(
+                                wt_kb_plan.read_bytes()
+                            ).hexdigest()
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assert (
+                _run_hook(
+                    {
+                        "cwd": str(pwf_repo),
+                        "artifactDirectoryPath": str(art_dir),
+                        "toolCall": {
+                            "name": "run_command",
+                            "args": {"CommandLine": "mise run worktree:rm kb-dated"},
+                        },
+                    }
+                )
+                == _allow()
+            )
+            checks.append("worktree_rm_date_prefixed_and_wt_layout_gate")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)

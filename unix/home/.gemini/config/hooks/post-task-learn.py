@@ -38,6 +38,17 @@ USER_LEARN_CMD_RE = re.compile(r"^\s*/learn(?:\s|$)")
 SYSTEM_LEARN_RE = re.compile(r"Automated post-task /learn check")
 SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 PLAN_ID_LINE_RE = re.compile(r'^\s*PLAN_ID\s*=\s*"([^"\r\n]+)"')
+LEARN_APPLY_RE = re.compile(
+    r"\b(?:apply|approve|ship|merge)\b[^\n]{0,80}\b(?:learning_proposal(?:\.md)?|proposal\s+\d+|/learn\s+proposal)\b"
+    r"|\blearning_proposal\.md\b",
+    re.IGNORECASE,
+)
+NONZERO_EXIT_RE = re.compile(r"\bCommand exited with code ([1-9]\d*)\b")
+TOOL_DENY_RE = re.compile(r'"decision"\s*:\s*"deny"')
+
+
+def _is_learn_doc_path(path: Path | None) -> bool:
+    return path is not None and path.suffix.lower() == ".md"
 
 
 def _is_ignored_system_message(content: str) -> bool:
@@ -509,10 +520,10 @@ def _analyze_slice(
     last_user_input: str,
     base_dir: Path | None,
     artifact_dir: Path | None,
-) -> tuple[bool, bool, list[Path], str | None, str | None]:
-    """Return (already_learned, has_task_work, touched_plans, closed_worktree_slug, ship_closeout)."""
+) -> tuple[bool, bool, list[Path], str | None, str | None, bool]:
+    """Return (already_learned, has_task_work, touched_plans, closed_worktree_slug, ship_closeout, is_zero_error_learn_apply_docs_only)."""
     if last_user_input and _is_explicit_user_learn(last_user_input):
-        return True, False, [], None, None
+        return True, False, [], None, None, False
 
     parsed: list[dict[str, Any]] = []
     last_user_pos: int | None = None
@@ -535,12 +546,31 @@ def _analyze_slice(
     last_work_idx = -1
     has_task_work = False
     touched_plans: list[Path] = []
+    edited_work_paths: list[Path | None] = []
+    read_learning_proposal = False
+    has_turn_error = False
+    turn_user_text = last_user_input
     closed_worktree_slug: str | None = None
     ship_closeout: str | None = None
 
     for idx, entry in enumerate(turn_entries):
         entry_type = entry.get("type")
         content = entry.get("content")
+        if entry_type == "USER_INPUT" and isinstance(content, str):
+            turn_user_text = content
+        if (
+            entry_type == "ERROR_MESSAGE"
+            or entry.get("status") == "ERROR"
+            or bool(entry.get("error"))
+            or (
+                entry_type == "GENERIC"
+                and isinstance(content, str)
+                and bool(
+                    NONZERO_EXIT_RE.search(content) or TOOL_DENY_RE.search(content)
+                )
+            )
+        ):
+            has_turn_error = True
         if isinstance(content, str) and (
             (entry_type == "USER_INPUT" and _is_explicit_user_learn(content))
             or (
@@ -576,6 +606,15 @@ def _analyze_slice(
                 else:
                     has_task_work = True
                     last_work_idx = idx
+                    is_planning = target_path is not None and (
+                        (
+                            base_dir is not None
+                            and _is_within_dir(target_path, base_dir / ".planning")
+                        )
+                        or ".planning" in target_path.parts
+                    )
+                    if not is_planning:
+                        edited_work_paths.append(target_path)
                     if target_path is not None and target_path.name == "task_plan.md":
                         touched_plans.append(target_path)
             elif name == "read_file":
@@ -583,6 +622,10 @@ def _analyze_slice(
                 if "post-task-learn/SKILL.md" in target:
                     last_learn_idx = idx
                 p = _path_from_arg(args, base_dir)
+                if (
+                    p is not None and p.name == "learning_proposal.md"
+                ) or "learning_proposal.md" in target:
+                    read_learning_proposal = True
                 if p is not None and p.name == "task_plan.md":
                     touched_plans.append(p)
             elif name == "run_command" and isinstance(args, dict):
@@ -601,6 +644,15 @@ def _analyze_slice(
                         last_work_idx = idx
 
     already_learned = last_learn_idx > last_work_idx
+    is_zero_error_learn_apply_docs_only = (
+        bool(edited_work_paths)
+        and all(_is_learn_doc_path(p) for p in edited_work_paths)
+        and (
+            read_learning_proposal
+            or bool(LEARN_APPLY_RE.search(_extract_user_request(turn_user_text)))
+        )
+        and not has_turn_error
+    )
 
     return (
         already_learned,
@@ -608,6 +660,7 @@ def _analyze_slice(
         touched_plans,
         closed_worktree_slug,
         ship_closeout,
+        is_zero_error_learn_apply_docs_only,
     )
 
 
@@ -684,6 +737,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         touched_plans,
         closed_worktree_slug,
         ship_closeout,
+        is_zero_error_learn_apply_docs_only,
     ) = _analyze_slice(new_lines, user_text, base_dir, artifact_dir)
 
     discovered_plans = _discover_plans(payload, touched_plans)
@@ -719,6 +773,14 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         for _, plan_key, digest, err_count in completed_unlearned:
             if wrote_proposal or explicit_learn or err_count == 0:
                 learned_plans[plan_key] = digest
+        _write_state(state_path, len(lines), learned_plans, None)
+        return {}
+
+    if is_zero_error_learn_apply_docs_only and all(
+        err == 0 for _, _, _, err in completed_unlearned
+    ):
+        for _, plan_key, digest, _ in completed_unlearned:
+            learned_plans[plan_key] = digest
         _write_state(state_path, len(lines), learned_plans, None)
         return {}
 
@@ -1557,6 +1619,210 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 and "stale-env" not in res13.get("reason", "")
             ), f"case 13 failed: {res13}"
             checks.append("mise_local_overrides_stale_env_plan_id")
+
+            # 14. Zero-error docs-only /learn-apply PR skips & persists zero-error plan digest
+            ws14 = root / "ws14"
+            pdir14 = ws14 / ".planning" / "2026-11-23-learn-apply"
+            pdir14.mkdir(parents=True)
+            plan14 = pdir14 / "task_plan.md"
+            plan14.write_text(
+                "# Apply14\n\n### Phase 1: Apply\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| None yet | - |\n",
+                encoding="utf-8",
+            )
+            (ws14 / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "2026-11-23-learn-apply"\n', encoding="utf-8"
+            )
+            t14 = root / "t14.jsonl"
+            art14 = root / "art14"
+            art14.mkdir()
+            _write_jsonl(
+                t14,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Apply approved Proposal 7 from learning_proposal.md</USER_REQUEST>",
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "read_file",
+                                "args": {"Path": str(art14 / "learning_proposal.md")},
+                            },
+                            {
+                                "name": "edit_file",
+                                "args": {"Path": str(ws14 / "skills/demo/SKILL.md")},
+                            },
+                            {
+                                "name": "edit_file",
+                                "args": {"Path": str(ws14 / "rules/demo.md")},
+                            },
+                            {
+                                "name": "edit_file",
+                                "args": {"Path": str(plan14)},
+                            },
+                            {
+                                "name": "run_command",
+                                "args": {
+                                    "CommandLine": "git commit -m 'docs: apply learn'"
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        "type": "GENERIC",
+                        "content": "Command exited with code 0.\n",
+                    },
+                ],
+            )
+            res14 = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t14),
+                    "artifactDirectoryPath": str(art14),
+                    "cwd": str(ws14),
+                    "lastUserInput": "<USER_REQUEST>Apply approved Proposal 7 from learning_proposal.md</USER_REQUEST>",
+                }
+            )
+            assert res14 == {}, f"case 14 failed: {res14}"
+            state14 = json.loads(
+                (art14 / ".post-task-learn-state.json").read_text(encoding="utf-8")
+            )
+            assert (
+                state14["learned_plans"].get(str(plan14.resolve()))
+                == hashlib.sha256(plan14.read_bytes()).hexdigest()
+            ), f"case 14 failed to persist zero-error plan digest: {state14}"
+            checks.append("zero_error_docs_only_learn_apply_skips")
+
+            # 15. Docs-only /learn-apply PR with turn error OR logged plan error still triggers
+            t15a = root / "t15a.jsonl"
+            art15a = root / "art15a"
+            art15a.mkdir()
+            _write_jsonl(
+                t15a,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Apply approved Proposal 7 from learning_proposal.md</USER_REQUEST>",
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "read_file",
+                                "args": {"Path": str(art15a / "learning_proposal.md")},
+                            },
+                            {
+                                "name": "edit_file",
+                                "args": {"Path": str(ws1 / "skills/demo/SKILL.md")},
+                            },
+                        ],
+                    },
+                    {
+                        "type": "GENERIC",
+                        "content": "Command exited with code 1.\nError: agnix failed",
+                    },
+                ],
+            )
+            res15a = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t15a),
+                    "artifactDirectoryPath": str(art15a),
+                    "cwd": str(ws1),
+                }
+            )
+            assert res15a.get("decision") == "continue", (
+                f"case 15a turn error should trigger: {res15a}"
+            )
+
+            ws15b = root / "ws15b"
+            pdir15b = ws15b / ".planning" / "2026-11-23-learn-err"
+            pdir15b.mkdir(parents=True)
+            (pdir15b / "task_plan.md").write_text(
+                "# Err15b\n\n### Phase 1: Apply\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| agnix XP-SK-002 | Fixed |\n",
+                encoding="utf-8",
+            )
+            t15b = root / "t15b.jsonl"
+            art15b = root / "art15b"
+            art15b.mkdir()
+            _write_jsonl(
+                t15b,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Apply approved Proposal 7 from learning_proposal.md</USER_REQUEST>",
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "edit_file",
+                                "args": {"Path": str(ws15b / "skills/demo/SKILL.md")},
+                            }
+                        ],
+                    },
+                ],
+            )
+            res15b = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t15b),
+                    "artifactDirectoryPath": str(art15b),
+                    "cwd": str(ws15b),
+                }
+            )
+            assert res15b.get("decision") == "continue", (
+                f"case 15b plan error should trigger: {res15b}"
+            )
+            checks.append("docs_only_learn_apply_with_error_triggers")
+
+            # 16. Zero-error /learn-apply PR editing code/hooks still triggers
+            t16 = root / "t16.jsonl"
+            art16 = root / "art16"
+            art16.mkdir()
+            _write_jsonl(
+                t16,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Apply learning_proposal.md</USER_REQUEST>",
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "read_file",
+                                "args": {"Path": str(art16 / "learning_proposal.md")},
+                            },
+                            {
+                                "name": "edit_file",
+                                "args": {"Path": str(ws1 / "hooks/post-task-learn.py")},
+                            },
+                        ],
+                    },
+                ],
+            )
+            res16 = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t16),
+                    "artifactDirectoryPath": str(art16),
+                    "cwd": str(ws1),
+                }
+            )
+            assert res16.get("decision") == "continue", (
+                f"case 16 non-doc edit should trigger: {res16}"
+            )
+            checks.append("non_doc_learn_apply_triggers")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)
