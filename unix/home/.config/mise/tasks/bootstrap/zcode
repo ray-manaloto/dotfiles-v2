@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#MISE description="Initialize headless ZCode credential secret (runtime only) and verify zcode CLI"
+set -euo pipefail
+
+mkdir -p "${HOME}/.zcode/cli" "${HOME}/.zcode/v2"
+chmod 0700 "${HOME}/.zcode/v2"
+
+# Never bake a credential encryption secret into a Docker build image layer (Phase 1b uses MISE_CONFIG_DIR=/tmp/phase1b).
+if [[ ${MISE_CONFIG_DIR:-} != "/tmp/phase1b" ]]; then
+	secret_file="${ZCODE_CREDENTIAL_SECRET_FILE:-${HOME}/.zcode/v2/credential-secret}"
+	mkdir -p "$(dirname "${secret_file}")"
+	chmod 0700 "$(dirname "${secret_file}")"
+	if [[ ! -s ${secret_file} ]]; then
+		(
+			umask 077
+			tmp_file="${secret_file}.tmp.$$"
+			python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))' >"${tmp_file}"
+			chmod 0600 "${tmp_file}"
+			mv -n "${tmp_file}" "${secret_file}" 2>/dev/null || rm -f "${tmp_file}"
+		)
+	else
+		chmod 0600 "${secret_file}"
+	fi
+fi
+
+zcode --version </dev/null
+zcode doctor --json </dev/null >/dev/null

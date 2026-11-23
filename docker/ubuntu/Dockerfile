@@ -5,10 +5,13 @@ FROM ubuntu:26.10@sha256:c4ca31b6e93261c5dd773826f789738a49e414ca04fc094b1ccd0f9
 ARG DOTFILES_APT_CACHE=""
 ARG TARGETARCH
 
+# ZCODE_CREDENTIAL_SECRET_FILE is a path inside a runtime volume, not a secret value.
+# hadolint ignore=DL3064
 ENV container=docker \
     DEBIAN_FRONTEND=noninteractive \
     HOME=/home/dev \
     CLAUDE_CONFIG_DIR=/home/dev/.claude \
+    ZCODE_CREDENTIAL_SECRET_FILE=/home/dev/.zcode/v2/credential-secret \
     MISE_DATA_DIR=/opt/mise \
     MISE_CACHE_DIR=/opt/mise/cache \
     MISE_ENV=container \

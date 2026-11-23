@@ -16,6 +16,7 @@ hadolint = "2.15.1"
 hk = "2.13.0"
 node = "26.13.1"
 "npm:openwiki" = { version = "0.9.0", allow_builds = ["better-sqlite3"] }
+"npm:zcode-app-cli" = "3.18.2-48"
 pkl = "0.33.1"
 python = "3.15.2"
 ruff = "0.17.6"
@@ -59,6 +60,8 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.gemini/config/skills/mise-bootstrap-ops/SKILL.md" = { mode = "symlink" }
 "~/.gemini/config/skills/post-task-learn/SKILL.md" = { mode = "symlink" }
 "~/.gemini/config/skills/pwf-status/SKILL.md" = { mode = "symlink" }
+"~/.zcode/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
+"~/.zcode/cli/setting.json" = { mode = "symlink" }
 
 [bootstrap.directories."~/.config/last30days"]
 mode = "0700"
@@ -80,9 +83,18 @@ mode = "0700"
 [bootstrap.directories."~/.opencode/bin"]
 mode = "0755"
 
+[bootstrap.directories."~/.zcode"]
+mode = "0755"
+
+[bootstrap.directories."~/.zcode/cli"]
+mode = "0755"
+
+[bootstrap.directories."~/.zcode/v2"]
+mode = "0700"
+
 [tasks.bootstrap]
 description = "Install idempotent native AI harness CLIs"
-depends = ["bootstrap:claude", "bootstrap:opencode"]
+depends = ["bootstrap:claude", "bootstrap:opencode", "bootstrap:zcode"]
 
 [settings]
 auto_install_disable_tools = [

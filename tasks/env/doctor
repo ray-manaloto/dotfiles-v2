@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-#MISE description="Verify live state, isolation, symlinks, tools, Claude Code, OpenCode, Tailscale SSH, and project doctor across pc, mac, and vm"
+#MISE description="Verify live state, isolation, symlinks, tools, Claude Code, OpenCode, ZCode, Tailscale SSH, and project doctor across pc, mac, and vm"
 #USAGE flag "--target <target>" default="all" help="Environment to check: pc, mac, vm, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
-#USAGE flag "--smoke" help="Run live Claude Code and OpenCode prompt tests across requested targets"
+#USAGE flag "--smoke" help="Run live Claude Code, OpenCode, and ZCode prompt tests across requested targets"
 set -euo pipefail
 
 target="${usage_target:-all}"
@@ -108,7 +108,7 @@ check_container() {
 	fi
 
 	ts_dest="$(resolve_ts_dest "${want_ts_host}")"
-	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "dev@${ts_dest}" 'uname -m && id -un && test "${MISE_DATA_DIR:-}" = /opt/mise && command -v mise >/dev/null && command -v tailscale >/dev/null && command -v hk >/dev/null && command -v python3 >/dev/null && command -v agnix >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null && test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' 2>/dev/null)"; then
+	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "dev@${ts_dest}" 'uname -m && id -un && test "${MISE_DATA_DIR:-}" = /opt/mise && command -v mise >/dev/null && command -v tailscale >/dev/null && command -v hk >/dev/null && command -v python3 >/dev/null && command -v agnix >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null && command -v zcode >/dev/null && test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" && test -n "${ZCODE_CREDENTIAL_SECRET_FILE:-}"' 2>/dev/null)"; then
 		fail_row "${label}" "Tailscale SSH to dev@${ts_dest} failed"
 		return
 	fi
@@ -161,18 +161,31 @@ ocpath="$(command -v opencode)"
 test "${ocpath}" = "/home/dev/.opencode/bin/opencode"
 ocver="$(opencode --version </dev/null | awk '{print $NF}')"
 [[ "${ocver}" == v2.* || "${ocver}" == 2.* ]]
+test -w /home/dev/.zcode
+test "$(readlink -f /home/dev/.zcode/cli/setting.json)" = "/workspace/unix/home/.zcode/cli/setting.json"
+test "$(readlink -f /home/dev/.zcode/AGENTS.md)" = "/workspace/unix/home/.config/agents/AGENTS.md"
+zpath="$(command -v zcode)"
+test "${zpath}" = "/opt/mise/shims/zcode"
+test -s "${ZCODE_CREDENTIAL_SECRET_FILE:-}"
+test "$(stat -c '%a' "${ZCODE_CREDENTIAL_SECRET_FILE}")" = "600"
+test "$(wc -c < "${ZCODE_CREDENTIAL_SECRET_FILE}")" -ge 32
+zver="$(zcode --version </dev/null | awk '$1 == "zcode-app-cli" {print $2}')"
+test -n "${zver}"
+zcode doctor --json </dev/null | jq -e '.configuration.ok == true and .configuration.user.status == "loaded" and (.configuration.diagnostics | length == 0)' >/dev/null
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
 	sout="$(claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null)"
 	[[ "${sout}" == *OK* ]]
 	oc_out="$(opencode --standalone run --archived "Reply with exactly: OK" </dev/null)"
 	[[ "${oc_out}" == *OK* ]]
+	z_out="$(zcode -p "Reply with exactly: OK" </dev/null)"
+	[[ "${z_out}" == *OK* ]]
 	smoke_suffix=", smoke=OK"
 fi
-printf 'claude=%s, opencode=%s%s' "${cver}" "${ocver}" "${smoke_suffix}"
+printf 'claude=%s, opencode=%s, zcode=%s%s' "${cver}" "${ocver}" "${zver}" "${smoke_suffix}"
 CONTAINER
 	)" || [[ -z ${claude_out} ]]; then
-		fail_row "${label}" "Claude Code / OpenCode / agent-secrets verification failed"
+		fail_row "${label}" "Claude Code / OpenCode / ZCode / agent-secrets verification failed"
 		return
 	fi
 
@@ -216,7 +229,7 @@ check_vm() {
 	fi
 
 	ts_dest="$(resolve_ts_dest "${want_ts_host}")"
-	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "admin@${ts_dest}" 'uname -m && id -un && command -v mise && command -v tailscale >/dev/null && command -v hk >/dev/null && command -v python3 >/dev/null && command -v agnix >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null && test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' 2>/dev/null)"; then
+	if ! ssh_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "admin@${ts_dest}" 'uname -m && id -un && command -v mise && command -v tailscale >/dev/null && command -v hk >/dev/null && command -v python3 >/dev/null && command -v agnix >/dev/null && command -v claude >/dev/null && command -v opencode >/dev/null && command -v zcode >/dev/null && test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" && test -n "${ZCODE_CREDENTIAL_SECRET_FILE:-}"' 2>/dev/null)"; then
 		fail_row "vm" "Tailscale SSH to admin@${ts_dest} failed"
 		return
 	fi
@@ -259,15 +272,29 @@ ocpath="$(/bin/bash -lc 'command -v opencode')"
 test "${ocpath}" = "${HOME}/.opencode/bin/opencode"
 ocver="$(/bin/bash -lc 'opencode --version </dev/null' | awk '{print $NF}')"
 [[ "${ocver}" == v2.* || "${ocver}" == 2.* ]]
+link_zc="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.zcode/cli/setting.json")"
+want_zc="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.zcode/cli/setting.json")"
+test "${link_zc}" = "${want_zc}"
+link_zc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.zcode/AGENTS.md")"
+want_zc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/agents/AGENTS.md")"
+test "${link_zc_agents}" = "${want_zc_agents}"
+zpath="$(/bin/bash -lc 'command -v zcode')"
+test "${zpath}" = "${HOME}/.local/share/mise/shims/zcode"
+/bin/bash -lc 'test -s "${ZCODE_CREDENTIAL_SECRET_FILE:-}" && test "$(stat -f "%Lp" "${ZCODE_CREDENTIAL_SECRET_FILE}")" = "600" && test "$(wc -c < "${ZCODE_CREDENTIAL_SECRET_FILE}")" -ge 32'
+zver="$(/bin/bash -lc 'zcode --version </dev/null' | awk '$1 == "zcode-app-cli" {print $2}')"
+test -n "${zver}"
+/bin/bash -lc 'zcode doctor --json </dev/null' | jq -e '.configuration.ok == true and .configuration.user.status == "loaded" and (.configuration.diagnostics | length == 0)' >/dev/null
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
   sout="$(/bin/bash -lc 'claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null')"
   [[ "${sout}" == *OK* ]]
   oc_out="$(/bin/bash -lc 'opencode --standalone run --archived "Reply with exactly: OK" </dev/null')"
   [[ "${oc_out}" == *OK* ]]
+  z_out="$(/bin/bash -lc 'zcode -p "Reply with exactly: OK" </dev/null')"
+  [[ "${z_out}" == *OK* ]]
   smoke_suffix=" | smoke=OK"
 fi
-printf '%s | mise=%s | %s | claude=%s | opencode=%s | tailscale-ssh=OK | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${ocver}" "${smoke_suffix}"
+printf '%s | mise=%s | %s | claude=%s | opencode=%s | zcode=%s | tailscale-ssh=OK | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${ocver}" "${zver}" "${smoke_suffix}"
 GUEST
 	)"; then
 		fail_row "vm" "guest verification failed"

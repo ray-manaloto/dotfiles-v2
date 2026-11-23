@@ -120,3 +120,24 @@ for key in ("disable_tools", "auto_install_disable_tools"):
 PY
 '''
 hint = "Keep claude, codex, agy, opencode, and mise in disable_tools and auto_install_disable_tools (not [tools]) in unix/home/.config/mise/config.toml."
+
+[doctor.checks.zcode-config]
+description = "Committed ZCode settings and AGENTS.md are registered in [dotfiles] and pass zcode doctor --json"
+run = '''
+test -f unix/home/.zcode/cli/setting.json
+python3 - <<'PY'
+import json
+import tomllib
+from pathlib import Path
+
+json.loads(Path("unix/home/.zcode/cli/setting.json").read_text(encoding="utf-8"))
+cfg = tomllib.loads(Path("unix/home/.config/mise/config.toml").read_text(encoding="utf-8"))
+dotfiles = cfg.get("dotfiles", {})
+for key in ("~/.zcode/cli/setting.json", "~/.zcode/AGENTS.md"):
+    assert key in dotfiles, f"Missing {key} in unix/home/.config/mise/config.toml [dotfiles]"
+PY
+if command -v zcode >/dev/null 2>&1; then
+  ZCODE_CLI_SETTINGS_FILE="$PWD/unix/home/.zcode/cli/setting.json" zcode doctor --json </dev/null | jq -e '.configuration.ok == true and .configuration.user.status == "loaded" and (.configuration.diagnostics | length == 0)' >/dev/null
+fi
+'''
+hint = "Keep unix/home/.zcode/cli/setting.json valid, registered in [dotfiles] with ~/.zcode/AGENTS.md, and passing zcode doctor --json."

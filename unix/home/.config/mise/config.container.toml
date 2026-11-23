@@ -87,6 +87,21 @@ owner = "dev"
 group = "dev"
 mode = "0755"
 
+[bootstrap.directories."/home/dev/.zcode"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.zcode/cli"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.zcode/v2"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
 [bootstrap.files."/etc/profile.d/dotfiles-v2-env.sh"]
 source = "./assets/container/dotfiles-v2-env.sh"
 owner = "root"

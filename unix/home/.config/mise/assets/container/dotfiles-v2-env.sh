@@ -1,6 +1,7 @@
 # shellcheck shell=sh
 export container=docker
 export CLAUDE_CONFIG_DIR=/home/dev/.claude
+export ZCODE_CREDENTIAL_SECRET_FILE=/home/dev/.zcode/v2/credential-secret
 export MISE_DATA_DIR=/opt/mise
 export MISE_CACHE_DIR=/opt/mise/cache
 export MISE_ENV=container
