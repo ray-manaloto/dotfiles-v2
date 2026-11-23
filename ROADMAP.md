@@ -47,3 +47,25 @@
   `knowledge-base-v2` inside `dotfiles-v2` containers (`jq` in container toolset,
   `:ro` `~/.config/agents/private-patterns.txt` mount, persistent `kb.noindex` /
   `pins.json` mounts, and `fnox` proxy forwarding).
+- [x] **Follow-up (Clean-room `herdr_roll` & post-review verification gate):**
+  Shipped clean-room 6-harness rolling-restart engine (`herdr_roll`, `e73ce7b`,
+  `5b5513a`), `repotools trust` worktree wiring, and ordered 2-stage
+  post-review verification gate (`2eb3410`).
+- [ ] **Follow-up (Herdr rolling restarts & issue-mapped PWF workflow):**
+  - [ ] [#4](https://github.com/ray-manaloto/dotfiles-v2/issues/4) Cut over
+    global `roll:*` `mise` tasks and Herdr skills from legacy `dotfiles` to
+    `dotfiles-v2` (`PLAN_ID` / worktree slug: `herdr-roll-global-cutover`).
+  - [ ] [#5](https://github.com/ray-manaloto/dotfiles-v2/issues/5) Fix
+    `OpenCodeAdapter` session-ID resolution for `opencode --standalone` tabs
+    without `-s` (`PLAN_ID` / worktree slug: `herdr-roll-opencode-sid`).
+  - [ ] [#7](https://github.com/ray-manaloto/dotfiles-v2/issues/7) Live
+    `--apply` verification across `claude`, `hermes`, `zcode`, and full
+    reboot/wave flows (`PLAN_ID` / worktree slug: `herdr-roll-live-verify`;
+    blocked by `#4`, `#5`).
+  - [ ] [#8](https://github.com/ray-manaloto/dotfiles-v2/issues/8) Add
+    nanosecond-timestamped verification evidence, process `lstart`/hook-load
+    proof to `roll:verify`, and dialog triage docs (`PLAN_ID` / worktree slug:
+    `herdr-roll-verify-proof`; blocked by `#4`).
+  - [ ] [#6](https://github.com/ray-manaloto/dotfiles-v2/issues/6) Enforce
+    GitHub issue -> PWF `PLAN_ID` -> git worktree mapping and nanosecond
+    verification evidence (`PLAN_ID` / worktree slug: `worktree-issue-pwf-map`).
