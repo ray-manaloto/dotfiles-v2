@@ -30,8 +30,7 @@ COPY unix/home/.config/mise/assets/container/ /tmp/phase1/assets/container/
 
 RUN --mount=type=cache,id=apt-cache-${TARGETARCH},target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=apt-lib-${TARGETARCH},target=/var/lib/apt,sharing=locked \
-    mise --version \
-    && rm -f /etc/apt/apt.conf.d/docker-clean \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
     && export HOME=/tmp/phase1-home \
       XDG_DATA_HOME=/tmp/phase1-home/data \
       XDG_STATE_HOME=/tmp/phase1-home/state \
@@ -41,6 +40,7 @@ RUN --mount=type=cache,id=apt-cache-${TARGETARCH},target=/var/cache/apt,sharing=
       MISE_STATE_DIR=/tmp/phase1-mise/state \
       MISE_CONFIG_DIR=/tmp/phase1 \
       MISE_TRUSTED_CONFIG_PATHS=/tmp/phase1 \
+    && mise --version \
     && mise -E container-prune-ubuntu bootstrap --only accounts --yes \
     && envs="container,linux" \
     && if [ -n "${DOTFILES_APT_CACHE}" ]; then envs="${envs},ubuntu-cache"; fi \
