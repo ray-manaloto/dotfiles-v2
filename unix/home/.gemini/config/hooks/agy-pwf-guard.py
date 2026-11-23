@@ -217,26 +217,35 @@ def _is_plan_all_complete(plan_path: Path) -> bool:
 
 def _resolve_active_plan(repo_root: Path) -> Path | None:
     pwf_root_raw = os.environ.get("PWF_PLAN_ROOT", "").strip()
+    env_plan_id = os.environ.get("PLAN_ID", "").strip()
     if pwf_root_raw:
         base = Path(os.path.expanduser(pwf_root_raw)).resolve(strict=False)
         if not base.is_dir():
             return None
+        if env_plan_id:
+            if not _valid_slug(env_plan_id):
+                return None
+            candidate = base / ".planning" / env_plan_id / "task_plan.md"
+            return candidate if candidate.is_file() else None
+        has_local_pin, local_plan_id = _read_plan_id_from_mise_local(repo_root)
+        if has_local_pin:
+            if not _valid_slug(local_plan_id):
+                return None
+            candidate = base / ".planning" / local_plan_id / "task_plan.md"
+            return candidate if candidate.is_file() else None
     else:
         base = repo_root
-
-    env_plan_id = os.environ.get("PLAN_ID", "").strip()
-    if env_plan_id:
-        if not _valid_slug(env_plan_id):
-            return None
-        candidate = base / ".planning" / env_plan_id / "task_plan.md"
-        return candidate if candidate.is_file() else None
-
-    has_local_pin, local_plan_id = _read_plan_id_from_mise_local(repo_root)
-    if has_local_pin:
-        if not _valid_slug(local_plan_id):
-            return None
-        candidate = base / ".planning" / local_plan_id / "task_plan.md"
-        return candidate if candidate.is_file() else None
+        has_local_pin, local_plan_id = _read_plan_id_from_mise_local(repo_root)
+        if has_local_pin:
+            if not _valid_slug(local_plan_id):
+                return None
+            candidate = base / ".planning" / local_plan_id / "task_plan.md"
+            return candidate if candidate.is_file() else None
+        if env_plan_id:
+            if not _valid_slug(env_plan_id):
+                return None
+            candidate = base / ".planning" / env_plan_id / "task_plan.md"
+            return candidate if candidate.is_file() else None
 
     active_file = base / ".planning" / ".active_plan"
     if active_file.is_file():
@@ -709,6 +718,45 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 == _allow()
             )
             checks.append("worktree_rm_learn_gate")
+
+            # 10. mise.local.toml pin overrides stale completed os.environ["PLAN_ID"]
+            os.environ["PLAN_ID"] = "plan-done"
+            (pwf_repo / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "plan-a"\n', encoding="utf-8"
+            )
+            res = _run_hook(
+                {
+                    "toolCall": {
+                        "name": "edit_file",
+                        "args": {"Path": str(pwf_repo / "AGENTS.md")},
+                    }
+                }
+            )
+            assert res == _allow(), (
+                f"mise.local.toml should override stale env PLAN_ID: {res}"
+            )
+            checks.append("mise_local_overrides_stale_env_plan_id")
+
+            # 11. Invalid or missing mise.local.toml pin fails closed despite valid env PLAN_ID
+            os.environ["PLAN_ID"] = "plan-b"
+            for bad_slug in ("missing-local", "../bad"):
+                (pwf_repo / "mise.local.toml").write_text(
+                    f'[env]\nPLAN_ID = "{bad_slug}"\n', encoding="utf-8"
+                )
+                res = _run_hook(
+                    {
+                        "toolCall": {
+                            "name": "edit_file",
+                            "args": {"Path": str(pwf_repo / "AGENTS.md")},
+                        }
+                    }
+                )
+                assert res.get("decision") == "deny", (
+                    f"invalid mise.local.toml ({bad_slug}) must deny despite env PLAN_ID: {res}"
+                )
+            (pwf_repo / "mise.local.toml").unlink()
+            os.environ.pop("PLAN_ID", None)
+            checks.append("invalid_mise_local_fails_closed_despite_env")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)

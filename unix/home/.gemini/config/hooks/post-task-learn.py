@@ -36,6 +36,8 @@ SHIP_CLOSEOUT_RE = re.compile(r"(?:^|[\s/])ship\.py\s+(merge|cleanup)\b")
 USER_REQUEST_RE = re.compile(r"<USER_REQUEST>([\s\S]*?)</USER_REQUEST>")
 USER_LEARN_CMD_RE = re.compile(r"^\s*/learn(?:\s|$)")
 SYSTEM_LEARN_RE = re.compile(r"Automated post-task /learn check")
+SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+PLAN_ID_LINE_RE = re.compile(r'^\s*PLAN_ID\s*=\s*"([^"\r\n]+)"')
 
 
 def _is_ignored_system_message(content: str) -> bool:
@@ -358,6 +360,45 @@ def _parse_pwf_plan(text: str) -> tuple[int, int, int, int, bool]:
     return total, counts["complete"], counts["in_progress"], counts["pending"], valid
 
 
+def _valid_slug(slug: str) -> bool:
+    return bool(slug and SAFE_SLUG_RE.match(slug) and slug not in (".", ".."))
+
+
+def _read_plan_id_from_mise_local(repo_root: Path) -> tuple[bool, str]:
+    local_cfg = repo_root / "mise.local.toml"
+    if not local_cfg.is_file():
+        return False, ""
+    try:
+        text = local_cfg.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True, ""
+
+    try:
+        import tomllib  # type: ignore[import-not-found]
+    except ImportError:
+        tomllib = None
+
+    if tomllib is not None:
+        try:
+            parsed = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return True, ""
+        if isinstance(parsed, dict):
+            env_tbl = parsed.get("env")
+            if isinstance(env_tbl, dict):
+                val = env_tbl.get("PLAN_ID")
+                if isinstance(val, str):
+                    return True, val.strip()
+        return False, ""
+
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0]
+        match = PLAN_ID_LINE_RE.match(stripped)
+        if match:
+            return True, match.group(1).strip()
+    return False, ""
+
+
 def _plans_for_root(root: Path) -> list[Path]:
     planning = root / ".planning"
     if planning.is_dir():
@@ -403,16 +444,28 @@ def _discover_plans(payload: dict[str, Any], touched_plans: list[Path]) -> list[
             seen.add(key)
             found.append(p)
 
-    plan_id = os.environ.get("PLAN_ID", "").strip()
+    env_plan_id = os.environ.get("PLAN_ID", "").strip()
     pwf_root_raw = os.environ.get("PWF_PLAN_ROOT", "").strip()
-    if plan_id:
-        base = Path(pwf_root_raw) if pwf_root_raw else (roots[0] if roots else None)
-        if base is not None:
-            add_plan(base / ".planning" / plan_id / "task_plan.md")
+    if pwf_root_raw:
+        if env_plan_id:
+            if _valid_slug(env_plan_id):
+                add_plan(
+                    Path(pwf_root_raw) / ".planning" / env_plan_id / "task_plan.md"
+                )
+        else:
+            seen_roots: set[str] = set()
+            for root in [Path(pwf_root_raw), *roots]:
+                try:
+                    rkey = str(root.resolve())
+                except OSError:
+                    rkey = str(root)
+                if rkey in seen_roots or not root.is_dir():
+                    continue
+                seen_roots.add(rkey)
+                for p in _plans_for_root(root):
+                    add_plan(p)
     else:
-        seen_roots: set[str] = set()
-        if pwf_root_raw:
-            roots = [Path(pwf_root_raw), *roots]
+        seen_roots = set()
         for root in roots:
             try:
                 rkey = str(root.resolve())
@@ -421,8 +474,16 @@ def _discover_plans(payload: dict[str, Any], touched_plans: list[Path]) -> list[
             if rkey in seen_roots or not root.is_dir():
                 continue
             seen_roots.add(rkey)
-            for p in _plans_for_root(root):
-                add_plan(p)
+            has_local_pin, local_plan_id = _read_plan_id_from_mise_local(root)
+            if has_local_pin:
+                if _valid_slug(local_plan_id):
+                    add_plan(root / ".planning" / local_plan_id / "task_plan.md")
+            elif env_plan_id:
+                if _valid_slug(env_plan_id):
+                    add_plan(root / ".planning" / env_plan_id / "task_plan.md")
+            else:
+                for p in _plans_for_root(root):
+                    add_plan(p)
 
     for touched in touched_plans:
         add_plan(touched)
@@ -625,10 +686,6 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         ship_closeout,
     ) = _analyze_slice(new_lines, user_text, base_dir, artifact_dir)
 
-    if already_learned:
-        _write_state(state_path, len(lines), learned_plans, None)
-        return {}
-
     discovered_plans = _discover_plans(payload, touched_plans)
     completed_unlearned: list[tuple[Path, str, str, int]] = []
     has_incomplete_plan = False
@@ -655,6 +712,15 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 )
         else:
             has_incomplete_plan = True
+
+    if already_learned:
+        wrote_proposal = _slice_wrote_learning_proposal(new_lines, base_dir)
+        explicit_learn = bool(user_text and _is_explicit_user_learn(user_text))
+        for _, plan_key, digest, err_count in completed_unlearned:
+            if wrote_proposal or explicit_learn or err_count == 0:
+                learned_plans[plan_key] = digest
+        _write_state(state_path, len(lines), learned_plans, None)
+        return {}
 
     if completed_unlearned:
         labels = ", ".join(_plan_label(p) for p, _, _, _ in completed_unlearned)
@@ -1315,6 +1381,182 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             assert res11a.get("decision") == "continue", f"case 11a failed: {res11a}"
             assert _run_hook(dict(p11, continuationActive=True)) == {}
             checks.append("zero_error_placeholder_allows_fast_exit")
+
+            # 12. already_learned persists completed plan digest on proactive learning_proposal.md edit,
+            #     while skill-read-only on an error-logging plan does NOT persist digest
+            ws12a = root / "ws12a"
+            pdir12a = ws12a / ".planning" / "proactive12"
+            pdir12a.mkdir(parents=True)
+            plan12a = pdir12a / "task_plan.md"
+            plan12a.write_text(
+                "# Proactive12\n\n### Phase 1: Do\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| Bug D | Fixed D |\n",
+                encoding="utf-8",
+            )
+            t12a = root / "t12a.jsonl"
+            art12a = root / "art12a"
+            art12a.mkdir()
+            _write_jsonl(
+                t12a,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {"name": "edit_file", "args": {"Path": str(plan12a)}}
+                        ],
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "write_file",
+                                "args": {"Path": str(art12a / "learning_proposal.md")},
+                            }
+                        ],
+                    },
+                ],
+            )
+            p12a = {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t12a),
+                "artifactDirectoryPath": str(art12a),
+                "cwd": str(ws12a),
+            }
+            assert _run_hook(p12a) == {}, (
+                "case 12a initial proactive learn should allow"
+            )
+            state12a = json.loads(
+                (art12a / ".post-task-learn-state.json").read_text(encoding="utf-8")
+            )
+            assert (
+                state12a["learned_plans"].get(str(plan12a.resolve()))
+                == hashlib.sha256(plan12a.read_bytes()).hexdigest()
+            ), f"case 12a failed to persist digest: {state12a}"
+            _write_jsonl(
+                t12a,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Next</USER_REQUEST>",
+                    }
+                ],
+            )
+            assert _run_hook(p12a) == {}, "case 12a next turn should remain deduped"
+
+            ws12b = root / "ws12b"
+            pdir12b = ws12b / ".planning" / "skillread12"
+            pdir12b.mkdir(parents=True)
+            plan12b = pdir12b / "task_plan.md"
+            plan12b.write_text(
+                "# SkillRead12\n\n### Phase 1: Do\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| Bug E | Fixed E |\n",
+                encoding="utf-8",
+            )
+            t12b = root / "t12b.jsonl"
+            art12b = root / "art12b"
+            art12b.mkdir()
+            _write_jsonl(
+                t12b,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "read_file",
+                                "args": {"Path": "post-task-learn/SKILL.md"},
+                            }
+                        ],
+                    },
+                ],
+            )
+            p12b = {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t12b),
+                "artifactDirectoryPath": str(art12b),
+                "cwd": str(ws12b),
+            }
+            assert _run_hook(p12b) == {}, "case 12b skill-read turn should return {}"
+            state12b = json.loads(
+                (art12b / ".post-task-learn-state.json").read_text(encoding="utf-8")
+            )
+            assert str(plan12b.resolve()) not in state12b["learned_plans"], (
+                f"case 12b skill-read must not persist error plan digest: {state12b}"
+            )
+            _write_jsonl(
+                t12b,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Next</USER_REQUEST>",
+                    }
+                ],
+            )
+            res12b_next = _run_hook(p12b)
+            assert res12b_next.get("decision") == "continue" and (
+                "1 logged error(s)" in res12b_next.get("reason", "")
+            ), f"case 12b next turn should trigger hard gate: {res12b_next}"
+            checks.append("already_learned_persists_completed_plan_digest")
+
+            # 13. mise.local.toml PLAN_ID pin overrides stale inherited os.environ["PLAN_ID"]
+            ws13 = root / "ws13"
+            stale_dir13 = ws13 / ".planning" / "stale-env"
+            stale_dir13.mkdir(parents=True)
+            (stale_dir13 / "task_plan.md").write_text(
+                "# Stale\n\n### Phase 1: Do\n**Status:** in_progress\n",
+                encoding="utf-8",
+            )
+            local_dir13 = ws13 / ".planning" / "local-pin"
+            local_dir13.mkdir(parents=True)
+            (local_dir13 / "task_plan.md").write_text(
+                "# Local\n\n### Phase 1: Do\n**Status:** complete\n",
+                encoding="utf-8",
+            )
+            (ws13 / "mise.local.toml").write_text(
+                '[env]\nPLAN_ID = "local-pin"\n', encoding="utf-8"
+            )
+            t13 = root / "t13.jsonl"
+            art13 = root / "art13"
+            art13.mkdir()
+            _write_jsonl(
+                t13,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    }
+                ],
+            )
+            os.environ["PLAN_ID"] = "stale-env"
+            try:
+                res13 = _run_hook(
+                    {
+                        "terminationReason": "NO_TOOL_CALL",
+                        "fullyIdle": True,
+                        "transcriptPath": str(t13),
+                        "artifactDirectoryPath": str(art13),
+                        "cwd": str(ws13),
+                    }
+                )
+            finally:
+                os.environ.pop("PLAN_ID", None)
+            assert (
+                res13.get("decision") == "continue"
+                and "local-pin" in res13.get("reason", "")
+                and "stale-env" not in res13.get("reason", "")
+            ), f"case 13 failed: {res13}"
+            checks.append("mise_local_overrides_stale_env_plan_id")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)
