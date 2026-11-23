@@ -176,16 +176,19 @@ test -L /home/dev/.gemini/config/skills
 test "$(readlink -f /home/dev/.gemini/config/skills)" = "/home/dev/.agents/skills"
 python3 - <<'PY'
 import json
+import os
 import tomllib
 from pathlib import Path
 
-c = json.loads(Path("/home/dev/.claude.json").read_text(encoding="utf-8"))
+claude_cfg = Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR") else Path("/home/dev/.claude.json")
+c = json.loads(claude_cfg.read_text(encoding="utf-8"))
 for srv in ("mise", "hk", "pitchfork", "usage-mise"):
-    assert srv in c.get("mcpServers", {}), f"Missing claude mcpServers.{srv}"
+    assert srv in c.get("mcpServers", {}), f"Missing claude mcpServers.{srv} in {claude_cfg}"
 cx = tomllib.loads(Path("/home/dev/.codex/config.toml").read_text(encoding="utf-8"))
 for srv in ("mise", "hk", "pitchfork", "usage-mise"):
     assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
 PY
+claude mcp get mise </dev/null >/dev/null
 for _sk in aube communique flint fnox hk-configure hk-debug pitchfork usage vercel-board; do
 	test -f "/home/dev/.agents/skills/${_sk}/SKILL.md"
 	test -f "/home/dev/.claude/skills/${_sk}/SKILL.md"
@@ -340,9 +343,10 @@ import tomllib
 from pathlib import Path
 
 assert os.path.realpath(os.path.expanduser("~/.gemini/config/skills")) == os.path.realpath(os.path.expanduser("~/.agents/skills")), "~/.gemini/config/skills must resolve to ~/.agents/skills"
-c = json.loads(Path(os.path.expanduser("~/.claude.json")).read_text(encoding="utf-8"))
+claude_cfg = Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR") else Path.home() / ".claude.json"
+c = json.loads(claude_cfg.read_text(encoding="utf-8"))
 for srv in ("mise", "hk", "pitchfork", "usage-mise"):
-    assert srv in c.get("mcpServers", {}), f"Missing claude mcpServers.{srv}"
+    assert srv in c.get("mcpServers", {}), f"Missing claude mcpServers.{srv} in {claude_cfg}"
 cx = tomllib.loads(Path(os.path.expanduser("~/.codex/config.toml")).read_text(encoding="utf-8"))
 for srv in ("mise", "hk", "pitchfork", "usage-mise"):
     assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"

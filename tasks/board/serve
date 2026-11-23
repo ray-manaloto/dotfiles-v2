@@ -19,9 +19,12 @@ if [[ ! -s ${token_file} ]]; then
 	(
 		umask 077
 		tmp="${token_file}.tmp.$$"
+		trap 'rm -f "${tmp}"' EXIT
 		python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_hex(32))' >"${tmp}"
 		chmod 0600 "${tmp}"
-		mv -n "${tmp}" "${token_file}" 2>/dev/null || rm -f "${tmp}"
+		if ! ln "${tmp}" "${token_file}" 2>/dev/null && [[ ! -s ${token_file} ]]; then
+			mv -f "${tmp}" "${token_file}"
+		fi
 	)
 else
 	chmod 0600 "${token_file}"

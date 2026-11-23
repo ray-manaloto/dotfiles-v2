@@ -11,6 +11,13 @@ hosts, Linux containers, and macOS VMs.
   `status.state` is `"idle"` or `"done"` (omit `--if idle` when `"done"`). Never
   send payloads via `hc send`, and never touch `ANTIGRAVITY_CSRF_TOKEN`.
 - **Containers:** Always pass `-e container=docker`; never pass `--privileged`.
+- **Pre-ship code review gate:** Before pushing, fast-forward merging into
+  `main`/`master`, or opening a pull request on any non-documentation change,
+  run `/code-review:code-review` (`+ code-review-commons`, fanning out across
+  read-only slices when diffs exceed ~1,000 lines), fix confirmed `CRITICAL`,
+  `HIGH`, and `MEDIUM` findings, and record the `HEAD` receipt via
+  `python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --summary "..."`.
+  Use `/code-review:pr-code-review` on open GitHub pull requests.
 - **Privacy and git hygiene:** Stage changed files explicitly by name (never
   `git add -A` or `git add .`). Never commit secrets, tokens, private
   hostnames (use `pc` or "remote Linux host"), or local `/Users/...` home

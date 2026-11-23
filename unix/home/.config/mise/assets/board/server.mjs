@@ -69,13 +69,19 @@ function findVercelBoardPkgRoot() {
   }
   let cur = dirname(realpathSync(resolveVbBinary()));
   for (let i = 0; i < 10; i += 1) {
-    const pkgFile = join(cur, "package.json");
-    if (existsSync(pkgFile)) {
-      try {
-        const pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
-        if (pkg?.name === "@vercel/board") return cur;
-      } catch {
-        // Keep walking up.
+    for (const candidate of [
+      cur,
+      join(cur, "@vercel", "board"),
+      join(cur, "node_modules", "@vercel", "board"),
+    ]) {
+      const pkgFile = join(candidate, "package.json");
+      if (existsSync(pkgFile)) {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
+          if (pkg?.name === "@vercel/board") return realpathSync(candidate);
+        } catch {
+          // Keep walking up.
+        }
       }
     }
     const parent = dirname(cur);
@@ -167,7 +173,9 @@ async function main() {
   const expectedDigest = sha256(rawToken);
 
   const pkgRoot = findVercelBoardPkgRoot();
-  const { board } = await import(pathToFileURL(join(pkgRoot, "dist/index.node.mjs")).href);
+  const { board, HttpError } = await import(
+    pathToFileURL(join(pkgRoot, "dist/index.node.mjs")).href
+  );
   const { local } = await import(pathToFileURL(join(pkgRoot, "dist/backend-local.mjs")).href);
   const { inspector } = await import(pathToFileURL(join(pkgRoot, "dist/inspect.mjs")).href);
 
@@ -185,9 +193,21 @@ async function main() {
         }
         return null;
       }
-      if (tailscaleHost && new URL(request.url).host.toLowerCase() === tailscaleHost) {
+      if (tailscaleHost && new URL(request.audience).host.toLowerCase() === tailscaleHost) {
         const tsCaller = parseTailscaleLogin(request.headers.get("tailscale-user-login"));
         if (tsCaller !== null) {
+          const site = request.headers.get("sec-fetch-site");
+          const reqOrigin = request.headers.get("origin");
+          if (
+            (site !== null && site !== "same-origin" && site !== "none") ||
+            (reqOrigin !== null && reqOrigin !== new URL(request.audience).origin)
+          ) {
+            throw new HttpError(
+              403,
+              "forbidden",
+              "cross-site requests cannot authenticate via Tailscale identity",
+            );
+          }
           return {
             id: `tailscale:user:${tsCaller.login}`,
             kind: "person",
@@ -210,7 +230,7 @@ async function main() {
 
     if (req.method === "GET" && pathOnly === "/healthz") {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      res.end(JSON.stringify({ ok: true, mount: MOUNT }));
+      res.end(JSON.stringify({ ok: true, mount: MOUNT, tailscale_host: tailscaleHost }));
       return;
     }
 
@@ -237,7 +257,41 @@ async function main() {
         ...(body && body.length > 0 ? { body } : {}),
         signal: controller.signal,
       });
-      const handler = pathOnly === MOUNT || pathOnly.startsWith(`${MOUNT}/`) ? team.fetch : inspect;
+      const isApi = pathOnly === MOUNT || pathOnly.startsWith(`${MOUNT}/`);
+      if (!isApi) {
+        const bearer = parseBearer(webReq.headers.get("authorization"));
+        const bearerOk = bearer !== null && timingSafeEqual(sha256(bearer), expectedDigest);
+        const isTailnet = Boolean(
+          tailscaleHost && new URL(origin).host.toLowerCase() === tailscaleHost,
+        );
+        if (isTailnet && !bearerOk) {
+          const tsCaller = parseTailscaleLogin(webReq.headers.get("tailscale-user-login"));
+          if (tsCaller === null) {
+            res.writeHead(401, { "content-type": "application/json" });
+            res.end(
+              JSON.stringify({
+                error: { code: "unauthorized", message: "authentication required" },
+              }),
+            );
+            return;
+          }
+          const site = webReq.headers.get("sec-fetch-site");
+          const reqOrigin = webReq.headers.get("origin");
+          if (
+            (site !== null && site !== "same-origin" && site !== "none") ||
+            (reqOrigin !== null && reqOrigin !== origin)
+          ) {
+            res.writeHead(403, { "content-type": "application/json" });
+            res.end(
+              JSON.stringify({
+                error: { code: "forbidden", message: "cross-site request forbidden" },
+              }),
+            );
+            return;
+          }
+        }
+      }
+      const handler = isApi ? team.fetch : inspect;
       const webRes = await handler(webReq);
       const outHeaders = {};
       webRes.headers.forEach((value, key) => {
@@ -254,8 +308,13 @@ async function main() {
       }
       res.end();
     } catch (error) {
+      if (controller.signal.aborted || res.writableEnded) return;
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
       const status = error?.status === 413 ? 413 : 500;
-      if (!res.headersSent) res.writeHead(status, { "content-type": "application/json" });
+      res.writeHead(status, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
           error: {
@@ -275,9 +334,14 @@ async function main() {
     });
   });
 
+  let closing = false;
   const shutdown = async () => {
-    server.closeAllConnections?.();
-    await new Promise((done) => server.close(() => done()));
+    if (closing) return;
+    closing = true;
+    await new Promise((done) => {
+      server.close(() => done());
+      server.closeAllConnections?.();
+    });
     await backend.close?.();
     process.exit(0);
   };

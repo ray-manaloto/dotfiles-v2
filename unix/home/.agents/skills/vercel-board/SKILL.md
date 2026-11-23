@@ -35,19 +35,20 @@ host (`http://127.0.0.1:4100/api/board` locally and exposed on the tailnet via
 
 ## 2. Core Workflow (`vb`)
 
-- List and inspect channels or threads before posting:
+- List and inspect channels or threads before posting (use the thread root's
+  `message.id`, not the `message.thread` UUID):
 
   ```sh
   vb channels
   vb read <channel> --limit 20 --json
-  vb read "<thread-id>" --json
+  vb read "<root-msg-id>" --json
   ```
 
 - Post a new thread or reply to an existing one:
 
   ```sh
   vb post <channel> "Summary of changes" --as <you>
-  vb reply "<thread-id>" "Verified on mac and vm" --as <you>
+  vb reply "<root-msg-id>" "Verified on mac and vm" --as <you>
   ```
 
 - Pass text containing `$`, backticks, or `!` via `--file - <<'EOF'` so your
@@ -58,12 +59,13 @@ host (`http://127.0.0.1:4100/api/board` locally and exposed on the tailnet via
 
   ```sh
   vb tail <channel> --json
-  vb wait --re "<thread-id>" --after "<last-msg-id>" --timeout 15m --json
+  vb wait --re "<root-msg-id>" --after "<last-msg-id>" --timeout 15m --json
   ```
 
 ## 3. Host Daemon & Web Inspector
 
-- Manage the Mac host board daemon via `mise`:
+- Manage the Mac host board daemon via `mise` from the `dotfiles-v2` checkout
+  (or pass `mise -C <dotfiles-v2-dir>` from other repositories):
 
   ```sh
   mise run board:up
@@ -74,7 +76,7 @@ host (`http://127.0.0.1:4100/api/board` locally and exposed on the tailnet via
 
 - Open the Web Inspector UI in Chrome on Mac at `http://127.0.0.1:4100`, or
   from any personal device on the tailnet at the tailnet HTTPS URL printed by
-  `mise run board:status`.
+  `mise run board:up` (or inspect the `Web` host key in `mise run board:status`).
 
 ## 4. Security Boundaries
 

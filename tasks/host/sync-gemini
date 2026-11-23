@@ -111,6 +111,8 @@ if check_only:
     gemini_skills = host_cfg / "skills"
     if not gemini_skills.is_symlink() or gemini_skills.resolve(strict=False) != host_agents_skills.resolve(strict=False):
         errors.append(f"{gemini_skills} must symlink to {host_agents_skills}")
+    if host_claude_skills.is_symlink():
+        errors.append(f"{host_claude_skills} must be a real directory, not a symlink")
 
     for sk in skill_names:
         allowed_skill_srcs = {(src_skills / sk).resolve(), (main_src_skills / sk).resolve()}
@@ -159,14 +161,37 @@ for rel in managed_rels:
     linked += 1
 
 host_agents_skills.mkdir(parents=True, exist_ok=True)
+if host_claude_skills.is_symlink():
+    if host_claude_skills.resolve(strict=False) == host_agents_skills.resolve(strict=False):
+        host_claude_skills.unlink()
+    else:
+        raise RuntimeError(
+            f"Refusing to replace symlink {host_claude_skills} -> {os.readlink(host_claude_skills)}"
+        )
 host_claude_skills.mkdir(parents=True, exist_ok=True)
 gemini_skills = host_cfg / "skills"
 if gemini_skills.is_symlink():
     if gemini_skills.resolve(strict=False) != host_agents_skills.resolve(strict=False):
         gemini_skills.unlink()
         os.symlink("../../.agents/skills", gemini_skills)
-elif gemini_skills.exists():
+elif gemini_skills.is_dir():
+    non_legacy = []
+    for child in gemini_skills.iterdir():
+        if child.name == ".DS_Store":
+            continue
+        if child.is_dir() and not child.is_symlink():
+            sub = [c.name for c in child.iterdir() if c.name != ".DS_Store"]
+            if sub == ["SKILL.md"] and (child / "SKILL.md").is_symlink():
+                continue
+        non_legacy.append(child.name)
+    if non_legacy:
+        raise RuntimeError(
+            f"Refusing to delete non-legacy entries in {gemini_skills}: {', '.join(sorted(non_legacy))}"
+        )
     shutil.rmtree(gemini_skills)
+    os.symlink("../../.agents/skills", gemini_skills)
+elif gemini_skills.exists():
+    gemini_skills.unlink()
     os.symlink("../../.agents/skills", gemini_skills)
 else:
     gemini_skills.parent.mkdir(parents=True, exist_ok=True)

@@ -127,5 +127,6 @@ block = """
 
 [dotfiles]
 "~/.bashrc/dotfiles-v2" = { line = ". /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-secrets.sh", position = "prepend" }
+"~/.claude/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true, permissions = "0600" }
 "~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink" }
 "~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink" }

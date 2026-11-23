@@ -57,12 +57,14 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.config/opencode/opencode.json" = { mode = "symlink" }
 "~/.gemini/GEMINI.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
 "~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
+"~/.gemini/config/hooks/agy-code-review-guard.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/agy-hc-send-guard.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/agy-interactive-questions.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/agy-pwf-guard.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/agy-skill-cutoff.py" = { mode = "symlink" }
 "~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink" }
 "~/.gemini/config/rules/agy-peer-messaging.md" = { mode = "symlink" }
+"~/.gemini/config/rules/code-review-protocol.md" = { mode = "symlink" }
 "~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
 "~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
 "~/.gemini/config/rules/research-due-diligence.md" = { mode = "symlink" }
@@ -84,7 +86,7 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.zcode/cli/setting.json" = { mode = "symlink" }
 
 [bootstrap.hooks.pre-dotfiles]
-run = 'if [ -L ~/.claude/skills ]; then rm -f ~/.claude/skills; fi && if [ -d ~/.gemini/config/skills ] && [ ! -L ~/.gemini/config/skills ]; then rm -rf ~/.gemini/config/skills; fi && mkdir -p ~/.agents/skills ~/.claude/skills'
+run = 'if [ -L ~/.claude/skills ]; then rm -f ~/.claude/skills; fi && mkdir -p ~/.agents/skills ~/.claude/skills && if [ -d ~/.gemini/config/skills ] && [ ! -L ~/.gemini/config/skills ]; then rm -f ~/.gemini/config/skills/.DS_Store && for d in ~/.gemini/config/skills/*; do [ -e "$d" ] || [ -L "$d" ] || continue; b="$(basename "$d")"; if [ -d "$d" ] && [ ! -L "$d" ]; then rm -f "$d/.DS_Store"; fi; if [ -d "$d" ] && [ ! -L "$d" ] && [ -L "$d/SKILL.md" ] && [ "$(ls -A "$d" | wc -l)" -eq 1 ]; then rm -rf "$d"; elif [ ! -e ~/.agents/skills/"$b" ] && [ ! -L ~/.agents/skills/"$b" ]; then mv "$d" ~/.agents/skills/"$b"; fi; done && rmdir ~/.gemini/config/skills; fi'
 
 [bootstrap.directories."~/.config/board"]
 mode = "0700"
