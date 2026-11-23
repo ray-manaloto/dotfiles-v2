@@ -63,6 +63,10 @@ EOF
 
 mise trust "${wt_dir}"
 
+if command -v repotools >/dev/null 2>&1; then
+	(cd "${root}" && repotools trust)
+fi
+
 resolved="$(cd "${wt_dir}" && PLAN_ID="${plan_id}" sh "${pwf_dir}/scripts/resolve-plan-dir.sh")"
 if [[ -z ${resolved} || ! -f "${resolved}/task_plan.md" ]]; then
 	echo "resolve-plan-dir.sh failed for PLAN_ID=${plan_id} in ${wt_dir}" >&2

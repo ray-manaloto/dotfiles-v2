@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#MISE description="Resume Herdr sessions from a saved stop/snapshot graph.json (dry-run unless --apply)"
+#USAGE flag "--run <run_id>" help="Resume from a specific roll run ID"
+#USAGE flag "--graph <path>" help="Resume from an explicit graph.json path"
+#USAGE flag "--tabs <tabs>" help="Comma-separated tab names, space/tab selectors, or terminal IDs"
+#USAGE flag "--spaces <spaces>" help="Comma-separated space names"
+#USAGE flag "--harnesses <harnesses>" help="Comma-separated harnesses (agy,codex,claude,opencode,hermes,zcode)"
+#USAGE flag "--all" help="Resume all sessions in the saved graph"
+#USAGE flag "--exclude <exclude>" help="Comma-separated spaces, tabs, or terminal IDs to skip"
+#USAGE flag "--prompt <text>" help="Optional resume prompt"
+#USAGE flag "--fresh-tab" help="Always open new tabs instead of reusing bare-shell tabs"
+#USAGE flag "--concurrency <n>" help="Max parallel resumes" default="4"
+#USAGE flag "--settle <seconds>" help="Startup verification timeout in seconds" default="45"
+#USAGE flag "--apply" help="Execute resumes (default: read-only dry-run plan)"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+
+args=(start --concurrency "${usage_concurrency:-4}" --settle "${usage_settle:-45}")
+[[ -n ${usage_run:-} ]] && args+=(--run "${usage_run}")
+[[ -n ${usage_graph:-} ]] && args+=(--graph "${usage_graph}")
+[[ -n ${usage_tabs:-} ]] && args+=(--tabs "${usage_tabs}")
+[[ -n ${usage_spaces:-} ]] && args+=(--spaces "${usage_spaces}")
+[[ -n ${usage_harnesses:-} ]] && args+=(--harnesses "${usage_harnesses}")
+[[ ${usage_all:-false} == "true" ]] && args+=(--all)
+[[ -n ${usage_exclude:-} ]] && args+=(--exclude "${usage_exclude}")
+[[ -n ${usage_prompt:-} ]] && args+=("--prompt=${usage_prompt}")
+[[ ${usage_fresh_tab:-false} == "true" ]] && args+=(--fresh-tab)
+[[ ${usage_apply:-false} == "true" ]] && args+=(--apply)
+
+exec python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

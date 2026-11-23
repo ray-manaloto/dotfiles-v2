@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#MISE description="Spawn a detached parentless roll tab to safely restart the calling Herdr tab"
+#USAGE flag "--fresh-tab" help="Open a new tab and close the current one after verification"
+#USAGE flag "--busy-wait <seconds>" help="Max seconds the roll tab waits for this session turn to end" default="30"
+#USAGE flag "--settle <seconds>" help="Exit and resume verification timeout in seconds" default="45"
+#USAGE flag "--handshake" help="Send READY-TO-RESTART handshake before exit"
+#USAGE flag "--apply" help="Spawn the detached roll tab now (default: print planned tab.new JSON)"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+
+args=(self --busy-wait "${usage_busy_wait:-30}" --settle "${usage_settle:-45}")
+[[ ${usage_fresh_tab:-false} == "true" ]] && args+=(--fresh-tab)
+[[ ${usage_handshake:-false} == "true" ]] && args+=(--handshake)
+[[ ${usage_apply:-false} == "true" ]] && args+=(--apply)
+
+exec python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

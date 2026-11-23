@@ -208,3 +208,14 @@ assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootst
 PY
 '''
 hint = "Ensure pitchfork.toml, jdx tools, npm:@vercel/board, mcp-jdx, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly."
+
+[doctor.checks.herdr-roll]
+description = "Clean-room herdr_roll engine unit tests and executable roll:* tasks pass validation"
+run = '''
+for task in snapshot restart stop start verify self; do
+  test -x "unix/home/.config/mise/tasks/roll/$task"
+done
+test -f "unix/home/.agents/skills/herdr-roll/SKILL.md"
+python3 -I -B -m unittest discover -s unix/home/.config/mise/lib/herdr_roll/tests -t unix/home/.config/mise/lib -v
+'''
+hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable and herdr_roll unit tests pass."

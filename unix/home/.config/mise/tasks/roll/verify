@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#MISE description="Verify restarted or resumed Herdr sessions deterministically with adaptive polling"
+#USAGE flag "--run <run_id>" help="Attach verification log to an existing run ID"
+#USAGE flag "--tabs <tabs>" help="Comma-separated tab names, space/tab selectors, or terminal IDs"
+#USAGE flag "--spaces <spaces>" help="Comma-separated space names"
+#USAGE flag "--harnesses <harnesses>" help="Comma-separated harnesses (agy,codex,claude,opencode,hermes,zcode)"
+#USAGE flag "--all" help="Verify all non-excluded live agent tabs"
+#USAGE flag "--exclude <exclude>" help="Comma-separated spaces, tabs, or terminal IDs to skip"
+#USAGE flag "--settle <seconds>" help="Polling timeout per session in seconds" default="45"
+#USAGE flag "--apply" help="Write verify log and append outcome to runs.jsonl"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+
+args=(verify --settle "${usage_settle:-45}")
+[[ -n ${usage_run:-} ]] && args+=(--run "${usage_run}")
+[[ -n ${usage_tabs:-} ]] && args+=(--tabs "${usage_tabs}")
+[[ -n ${usage_spaces:-} ]] && args+=(--spaces "${usage_spaces}")
+[[ -n ${usage_harnesses:-} ]] && args+=(--harnesses "${usage_harnesses}")
+[[ ${usage_all:-false} == "true" ]] && args+=(--all)
+[[ -n ${usage_exclude:-} ]] && args+=(--exclude "${usage_exclude}")
+[[ ${usage_apply:-false} == "true" ]] && args+=(--apply)
+
+exec python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

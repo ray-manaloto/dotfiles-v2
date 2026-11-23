@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#MISE description="Clean-room wave-ordered Herdr rolling restart across 6 harnesses (dry-run unless --apply)"
+#USAGE flag "--tabs <tabs>" help="Comma-separated tab names, space/tab selectors, or terminal IDs"
+#USAGE flag "--spaces <spaces>" help="Comma-separated space names"
+#USAGE flag "--harnesses <harnesses>" help="Comma-separated harnesses (agy,codex,claude,opencode,hermes,zcode)"
+#USAGE flag "--all" help="Target all non-excluded live agent tabs"
+#USAGE flag "--exclude <exclude>" help="Comma-separated spaces, tabs, or terminal IDs to leave untouched"
+#USAGE flag "--concurrency <n>" help="Max parallel restarts within child/lead waves" default="4"
+#USAGE flag "--wait <seconds>" help="Handshake response timeout in seconds" default="180"
+#USAGE flag "--settle <seconds>" help="Exit and resume verification timeout in seconds" default="45"
+#USAGE flag "--busy-wait <seconds>" help="Max seconds to wait on busy tabs before skipping" default="0"
+#USAGE flag "--handshake" help="Send opt-in READY-TO-RESTART handshake before exit"
+#USAGE flag "--verify-turn" help="Send opt-in no-op verification turn after resume"
+#USAGE flag "--fresh-tab" help="Open a new tab and close the old one only after verification"
+#USAGE flag "--keep-env" help="Preserve current shell env instead of clean env -i relaunch"
+#USAGE flag "--apply" help="Execute restarts (default: read-only dry-run plan)"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+
+args=(
+	restart
+	--concurrency "${usage_concurrency:-4}"
+	--wait "${usage_wait:-180}"
+	--settle "${usage_settle:-45}"
+	--busy-wait "${usage_busy_wait:-0}"
+)
+[[ -n ${usage_tabs:-} ]] && args+=(--tabs "${usage_tabs}")
+[[ -n ${usage_spaces:-} ]] && args+=(--spaces "${usage_spaces}")
+[[ -n ${usage_harnesses:-} ]] && args+=(--harnesses "${usage_harnesses}")
+[[ ${usage_all:-false} == "true" ]] && args+=(--all)
+[[ -n ${usage_exclude:-} ]] && args+=(--exclude "${usage_exclude}")
+[[ ${usage_handshake:-false} == "true" ]] && args+=(--handshake)
+[[ ${usage_verify_turn:-false} == "true" ]] && args+=(--verify-turn)
+[[ ${usage_fresh_tab:-false} == "true" ]] && args+=(--fresh-tab)
+[[ ${usage_keep_env:-false} == "true" ]] && args+=(--keep-env)
+[[ ${usage_apply:-false} == "true" ]] && args+=(--apply)
+
+exec python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from herdr_roll.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

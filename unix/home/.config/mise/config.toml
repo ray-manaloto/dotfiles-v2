@@ -70,12 +70,14 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 "~/.gemini/config/rules/research-due-diligence.md" = { mode = "symlink" }
 "~/.gemini/config/rules/skill-cutoff-agy.md" = { mode = "symlink" }
 "~/.agents/skills/agy-session-ops" = { mode = "symlink" }
+"~/.agents/skills/herdr-roll" = { mode = "symlink" }
 "~/.agents/skills/mise-bootstrap-ops" = { mode = "symlink" }
 "~/.agents/skills/post-task-learn" = { mode = "symlink" }
 "~/.agents/skills/pwf-status" = { mode = "symlink" }
 "~/.agents/skills/vercel-board" = { mode = "symlink" }
 "~/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true, permissions = "0600" }
 "~/.claude/skills/agy-session-ops" = { source = "../../.agents/skills/agy-session-ops", mode = "symlink" }
+"~/.claude/skills/herdr-roll" = { source = "../../.agents/skills/herdr-roll", mode = "symlink" }
 "~/.claude/skills/mise-bootstrap-ops" = { source = "../../.agents/skills/mise-bootstrap-ops", mode = "symlink" }
 "~/.claude/skills/post-task-learn" = { source = "../../.agents/skills/post-task-learn", mode = "symlink" }
 "~/.claude/skills/pwf-status" = { source = "../../.agents/skills/pwf-status", mode = "symlink" }
