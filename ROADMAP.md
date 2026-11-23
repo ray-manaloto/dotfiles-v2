@@ -16,7 +16,7 @@
 - [ ] **Step 2:** Subscriptions-only AI harnesses added and live-verified across
   all 3 environments (`pc`, `mac`, `vm`) before C++ compilers:
   - [x] 2.1 Claude Code (`agent-secrets` OAuth token mount)
-  - [ ] 2.2 OpenCode (free zero-retention model)
+  - [x] 2.2 OpenCode (free zero-retention model)
   - [ ] 2.3 ZCode (`npm:zcode-app-cli`)
   - [ ] 2.4 Antigravity CLI (`agy`, `Orchestrator (Neon)` default)
   - [ ] 2.5 Codex (`--device-auth`) + `ray-manaloto/skills` + `[dotfile_groups]`
