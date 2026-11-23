@@ -193,6 +193,7 @@ fi
 touch "${HOME}/.zshenv" "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc"
 export PATH="/opt/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:${PATH}"
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
+export MISE_LOCKED=1
 export MISE_YES=1
 /usr/local/bin/mise -E vm,macos bootstrap \
   --from "${REPO_URL}" \

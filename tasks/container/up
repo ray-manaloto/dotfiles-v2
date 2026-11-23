@@ -130,7 +130,7 @@ run_phase2_bootstrap() {
 		if [ -e /home/dev/.config/mise ] && [ ! -L /home/dev/.config/mise ]; then
 			rm -rf /home/dev/.config/mise
 		fi
-		mise -E container,linux bootstrap \
+		MISE_LOCKED=1 mise -E container,linux bootstrap \
 			--from "$1" \
 			--from-dir /workspace \
 			--config-dir unix/home/.config/mise \

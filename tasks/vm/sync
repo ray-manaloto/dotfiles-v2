@@ -42,6 +42,7 @@ if [[ -e "${HOME}/.config/mise" && ! -L "${HOME}/.config/mise" ]]; then
   rm -rf "${HOME}/.config/mise"
 fi
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
+export MISE_LOCKED=1
 export MISE_YES=1
 /usr/local/bin/mise -E vm,macos bootstrap \
   --from "${REPO_URL}" \

@@ -258,6 +258,9 @@ specifiers = ["0.9.0"]
 [tools."npm:openwiki".options]
 allow_builds = '["better-sqlite3"]'
 
+[tools."npm:openwiki".provenance]
+repository = "github.com/langchain-ai/openwiki"
+
 [[tools.pkl]]
 version = "0.33.1"
 backend = "aqua:apple/pkl"
