@@ -190,7 +190,8 @@ for srv in ("mise", "hk", "pitchfork", "usage-mise"):
     assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
 dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "dot", "status", "--json"], text=True))
 healthy = {"applied", "tracked", "absent", "not_on_this_machine", "ok", "synced", "match"}
-for entry in (dot_data.get("files") if isinstance(dot_data, dict) else dot_data) or []:
+entries = ((dot_data.get("files") or []) + (dot_data.get("edits") or [])) if isinstance(dot_data, dict) else (dot_data or [])
+for entry in entries:
     if isinstance(entry, dict):
         st = str(entry.get("state") or entry.get("status") or "")
         assert not st or st in healthy, f"unhealthy dot status: {entry}"
@@ -360,9 +361,10 @@ for srv in ("mise", "hk", "pitchfork", "usage-mise"):
 cx = tomllib.loads(Path(os.path.expanduser("~/.codex/config.toml")).read_text(encoding="utf-8"))
 for srv in ("mise", "hk", "pitchfork", "usage-mise"):
     assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
-dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "dot", "status", "--json"], text=True))
+dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "-E", "vm", "dot", "status", "--json"], text=True))
 healthy = {"applied", "tracked", "absent", "not_on_this_machine", "ok", "synced", "match"}
-for entry in (dot_data.get("files") if isinstance(dot_data, dict) else dot_data) or []:
+entries = ((dot_data.get("files") or []) + (dot_data.get("edits") or [])) if isinstance(dot_data, dict) else (dot_data or [])
+for entry in entries:
     if isinstance(entry, dict):
         st = str(entry.get("state") or entry.get("status") or "")
         assert not st or st in healthy, f"unhealthy dot status: {entry}"

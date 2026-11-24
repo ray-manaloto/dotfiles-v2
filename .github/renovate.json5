@@ -19,10 +19,8 @@
       datasourceTemplate: "github-release-attachments",
       depNameTemplate: "packslip",
       packageNameTemplate: "jdx/packslip",
-      currentValueTemplate: "v{{{currentValue}}}",
-      extractVersionTemplate: "^v(?<version>.+)$",
       matchStrings: [
-        'PACKSLIP_VER="(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"\\nPACKSLIP_SHA256_MACOS_ARM64="(?<currentDigest>[a-f0-9]{64})"',
+        'PACKSLIP_VER="(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)"\\nPACKSLIP_SHA256_MACOS_ARM64="(?<currentDigest>[a-f0-9]{64})"',
       ],
     },
   ],

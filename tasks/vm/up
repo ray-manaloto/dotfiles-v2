@@ -7,7 +7,7 @@ VM_NAME="dotfiles-v2-macos"
 TS_HOSTNAME="dotfiles-v2-vm"
 BASE_IMAGE="ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fbac071c663bf249007b9b387e16b7d576144588acb1d93f9"
 MISE_VER="2026.11.13"
-PACKSLIP_VER="1.11.5"
+PACKSLIP_VER="v1.11.5"
 PACKSLIP_SHA256_MACOS_ARM64="9654417414246dba0a7c394b0cf98dae95979df43f169c27bbce5976e8604aa5"
 PACKSLIP_MISE_PIN="ps1_nlhmwtfeufglxv5myvwvronk7a"
 REPO_URL="https://github.com/ray-manaloto/dotfiles-v2.git"
@@ -141,7 +141,7 @@ fi
 if [[ "${have}" != "${MISE_VER}" ]]; then
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir}"' EXIT
-  curl -fsSLo "${tmp_dir}/packslip" "https://github.com/jdx/packslip/releases/download/v${PACKSLIP_VER}/packslip-v${PACKSLIP_VER}-darwin-arm64"
+  curl -fsSLo "${tmp_dir}/packslip" "https://github.com/jdx/packslip/releases/download/${PACKSLIP_VER}/packslip-${PACKSLIP_VER}-darwin-arm64"
   printf '%s  %s/packslip\n' "${PACKSLIP_SHA}" "${tmp_dir}" | shasum -a 256 -c -
   chmod 0755 "${tmp_dir}/packslip"
   sudo install -d -m 0755 /usr/local/bin
