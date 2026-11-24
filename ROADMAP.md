@@ -57,17 +57,18 @@
     global `roll:*` `mise` tasks and Herdr skills from legacy `dotfiles` to
     `dotfiles-v2` (`PLAN_ID` / worktree slug: `herdr-roll-global-cutover`;
     resolved via `#9` on `main` at `0c24382`).
-  - [ ] [#5](https://github.com/ray-manaloto/dotfiles-v2/issues/5) Fix
+  - [x] [#5](https://github.com/ray-manaloto/dotfiles-v2/issues/5) Fix
     `OpenCodeAdapter` session-ID resolution for `opencode --standalone` tabs
-    without `-s` (`PLAN_ID` / worktree slug: `herdr-roll-opencode-sid`).
+    without `-s` (`PLAN_ID` / worktree slug: `herdr-roll-opencode-sid`;
+    shipped on `main` at `3be8af`).
   - [ ] [#7](https://github.com/ray-manaloto/dotfiles-v2/issues/7) Live
     `--apply` verification across `claude`, `hermes`, `zcode`, and full
     reboot/wave flows (`PLAN_ID` / worktree slug: `herdr-roll-live-verify`;
     blocked by `#4`, `#5`).
-  - [ ] [#8](https://github.com/ray-manaloto/dotfiles-v2/issues/8) Add
+  - [x] [#8](https://github.com/ray-manaloto/dotfiles-v2/issues/8) Add
     nanosecond-timestamped verification evidence, process `lstart`/hook-load
     proof to `roll:verify`, and dialog triage docs (`PLAN_ID` / worktree slug:
-    `herdr-roll-verify-proof`; blocked by `#4`).
+    `herdr-roll-verify-proof`; shipped on `main` at `3be8af`).
   - [x] [#6](https://github.com/ray-manaloto/dotfiles-v2/issues/6) Enforce
     GitHub issue -> PWF `PLAN_ID` -> git worktree mapping and nanosecond
     verification evidence (`PLAN_ID` / worktree slug: `worktree-issue-pwf-map`;
@@ -91,10 +92,10 @@
     `datamodel-codegen`, dual-sink `structlog`, and strict `hk`/doctor
     prevention gates (`PLAN_ID` / worktree slug: `py-schema-deps-and-gates`;
     shipped on `main` at `0c24382`).
-  - [ ] [#12](https://github.com/ray-manaloto/dotfiles-v2/issues/12) Build
+  - [x] [#12](https://github.com/ray-manaloto/dotfiles-v2/issues/12) Build
     self-optimizing/self-healing `agy-learn` ledger, fix 7 Antigravity hook
     bugs, and apply Proposal 8 (`PLAN_ID` / worktree slug:
-    `self-healing-agy-learn`; blocked by `#10`).
+    `self-healing-agy-learn`; shipped on `main` at `3be8af`).
   - [ ] [#11](https://github.com/ray-manaloto/dotfiles-v2/issues/11) Host
     `@vercel/board` always-on on remote Linux host (`pc`) and adopt
     `templates/swarm` + `factory` orchestration (`PLAN_ID` / worktree slug:
