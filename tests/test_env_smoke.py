@@ -683,7 +683,6 @@ def test_dry_run_sends_zero_prompts_and_fails_on_broken_probe() -> None:
             EnvSmokeHarness.AGY,
             "gemini-3.8-flash-low",
             [
-                "--print",
                 "--model",
                 "gemini-3.8-flash-low",
                 "--effort",
@@ -694,7 +693,7 @@ def test_dry_run_sends_zero_prompts_and_fails_on_broken_probe() -> None:
                 "60s",
                 "--log-file",
                 "/dev/null",
-                "Reply with exactly: OK",
+                "--print=Reply with exactly: OK",
             ],
         ),
         (
@@ -755,9 +754,21 @@ def test_smoke_commands_match_contract(
     assert cmd == ["/b", *expected]
     assert "--bare" not in cmd
     skill = runner.build_command(harness, "/b", model, skill_check=True, timeout=90)
-    assert runner.SKILL_PROMPT in skill
     if harness == EnvSmokeHarness.AGY:
         assert "--dangerously-skip-permissions" in skill
+        assert skill[-1] == f"--print={runner.SKILL_PROMPT}"
+        assert "--print" not in skill
+    else:
+        assert runner.SKILL_PROMPT in skill
+    if harness == EnvSmokeHarness.CODEX:
+        assert "read-only" not in skill
+        assert "workspace-write" in skill
+        assert "sandbox_workspace_write.network_access=true" in skill
+    if harness == EnvSmokeHarness.HERMES:
+        idx = skill.index("--max-turns")
+        assert skill[idx + 1] == "16"
+        r_idx = skill.index("--reasoning")
+        assert skill[r_idx + 1] == "low"
     if harness == EnvSmokeHarness.OPENCODE:
         assert "--auto" in skill
 
@@ -809,6 +820,20 @@ def test_smoke_ok_and_reply_mismatch() -> None:
         bad, _ = _run_one(EnvSmokeHarness.CODEX, _result(bad_out))
         assert bad.status == EnvSmokeStatus.FAIL
         assert bad.reason == "reply did not contain OK"
+    for harness, bad_json in (
+        (
+            EnvSmokeHarness.AGY,
+            json.dumps(
+                {"event": "result", "result": {"status": "ERROR", "response": "OK"}}
+            ),
+        ),
+        (
+            EnvSmokeHarness.HERMES,
+            json.dumps({"type": "result", "exit_code": 1, "text": "OK"}),
+        ),
+    ):
+        err_smoke, _ = _run_one(harness, _result(bad_json))
+        assert err_smoke.status == EnvSmokeStatus.FAIL
 
 
 def test_zcode_quota_codes_do_not_override_success_or_other_harnesses() -> None:
@@ -828,13 +853,24 @@ def test_zcode_quota_codes_do_not_override_success_or_other_harnesses() -> None:
         EnvSmokeHarness.HERMES,
         _result(
             exit_code=0,
-            stdout=json.dumps(
-                {
-                    "type": "tool_call",
-                    "name": "terminal",
-                    "duration_ms": 429,
-                    "arguments": json.dumps({"command": "agentsview session list"}),
-                }
+            stdout="\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_call",
+                        "name": "terminal",
+                        "tool_call_id": "call_429",
+                        "arguments": json.dumps({"command": "agentsview session list"}),
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "terminal",
+                        "tool_call_id": "call_429",
+                        "duration_ms": 429,
+                        "output": json.dumps({"output": "[]", "exit_code": 0}),
+                        "is_error": False,
+                    },
+                ]
             ),
         ),
         mode=EnvSmokeMode.SKILL_CHECK,
@@ -915,10 +951,24 @@ CLAUDE_CLI_STREAM = "\n".join(
                 "content": [
                     {
                         "type": "tool_use",
+                        "id": "toolu_bash_1",
                         "name": "Bash",
                         "input": {
                             "command": "agentsview session list --limit 1 --format json"
                         },
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_bash_1",
+                        "content": "[]",
+                        "is_error": False,
                     }
                 ]
             },
@@ -984,19 +1034,110 @@ OPENCODE_CLI_JSON = json.dumps(
         "part": {
             "tool": "bash",
             "state": {
+                "status": "completed",
                 "input": {
                     "command": "~/.local/share/mise/shims/agentsview session list -n 1"
-                }
+                },
             },
         },
     }
 )
-HERMES_ARGS_JSON = json.dumps(
-    {
-        "type": "tool_call",
-        "name": "terminal",
-        "arguments": json.dumps({"command": "agentsview session list --limit 1"}),
-    }
+HERMES_ARGS_JSON = "\n".join(
+    json.dumps(x)
+    for x in [
+        {
+            "type": "tool_call",
+            "name": "terminal",
+            "tool_call_id": "call_args",
+            "arguments": json.dumps({"command": "agentsview session list --limit 1"}),
+        },
+        {
+            "type": "tool_result",
+            "name": "terminal",
+            "tool_call_id": "call_args",
+            "output": json.dumps({"output": "[]", "exit_code": 0}),
+            "is_error": False,
+        },
+    ]
+)
+HERMES_EXEC_CODE_NOT_SHELL_JSON = "\n".join(
+    json.dumps(x)
+    for x in [
+        {
+            "type": "tool_use",
+            "name": "execute_code",
+            "tool_call_id": "call_py",
+            "input": {
+                "code": 'from hermes_tools import terminal\nprint(terminal("agentsview session list --limit 1 --json"))'
+            },
+        },
+        {
+            "type": "tool_result",
+            "name": "execute_code",
+            "tool_call_id": "call_py",
+            "output": json.dumps(
+                {
+                    "status": "success",
+                    "output": "{'output': '[]', 'exit_code': 0}",
+                    "exit_code": 0,
+                    "tool_calls_made": 1,
+                }
+            ),
+            "is_error": False,
+        },
+    ]
+)
+HERMES_TRUNCATED_TERMINAL_JSON = "\n".join(
+    json.dumps(x)
+    for x in [
+        {
+            "type": "tool_use",
+            "name": "terminal",
+            "tool_call_id": "call_trunc",
+            "input": {"command": "agentsview session list --bad"},
+        },
+        {
+            "type": "tool_result",
+            "name": "terminal",
+            "tool_call_id": "call_trunc",
+            "output": '{"output": "' + ("x" * 5000) + "...",
+            "is_error": False,
+        },
+    ]
+)
+HERMES_NO_ID_FAILED_TERMINAL_JSON = "\n".join(
+    json.dumps(x)
+    for x in [
+        {
+            "type": "tool_use",
+            "name": "terminal",
+            "input": {"command": "agentsview session list --bad"},
+        },
+        {
+            "type": "tool_result",
+            "name": "terminal",
+            "output": json.dumps({"output": "fatal", "exit_code": 64}),
+            "is_error": False,
+        },
+    ]
+)
+HERMES_FAILED_TERMINAL_JSON = "\n".join(
+    json.dumps(x)
+    for x in [
+        {
+            "type": "tool_use",
+            "name": "terminal",
+            "tool_call_id": "call_fail",
+            "input": {"command": "agentsview session list --bad"},
+        },
+        {
+            "type": "tool_result",
+            "name": "terminal",
+            "tool_call_id": "call_fail",
+            "output": json.dumps({"output": "fatal: bad flag", "exit_code": 64}),
+            "is_error": False,
+        },
+    ]
 )
 AGY_CHATTER_ONLY = json.dumps(
     {
@@ -1004,6 +1145,93 @@ AGY_CHATTER_ONLY = json.dumps(
         "text": "I would run agentsview session list",
         "command": "echo agentsview",
     }
+)
+AGY_CLI_STREAM_JSON = "\n".join(
+    json.dumps(x)
+    for x in [
+        {
+            "event": "init",
+            "init": {"tools": ["run_command", "call_mcp_tool"]},
+        },
+        {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 1,
+                "state": "ACTIVE",
+                "step_type": "tool",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {"CommandLine": "agentsview list --limit 1 --json"},
+                },
+            },
+        },
+        {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 1,
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {"CommandLine": "agentsview list --limit 1 --json"},
+                    "output": "Command exited with code 0.\n\nCommand output:\n[]\n",
+                },
+            },
+        },
+        {
+            "event": "result",
+            "result": {"status": "SUCCESS", "response": "sess_1"},
+        },
+    ]
+)
+AGY_MCP_STREAM_JSON = json.dumps(
+    {
+        "event": "step_update",
+        "step_update": {
+            "step_index": 1,
+            "state": "DONE",
+            "step_type": "tool",
+            "tool_name": "call_mcp_tool",
+            "tool_info": {
+                "name": "call_mcp_tool",
+                "parameters": {"ServerName": "agentsview", "ToolName": "search"},
+            },
+        },
+    }
+)
+AGY_FAILED_CLI_STREAM_JSON = "\n".join(
+    json.dumps(x)
+    for x in [
+        {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 1,
+                "state": "ACTIVE",
+                "step_type": "tool",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {"CommandLine": "agentsview list --limit 1"},
+                },
+            },
+        },
+        {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 1,
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {"CommandLine": "agentsview list --limit 1"},
+                    "output": "Command exited with code 127.\n",
+                },
+            },
+        },
+    ]
 )
 CODEX_FAILED_CLI_JSONL = json.dumps(
     {
@@ -1033,6 +1261,291 @@ ECHO_AGENTSVIEW_TOOL = json.dumps(
         (CODEX_MCP_JSONL, EnvSmokeSkillVerdict.FAIL_MCP_USED),
         (OPENCODE_CLI_JSON, EnvSmokeSkillVerdict.PASS),
         (HERMES_ARGS_JSON, EnvSmokeSkillVerdict.PASS),
+        (HERMES_EXEC_CODE_NOT_SHELL_JSON, EnvSmokeSkillVerdict.FAIL_NO_CLI),
+        (HERMES_TRUNCATED_TERMINAL_JSON, EnvSmokeSkillVerdict.FAIL_NO_CLI),
+        (HERMES_NO_ID_FAILED_TERMINAL_JSON, EnvSmokeSkillVerdict.FAIL_NO_CLI),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "call_unnamed",
+                        "input": {"command": "agentsview session list"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call_unnamed",
+                        "output": "",
+                        "is_error": False,
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "dup_1",
+                        "input": {"command": "agentsview session list"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "dup_1",
+                        "input": {"command": "pwd"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "terminal",
+                        "tool_call_id": "dup_1",
+                        "output": json.dumps({"output": "/tmp", "exit_code": 0}),
+                        "is_error": False,
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "id": "e1",
+                        "name": "terminal",
+                        "tool_call_id": "a",
+                        "input": {"command": "agentsview session list --limit 1"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "id": "e2",
+                        "name": "terminal",
+                        "tool_call_id": "a",
+                        "output": json.dumps({"output": "[]", "exit_code": 0}),
+                        "is_error": False,
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.PASS,
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "tool_call",
+                    "id": "c",
+                    "name": "bash",
+                    "input": {"command": "agentsview session list"},
+                }
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "call_true_or",
+                        "input": {"command": "true || agentsview session list"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "terminal",
+                        "tool_call_id": "call_true_or",
+                        "output": json.dumps({"output": "", "exit_code": 0}),
+                        "is_error": False,
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "call_or_true",
+                        "input": {"command": "agentsview session list || true"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "terminal",
+                        "tool_call_id": "call_or_true",
+                        "output": json.dumps({"output": "", "exit_code": 0}),
+                        "is_error": False,
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "call_or_both_av",
+                        "input": {
+                            "command": "agentsview session list --limit 1 --json || agentsview session --help"
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "terminal",
+                        "tool_call_id": "call_or_both_av",
+                        "output": json.dumps({"output": "[]", "exit_code": 0}),
+                        "is_error": False,
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.PASS,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "call_mismatch",
+                        "input": {"command": "agentsview session list"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "read_file",
+                        "tool_call_id": "call_mismatch",
+                        "output": "",
+                        "is_error": False,
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "tool_result",
+                    "name": "read_file",
+                    "content": [
+                        {
+                            "event": "step_update",
+                            "step_update": {
+                                "state": "DONE",
+                                "step_type": "tool",
+                                "tool_name": "run_command",
+                                "tool_info": {
+                                    "name": "run_command",
+                                    "parameters": {
+                                        "CommandLine": "agentsview session list"
+                                    },
+                                    "output": "Command exited with code 0.\n",
+                                },
+                            },
+                        }
+                    ],
+                }
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_call",
+                        "name": "terminal",
+                        "tool_call_id": "call_tc_cap",
+                        "arguments": json.dumps({"command": "agentsview session list"}),
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "terminal",
+                        "tool_call_id": "call_tc_cap",
+                        "output": ('{"output": "' + ("x" * 5000))[:5000] + "...",
+                        "is_error": False,
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (AGY_CLI_STREAM_JSON, EnvSmokeSkillVerdict.PASS),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "step_type": "tool",
+                            "tool_name": "run_command",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {
+                                    "CommandLine": "agentsview session list --limit 1 --json"
+                                },
+                                "output": "Command exited with code 0.\n\nCommand output:\nCommand exited with code 1.\n",
+                            },
+                        },
+                    }
+                ]
+            ),
+            EnvSmokeSkillVerdict.PASS,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "ACTIVE",
+                            "step_type": "tool",
+                            "tool_name": "call_mcp_tool",
+                            "tool_info": {
+                                "name": "call_mcp_tool",
+                                "parameters": {
+                                    "ServerName": "agentsview",
+                                    "ToolName": "search_content",
+                                },
+                            },
+                        },
+                    },
+                    json.loads(AGY_CLI_STREAM_JSON.splitlines()[2]),
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_MCP_USED,
+        ),
+        (
+            json.dumps(
+                {
+                    "event": "step_update",
+                    "step_update": {
+                        "state": "",
+                        "step_type": "tool",
+                        "tool_name": "run_command",
+                        "tool_info": {
+                            "name": "run_command",
+                            "parameters": {"CommandLine": "agentsview session list"},
+                            "output": "",
+                        },
+                    },
+                }
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (AGY_MCP_STREAM_JSON, EnvSmokeSkillVerdict.FAIL_MCP_USED),
+        (AGY_FAILED_CLI_STREAM_JSON, EnvSmokeSkillVerdict.FAIL_NO_CLI),
         (
             {"type": "tool_call", "server": "agentsview", "tool": "search"},
             EnvSmokeSkillVerdict.FAIL_MCP_USED,
@@ -1041,6 +1554,375 @@ ECHO_AGENTSVIEW_TOOL = json.dumps(
         (CODEX_FAILED_CLI_JSONL, EnvSmokeSkillVerdict.FAIL_NO_CLI),
         (ECHO_AGENTSVIEW_TOOL, EnvSmokeSkillVerdict.FAIL_NO_CLI),
         ("plain text, no json", EnvSmokeSkillVerdict.FAIL_NO_CLI),
+        *(
+            (
+                json.dumps(
+                    {
+                        "type": kind,
+                        "name": alias,
+                        "input": {"command": "agentsview session list"},
+                    }
+                ),
+                EnvSmokeSkillVerdict.FAIL_NO_CLI,
+            )
+            for kind in ("tool_use", "tool_call", "function_call")
+            for alias in (
+                "bash",
+                "shell",
+                "sh",
+                "zsh",
+                "exec_command",
+                "run_command",
+                "command_execution",
+            )
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "tool_call",
+                    "name": "terminal",
+                    "tool_call_id": "call_part_bypass",
+                    "part": {},
+                    "arguments": json.dumps({"command": "agentsview session list"}),
+                }
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "running",
+                            "input": {"command": "agentsview session list"},
+                        },
+                    },
+                }
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "id": "bash_fail_meta",
+                        "name": "bash",
+                        "input": {"command": "agentsview session list"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "bash_fail_meta",
+                        "output": "",
+                        "exit_code": 1,
+                        "status": "failed",
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        *(
+            (
+                "\n".join(
+                    json.dumps(x)
+                    for x in [
+                        {
+                            "type": "tool_use",
+                            "name": "terminal",
+                            "tool_call_id": "call_shell_guard",
+                            "input": {"command": cmd},
+                        },
+                        {
+                            "type": "tool_result",
+                            "name": "terminal",
+                            "tool_call_id": "call_shell_guard",
+                            "output": json.dumps({"output": "[]", "exit_code": 0}),
+                            "is_error": False,
+                        },
+                    ]
+                ),
+                expected,
+            )
+            for cmd, expected in (
+                ("true # ; agentsview session list", EnvSmokeSkillVerdict.FAIL_NO_CLI),
+                ("true;#agentsview session list", EnvSmokeSkillVerdict.FAIL_NO_CLI),
+                ("agentsview session list & true", EnvSmokeSkillVerdict.FAIL_NO_CLI),
+                ("agentsview session list &", EnvSmokeSkillVerdict.FAIL_NO_CLI),
+                ("agentsview session list 2>&1", EnvSmokeSkillVerdict.PASS),
+                ("agentsview session list |& head -5", EnvSmokeSkillVerdict.PASS),
+                ("true & agentsview session list", EnvSmokeSkillVerdict.PASS),
+            )
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "item.started",
+                        "item": {
+                            "id": "item_1",
+                            "type": "command_execution",
+                            "command": "agentsview session list",
+                            "status": "in_progress",
+                        },
+                    },
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_1",
+                            "type": "command_execution",
+                            "command": "agentsview session list",
+                            "exit_code": 1,
+                            "status": "failed",
+                        },
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        *(
+            (
+                json.dumps(
+                    {
+                        "event": "step_update",
+                        "step_update": {
+                            "state": "DONE",
+                            "step_type": "tool",
+                            "tool_name": "run_command",
+                            "tool_info": {
+                                "name": "run_command",
+                                "parameters": {
+                                    "CommandLine": "agentsview session list"
+                                },
+                                "output": out_text,
+                            },
+                        },
+                    }
+                ),
+                EnvSmokeSkillVerdict.FAIL_NO_CLI,
+            )
+            for out_text in (
+                "Command exited with code 0.5\n",
+                "Command exited with code 0.\nCommand exited with code 1.\n",
+                "Command exited with code 0.\nCommand exited with code 0.5\n",
+                f"Command exited with code 0.\nCommand exited with code {'0' * 5000}.\n",
+                f"Command exited with code {'0' * 5000}.\n",
+            )
+        ),
+        *(
+            (
+                json.dumps(
+                    {
+                        "kind": kind,
+                        "name": "bash",
+                        "input": {"command": "agentsview session list"},
+                    }
+                ),
+                EnvSmokeSkillVerdict.FAIL_NO_CLI,
+            )
+            for kind in ("tool_use", "tool_call", "function_call")
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "tool": "bash",
+                        "state": {"input": {"command": "agentsview session list"}},
+                    },
+                }
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "id": "bash_json_fail",
+                        "name": "bash",
+                        "input": {"command": "agentsview session list"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "bash_json_fail",
+                        "output": json.dumps(
+                            {
+                                "output": "[]",
+                                "exit_code": 0,
+                                "error": "fatal",
+                                "metadata": {"exit": 1},
+                            }
+                        ),
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        *(
+            (
+                "\n".join(
+                    json.dumps(x)
+                    for x in [
+                        {
+                            "type": "tool_use",
+                            "name": "terminal",
+                            "tool_call_id": "call_shell_ext",
+                            "input": {"command": cmd},
+                        },
+                        {
+                            "type": "tool_result",
+                            "name": "terminal",
+                            "tool_call_id": "call_shell_ext",
+                            "output": json.dumps({"output": "[]", "exit_code": 0}),
+                            "is_error": False,
+                        },
+                    ]
+                ),
+                EnvSmokeSkillVerdict.FAIL_NO_CLI,
+            )
+            for cmd in (
+                "true ||\n agentsview session list",
+                "true || # comment\n agentsview session list",
+                r"agentsview a\ #x & true",
+                "agentsview missing \\|\ntrue",
+                "cat <<agentsview\nfixture\nagentsview",
+                'cat <<""\nagentsview session list\n\n',
+                'bash -n -c "agentsview session list"',
+                'bash /dev/null -c "agentsview session list"',
+                "agentsview missing | true",
+                "env -u agentsview true",
+                "env --unset agentsview true",
+                "env -S true agentsview session list",
+                "env --help agentsview",
+            )
+        ),
+        *(
+            (
+                "\n".join(
+                    json.dumps(x)
+                    for x in [
+                        {
+                            "type": "tool_use",
+                            "name": "terminal",
+                            "tool_call_id": "call_shell_ok2",
+                            "input": {"command": cmd},
+                        },
+                        {
+                            "type": "tool_result",
+                            "name": "terminal",
+                            "tool_call_id": "call_shell_ok2",
+                            "output": json.dumps({"output": "[]", "exit_code": 0}),
+                            "is_error": False,
+                        },
+                    ]
+                ),
+                EnvSmokeSkillVerdict.PASS,
+            )
+            for cmd in (
+                "true || false && agentsview session list",
+                "cat <<'EOF'\nignore\nEOF\nagentsview session list",
+            )
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "type": "tool",
+                        "tool": "bash",
+                        "error": "fatal",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "agentsview session list"},
+                        },
+                    },
+                }
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "type": "other",
+                        "tool": "bash",
+                        "state": {
+                            "status": "running",
+                            "input": {"command": "agentsview session list"},
+                        },
+                    },
+                }
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                [
+                    *AGY_CLI_STREAM_JSON.splitlines()[:-1],
+                    json.dumps(
+                        {
+                            "event": "result",
+                            "result": {"status": "ERROR", "response": "OK"},
+                        }
+                    ),
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            json.dumps(
+                [
+                    json.loads(OPENCODE_CLI_JSON),
+                    {
+                        "event": "result",
+                        "result": {"status": "ERROR", "response": "OK"},
+                    },
+                ]
+            ),
+            EnvSmokeSkillVerdict.FAIL_NO_CLI,
+        ),
+        (
+            "\n".join(
+                json.dumps(x)
+                for x in [
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "call_retry_1",
+                        "input": {"command": "agentsview session search"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "terminal",
+                        "tool_call_id": "call_retry_1",
+                        "output": json.dumps({"output": "bad", "exit_code": 65}),
+                        "is_error": True,
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "terminal",
+                        "tool_call_id": "call_retry_2",
+                        "input": {"command": "agentsview session list --limit 1"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "terminal",
+                        "tool_call_id": "call_retry_2",
+                        "output": json.dumps({"output": "[]", "exit_code": 0}),
+                        "is_error": False,
+                    },
+                    {"type": "result", "session_id": "s_retry", "exit_code": 0},
+                ]
+            ),
+            EnvSmokeSkillVerdict.PASS,
+        ),
     ],
 )
 def test_analyze_skill_output_cli_vs_mcp(
@@ -1054,6 +1936,288 @@ def test_analyze_skill_output_records_calls() -> None:
     check = runner.analyze_skill_output(CODEX_MCP_JSONL + "\n" + CODEX_CLI_JSONL)
     assert check.mcp_calls == ["agentsview/list_sessions"]
     assert check.cli_calls == ["/bin/zsh -lc 'agentsview session list --limit 1'"]
+
+
+def test_rehydrate_hermes_capped_output(tmp_path: Path) -> None:
+    import sqlite3
+
+    hermes_dir = tmp_path / ".hermes"
+    hermes_dir.mkdir(parents=True)
+    db = hermes_dir / "state.db"
+    sid = "local-cap-test"
+    full_ok = json.dumps({"output": "x" * 5500, "exit_code": 0})
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, tool_name TEXT, tool_call_id TEXT, content TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO messages VALUES (1, ?, 'tool', 'terminal', 'call_cap', ?)",
+            (sid, full_ok),
+        )
+    capped = "\n".join(
+        json.dumps(x)
+        for x in [
+            {
+                "type": "tool_use",
+                "name": "terminal",
+                "tool_call_id": "call_cap",
+                "input": {"command": "agentsview session list --json"},
+            },
+            {
+                "type": "tool_result",
+                "name": "terminal",
+                "tool_call_id": "call_cap",
+                "output": full_ok[:5000] + "...",
+                "is_error": False,
+            },
+            {"type": "result", "session_id": sid, "exit_code": 0, "text": "s1"},
+        ]
+    )
+    assert (
+        runner.analyze_skill_output(capped).verdict == EnvSmokeSkillVerdict.FAIL_NO_CLI
+    )
+    hydrated = runner._rehydrate_hermes_capped_output(capped, home=tmp_path)
+    assert hydrated is not None
+    assert runner.analyze_skill_output(hydrated).verdict == EnvSmokeSkillVerdict.PASS
+
+    yielded = json.dumps(
+        {"output": "x" * 5500, "exit_code": None, "status": "yielded_to_background"}
+    )
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE messages SET content = ? WHERE id = 1", (yielded,))
+    hydrated_yield = runner._rehydrate_hermes_capped_output(capped, home=tmp_path)
+    assert hydrated_yield is not None
+    assert (
+        runner.analyze_skill_output(hydrated_yield).verdict
+        == EnvSmokeSkillVerdict.FAIL_NO_CLI
+    )
+
+    # ID-less rehydration requires an exact 5,000-byte prefix match (never positional mix-up).
+    db_noid = hermes_dir / "state.db"
+    other_ok = json.dumps({"output": "a" * 5500, "exit_code": 0})
+    fail_matching = json.dumps({"output": "x" * 5500, "exit_code": 2})
+    with sqlite3.connect(db_noid) as conn:
+        conn.execute("DELETE FROM messages")
+        conn.execute(
+            "INSERT INTO messages VALUES (1, ?, 'tool', 'terminal', NULL, ?)",
+            (sid, other_ok),
+        )
+        conn.execute(
+            "INSERT INTO messages VALUES (2, ?, 'tool', 'terminal', NULL, ?)",
+            (sid, fail_matching),
+        )
+    capped_noid = "\n".join(
+        json.dumps(x)
+        for x in [
+            {
+                "type": "tool_use",
+                "name": "terminal",
+                "input": {"command": "agentsview session list --json"},
+            },
+            {
+                "type": "tool_result",
+                "name": "terminal",
+                "output": fail_matching[:5000] + "...",
+                "is_error": False,
+            },
+            {"type": "result", "session_id": sid, "exit_code": 0, "text": "s1"},
+        ]
+    )
+    hydrated_noid = runner._rehydrate_hermes_capped_output(capped_noid, home=tmp_path)
+    assert hydrated_noid is not None
+    assert (
+        runner.analyze_skill_output(hydrated_noid).verdict
+        == EnvSmokeSkillVerdict.FAIL_NO_CLI
+    )
+
+    # UTF-8 5,000-byte multibyte cap (2,500 'é' characters = 5,000 bytes, len=2503) rehydrates cleanly.
+    utf8_ok = json.dumps({"output": "é" * 2600, "exit_code": 0}, ensure_ascii=False)
+    utf8_prefix = (
+        utf8_ok.encode("utf-8")[:5000].decode("utf-8", errors="ignore") + "..."
+    )
+    with sqlite3.connect(db_noid) as conn:
+        conn.execute("DELETE FROM messages")
+        conn.execute(
+            "INSERT INTO messages VALUES (1, ?, 'tool', 'terminal', 'call_utf8', ?)",
+            (sid, utf8_ok),
+        )
+    capped_utf8 = "\n".join(
+        json.dumps(x, ensure_ascii=False)
+        for x in [
+            {
+                "type": "tool_use",
+                "name": "terminal",
+                "tool_call_id": "call_utf8",
+                "input": {"command": "agentsview session list --json"},
+            },
+            {
+                "type": "tool_result",
+                "name": "terminal",
+                "tool_call_id": "call_utf8",
+                "output": utf8_prefix,
+                "is_error": False,
+            },
+            {"type": "result", "session_id": sid, "exit_code": 0, "text": "s1"},
+        ]
+    )
+    hydrated_utf8 = runner._rehydrate_hermes_capped_output(capped_utf8, home=tmp_path)
+    assert hydrated_utf8 is not None
+    assert (
+        runner.analyze_skill_output(hydrated_utf8).verdict == EnvSmokeSkillVerdict.PASS
+    )
+
+    # Split multibyte char at byte 5,000 leaves 4,997-4,999 bytes (4-byte emoji cut -> 4,997 bytes).
+    utf8_split_ok = json.dumps(
+        {"output": ("a" * 4985) + "🚀" + ("z" * 200), "exit_code": 0},
+        ensure_ascii=False,
+    )
+    utf8_split_prefix = (
+        utf8_split_ok.encode("utf-8")[:5000].decode("utf-8", errors="ignore") + "..."
+    )
+    assert len(utf8_split_prefix.encode("utf-8")) == 5000  # 4997 prefix + 3 '...'
+    with sqlite3.connect(db_noid) as conn:
+        conn.execute("DELETE FROM messages")
+        conn.execute(
+            "INSERT INTO messages VALUES (1, ?, 'tool', 'terminal', 'call_split', ?)",
+            (sid, utf8_split_ok),
+        )
+    capped_split = "\n".join(
+        json.dumps(x, ensure_ascii=False)
+        for x in [
+            {
+                "type": "tool_use",
+                "name": "terminal",
+                "tool_call_id": "call_split",
+                "input": {"command": "agentsview session list --json"},
+            },
+            {
+                "type": "tool_result",
+                "name": "terminal",
+                "tool_call_id": "call_split",
+                "output": utf8_split_prefix,
+                "is_error": False,
+            },
+            {"type": "result", "session_id": sid, "exit_code": 0, "text": "s1"},
+        ]
+    )
+    hydrated_split = runner._rehydrate_hermes_capped_output(capped_split, home=tmp_path)
+    assert hydrated_split is not None
+    assert (
+        runner.analyze_skill_output(hydrated_split).verdict == EnvSmokeSkillVerdict.PASS
+    )
+
+    # Oversized (>5000 char ASCII) exact prefix of full_ok isolates rejection strictly by size.
+    with sqlite3.connect(db_noid) as conn:
+        conn.execute("DELETE FROM messages")
+        conn.execute(
+            "INSERT INTO messages VALUES (1, ?, 'tool', 'terminal', 'call_cap', ?)",
+            (sid, full_ok),
+        )
+    oversized = "\n".join(
+        json.dumps(x)
+        for x in [
+            {
+                "type": "tool_use",
+                "name": "terminal",
+                "tool_call_id": "call_cap",
+                "input": {"command": "agentsview session list"},
+            },
+            {
+                "type": "tool_result",
+                "name": "terminal",
+                "tool_call_id": "call_cap",
+                "output": full_ok[:5001] + "...",
+                "is_error": False,
+            },
+            {"type": "result", "session_id": sid, "exit_code": 0, "text": "s1"},
+        ]
+    )
+    assert len(json.loads(oversized.splitlines()[1])["output"]) == 5004
+    assert runner._rehydrate_hermes_capped_output(oversized, home=tmp_path) is None
+
+    # Duplicate DB rows sharing one tool_call_id fail closed when second row has NULL or different content.
+    dup_diff_fail = json.dumps({"output": "z" * 5500, "exit_code": 1})
+    with sqlite3.connect(db_noid) as conn:
+        conn.execute("DELETE FROM messages")
+        conn.execute(
+            "INSERT INTO messages VALUES (1, ?, 'tool', 'terminal', 'call_cap', ?)",
+            (sid, full_ok),
+        )
+        conn.execute(
+            "INSERT INTO messages VALUES (2, ?, 'tool', 'terminal', 'call_cap', NULL)",
+            (sid,),
+        )
+    assert runner._rehydrate_hermes_capped_output(capped, home=tmp_path) is None
+    with sqlite3.connect(db_noid) as conn:
+        conn.execute(
+            "UPDATE messages SET content = ? WHERE id = 2",
+            (dup_diff_fail,),
+        )
+    assert runner._rehydrate_hermes_capped_output(capped, home=tmp_path) is None
+    assert (
+        runner.analyze_skill_output(capped).verdict == EnvSmokeSkillVerdict.FAIL_NO_CLI
+    )
+
+    # Duplicate DB rows sharing both tool_call_id and capped prefix also fail closed.
+    dup_same_fail = json.dumps({"output": "x" * 5500, "exit_code": 1})
+    with sqlite3.connect(db_noid) as conn:
+        conn.execute("DELETE FROM messages")
+        conn.execute(
+            "INSERT INTO messages VALUES (1, ?, 'tool', 'terminal', 'call_cap', ?)",
+            (sid, full_ok),
+        )
+        conn.execute(
+            "INSERT INTO messages VALUES (2, ?, 'tool', 'terminal', 'call_cap', ?)",
+            (sid, dup_same_fail),
+        )
+    assert runner._rehydrate_hermes_capped_output(capped, home=tmp_path) is None
+    assert (
+        runner.analyze_skill_output(capped).verdict == EnvSmokeSkillVerdict.FAIL_NO_CLI
+    )
+
+    # Escaped lone surrogate in output or session_id never raises UnicodeEncodeError.
+    surrogate = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "name": "terminal",
+                    "tool_call_id": "call_surr",
+                    "input": {"command": "agentsview session list"},
+                }
+            ),
+            '{"type": "tool_result", "name": "terminal", "tool_call_id": "call_surr", "output": "\\ud800...", "is_error": false}',
+            json.dumps({"type": "result", "session_id": sid, "exit_code": 0}),
+        ]
+    )
+    assert runner._rehydrate_hermes_capped_output(surrogate, home=tmp_path) is None
+    assert (
+        runner.analyze_skill_output(surrogate).verdict
+        == EnvSmokeSkillVerdict.FAIL_NO_CLI
+    )
+    surrogate_sid = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "name": "terminal",
+                    "tool_call_id": "call_cap",
+                    "input": {"command": "agentsview session list"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "tool_result",
+                    "name": "terminal",
+                    "tool_call_id": "call_cap",
+                    "output": full_ok[:5000] + "...",
+                    "is_error": False,
+                }
+            ),
+            '{"type": "result", "session_id": "\\ud800", "exit_code": 0}',
+        ]
+    )
+    assert runner._rehydrate_hermes_capped_output(surrogate_sid, home=tmp_path) is None
 
 
 def test_skill_check_mode_pass_and_fail() -> None:
@@ -1072,6 +2236,19 @@ def test_skill_check_mode_pass_and_fail() -> None:
     )
     assert bad.status == EnvSmokeStatus.FAIL
     assert bad.errors[-1].code == EnvSmokeErrorCode.ERR_SKILL_CHECK_FAILED
+    agy_err_stream = "\n".join(
+        [
+            *AGY_CLI_STREAM_JSON.splitlines()[:-1],
+            json.dumps(
+                {"event": "result", "result": {"status": "ERROR", "response": "OK"}}
+            ),
+        ]
+    )
+    agy_err, _ = _run_one(
+        EnvSmokeHarness.AGY, _result(agy_err_stream), mode=EnvSmokeMode.SKILL_CHECK
+    )
+    assert agy_err.status == EnvSmokeStatus.FAIL
+    assert agy_err.errors[-1].code == EnvSmokeErrorCode.ERR_SKILL_CHECK_FAILED
 
 
 # ----------------------------------------------------------- aggregate + cli
