@@ -473,3 +473,64 @@ esac
     assert " prune --yes" in calls
     assert " cache prune --dry-run" in calls
     assert " cache prune\n" in calls
+
+
+def test_harden_bins_and_integrity_skip_macos_app_bundles(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc_mod = load_module("doctor_checks")
+    repo_root = _repo_root()
+    installs_dir = tmp_path / "mise_data" / "installs"
+
+    app_bin = (
+        installs_dir / "cmake" / "4.5.1" / "CMake.app" / "Contents" / "MacOS" / "CMake"
+    )
+    app_bin.parent.mkdir(parents=True)
+    app_bin.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 16)
+    app_bin.chmod(0o755)
+
+    reg_bin = installs_dir / "ripgrep" / "16.0.0" / "bin" / "rg"
+    reg_bin.parent.mkdir(parents=True)
+    reg_bin.write_bytes(b"\xcf\xfa\xed\xfe" + b"\x00" * 16)
+    reg_bin.chmod(0o755)
+
+    harden_task = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "host"
+        / "harden-bins"
+    )
+    proc = subprocess.run(
+        ["bash", str(harden_task)],
+        env={
+            "HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "usage_dir": str(installs_dir),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "hardened " in proc.stdout
+    assert (reg_bin.stat().st_mode & 0o777) == 0o555
+    expected_app_mode = 0o755 if sys.platform == "darwin" else 0o555
+    assert (app_bin.stat().st_mode & 0o777) == expected_app_mode
+
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "mise_data"))
+    monkeypatch.setattr(doc_mod.shutil, "which", lambda _cmd: None)
+
+    # Under darwin, writable *.app bundle binaries must be skipped without error.
+    app_bin.chmod(0o755)
+    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
+    darwin_errs, _ = doc_mod.check_mise_binary_integrity(repo_root)
+    assert darwin_errs == [], darwin_errs
+
+    # Under non-darwin, writable binaries even under *.app dirs are caught if present.
+    monkeypatch.setattr(doc_mod.sys, "platform", "linux")
+    linux_errs, _ = doc_mod.check_mise_binary_integrity(repo_root)
+    assert any("CMake" in e for e in linux_errs), linux_errs

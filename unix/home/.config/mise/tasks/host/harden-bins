@@ -70,7 +70,9 @@ changed = 0
 for cur_dir, dirnames, filenames in os.walk(root, followlinks=False):
     dirnames[:] = [
         d for d in dirnames
-        if d not in SKIP_DIRS and not os.path.islink(os.path.join(cur_dir, d))
+        if d not in SKIP_DIRS
+        and not (sys.platform == "darwin" and d.endswith(".app"))
+        and not os.path.islink(os.path.join(cur_dir, d))
     ]
     for fname in filenames:
         fpath = os.path.join(cur_dir, fname)

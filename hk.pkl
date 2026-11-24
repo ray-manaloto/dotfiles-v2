@@ -58,6 +58,9 @@ local const typosStep = picked["typos"] as Step
 local const fastSteps: Mapping<String, Step | Group> = (picked) {
   ["betterleaks"] = (betterleaksStep) {
     exclude = (betterleaksStep.exclude ?? List()) + lockfileExcludes
+    env {
+      ["BETTERLEAKS_CONFIG"] = ".betterleaks.toml"
+    }
   }
   ["zizmor"] = (githubActionsGroup.steps["zizmor"] as Step) {
     depends = List()
@@ -287,6 +290,9 @@ hooks {
       }
       ["betterleaks-commits"] = (Builtins.betterleaks) {
         scan = "commits"
+        env {
+          ["BETTERLEAKS_CONFIG"] = ".betterleaks.toml"
+        }
       }
       ["no-core-worktree"] = (fastSteps["no-core-worktree"] as Step) {
         exclusive = true

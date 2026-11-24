@@ -1,0 +1,14 @@
+title = "dotfiles-v2 betterleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Exclude machine-generated lockfiles matching hk.pkl lockfileExcludes"
+paths = [
+  '''^\.mise/locks/.*''',
+  '''^unix/home/\.config/mise/locks/.*''',
+  '''^unix/home/\.config/mise/mise(\.[^/]+)?\.lock$''',
+  '''^mise\.lock$''',
+  '''^uv\.lock$''',
+]

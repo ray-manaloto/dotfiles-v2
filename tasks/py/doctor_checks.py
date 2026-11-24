@@ -2079,6 +2079,7 @@ def check_mise_binary_integrity(repo_root: Path) -> tuple[list[str], str]:
                     d
                     for d in dirnames
                     if d not in BINARY_HARDEN_SKIP_DIRS
+                    and not (sys.platform == "darwin" and d.endswith(".app"))
                     and not os.path.islink(os.path.join(cur_dir, d))
                 ]
                 for fname in filenames:
