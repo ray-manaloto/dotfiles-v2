@@ -1106,3 +1106,36 @@ def test_host_prune_uses_daemon_id_and_backend_mismatch_cleanup() -> None:
         '["mise", "-C", str(home), "uninstall", "--all", "--yes", tool_name]'
         in prune_txt
     )
+
+
+def test_strip_git_core_from_path_preserves_real_ordering(monkeypatch) -> None:
+    _, doc_mod = _load_doctor_checks()
+    home = Path.home()
+    shims = f"{home}/.local/share/mise/shims"
+    raw = os.pathsep.join(
+        [
+            "/opt/homebrew/opt/git/libexec/git-core",
+            "/custom/git-exec",
+            "/usr/lib/git-core/",
+            shims,
+            "/opt/homebrew/bin",
+        ]
+    )
+    cleaned = doc_mod._strip_git_core_from_path(raw, "/custom/git-exec/")
+    assert cleaned == f"{shims}{os.pathsep}/opt/homebrew/bin"
+
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setenv("PATH", raw)
+    monkeypatch.setenv("GIT_EXEC_PATH", "/custom/git-exec")
+    seen_env: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        seen_env.update(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"errors": [], "warnings": []}), stderr=""
+        )
+
+    monkeypatch.setattr(doc_mod.subprocess, "run", fake_run)
+    errs, _ = doc_mod.check_mise_doctor_clean()
+    assert errs == []
+    assert seen_env["PATH"] == f"{shims}{os.pathsep}/opt/homebrew/bin"

@@ -547,16 +547,35 @@ def check_host_option_a(
     )
 
 
+def _strip_git_core_from_path(path_value: str, git_exec_path: str = "") -> str:
+    """Drop git hook-injected `*/git-core` / `GIT_EXEC_PATH` prefixes without masking real PATH order."""
+    norm_exec = git_exec_path.rstrip(os.sep)
+    suffix = f"{os.sep}git-core"
+    kept = [
+        entry
+        for entry in path_value.split(os.pathsep)
+        if not entry.rstrip(os.sep).endswith(suffix)
+        and (not norm_exec or entry.rstrip(os.sep) != norm_exec)
+    ]
+    return os.pathsep.join(kept)
+
+
 def check_mise_doctor_clean() -> tuple[list[str], str]:
     """Verify `mise -C ~ doctor --json` reports 0 errors and 0 warnings."""
     if os.environ.get("CI"):
         return [], "CI: skipped live host mise-doctor-clean"
     home = Path.home()
+    env = dict(os.environ)
+    if "PATH" in env:
+        env["PATH"] = _strip_git_core_from_path(
+            env["PATH"], env.get("GIT_EXEC_PATH", "")
+        )
     try:
         proc = subprocess.run(
             ["mise", "-C", str(home), "doctor", "--json"],
             capture_output=True,
             text=True,
+            env=env,
             stdin=subprocess.DEVNULL,
             timeout=15,
             check=False,
