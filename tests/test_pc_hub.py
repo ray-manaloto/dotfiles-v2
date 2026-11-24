@@ -6,6 +6,7 @@ import json
 import os
 import plistlib
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,16 @@ AV_WRAPPER = (
     / "assets"
     / "agentsview"
     / "agentsview-wrapper.sh"
+)
+VB_WRAPPER = (
+    REPO_ROOT
+    / "unix"
+    / "home"
+    / ".config"
+    / "mise"
+    / "assets"
+    / "board"
+    / "vb-proxy-wrapper.sh"
 )
 
 
@@ -400,6 +411,110 @@ def test_agentsview_wrapper_routes_when_configured_and_passes_through_otherwise(
         explicit.stdout.strip()
         == "NO_DAEMON=1|session list --server http://127.0.0.1:9999"
     )
+
+
+def _is_tailscale_proxy_active() -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", 1055), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def test_proxy_wrappers_clear_fnox_proxy_on_native_tailscale(
+    tmp_path: Path,
+) -> None:
+    fake_home = tmp_path / "home"
+    data_dir = fake_home / ".local" / "share" / "mise"
+    av_install_dir = data_dir / "installs" / "github-kenn-io-agentsview" / "0.48.0"
+    av_install_dir.mkdir(parents=True)
+    vb_bin_dir = (
+        data_dir / "installs" / "npm-vercel-board" / "latest" / "node_modules" / ".bin"
+    )
+    vb_bin_dir.mkdir(parents=True)
+
+    dump_script = (
+        "#!/usr/bin/env bash\n"
+        'printf "HTTPS_PROXY=%s|HTTP_PROXY=%s|https_proxy=%s|http_proxy=%s|ALL_PROXY=%s|all_proxy=%s\\n" '
+        '"${HTTPS_PROXY:-}" "${HTTP_PROXY:-}" "${https_proxy:-}" "${http_proxy:-}" '
+        '"${ALL_PROXY:-}" "${all_proxy:-}"\n'
+    )
+    fake_av = av_install_dir / "agentsview"
+    fake_av.write_text(dump_script, encoding="utf-8")
+    fake_av.chmod(0o755)
+    fake_vb = vb_bin_dir / "vb"
+    fake_vb.write_text(dump_script, encoding="utf-8")
+    fake_vb.chmod(0o755)
+
+    vb_entry = tmp_path / "vb"
+    vb_entry.symlink_to(VB_WRAPPER)
+
+    expected_http = "http://127.0.0.1:1055" if _is_tailscale_proxy_active() else ""
+    expected_dump = (
+        f"HTTPS_PROXY={expected_http}|HTTP_PROXY={expected_http}|"
+        f"https_proxy={expected_http}|http_proxy={expected_http}|"
+        "ALL_PROXY=|all_proxy="
+    )
+
+    fnox_http_proxy = f"http://{'fnox'}:{'tok'}@127.0.0.1:64729"
+    fnox_socks_proxy = f"socks5://{'fnox'}:{'tok'}@127.0.0.1:64729"
+    fnox_proxy_vars = {
+        "HTTPS_PROXY": fnox_http_proxy,
+        "HTTP_PROXY": fnox_http_proxy,
+        "https_proxy": fnox_http_proxy,
+        "http_proxy": fnox_http_proxy,
+        "ALL_PROXY": fnox_socks_proxy,
+        "all_proxy": fnox_socks_proxy,
+    }
+    base_env = {
+        "HOME": str(fake_home),
+        "MISE_DATA_DIR": str(data_dir),
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        **fnox_proxy_vars,
+    }
+
+    av_env_res = subprocess.run(
+        ["bash", str(AV_WRAPPER), "session", "list"],
+        env={**base_env, "AGENTSVIEW_SERVER": "https://hub.tailnet.ts.net/agentsview"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert av_env_res.stdout.strip() == expected_dump
+
+    av_arg_res = subprocess.run(
+        [
+            "bash",
+            str(AV_WRAPPER),
+            "session",
+            "list",
+            "--server",
+            "https://hub.tailnet.ts.net/agentsview",
+        ],
+        env=base_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert av_arg_res.stdout.strip() == expected_dump
+
+    vb_env_res = subprocess.run(
+        [str(vb_entry), "board", "read"],
+        env={**base_env, "BOARD_URL": "https://hub.tailnet.ts.net/board"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert vb_env_res.stdout.strip() == expected_dump
+
+    vb_arg_res = subprocess.run(
+        [str(vb_entry), "--url=https://hub.tailnet.ts.net/board"],
+        env=base_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert vb_arg_res.stdout.strip() == expected_dump
 
 
 def test_hub_tasks_dry_run_and_container_refusal() -> None:

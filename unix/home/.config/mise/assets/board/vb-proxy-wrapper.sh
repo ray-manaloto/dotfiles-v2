@@ -50,13 +50,30 @@ if [[ -n ${orig_board_token} ]]; then
 	export BOARD_TOKEN="${orig_board_token}"
 fi
 
-if [[ ${BOARD_URL:-} == https://*.ts.net/* ]] && (exec 3<>/dev/tcp/127.0.0.1/1055) 2>/dev/null; then
-	export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--use-env-proxy"
-	export HTTPS_PROXY="http://127.0.0.1:1055"
-	export HTTP_PROXY="http://127.0.0.1:1055"
-	export https_proxy="http://127.0.0.1:1055"
-	export http_proxy="http://127.0.0.1:1055"
-	unset ALL_PROXY all_proxy
+is_ts_target=0
+if [[ ${BOARD_URL:-} == https://*.ts.net/* ]]; then
+	is_ts_target=1
+fi
+for arg in "$@"; do
+	case "${arg}" in
+	--url=https://*.ts.net/* | https://*.ts.net/*)
+		is_ts_target=1
+		;;
+	esac
+done
+
+if [[ ${is_ts_target} -eq 1 ]]; then
+	if (exec 3<>/dev/tcp/127.0.0.1/1055) 2>/dev/null; then
+		export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--use-env-proxy"
+		export HTTPS_PROXY="http://127.0.0.1:1055"
+		export HTTP_PROXY="http://127.0.0.1:1055"
+		export https_proxy="http://127.0.0.1:1055"
+		export http_proxy="http://127.0.0.1:1055"
+		unset ALL_PROXY all_proxy
+	else
+		# Native-Tailscale hosts (macOS host) must bypass fnox localhost CONNECT proxy, which rejects *.ts.net with 403.
+		unset HTTPS_PROXY HTTP_PROXY https_proxy http_proxy ALL_PROXY all_proxy
+	fi
 fi
 
 exec "${bin}" "$@"
