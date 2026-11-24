@@ -298,6 +298,41 @@ def test_record_review_canonicalizes_plan_key_and_rejects_bare_slugs(
     assert rel_with_root.review is not None
     assert rel_with_root.review.plan_key == resolved_plan
 
+    # 7. Directory-without-trailing-slash and '..' traversal rejected on plan_key and plan_path
+    for bad_key, bad_plan_path in (
+        (".planning/2026-11-23-feat", None),
+        ("../wt/.planning/2026-11-23-feat/task_plan.md", None),
+        ("", str(repo_dir / ".planning" / "2026-11-23-feat")),
+        (
+            str(repo_dir / ".planning" / "2026-11-23-feat" / "task_plan.md"),
+            str(repo_dir / ".planning" / "2026-11-23-feat"),
+        ),
+        (
+            "2026-11-23-feat",
+            str(
+                repo_dir
+                / ".planning"
+                / "2026-11-23-feat"
+                / ".."
+                / "2026-11-23-feat"
+                / "task_plan.md"
+            ),
+        ),
+    ):
+        bad_dir_or_dotdot = record_review(
+            plan_key=bad_key,
+            plan_sha256="sha1",
+            outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+            error_count=0,
+            survivor_count=0,
+            provenance=ProvenanceRef(
+                transcript_step="t.jsonl#L9", plan_path=bad_plan_path
+            ),
+            state_dir=state_dir,
+        )
+        assert bad_dir_or_dotdot.rc == 1
+        assert bad_dir_or_dotdot.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
 
 def test_anti_rubber_stamp_gate_rejects_unjustified_zero_survivor_reviews(
     tmp_path: Path,
@@ -335,9 +370,11 @@ def test_anti_rubber_stamp_gate_rejects_unjustified_zero_survivor_reviews(
     assert short_notes.rc == 1
     assert short_notes.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
 
-    # Boilerplate notes >= 40 chars rejected
+    # Boilerplate notes >= 40 chars (including dash padding & hyphen/slash tokens) rejected
     for bad_note in (
         "post-task /learn: no reusable customization updates needed.",
+        "Post-task /learn: no reusable updates needed.",
+        "no new proposals --- --- --- none needed",
         "-" * 50,
         "no new proposals needed; no new proposals needed; none",
     ):
@@ -354,8 +391,26 @@ def test_anti_rubber_stamp_gate_rejects_unjustified_zero_survivor_reviews(
             notes=bad_note,
             state_dir=state_dir,
         )
-        assert boilerplate.rc == 1
+        assert boilerplate.rc == 1, bad_note
         assert boilerplate.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # Placeholder / trivial plan_error_ref variants rejected
+    for bad_ref in ("(none)", "no error", "N/A - none", "x", "_"):
+        bad_err_ref = record_review(
+            plan_key=plan_key,
+            plan_sha256="sha2",
+            outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+            error_count=1,
+            survivor_count=0,
+            provenance=ProvenanceRef(
+                transcript_step="t.jsonl#L12b",
+                plan_error_ref=bad_ref,
+            ),
+            notes="Row 1 already enforced in hk.pkl ruff and ty static checks.",
+            state_dir=state_dir,
+        )
+        assert bad_err_ref.rc == 1, bad_ref
+        assert bad_err_ref.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
 
     # Substantive notes >= 40 chars without plan_error_ref rejected
     no_err_ref = record_review(
@@ -370,6 +425,45 @@ def test_anti_rubber_stamp_gate_rejects_unjustified_zero_survivor_reviews(
     )
     assert no_err_ref.rc == 1
     assert no_err_ref.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # Cannot bypass anti-rubber-stamp via outcome=proposed or outcome=applied with survivor_count=0
+    for verdict in (ReviewVerdict.PROPOSED, ReviewVerdict.APPLIED):
+        vacuous = record_review(
+            plan_key=plan_key,
+            plan_sha256="sha2",
+            outcome=verdict,
+            error_count=1,
+            survivor_count=0,
+            proposal_ids=[],
+            provenance=ProvenanceRef(transcript_step="t.jsonl#L13b"),
+            state_dir=state_dir,
+        )
+        assert vacuous.rc == 1, verdict
+        assert vacuous.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # Valid proposed / applied reviews with survivor_count >= 1 or proposal_ids succeed
+    valid_proposed = record_review(
+        plan_key=plan_key,
+        plan_sha256="sha2",
+        outcome=ReviewVerdict.PROPOSED,
+        error_count=1,
+        survivor_count=1,
+        proposal_ids=["prop-1234abcd"],
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L13c"),
+        state_dir=state_dir,
+    )
+    assert valid_proposed.rc == 0
+    valid_applied = record_review(
+        plan_key=plan_key,
+        plan_sha256="sha2",
+        outcome=ReviewVerdict.APPLIED,
+        error_count=1,
+        survivor_count=0,
+        proposal_ids=["prop-1234abcd"],
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L13d"),
+        state_dir=state_dir,
+    )
+    assert valid_applied.rc == 0
 
     # Both substantive notes (>= 40 chars) and non-placeholder plan_error_ref succeed
     accepted = record_review(

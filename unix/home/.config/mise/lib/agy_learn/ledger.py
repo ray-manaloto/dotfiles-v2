@@ -35,6 +35,7 @@ DECLINED_BUFFER_NS = DECLINED_BUFFER_DAYS * 86_400 * 1_000_000_000
 PROPOSAL_MD_MAX_BYTES = 8192
 LOCK_TIMEOUT_S = 10.0
 MIN_SUBSTANTIVE_NOTES_LEN = 40
+_STRIP_PUNCT = " .,:;!?-_`\"'()[]—"
 
 _PLACEHOLDER_STRINGS = frozenset(
     {
@@ -43,6 +44,7 @@ _PLACEHOLDER_STRINGS = frozenset(
         "—",
         "none",
         "none yet",
+        "no error",
         "no errors",
         "n/a",
         "na",
@@ -110,6 +112,7 @@ _BOILERPLATE_WORDS = frozenset(
         "updates",
     }
 )
+_ERROR_REF_BOILERPLATE = _BOILERPLATE_WORDS | {"error", "errors"}
 
 TIER_RANK: dict[EnforcementTier, int] = {
     EnforcementTier.HK_PKL: 1,
@@ -171,10 +174,17 @@ def canonicalize_plan_key(
     )
 
     if raw_path:
-        if is_bare_plan_key(raw_path) or raw_path.endswith(("/", "\\")):
+        path_posix = raw_path.replace("\\", "/")
+        path_obj = Path(path_posix)
+        if (
+            is_bare_plan_key(raw_path)
+            or raw_path.endswith(("/", "\\"))
+            or ".." in path_obj.parts
+            or path_obj.name != "task_plan.md"
+        ):
             return (
                 None,
-                f"plan_path {raw_path!r} must point to a task_plan.md path, not a bare slug or directory.",
+                f"plan_path {raw_path!r} must point to a task_plan.md file without '..' traversal.",
             )
         p_exp = Path(os.path.expanduser(raw_path))
         resolved_plan = str(
@@ -208,10 +218,16 @@ def canonicalize_plan_key(
                 None,
                 f"Bare non-path slug plan_key {raw_key!r} is rejected and does not match plan_path {resolved_plan!r}.",
             )
-        if raw_key.endswith(("/", "\\")):
+        key_posix = raw_key.replace("\\", "/")
+        key_obj = Path(key_posix)
+        if (
+            raw_key.endswith(("/", "\\"))
+            or ".." in key_obj.parts
+            or key_obj.name != "task_plan.md"
+        ):
             return (
                 None,
-                f"plan_key {raw_key!r} must reference a plan file, not a directory.",
+                f"plan_key {raw_key!r} must point to a task_plan.md file without '..' traversal.",
             )
         k_exp = Path(os.path.expanduser(raw_key))
         if k_exp.is_absolute():
@@ -253,29 +269,40 @@ def canonicalize_plan_key(
             None,
             f"Bare non-path slug plan_key {raw_key!r} is rejected; pass canonical task_plan.md path, repo-relative .planning/<PLAN_ID>/task_plan.md, or --plan-path.",
         )
-    if raw_key.endswith(("/", "\\")):
+    key_posix = raw_key.replace("\\", "/")
+    key_obj = Path(key_posix)
+    if (
+        raw_key.endswith(("/", "\\"))
+        or ".." in key_obj.parts
+        or key_obj.name != "task_plan.md"
+    ):
         return (
             None,
-            f"plan_key {raw_key!r} must reference a plan file, not a directory.",
+            f"plan_key {raw_key!r} must point to a task_plan.md file without '..' traversal.",
         )
     k_exp = Path(os.path.expanduser(raw_key))
     if k_exp.is_absolute():
         return str(k_exp.resolve(strict=False)), None
     if root_path is not None:
         return str((root_path / k_exp).resolve(strict=False)), None
-    norm_posix = Path(raw_key.replace("\\", "/")).as_posix()
-    if norm_posix in (".", "..") or norm_posix.endswith(("/.", "/..")):
+    norm_posix = key_obj.as_posix()
+    if norm_posix in (".", "..") or ".." in Path(norm_posix).parts:
         return None, f"Invalid relative plan_key {raw_key!r}."
     return norm_posix, None
 
 
 def is_non_placeholder_error_ref(plan_error_ref: str | None) -> bool:
-    """Return True when *plan_error_ref* is non-empty and not a trivial placeholder."""
+    """Return True when *plan_error_ref* is non-empty, >=3 chars, and not a trivial placeholder."""
     raw = (plan_error_ref or "").strip()
     if not raw:
         return False
-    norm = re.sub(r"\s+", " ", raw).strip(" .,:;!?-").lower()
-    return norm not in _PLACEHOLDER_STRINGS
+    norm = re.sub(r"\s+", " ", raw).strip(_STRIP_PUNCT).lower()
+    if len(norm) < 3 or re.search(r"[a-z0-9]", norm) is None:
+        return False
+    if norm in _PLACEHOLDER_STRINGS:
+        return False
+    tokens = re.findall(r"[a-z0-9]+", norm)
+    return any(tok not in _ERROR_REF_BOILERPLATE for tok in tokens)
 
 
 def validate_substantive_notes(notes: str | None) -> str | None:
@@ -295,19 +322,15 @@ def validate_substantive_notes(notes: str | None) -> str | None:
             f"notes must be >= {MIN_SUBSTANTIVE_NOTES_LEN} meaningful chars "
             f"(got {len(collapsed)})"
         )
-    norm = collapsed.lower().strip(" .,:;!?-_`\"'")
+    norm = collapsed.lower().strip(_STRIP_PUNCT)
     if norm in _PLACEHOLDER_STRINGS:
         return "notes cannot be trivial placeholder boilerplate"
     alpha_words = re.findall(r"[A-Za-z]{2,}", collapsed)
-    unique_tokens = {
-        tok.lower() for tok in re.findall(r"[A-Za-z0-9_/-]{2,}", collapsed)
-    }
+    unique_tokens = {tok.lower() for tok in re.findall(r"[A-Za-z0-9]{2,}", collapsed)}
     if len(alpha_words) < 5 or len(unique_tokens) < 4:
         return "notes must contain a substantive explanation (not repeated filler or punctuation)"
-    non_boilerplate = [
-        tok for tok in unique_tokens if tok.strip("_-/") not in _BOILERPLATE_WORDS
-    ]
-    if not non_boilerplate:
+    non_boilerplate = [tok for tok in unique_tokens if tok not in _BOILERPLATE_WORDS]
+    if len(non_boilerplate) < 2:
         return "notes cannot consist solely of trivial boilerplate phrasing"
     return None
 
@@ -516,6 +539,29 @@ def record_review(
             returns=[],
         )
 
+    clean_proposal_ids = [pid.strip() for pid in (proposal_ids or ()) if pid.strip()]
+
+    if outcome in (ReviewVerdict.PROPOSED, ReviewVerdict.APPLIED) and (
+        survivor_count < 1 and not clean_proposal_ids
+    ):
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="record-review",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_INVALID_INPUT,
+                    message=(
+                        f"{outcome.value} review requires survivor_count >= 1 or non-empty proposal_ids; "
+                        "use no_new_proposals for 0-survivor reviews."
+                    ),
+                )
+            ],
+            returns=[],
+        )
+
     if outcome is ReviewVerdict.NO_NEW_PROPOSALS:
         if survivor_count != 0:
             ts, ns = now_ns_pair()
@@ -577,7 +623,7 @@ def record_review(
                     error_count=error_count,
                     outcome=outcome,
                     survivor_count=survivor_count,
-                    proposal_ids=list(proposal_ids or ()),
+                    proposal_ids=clean_proposal_ids,
                     provenance=provenance,
                     repo_root=repo_root,
                     conversation_id=conversation_id,
