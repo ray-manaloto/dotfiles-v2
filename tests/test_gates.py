@@ -1340,6 +1340,10 @@ def test_normalize_path_for_mise_doctor_shim_and_activated_modes(monkeypatch) ->
 def test_vm_up_normalizes_usr_local_bin_ownership_for_packslip() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     vm_up = (repo_root / "tasks" / "vm" / "up").read_text(encoding="utf-8")
-    assert "sudo install -d -o root -g wheel -m 0755 /usr/local/bin" in vm_up
-    assert "sudo chown root:wheel /usr/local/bin" in vm_up
-    assert "sudo chmod 0755 /usr/local/bin" in vm_up
+    install_idx = vm_up.index('"${tmp_dir}/packslip" install github.com/jdx/mise')
+    for snippet in (
+        "sudo install -d -o root -g wheel -m 0755 /usr/local/bin",
+        "sudo chown root:wheel /usr/local /usr/local/bin",
+        "sudo chmod 0755 /usr/local /usr/local/bin",
+    ):
+        assert vm_up.index(snippet) < install_idx

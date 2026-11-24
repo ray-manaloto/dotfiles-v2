@@ -145,8 +145,8 @@ if [[ "${have}" != "${MISE_VER}" ]]; then
   printf '%s  %s/packslip\n' "${PACKSLIP_SHA}" "${tmp_dir}" | shasum -a 256 -c -
   chmod 0755 "${tmp_dir}/packslip"
   sudo install -d -o root -g wheel -m 0755 /usr/local/bin
-  sudo chown root:wheel /usr/local/bin
-  sudo chmod 0755 /usr/local/bin
+  sudo chown root:wheel /usr/local /usr/local/bin
+  sudo chmod 0755 /usr/local /usr/local/bin
   sudo "${tmp_dir}/packslip" install github.com/jdx/mise \
     --version "${MISE_VER}" \
     --pin "${PACKSLIP_PIN}" \
