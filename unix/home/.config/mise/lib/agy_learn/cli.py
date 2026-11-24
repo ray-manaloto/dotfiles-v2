@@ -10,7 +10,7 @@ from typing import Annotated
 
 import cyclopts
 import orjson
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agy_learn.heal import render_active_proposal_md, run_heal_check
 from agy_learn.ledger import (
@@ -47,12 +47,8 @@ def _configure_agy_learn_logging(
     read_only: bool = False,
 ) -> None:
     resolved = resolve_state_dir(state_dir)
-    level = logging.WARNING if json_mode else logging.INFO
-    jsonl_path = (
-        None
-        if (read_only and not resolved.is_dir())
-        else resolved / "agy-learn.log.jsonl"
-    )
+    level = logging.WARNING if (json_mode or read_only) else logging.INFO
+    jsonl_path = None if read_only else resolved / "agy-learn.log.jsonl"
     configure_logging(
         jsonl_path=jsonl_path,
         level=level,
@@ -286,12 +282,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     arg_list = list(sys.argv[1:] if argv is None else argv)
     app = _build_app()
     try:
-        result = app(arg_list, exit_on_error=False, result_action="return_value")
+        result = app(
+            arg_list,
+            exit_on_error=False,
+            print_error=False,
+            result_action="return_value",
+        )
         return int(result) if isinstance(result, int) else 0
-    except cyclopts.CycloptsError as err:
+    except (cyclopts.CycloptsError, ValidationError) as err:
         ts, ns = now_ns_pair()
+        raw_cmd = arg_list[0].strip() if arg_list else ""
+        cmd = raw_cmd or "cli"
         resp = LearnResponse(
-            command=arg_list[0] if arg_list else "cli",
+            command=cmd,
             rc=2,
             timestamp=ts,
             timestamp_unix_ns=ns,

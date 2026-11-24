@@ -571,15 +571,26 @@ run_doctor() {
 
 print_learn_heal() {
 	local dir="$1"
-	local self_dir lib_dir repo_root venv_py
+	local self_dir lib_dir repo_root venv_py common_dir common_root out
 	self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+	[[ -d "${self_dir}/../../lib/agy_learn" ]] || return 0
 	lib_dir="$(cd "${self_dir}/../../lib" && pwd -P)"
 	repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
 	venv_py="${repo_root}/.venv/bin/python"
-	[[ -d "${lib_dir}/agy_learn" && -x ${venv_py} ]] || return 0
-	printf '\nLearn Heal (read-only):\n  '
-	"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' \
-		"${lib_dir}" heal --check --repo "${dir}" || true
+	if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+		common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+		if [[ -n ${common_dir} ]]; then
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+			if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+				venv_py="${common_root}/.venv/bin/python"
+			fi
+		fi
+	fi
+	[[ -x ${venv_py} ]] || return 0
+	out="$("${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' \
+		"${lib_dir}" heal --check --repo "${dir}" 2>/dev/null || true)"
+	[[ -n ${out} ]] || return 0
+	printf '\nLearn Heal (read-only):\n  %s\n' "${out}"
 }
 
 find_pwf_scripts || true

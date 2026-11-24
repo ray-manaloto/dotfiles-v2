@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import os
 import re
 import shlex
@@ -268,27 +269,49 @@ AGY_CLI_LOG_PID_RE = re.compile(r"Starting language server process with pid (\d+
 AGY_CLI_LOG_HOOKS_RE = re.compile(
     r"loaded (\d+) named hooks from \d+ hooks\.json file\(s\)"
 )
-AGY_CLI_LOG_CONV_RE = re.compile(
-    r"(?:Resuming conversation |Starting conversation update stream for "
+AGY_CLI_LOG_PRIMARY_CONV_RE = re.compile(
+    r"(?:Resuming conversation "
     r"|GetConversationDetail: found conversation |Forwarding user message to conversation "
-    r"|Sending user message to conversation |cascade_id:)"
+    r"|Sending user message to conversation )"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+)
+AGY_CLI_LOG_STREAM_CONV_RE = re.compile(
+    r"(?:Starting conversation update stream for |cascade_id:)"
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
 )
 
 
+def _read_bounded_log(
+    path: Path, *, head_bytes: int = 262_144, tail_bytes: int = 65_536
+) -> str:
+    size = path.stat().st_size
+    if size <= head_bytes + tail_bytes:
+        return path.read_text(encoding="utf-8", errors="replace")
+    with path.open("rb") as handle:
+        head = handle.read(head_bytes)
+        handle.seek(max(0, size - tail_bytes))
+        tail = handle.read(tail_bytes)
+    return (
+        head.decode("utf-8", errors="replace")
+        + "\n"
+        + tail.decode("utf-8", errors="replace")
+    )
+
+
 def process_start_info(pid: int | None) -> tuple[str | None, str | None]:
     """Return `(started_at_ns, lstart)` for *pid* via `psutil`, or `(None, None)`."""
-    if pid is None or pid <= 0:
+    if pid is None or isinstance(pid, bool) or pid <= 0:
         return None, None
     try:
         ctime = float(psutil.Process(pid).create_time())
     except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError:
         return None, None
-    if ctime <= 0:
+    if not math.isfinite(ctime) or ctime <= 0:
         return None, None
-    started_at = format_ns_timestamp(round(ctime * 1_000_000_000))
+    started_ns = round(ctime * 1_000_000) * 1_000
+    started_at = format_ns_timestamp(started_ns)
     lstart = (
-        dt.datetime.fromtimestamp(ctime, tz=dt.UTC)
+        dt.datetime.fromtimestamp(started_ns // 1_000_000_000, tz=dt.UTC)
         .astimezone()
         .strftime("%a %b %e %H:%M:%S %Y")
     )
@@ -320,75 +343,50 @@ def _log_file_arg(fg_argv: Sequence[str]) -> str | None:
     return None
 
 
-def inspect_agy_cli_log(
-    tree_pids: Sequence[int],
+def _eval_agy_log_candidate(
+    log_path: Path,
+    tree_set: set[int],
     session_id: str | None,
-    *,
-    fg_argv: Sequence[str] = (),
-    hooks_json_path: Path | None = None,
-) -> AgyLogProof:
-    """Confirm active Antigravity CLI log PID, conversation ID, and loaded hook count."""
-    expected_hooks = _expected_agy_hook_count(hooks_json_path)
-    candidates: list[Path] = []
-    for raw_path in open_file_paths(tree_pids):
-        norm = raw_path.replace("\\", "/")
-        if "/antigravity-cli/log/cli-" in norm and norm.endswith(".log"):
-            candidates.append(Path(raw_path))
-    explicit_log = _log_file_arg(fg_argv)
-    if explicit_log:
-        candidates.append(Path(explicit_log).expanduser())
-
-    log_path: Path | None = next((p for p in candidates if p.is_file()), None)
-    if log_path is None:
-        return AgyLogProof(
-            log_path=None,
-            pid=None,
-            pid_matched=False,
-            conversation_id=None,
-            conversation_matched=False,
-            loaded_hook_count=None,
-            expected_hook_count=expected_hooks,
-            hooks_matched=False,
-            verified=False,
-        )
-
+    expected_hooks: int | None,
+) -> AgyLogProof | None:
     try:
-        text = log_path.read_text(encoding="utf-8", errors="replace")
+        text = _read_bounded_log(log_path)
     except OSError:
-        return AgyLogProof(
-            log_path=str(log_path),
-            pid=None,
-            pid_matched=False,
-            conversation_id=None,
-            conversation_matched=False,
-            loaded_hook_count=None,
-            expected_hook_count=expected_hooks,
-            hooks_matched=False,
-            verified=False,
-        )
+        return None
 
     pid_matches = AGY_CLI_LOG_PID_RE.findall(text)
-    log_pid = int(pid_matches[0]) if pid_matches else None
-    pid_matched = log_pid is not None and log_pid in set(tree_pids)
+    log_pid = int(pid_matches[-1]) if pid_matches else None
+    pid_matched = log_pid is not None and log_pid in tree_set
 
     hook_matches = AGY_CLI_LOG_HOOKS_RE.findall(text)
     loaded_hooks = int(hook_matches[-1]) if hook_matches else None
 
-    conv_matches = AGY_CLI_LOG_CONV_RE.findall(text)
-    if session_id and session_id in conv_matches:
-        conv_id: str | None = session_id
-        conv_matched = True
+    primary_convs = AGY_CLI_LOG_PRIMARY_CONV_RE.findall(text)
+    stream_convs = AGY_CLI_LOG_STREAM_CONV_RE.findall(text)
+    if primary_convs:
+        if session_id:
+            session_low = session_id.lower()
+            matched_primary = next(
+                (c for c in reversed(primary_convs) if c.lower() == session_low), None
+            )
+            conv_id: str | None = matched_primary or primary_convs[-1]
+        else:
+            conv_id = primary_convs[-1]
+    elif stream_convs:
+        conv_id = stream_convs[0]
     else:
-        conv_id = conv_matches[0] if conv_matches else None
-        conv_matched = bool(session_id and conv_id == session_id)
+        conv_id = None
 
+    conv_matched = bool(
+        session_id and conv_id and conv_id.lower() == session_id.lower()
+    )
     hooks_matched = (
         loaded_hooks is not None
         and expected_hooks is not None
         and loaded_hooks == expected_hooks
     )
     conv_ok = conv_matched if session_id else conv_id is not None
-    hooks_ok = hooks_matched if expected_hooks is not None else loaded_hooks is not None
+    hooks_ok = hooks_matched if expected_hooks is not None else True
     verified = bool(pid_matched and conv_ok and hooks_ok)
 
     return AgyLogProof(
@@ -401,6 +399,72 @@ def inspect_agy_cli_log(
         expected_hook_count=expected_hooks,
         hooks_matched=hooks_matched,
         verified=verified,
+    )
+
+
+def inspect_agy_cli_log(
+    tree_pids: Sequence[int],
+    session_id: str | None,
+    *,
+    fg_argv: Sequence[str] = (),
+    hooks_json_path: Path | None = None,
+) -> AgyLogProof:
+    """Confirm active Antigravity CLI log PID, conversation ID, and loaded hook count."""
+    expected_hooks = _expected_agy_hook_count(hooks_json_path)
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    explicit_log = _log_file_arg(fg_argv)
+    if explicit_log:
+        exp_path = Path(explicit_log).expanduser()
+        candidates.append(exp_path)
+        seen.add(str(exp_path))
+    for raw_path in open_file_paths(tree_pids):
+        norm = raw_path.replace("\\", "/")
+        if (
+            "/antigravity-cli/log/cli-" in norm
+            and norm.endswith(".log")
+            and raw_path not in seen
+        ):
+            seen.add(raw_path)
+            candidates.append(Path(raw_path))
+
+    existing = [p for p in candidates if p.is_file()]
+    if not existing:
+        return AgyLogProof(
+            log_path=None,
+            pid=None,
+            pid_matched=False,
+            conversation_id=None,
+            conversation_matched=False,
+            loaded_hook_count=None,
+            expected_hook_count=expected_hooks,
+            hooks_matched=False,
+            verified=False,
+        )
+
+    tree_set = set(tree_pids)
+    first_readable: AgyLogProof | None = None
+    for cand in existing:
+        proof = _eval_agy_log_candidate(cand, tree_set, session_id, expected_hooks)
+        if proof is None:
+            continue
+        if first_readable is None:
+            first_readable = proof
+        if proof.pid_matched:
+            return proof
+
+    if first_readable is not None:
+        return first_readable
+    return AgyLogProof(
+        log_path=str(existing[0]),
+        pid=None,
+        pid_matched=False,
+        conversation_id=None,
+        conversation_matched=False,
+        loaded_hook_count=None,
+        expected_hook_count=expected_hooks,
+        hooks_matched=False,
+        verified=False,
     )
 
 

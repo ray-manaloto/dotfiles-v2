@@ -184,18 +184,23 @@ def _write_state(state_path: Path, state: dict[str, Any]) -> None:
             Path(tmp_name).unlink(missing_ok=True)
 
 
+def _read_jsonl_lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8", errors="replace").split("\n")
+
+
 def _load_full_records(
-    transcript_path: Path, needed_indices: set[int]
+    transcript_path: Path, expected_types: dict[int, tuple[Any, Any]]
 ) -> dict[int, dict[str, Any]]:
-    if not needed_indices:
+    if not expected_types:
         return {}
     full_path = transcript_path.with_name("transcript_full.jsonl")
     if not full_path.is_file():
         return {}
     out: dict[int, dict[str, Any]] = {}
+    needed_indices = set(expected_types)
     max_idx = max(needed_indices)
     try:
-        with full_path.open("r", encoding="utf-8", errors="replace") as handle:
+        with full_path.open("r", encoding="utf-8", errors="replace", newline="\n") as handle:
             for idx, raw in enumerate(handle):
                 if idx > max_idx:
                     break
@@ -205,8 +210,18 @@ def _load_full_records(
                     obj = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(obj, dict):
-                    out[idx] = obj
+                if not isinstance(obj, dict):
+                    continue
+                exp_type, exp_step = expected_types[idx]
+                if exp_type is not None and obj.get("type") != exp_type:
+                    continue
+                if (
+                    exp_step is not None
+                    and obj.get("step_index") is not None
+                    and obj.get("step_index") != exp_step
+                ):
+                    continue
+                out[idx] = obj
     except OSError:
         return {}
     return out
@@ -222,6 +237,8 @@ def _unquote_truncated(val: Any) -> str:
                 return decoded
         except json.JSONDecodeError:
             pass
+        if val.endswith('\\"'):
+            return val[1:]
     if val.startswith('"') and not val.endswith('"'):
         return val[1:]
     return val
@@ -231,9 +248,7 @@ def _scan_last_user_idx(transcript_path: Path) -> int | None:
     if not transcript_path.is_file():
         return None
     try:
-        lines = transcript_path.read_text(
-            encoding="utf-8", errors="replace"
-        ).splitlines()
+        lines = _read_jsonl_lines(transcript_path)
     except OSError:
         return None
     last_user_idx = -1
@@ -375,9 +390,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     try:
-        lines = transcript_path.read_text(
-            encoding="utf-8", errors="replace"
-        ).splitlines()
+        lines = _read_jsonl_lines(transcript_path)
     except OSError:
         return {}
 
@@ -410,7 +423,15 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(truncated, list) and (
         "content" in truncated or "tool_calls" in truncated
     ):
-        full_records = _load_full_records(transcript_path, {final_line_idx})
+        full_records = _load_full_records(
+            transcript_path,
+            {
+                final_line_idx: (
+                    raw_resp_obj.get("type"),
+                    raw_resp_obj.get("step_index"),
+                )
+            },
+        )
         resp_obj = full_records.get(final_line_idx, raw_resp_obj)
 
     tool_calls = resp_obj.get("tool_calls") or []

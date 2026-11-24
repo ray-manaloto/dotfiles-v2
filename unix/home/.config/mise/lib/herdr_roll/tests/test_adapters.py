@@ -870,6 +870,148 @@ class AdapterTests(unittest.TestCase):
                 )
             )
 
+    def test_opencode_sqlite_edge_cases_and_fail_closed_title_matching(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db = tmp_path / "opencode.db"
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT, time_archived INTEGER, time_deleted INTEGER)"
+            )
+            # Isolated single-row titled dir rejects generic "OpenCode"
+            d_single_titled = str(tmp_path / "single-titled")
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_single_titled', 'p1', NULL, ?, 'Real title', NULL, NULL)",
+                (d_single_titled,),
+            )
+            # Empty/non-OC titles fail closed; time_deleted row excluded
+            misc_dir = tmp_path / "misc"
+            misc_dir.mkdir()
+            d_misc = str(misc_dir.resolve())
+            link_cwd = tmp_path / "misc-link"
+            link_cwd.symlink_to(misc_dir)
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_deleted', 'p1', NULL, ?, 'Deleted task', NULL, 999)",
+                (d_misc,),
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_fix', 'p1', NULL, ?, 'Fix auth bug cleanly', NULL, NULL)",
+                (d_misc,),
+            )
+            # >50 rows: session at row 65 resolves if unique, duplicate past row 50 fails closed
+            d_many = str(tmp_path / "many")
+            for idx in range(70):
+                title = (
+                    "Needle past fifty"
+                    if idx in {5, 65}
+                    else (
+                        "Unique needle past fifty"
+                        if idx == 4
+                        else f"Session item {idx:03d}"
+                    )
+                )
+                conn.execute(
+                    "INSERT INTO session_v2 VALUES (?, 'p1', NULL, ?, ?, NULL, NULL)",
+                    (f"ses_many_{idx}", d_many, title),
+                )
+            # 37-char exact vs >40-char truncated collision fails closed
+            d_coll = str(tmp_path / "coll")
+            p37 = "A" * 37
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_short_ellip', 'p1', NULL, ?, ?, NULL, NULL)",
+                (d_coll, f"{p37}…"),
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_long_orig', 'p1', NULL, ?, ?, NULL, NULL)",
+                (d_coll, f"{p37} extra chars beyond forty"),
+            )
+            conn.commit()
+            conn.close()
+
+            adapter = OpenCodeAdapter(db_path=db)
+            self.assertIsNone(
+                adapter.session_id(
+                    address="t1",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=d_single_titled,
+                    title="OpenCode",
+                    screen_text="",
+                )
+            )
+            # Non-"OC |" prefix, empty "OC |   ", short ellipsis, and reverse substring all fail closed
+            for bad_title in (
+                "Fix auth bug cleanly",
+                "OC |   ",
+                "OC | Fix...",
+                "OC | Wrapper around Fix auth bug cleanly",
+                "OC | Deleted task",
+            ):
+                self.assertIsNone(
+                    adapter.session_id(
+                        address="t1",
+                        tree_pids=[],
+                        fg_argv=["opencode", "--standalone"],
+                        term_argv=[],
+                        cwd=d_misc,
+                        title=bad_title,
+                        screen_text="",
+                    ),
+                    bad_title,
+                )
+            # Symlinked cwd and rowid ordering (no time_updated column) resolve uniquely
+            self.assertEqual(
+                adapter.session_id(
+                    address="t1",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=str(link_cwd),
+                    title="OC | Fix auth bug cleanly",
+                    screen_text="",
+                ),
+                "ses_fix",
+            )
+            # >50 rows: unique match at oldest end resolves, duplicate spanning past 50 fails closed
+            self.assertEqual(
+                adapter.session_id(
+                    address="t1",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=d_many,
+                    title="OC | Unique needle past fifty",
+                    screen_text="",
+                ),
+                "ses_many_4",
+            )
+            self.assertIsNone(
+                adapter.session_id(
+                    address="t1",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=d_many,
+                    title="OC | Needle past fifty",
+                    screen_text="",
+                )
+            )
+            # Exact-vs-truncated collision fails closed
+            self.assertIsNone(
+                adapter.session_id(
+                    address="t1",
+                    tree_pids=[],
+                    fg_argv=["opencode", "--standalone"],
+                    term_argv=[],
+                    cwd=d_coll,
+                    title=f"OC | {p37}…",
+                    screen_text="",
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

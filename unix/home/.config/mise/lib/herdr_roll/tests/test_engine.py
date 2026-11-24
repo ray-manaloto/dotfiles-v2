@@ -897,6 +897,95 @@ class EngineTests(unittest.TestCase):
                 )
             self.assertEqual(rc_fail, engine.EXIT_FAILED)
 
+            # Stream/subagent cascade_id must NOT hijack primary conversation, missing hooks.json stays valid, explicit --log-file wins
+            stream_decoy = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+            cli_log2 = log_dir / "cli-explicit.log"
+            cli_log2.write_text(
+                "\n".join(
+                    [
+                        f"I1123 14:21:26.1 server.go:1] Starting conversation update stream for {stream_decoy}",
+                        f"I1123 14:21:26.2 server.go:2656] Starting language server process with pid {os.getpid()}",
+                        f"I1123 14:21:26.3 common.go:496] Resuming conversation {conv_id.upper()}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            stale_log = log_dir / "cli-stale.log"
+            stale_log.write_text(
+                "I1123 14:00:00 server.go:1] Starting language server process with pid 99999999\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "herdr_roll.herdr.open_file_paths", return_value=[str(stale_log)]
+            ):
+                proof_stream = inspect_agy_cli_log(
+                    [os.getpid()],
+                    stream_decoy,
+                    fg_argv=["agy", "--log-file", str(cli_log2)],
+                    hooks_json_path=tmp_path / "missing-hooks.json",
+                )
+                self.assertFalse(proof_stream.verified)
+                self.assertEqual(proof_stream.conversation_id, conv_id.upper())
+
+                proof_case = inspect_agy_cli_log(
+                    [os.getpid()],
+                    conv_id,
+                    fg_argv=["agy", f"--log-file={cli_log2}"],
+                    hooks_json_path=tmp_path / "missing-hooks.json",
+                )
+                self.assertTrue(proof_case.verified)
+                self.assertTrue(proof_case.conversation_matched)
+
+            # restart_one(fresh_tab=True) fails closed BEFORE tab.close if agy_log_proof.verified is False
+            agy_space = SpaceSnapshot(id="sp_agy", name="dotfiles-v2")
+            agy_tab = TabSnapshot(
+                id="tb_old",
+                name="worker",
+                terminals=[
+                    TerminalSnapshot(
+                        address="t_old",
+                        kind=HarnessKind.AGY,
+                        session_id=conv_id,
+                        cwd=tmp,
+                        fg_pid=200,
+                        fg_argv=["agy", "--conversation", conv_id],
+                    )
+                ],
+            )
+            fake_agy_client = mock.MagicMock(spec=LiveClient)
+            fake_agy_client.info = {
+                "t_old": {"status": {"state": "idle", "app": "antigravity"}},
+                "t_new": {"status": {"state": "idle", "app": "antigravity"}},
+            }
+            fake_agy_client.foreground.return_value = (200, ["agy"])
+            fake_agy_client.tree.return_value = [200]
+            fake_agy_client.active_jobs.return_value = []
+            with (
+                mock.patch("herdr_roll.engine.assert_same_tab"),
+                mock.patch("herdr_roll.engine._wait_for_exit"),
+                mock.patch("herdr_roll.engine._launch_fresh_tab", return_value="t_new"),
+                mock.patch("herdr_roll.engine.git_status_porcelain", return_value=""),
+                mock.patch("herdr_roll.engine.hc_read", return_value="ready"),
+                mock.patch(
+                    "herdr_roll.engine.verify_target", return_value=(300, "t_new")
+                ),
+                mock.patch(
+                    "herdr_roll.engine.inspect_agy_cli_log", return_value=proof_bad
+                ),
+                mock.patch("herdr_roll.engine.herdr_app_do") as app_do_mock,
+            ):
+                fresh_fail = engine.restart_one(
+                    (agy_space, agy_tab, agy_tab.terminals[0]),
+                    timing=Timing(busy_wait=0.0, settle=1.0),
+                    run_dir=None,
+                    apply=True,
+                    fresh_tab=True,
+                    live=fake_agy_client,
+                )
+            self.assertEqual(fresh_fail.result, "failed-verify-timeout")
+            app_do_mock.assert_not_called()
+
     def test_cyclopts_cli_dispatches_and_returns_refused_envelope(self) -> None:
         with mock.patch("herdr_roll.cli.cmd_snapshot", return_value=0) as snap_mock:
             rc = cli.main(

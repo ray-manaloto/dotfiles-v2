@@ -82,8 +82,9 @@ BASE_TRIGGER_SUFFIX = (
     "Load the `post-task-learn` skill and run one bounded `/learn` review of the task just completed: "
     "inspect user corrections, failures, and reusable fixes; prioritize extracting repeatable workflows "
     "into Skills or Tier 1-3 deterministic gates (`hk.pkl` -> `mise doctor project` -> hook) over prose rules. "
-    "Record the review via `mise run learn:record-review` (`--outcome no_new_proposals --survivor-count 0` is valid "
-    "when 0 survivors exist) or `mise run learn:propose` + `mise run learn:render-proposal` (<= 8 KB `learning_proposal.md`, "
+    "Record the review via `mise run learn:record-review --plan-key <plan_path> --plan-sha256 <sha256>` "
+    "(`--outcome no_new_proposals --survivor-count 0` is valid when 0 survivors exist) "
+    "or `mise run learn:propose` + `mise run learn:render-proposal` (<= 8 KB `learning_proposal.md`, "
     "always setting `RequestFeedback=false` during automated Stop hooks)."
 )
 TRIGGER_REASON = (
@@ -171,17 +172,18 @@ def _read_shared_reviews(
     return latest
 
 
-def _append_owing_review(
+def _append_shared_review(
     *,
     plan_key: str,
     label: str,
     digest: str,
     error_count: int,
+    outcome: str,
+    notes: str,
     transcript_path: Path,
     line_count: int,
 ) -> None:
     reviews_path = _shared_reviews_path()
-    reviews_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = reviews_path.with_suffix(".jsonl.lock")
     ts, ns = _now_ns_pair()
     rev_id = "rev-" + hashlib.sha256(f"{plan_key}:{digest}:{ns}".encode()).hexdigest()[:12]
@@ -192,7 +194,7 @@ def _append_owing_review(
         "worktree_slug": None,
         "plan_sha256": digest,
         "error_count": max(0, int(error_count)),
-        "outcome": "owing_learn",
+        "outcome": outcome,
         "survivor_count": 0,
         "proposal_ids": [],
         "provenance": {
@@ -203,12 +205,13 @@ def _append_owing_review(
         },
         "repo_root": None,
         "conversation_id": None,
-        "notes": "Auto-marked owing_learn after Stop-hook retry exhaustion.",
+        "notes": notes,
         "timestamp": ts,
         "timestamp_unix_ns": ns,
     }
     line = json.dumps(record, separators=(",", ":")) + "\n"
     try:
+        reviews_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+", encoding="utf-8") as lock_handle:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
             try:
@@ -220,6 +223,27 @@ def _append_owing_review(
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
     except OSError:
         return
+
+
+def _append_owing_review(
+    *,
+    plan_key: str,
+    label: str,
+    digest: str,
+    error_count: int,
+    transcript_path: Path,
+    line_count: int,
+) -> None:
+    _append_shared_review(
+        plan_key=plan_key,
+        label=label,
+        digest=digest,
+        error_count=error_count,
+        outcome="owing_learn",
+        notes="Auto-marked owing_learn after Stop-hook retry exhaustion.",
+        transcript_path=transcript_path,
+        line_count=line_count,
+    )
 
 
 def _read_state(
@@ -394,23 +418,26 @@ def _unquote_truncated(val: Any) -> str:
                 return decoded
         except json.JSONDecodeError:
             pass
+        if val.endswith('\\"'):
+            return val[1:]
     if val.startswith('"') and not val.endswith('"'):
         return val[1:]
     return val
 
 
 def _load_full_records(
-    transcript_path: Path | None, needed_indices: set[int]
+    transcript_path: Path | None, expected_types: dict[int, tuple[Any, Any]]
 ) -> dict[int, dict[str, Any]]:
-    if transcript_path is None or not needed_indices:
+    if transcript_path is None or not expected_types:
         return {}
     full_path = transcript_path.with_name("transcript_full.jsonl")
     if not full_path.is_file():
         return {}
     out: dict[int, dict[str, Any]] = {}
+    needed_indices = set(expected_types)
     max_idx = max(needed_indices)
     try:
-        with full_path.open("r", encoding="utf-8", errors="replace") as handle:
+        with full_path.open("r", encoding="utf-8", errors="replace", newline="\n") as handle:
             for idx, raw in enumerate(handle):
                 if idx > max_idx:
                     break
@@ -420,8 +447,18 @@ def _load_full_records(
                     obj = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(obj, dict):
-                    out[idx] = obj
+                if not isinstance(obj, dict):
+                    continue
+                exp_type, exp_step = expected_types[idx]
+                if exp_type is not None and obj.get("type") != exp_type:
+                    continue
+                if (
+                    exp_step is not None
+                    and obj.get("step_index") is not None
+                    and obj.get("step_index") != exp_step
+                ):
+                    continue
+                out[idx] = obj
     except OSError:
         return {}
     return out
@@ -435,7 +472,7 @@ def _slice_wrote_learning_proposal(
     line_offset: int = 0,
 ) -> bool:
     parsed_slice: list[tuple[int, dict[str, Any]]] = []
-    needed_full: set[int] = set()
+    expected_types: dict[int, tuple[Any, Any]] = {}
     for rel_idx, raw in enumerate(lines):
         if not raw.strip():
             continue
@@ -448,10 +485,10 @@ def _slice_wrote_learning_proposal(
         abs_idx = line_offset + rel_idx
         parsed_slice.append((abs_idx, entry))
         trunc = entry.get("truncated_fields")
-        if isinstance(trunc, list) and ("tool_calls" in trunc or "content" in trunc):
-            needed_full.add(abs_idx)
+        if isinstance(trunc, list) and "tool_calls" in trunc:
+            expected_types[abs_idx] = (entry.get("type"), entry.get("step_index"))
 
-    full_records = _load_full_records(transcript_path, needed_full)
+    full_records = _load_full_records(transcript_path, expected_types)
     for abs_idx, raw_entry in parsed_slice:
         entry = full_records.get(abs_idx, raw_entry)
         tool_calls = entry.get("tool_calls") or []
@@ -469,10 +506,6 @@ def _slice_wrote_learning_proposal(
                     target_path is not None
                     and target_path.name == "learning_proposal.md"
                 ) or "learning_proposal.md" in target:
-                    return True
-            elif name == "run_command" and isinstance(args, dict):
-                cmd = _unquote_truncated(args.get("CommandLine"))
-                if cmd and LEARN_CMD_RE.search(cmd):
                     return True
     return False
 
@@ -769,8 +802,8 @@ def _analyze_slice(
         parsed.append((line_offset + rel_idx, entry))
 
     turn_entries = parsed[last_user_pos:] if last_user_pos is not None else parsed
-    needed_full = {
-        abs_idx
+    expected_types = {
+        abs_idx: (obj.get("type"), obj.get("step_index"))
         for abs_idx, obj in turn_entries
         if isinstance(obj.get("truncated_fields"), list)
         and (
@@ -778,7 +811,7 @@ def _analyze_slice(
             or "content" in obj["truncated_fields"]
         )
     }
-    full_records = _load_full_records(transcript_path, needed_full)
+    full_records = _load_full_records(transcript_path, expected_types)
 
     last_learn_idx = -1
     last_work_idx = -1
@@ -948,7 +981,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         lines = transcript_path.read_text(
             encoding="utf-8", errors="replace"
-        ).splitlines()
+        ).split("\n")
     except OSError:
         return {}
 
@@ -996,6 +1029,22 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 for item in pending_plans:
                     learned_plans[item["plan_key"]] = item["digest"]
                     owing_learn.pop(item["plan_key"], None)
+                    prev_shared = shared_reviews.get(item["plan_key"])
+                    if (
+                        prev_shared is not None
+                        and prev_shared[0] == item["digest"]
+                        and prev_shared[1] == "owing_learn"
+                    ):
+                        _append_shared_review(
+                            plan_key=item["plan_key"],
+                            label=item["label"],
+                            digest=item["digest"],
+                            error_count=int(item["error_count"]),
+                            outcome="proposed",
+                            notes="Cleared owing_learn after learning_proposal.md update.",
+                            transcript_path=transcript_path,
+                            line_count=len(lines),
+                        )
                 _write_state(state_path, len(lines), learned_plans, None, owing_learn)
                 return {}
 
@@ -1044,7 +1093,8 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 f"Post-task /learn hard gate: completed plan '{updated_pending['label']}' "
                 f"recorded {updated_pending['error_count']} error(s) in `## Errors Encountered`, "
                 "but no review or proposal was recorded. Do NOT fast-exit — record via "
-                "`mise run learn:record-review` (`--outcome no_new_proposals --survivor-count 0` if 0 survivors) "
+                "`mise run learn:record-review --plan-key <plan_path> --plan-sha256 <sha256>` "
+                "(`--outcome no_new_proposals --survivor-count 0` if 0 survivors) "
                 "or update `learning_proposal.md` (`RequestFeedback=false`) evaluating Tier 1-5 extraction."
             )
             return {"decision": "continue", "reason": reason}
@@ -1108,7 +1158,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
             line_offset=last_line,
         )
         explicit_learn = bool(user_text and _is_explicit_user_learn(user_text))
-        for _, plan_key, digest, err_count in completed_unlearned:
+        for plan_path, plan_key, digest, err_count in completed_unlearned:
             if (
                 wrote_proposal
                 or explicit_learn
@@ -1117,6 +1167,23 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
             ):
                 learned_plans[plan_key] = digest
                 owing_learn.pop(plan_key, None)
+                prev_shared = shared_reviews.get(plan_key)
+                if (
+                    wrote_proposal
+                    and prev_shared is not None
+                    and prev_shared[0] == digest
+                    and prev_shared[1] == "owing_learn"
+                ):
+                    _append_shared_review(
+                        plan_key=plan_key,
+                        label=_plan_label(plan_path),
+                        digest=digest,
+                        error_count=err_count,
+                        outcome="proposed",
+                        notes="Cleared owing_learn after learning_proposal.md update.",
+                        transcript_path=transcript_path,
+                        line_count=len(lines),
+                    )
         _write_state(state_path, len(lines), learned_plans, None, owing_learn)
         return {}
 
@@ -1131,10 +1198,15 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
 
     if completed_unlearned:
         ordered = sorted(completed_unlearned, key=lambda item: (item[3] == 0, item[1]))
-        labels = ", ".join(_plan_label(p) for p, _, _, _ in ordered)
-        total_errors = sum(err for _, _, _, err in ordered)
-        if total_errors > 0:
-            first_path, first_key, first_digest, _ = ordered[0]
+        error_plans = [item for item in ordered if item[3] > 0]
+        clean_plans = [item for item in ordered if item[3] == 0]
+        if error_plans:
+            for _, clean_key, clean_digest, _ in clean_plans:
+                learned_plans[clean_key] = clean_digest
+                owing_learn.pop(clean_key, None)
+            err_labels = ", ".join(_plan_label(p) for p, _, _, _ in error_plans)
+            total_errors = sum(err for _, _, _, err in error_plans)
+            first_path, first_key, first_digest, _ = error_plans[0]
             pending_plans = [
                 {
                     "plan_key": pk,
@@ -1142,11 +1214,11 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                     "digest": dig,
                     "error_count": err,
                 }
-                for p, pk, dig, err in ordered
+                for p, pk, dig, err in error_plans
             ]
             next_pending = {
                 "plan_key": first_key,
-                "label": labels if len(ordered) > 1 else _plan_label(first_path),
+                "label": err_labels if len(error_plans) > 1 else _plan_label(first_path),
                 "digest": first_digest,
                 "error_count": total_errors,
                 "baseline_proposal_sha": cur_proposal_sha,
@@ -1157,7 +1229,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 state_path, len(lines), learned_plans, next_pending, owing_learn
             )
             reason = (
-                f"Automated post-task /learn check: planning-with-files task completed ({labels}) "
+                f"Automated post-task /learn check: planning-with-files task completed ({err_labels}) "
                 f"with {total_errors} logged error(s) in `## Errors Encountered`. "
                 + BASE_TRIGGER_SUFFIX
                 + " Review the completed `task_plan.md` (`Errors Encountered`, `Decisions Made`), "
@@ -1165,6 +1237,8 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 "for 0 survivors or `propose` + `render-proposal` with `RequestFeedback=false`)."
             )
             return {"decision": "continue", "reason": reason}
+
+        labels = ", ".join(_plan_label(p) for p, _, _, _ in ordered)
 
         for _, plan_key, digest, _ in ordered:
             learned_plans[plan_key] = digest
@@ -1202,35 +1276,63 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _find_agy_learn_runner(payload: dict[str, Any]) -> tuple[Path, Path] | None:
+def _find_agy_learn_runner(
+    payload: dict[str, Any],
+) -> tuple[Path, Path, Path] | None:
     candidates: list[Path] = []
     base = _resolve_base_dir(payload)
     if base is not None:
         candidates.append(base)
     script_path = Path(__file__).resolve()
     for parent in script_path.parents:
-        if (parent / "unix" / "home" / ".config" / "mise" / "lib" / "agy_learn").is_dir():
+        if (
+            parent / "unix" / "home" / ".config" / "mise" / "lib" / "agy_learn"
+        ).is_dir():
             candidates.append(parent)
             break
     for cand in candidates:
-        venv_py = cand / ".venv" / "bin" / "python"
         lib_dir = cand / "unix" / "home" / ".config" / "mise" / "lib"
-        if venv_py.is_file() and (lib_dir / "agy_learn").is_dir():
-            return venv_py, lib_dir
+        if not (lib_dir / "agy_learn").is_dir():
+            continue
+        venv_py = cand / ".venv" / "bin" / "python"
+        if venv_py.is_file():
+            return venv_py, lib_dir, cand
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(cand), "rev-parse", "--git-common-dir"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            common_raw = proc.stdout.strip() if proc.returncode == 0 else ""
+            if common_raw:
+                common_path = Path(common_raw)
+                if not common_path.is_absolute():
+                    common_path = (cand / common_path).resolve()
+                common_venv = common_path.parent / ".venv" / "bin" / "python"
+                if common_venv.is_file():
+                    return common_venv, lib_dir, cand
+        except (OSError, subprocess.SubprocessError):
+            pass
     return None
 
 
 def _stdlib_heal_summary() -> dict[str, Any]:
     state_dir = _shared_state_dir()
     reviews = _read_shared_reviews(state_dir / "reviews.jsonl")
-    owing = [k for k, (_, outcome, _) in sorted(reviews.items()) if outcome == "owing_learn"]
+    owing = [
+        k for k, (_, outcome, _) in sorted(reviews.items()) if outcome == "owing_learn"
+    ]
     proposals_path = state_dir / "proposals.jsonl"
     active_count = 0
-    escalate_count = 0
+    escalated_ids: list[str] = []
     if proposals_path.is_file():
         latest_props: dict[str, dict[str, Any]] = {}
         try:
-            for raw in proposals_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            for raw in proposals_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
                 if not raw.strip():
                     continue
                 try:
@@ -1241,20 +1343,26 @@ def _stdlib_heal_summary() -> dict[str, Any]:
                     latest_props[obj["proposal_id"]] = obj
         except OSError:
             pass
-        for prop in latest_props.values():
+        for pid, prop in sorted(latest_props.items()):
             if prop.get("status") in ("pending", "approved"):
                 active_count += 1
-                if int(prop.get("occurrences") or 1) >= 2 and prop.get("recommended_tier") in (
-                    "skill",
-                    "rule",
+                try:
+                    occ = int(prop.get("occurrences") or 1)
+                except (TypeError, ValueError):
+                    occ = 1
+                orig_tier = prop.get("tier")
+                rec_tier = prop.get("recommended_tier")
+                if occ >= 2 and (
+                    rec_tier in ("skill", "rule")
+                    or (orig_tier in ("skill", "rule") and rec_tier != orig_tier)
                 ):
-                    escalate_count += 1
+                    escalated_ids.append(pid)
     return {
         "healthy": len(owing) == 0,
         "owing_plans": owing,
         "active_proposals_count": active_count,
-        "auto_escalated_count": escalate_count,
-        "already_applied_count": 0,
+        "auto_escalated_ids": escalated_ids,
+        "already_applied_ids": [],
         "proposal_md_within_budget": True,
     }
 
@@ -1265,8 +1373,8 @@ def _run_session_start(payload: dict[str, Any]) -> dict[str, Any]:
     report: dict[str, Any] | None = None
     runner = _find_agy_learn_runner(payload)
     if runner is not None:
-        venv_py, lib_dir = runner
-        repo_arg = str(lib_dir.parents[3])
+        venv_py, lib_dir, repo_root = runner
+        repo_arg = str(repo_root)
         cmd = [
             str(venv_py),
             "-I",
@@ -2527,7 +2635,55 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             assert ss_out.get("injectSteps"), (
                 f"case 22 SessionStart should surface owing_learn from case 9: {ss_out}"
             )
+            assert "auto_escalated_ids" in _stdlib_heal_summary()
             checks.append("session_start_surfaces_owing_learn_read_only")
+
+            # 23. Failed learn CLI run_command in Stop continuation does not bypass _slice_wrote_learning_proposal
+            ws23 = root / "ws23"
+            p23 = ws23 / ".planning" / "rev23"
+            p23.mkdir(parents=True)
+            plan23 = p23 / "task_plan.md"
+            plan23.write_text(
+                "# Rev23\n\n### Phase 1: Do\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| Bug23 | Fixed |\n",
+                encoding="utf-8",
+            )
+            t23 = root / "t23.jsonl"
+            art23 = root / "art23"
+            art23.mkdir()
+            _write_jsonl(
+                t23,
+                [{"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"}],
+            )
+            p23_payload = {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t23),
+                "artifactDirectoryPath": str(art23),
+                "cwd": str(ws23),
+            }
+            assert _run_hook(p23_payload).get("decision") == "continue"
+            _write_jsonl(
+                t23,
+                [
+                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"},
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "run_command",
+                                "args": {"CommandLine": "mise run learn:propose --tier skill"},
+                            }
+                        ],
+                    },
+                ],
+            )
+            res23_cont = _run_hook(dict(p23_payload, continuationActive=True))
+            assert res23_cont.get("decision") == "continue", (
+                f"case 23 unrecorded learn CLI cmd must NOT clear hard gate: {res23_cont}"
+            )
+            checks.append("learn_cmd_without_review_does_not_bypass_hard_gate")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)

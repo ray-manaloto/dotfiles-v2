@@ -91,40 +91,13 @@ def _make_id(prefix: str, key: str, ns: int) -> str:
     return f"{prefix}-{digest}"
 
 
-def _read_jsonl_models[ModelT: BaseModel](
+def _parse_jsonl_bytes[ModelT: BaseModel](
     path: Path,
+    raw_bytes: bytes,
     model_cls: type[ModelT],
-    *,
-    create_lock: bool = False,
 ) -> tuple[list[ModelT], list[LearnErrorEntry]]:
-    if not path.is_file():
-        return [], []
-    lock_path = path.with_suffix(f"{path.suffix}.lock")
-    if create_lock:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-    elif not lock_path.parent.is_dir():
-        return [], []
-
     items: list[ModelT] = []
     errors: list[LearnErrorEntry] = []
-    try:
-        with FileLock(str(lock_path), timeout=LOCK_TIMEOUT_S):
-            raw_bytes = path.read_bytes()
-    except Timeout as exc:
-        return [], [
-            LearnErrorEntry(
-                code=LearnErrorCode.ERR_LOCK_CONFLICT,
-                message=f"Timed out acquiring lock for {path}: {exc}",
-            )
-        ]
-    except OSError as exc:
-        return [], [
-            LearnErrorEntry(
-                code=LearnErrorCode.ERR_IO_FAILURE,
-                message=f"Failed reading {path}: {exc}",
-            )
-        ]
-
     for line_no, raw_line in enumerate(raw_bytes.splitlines(), start=1):
         stripped = raw_line.strip()
         if not stripped:
@@ -142,35 +115,44 @@ def _read_jsonl_models[ModelT: BaseModel](
     return items, errors
 
 
-def _append_jsonl_model(
-    path: Path, model: LearnReviewRecord | LearnProposal
-) -> list[LearnErrorEntry]:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _read_jsonl_models[ModelT: BaseModel](
+    path: Path,
+    model_cls: type[ModelT],
+    *,
+    use_lock: bool = False,
+) -> tuple[list[ModelT], list[LearnErrorEntry]]:
+    if not path.is_file():
+        return [], []
     lock_path = path.with_suffix(f"{path.suffix}.lock")
-    line = orjson.dumps(model.model_dump(mode="json")) + b"\n"
     try:
-        with (
-            FileLock(str(lock_path), timeout=LOCK_TIMEOUT_S),
-            path.open("ab") as handle,
-        ):
-            handle.write(line)
-            handle.flush()
-            os.fsync(handle.fileno())
+        if use_lock:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with FileLock(str(lock_path), timeout=LOCK_TIMEOUT_S):
+                raw_bytes = path.read_bytes()
+        else:
+            raw_bytes = path.read_bytes()
     except Timeout as exc:
-        return [
+        return [], [
             LearnErrorEntry(
                 code=LearnErrorCode.ERR_LOCK_CONFLICT,
                 message=f"Timed out acquiring lock for {path}: {exc}",
             )
         ]
     except OSError as exc:
-        return [
+        return [], [
             LearnErrorEntry(
                 code=LearnErrorCode.ERR_IO_FAILURE,
-                message=f"Failed writing {path}: {exc}",
+                message=f"Failed reading {path}: {exc}",
             )
         ]
-    return []
+    return _parse_jsonl_bytes(path, raw_bytes, model_cls)
+
+
+def _append_locked_bytes(path: Path, line: bytes) -> None:
+    with path.open("ab") as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def write_text_atomic(path: Path, text: str) -> None:
@@ -246,8 +228,8 @@ def record_review(
     state_dir: Path | None = None,
 ) -> LearnResponse:
     """Validate and append a `LearnReviewRecord` to `$XDG_STATE_HOME/agy-learn/reviews.jsonl`."""
-    ts, ns = now_ns_pair()
     if not has_valid_provenance(provenance):
+        ts, ns = now_ns_pair()
         return LearnResponse(
             command="record-review",
             rc=1,
@@ -263,6 +245,7 @@ def record_review(
         )
 
     if outcome is ReviewVerdict.NO_NEW_PROPOSALS and survivor_count != 0:
+        ts, ns = now_ns_pair()
         return LearnResponse(
             command="record-review",
             rc=1,
@@ -277,32 +260,76 @@ def record_review(
             returns=[],
         )
 
-    review = LearnReviewRecord(
-        review_id=_make_id("rev", f"{plan_key}:{plan_sha256}", ns),
-        plan_key=plan_key,
-        plan_id=plan_id,
-        worktree_slug=worktree_slug,
-        plan_sha256=plan_sha256,
-        error_count=error_count,
-        outcome=outcome,
-        survivor_count=survivor_count,
-        proposal_ids=list(proposal_ids or ()),
-        provenance=provenance,
-        repo_root=repo_root,
-        conversation_id=conversation_id,
-        notes=notes,
-        timestamp=ts,
-        timestamp_unix_ns=ns,
-    )
     resolved = resolve_state_dir(state_dir)
-    write_errs = _append_jsonl_model(resolved / "reviews.jsonl", review)
-    if write_errs:
+    reviews_path = resolved / "reviews.jsonl"
+    lock_path = reviews_path.with_suffix(f"{reviews_path.suffix}.lock")
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(lock_path), timeout=LOCK_TIMEOUT_S):
+            ts, ns = now_ns_pair()
+            try:
+                review = LearnReviewRecord(
+                    review_id=_make_id("rev", f"{plan_key}:{plan_sha256}", ns),
+                    plan_key=plan_key,
+                    plan_id=plan_id,
+                    worktree_slug=worktree_slug,
+                    plan_sha256=plan_sha256,
+                    error_count=error_count,
+                    outcome=outcome,
+                    survivor_count=survivor_count,
+                    proposal_ids=list(proposal_ids or ()),
+                    provenance=provenance,
+                    repo_root=repo_root,
+                    conversation_id=conversation_id,
+                    notes=notes,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                )
+            except ValidationError as exc:
+                return LearnResponse(
+                    command="record-review",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=[
+                        LearnErrorEntry(
+                            code=LearnErrorCode.ERR_INVALID_INPUT,
+                            message=str(exc),
+                        )
+                    ],
+                    returns=[],
+                )
+            _append_locked_bytes(
+                reviews_path, orjson.dumps(review.model_dump(mode="json")) + b"\n"
+            )
+    except Timeout as exc:
+        ts, ns = now_ns_pair()
         return LearnResponse(
             command="record-review",
             rc=1,
             timestamp=ts,
             timestamp_unix_ns=ns,
-            errors=write_errs,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_LOCK_CONFLICT,
+                    message=f"Timed out acquiring lock for {reviews_path}: {exc}",
+                )
+            ],
+            returns=[],
+        )
+    except OSError as exc:
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="record-review",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_IO_FAILURE,
+                    message=f"Failed writing {reviews_path}: {exc}",
+                )
+            ],
             returns=[],
         )
 
@@ -353,8 +380,8 @@ def propose_item(
     state_dir: Path | None = None,
 ) -> LearnResponse:
     """Record or escalate a proposal, honoring the 30-day declined buffer (`occurrences >= 2` overrides)."""
-    ts, ns = now_ns_pair()
     if not has_valid_provenance(provenance):
+        ts, ns = now_ns_pair()
         return LearnResponse(
             command="propose",
             rc=1,
@@ -370,131 +397,184 @@ def propose_item(
         )
 
     resolved = resolve_state_dir(state_dir)
-    existing_rows, read_errs = read_proposals(resolved)
-    if read_errs:
-        return LearnResponse(
-            command="propose",
-            rc=1,
-            timestamp=ts,
-            timestamp_unix_ns=ns,
-            errors=read_errs,
-            returns=[],
-        )
+    proposals_path = resolved / "proposals.jsonl"
+    lock_path = proposals_path.with_suffix(f"{proposals_path.suffix}.lock")
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(lock_path), timeout=LOCK_TIMEOUT_S):
+            raw_bytes = proposals_path.read_bytes() if proposals_path.is_file() else b""
+            ts, ns = now_ns_pair()
+            existing_rows, read_errs = _parse_jsonl_bytes(
+                proposals_path, raw_bytes, LearnProposal
+            )
+            if read_errs:
+                return LearnResponse(
+                    command="propose",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=read_errs,
+                    returns=[],
+                )
 
-    by_id = latest_proposals_map(existing_rows)
-    matched: LearnProposal | None = None
-    if proposal_id and proposal_id in by_id:
-        matched = by_id[proposal_id]
-    else:
-        for prop in sorted(
-            by_id.values(),
-            key=lambda p: p.timestamp_unix_ns,
-            reverse=True,
-        ):
-            if prop.dedup_key == dedup_key:
-                matched = prop
-                break
+            by_id = latest_proposals_map(existing_rows)
+            matched: LearnProposal | None = None
+            if proposal_id and proposal_id in by_id:
+                matched = by_id[proposal_id]
+            else:
+                for prop in sorted(
+                    by_id.values(),
+                    key=lambda p: p.timestamp_unix_ns,
+                    reverse=True,
+                ):
+                    if prop.dedup_key == dedup_key:
+                        matched = prop
+                        break
 
-    returns: list[LearnReturnEntry] = []
-    if matched is not None:
-        same_prov = _provenance_signature(matched.provenance) == _provenance_signature(
-            provenance
-        )
-        new_occurrences = matched.occurrences if same_prov else matched.occurrences + 1
-        if (
-            matched.status is ProposalStatus.DECLINED
-            and matched.declined_until_unix_ns is not None
-            and ns < matched.declined_until_unix_ns
-            and new_occurrences < 2
-        ):
-            return LearnResponse(
-                command="propose",
-                rc=1,
-                proposal=matched,
-                timestamp=ts,
-                timestamp_unix_ns=ns,
-                errors=[
-                    LearnErrorEntry(
-                        code=LearnErrorCode.ERR_DECLINED_ACTIVE,
+            returns: list[LearnReturnEntry] = []
+            if matched is not None:
+                seen_provs = {
+                    _provenance_signature(row.provenance)
+                    for row in existing_rows
+                    if row.proposal_id == matched.proposal_id
+                }
+                same_prov = _provenance_signature(provenance) in seen_provs
+                new_occurrences = (
+                    matched.occurrences if same_prov else matched.occurrences + 1
+                )
+                if (
+                    matched.status is ProposalStatus.DECLINED
+                    and matched.declined_until_unix_ns is not None
+                    and ns < matched.declined_until_unix_ns
+                    and (same_prov or new_occurrences < 2)
+                ):
+                    return LearnResponse(
+                        command="propose",
+                        rc=1,
+                        proposal=matched,
+                        timestamp=ts,
+                        timestamp_unix_ns=ns,
+                        errors=[
+                            LearnErrorEntry(
+                                code=LearnErrorCode.ERR_DECLINED_ACTIVE,
+                                message=(
+                                    f"Proposal {matched.proposal_id} is within 30-day declined buffer "
+                                    "and has no new recurrence."
+                                ),
+                            )
+                        ],
+                        returns=[
+                            LearnReturnEntry(
+                                code=LearnReturnCode.RET_SKIPPED,
+                                message="Skipped within 30-day declined buffer.",
+                            )
+                        ],
+                    )
+                if same_prov and matched.status in {
+                    ProposalStatus.PENDING,
+                    ProposalStatus.APPROVED,
+                    ProposalStatus.APPLIED,
+                    ProposalStatus.SHIPPED,
+                    ProposalStatus.DECLINED,
+                }:
+                    return LearnResponse(
+                        command="propose",
+                        rc=0,
+                        proposal=matched,
+                        timestamp=ts,
+                        timestamp_unix_ns=ns,
+                        errors=[],
+                        returns=[
+                            LearnReturnEntry(
+                                code=LearnReturnCode.RET_SKIPPED,
+                                message=f"Proposal {matched.proposal_id} already recorded for identical provenance.",
+                            )
+                        ],
+                    )
+                pid = matched.proposal_id
+            else:
+                new_occurrences = 1
+                pid = proposal_id or _make_id("prop", dedup_key, ns)
+
+            rec_tier, escalated = recommend_tier_for_occurrences(
+                tier, target_path, new_occurrences
+            )
+            if escalated:
+                returns.append(
+                    LearnReturnEntry(
+                        code=LearnReturnCode.RET_ESCALATED,
                         message=(
-                            f"Proposal {matched.proposal_id} is within 30-day declined buffer "
-                            "and has occurrences < 2."
+                            f"Auto-escalated {pid} from {tier.value} to {rec_tier.value} "
+                            f"(occurrences={new_occurrences})."
                         ),
                     )
-                ],
-                returns=[
-                    LearnReturnEntry(
-                        code=LearnReturnCode.RET_SKIPPED,
-                        message="Skipped within 30-day declined buffer.",
-                    )
-                ],
-            )
-        if same_prov and matched.status in {
-            ProposalStatus.PENDING,
-            ProposalStatus.APPROVED,
-            ProposalStatus.APPLIED,
-            ProposalStatus.SHIPPED,
-        }:
-            return LearnResponse(
-                command="propose",
-                rc=0,
-                proposal=matched,
-                timestamp=ts,
-                timestamp_unix_ns=ns,
-                errors=[],
-                returns=[
-                    LearnReturnEntry(
-                        code=LearnReturnCode.RET_SKIPPED,
-                        message=f"Proposal {matched.proposal_id} already recorded for identical provenance.",
-                    )
-                ],
-            )
-        pid = matched.proposal_id
-    else:
-        new_occurrences = 1
-        pid = proposal_id or _make_id("prop", dedup_key, ns)
+                )
 
-    rec_tier, escalated = recommend_tier_for_occurrences(
-        tier, target_path, new_occurrences
-    )
-    if escalated:
-        returns.append(
-            LearnReturnEntry(
-                code=LearnReturnCode.RET_ESCALATED,
-                message=(
-                    f"Auto-escalated {pid} from {tier.value} to {rec_tier.value} "
-                    f"(occurrences={new_occurrences})."
-                ),
+            try:
+                proposal = LearnProposal(
+                    proposal_id=pid,
+                    dedup_key=dedup_key,
+                    title=title,
+                    summary=summary,
+                    target_path=target_path,
+                    tier=tier,
+                    recommended_tier=rec_tier,
+                    retention_class=retention_class,
+                    status=ProposalStatus.PENDING,
+                    occurrences=new_occurrences,
+                    provenance=provenance,
+                    proposed_diff=proposed_diff,
+                    declined_until_unix_ns=None,
+                    shipped_commit=None,
+                    notes=notes,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                )
+            except ValidationError as exc:
+                return LearnResponse(
+                    command="propose",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=[
+                        LearnErrorEntry(
+                            code=LearnErrorCode.ERR_INVALID_INPUT,
+                            message=str(exc),
+                        )
+                    ],
+                    returns=[],
+                )
+            _append_locked_bytes(
+                proposals_path, orjson.dumps(proposal.model_dump(mode="json")) + b"\n"
             )
-        )
-
-    proposal = LearnProposal(
-        proposal_id=pid,
-        dedup_key=dedup_key,
-        title=title,
-        summary=summary,
-        target_path=target_path,
-        tier=tier,
-        recommended_tier=rec_tier,
-        retention_class=retention_class,
-        status=ProposalStatus.PENDING,
-        occurrences=new_occurrences,
-        provenance=provenance,
-        proposed_diff=proposed_diff,
-        declined_until_unix_ns=None,
-        shipped_commit=None,
-        notes=notes,
-        timestamp=ts,
-        timestamp_unix_ns=ns,
-    )
-    write_errs = _append_jsonl_model(resolved / "proposals.jsonl", proposal)
-    if write_errs:
+    except Timeout as exc:
+        ts, ns = now_ns_pair()
         return LearnResponse(
             command="propose",
             rc=1,
             timestamp=ts,
             timestamp_unix_ns=ns,
-            errors=write_errs,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_LOCK_CONFLICT,
+                    message=f"Timed out acquiring lock for {proposals_path}: {exc}",
+                )
+            ],
+            returns=[],
+        )
+    except OSError as exc:
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="propose",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_IO_FAILURE,
+                    message=f"Failed accessing {proposals_path}: {exc}",
+                )
+            ],
             returns=[],
         )
 
@@ -525,22 +605,62 @@ def mark_proposal(
     state_dir: Path | None = None,
 ) -> LearnResponse:
     """Update a proposal's status (setting a 30-day declined buffer when `declined`)."""
-    ts, ns = now_ns_pair()
     resolved = resolve_state_dir(state_dir)
-    rows, read_errs = read_proposals(resolved)
-    if read_errs:
-        return LearnResponse(
-            command="mark",
-            rc=1,
-            timestamp=ts,
-            timestamp_unix_ns=ns,
-            errors=read_errs,
-            returns=[],
-        )
+    proposals_path = resolved / "proposals.jsonl"
+    lock_path = proposals_path.with_suffix(f"{proposals_path.suffix}.lock")
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(lock_path), timeout=LOCK_TIMEOUT_S):
+            raw_bytes = proposals_path.read_bytes() if proposals_path.is_file() else b""
+            ts, ns = now_ns_pair()
+            rows, read_errs = _parse_jsonl_bytes(
+                proposals_path, raw_bytes, LearnProposal
+            )
+            if read_errs:
+                return LearnResponse(
+                    command="mark",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=read_errs,
+                    returns=[],
+                )
 
-    by_id = latest_proposals_map(rows)
-    existing = by_id.get(proposal_id)
-    if existing is None:
+            by_id = latest_proposals_map(rows)
+            existing = by_id.get(proposal_id)
+            if existing is None:
+                return LearnResponse(
+                    command="mark",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=[
+                        LearnErrorEntry(
+                            code=LearnErrorCode.ERR_PROPOSAL_NOT_FOUND,
+                            message=f"Unknown proposal_id: {proposal_id}",
+                        )
+                    ],
+                    returns=[],
+                )
+
+            declined_until = (
+                ns + DECLINED_BUFFER_NS if status is ProposalStatus.DECLINED else None
+            )
+            updated = existing.model_copy(
+                update={
+                    "status": status,
+                    "declined_until_unix_ns": declined_until,
+                    "shipped_commit": shipped_commit or existing.shipped_commit,
+                    "notes": notes if notes is not None else existing.notes,
+                    "timestamp": ts,
+                    "timestamp_unix_ns": ns,
+                }
+            )
+            _append_locked_bytes(
+                proposals_path, orjson.dumps(updated.model_dump(mode="json")) + b"\n"
+            )
+    except Timeout as exc:
+        ts, ns = now_ns_pair()
         return LearnResponse(
             command="mark",
             rc=1,
@@ -548,34 +668,25 @@ def mark_proposal(
             timestamp_unix_ns=ns,
             errors=[
                 LearnErrorEntry(
-                    code=LearnErrorCode.ERR_PROPOSAL_NOT_FOUND,
-                    message=f"Unknown proposal_id: {proposal_id}",
+                    code=LearnErrorCode.ERR_LOCK_CONFLICT,
+                    message=f"Timed out acquiring lock for {proposals_path}: {exc}",
                 )
             ],
             returns=[],
         )
-
-    declined_until = (
-        ns + DECLINED_BUFFER_NS if status is ProposalStatus.DECLINED else None
-    )
-    updated = existing.model_copy(
-        update={
-            "status": status,
-            "declined_until_unix_ns": declined_until,
-            "shipped_commit": shipped_commit or existing.shipped_commit,
-            "notes": notes if notes is not None else existing.notes,
-            "timestamp": ts,
-            "timestamp_unix_ns": ns,
-        }
-    )
-    write_errs = _append_jsonl_model(resolved / "proposals.jsonl", updated)
-    if write_errs:
+    except OSError as exc:
+        ts, ns = now_ns_pair()
         return LearnResponse(
             command="mark",
             rc=1,
             timestamp=ts,
             timestamp_unix_ns=ns,
-            errors=write_errs,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_IO_FAILURE,
+                    message=f"Failed accessing {proposals_path}: {exc}",
+                )
+            ],
             returns=[],
         )
 

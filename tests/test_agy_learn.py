@@ -254,6 +254,30 @@ def test_heal_check_read_only_detection_and_thin_proposal_render(
         provenance=ProvenanceRef(transcript_step="t.jsonl#L8"),
         state_dir=state_dir,
     )
+    # Unified diff with unchanged context + unapplied '+' line must NOT false-positive as already applied
+    (repo_dir / "hook.py").write_text(
+        "# common header context line >= 16 chars\nold_behavior_call_here()\n",
+        encoding="utf-8",
+    )
+    unapplied_diff = propose_item(
+        dedup_key="diff:unapplied-unified",
+        title="Unified diff guard",
+        summary="Replace old behavior with safe helper call.",
+        target_path="hook.py",
+        tier=EnforcementTier.AGY_HOOK,
+        retention_class=RetentionClass.SAFETY_INVARIANT,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L9"),
+        proposed_diff=(
+            "--- a/hook.py\n"
+            "+++ b/hook.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            " # common header context line >= 16 chars\n"
+            "-old_behavior_call_here()\n"
+            "+new_safe_helper_call_here()\n"
+        ),
+        state_dir=state_dir,
+    )
+    assert unapplied_diff.proposal is not None
     # Add many pending items with long diffs to test 8 KB budget cap
     for idx in range(25):
         propose_item(
@@ -294,6 +318,7 @@ def test_heal_check_read_only_detection_and_thin_proposal_render(
     assert report.proposal_md_within_budget is False
     assert len(report.owing_plans) == 1
     assert len(report.already_applied_ids) == 1
+    assert unapplied_diff.proposal.proposal_id not in report.already_applied_ids
 
     # render-proposal produces thin <= 8 KB active-only file pruning already_applied & one-time-note
     rendered = render_active_proposal_md(
@@ -303,11 +328,29 @@ def test_heal_check_read_only_detection_and_thin_proposal_render(
     assert rendered.rendered_bytes is not None
     assert rendered.rendered_bytes <= PROPOSAL_MD_MAX_BYTES
     md_text = out_md.read_text(encoding="utf-8")
-    assert "already:lock-chmod" not in md_text
+    assert "Lock chmod 0644" not in md_text
+    assert report.already_applied_ids[0] not in md_text
     assert "One-time note" not in md_text
     assert any(r.code is LearnReturnCode.RET_AUTO_PRUNED for r in rendered.returns)
 
-    # Also test CLI round-trip
+    # Tiny and invalid max_bytes never crash or violate byte cap
+    bad_cap = render_active_proposal_md(
+        out_path=out_md, state_dir=state_dir, repo_root=repo_dir, max_bytes=0
+    )
+    assert bad_cap.rc == 1
+    assert bad_cap.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    tiny_md = tmp_path / "tiny.md"
+    tiny_cap = render_active_proposal_md(
+        out_path=tiny_md, state_dir=state_dir, repo_root=repo_dir, max_bytes=16
+    )
+    assert tiny_cap.rc == 0
+    assert tiny_cap.rendered_bytes is not None and tiny_cap.rendered_bytes <= 16
+
+    # Also test CLI round-trip (must NOT create agy-learn.log.jsonl or .lock on read-only heal)
+    (state_dir / "agy-learn.log.jsonl").unlink(missing_ok=True)
+    for lockf in state_dir.glob("*.lock"):
+        lockf.unlink()
     rc = agy_learn_cli_main(
         [
             "heal",
@@ -322,9 +365,72 @@ def test_heal_check_read_only_detection_and_thin_proposal_render(
         ]
     )
     assert rc == 1  # owing_learn still active until cleared
+    assert not (state_dir / "agy-learn.log.jsonl").exists()
+    assert not list(state_dir.glob("*.lock"))
 
     rows, _ = read_proposals(state_dir)
-    assert len(rows) == 27
+    assert len(rows) == 28
+
+
+def test_declined_resurrection_guard_and_cli_validation_errors(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "agy-learn"
+    first = propose_item(
+        dedup_key="guard:dup",
+        title="Guard dup",
+        summary="Prevent duplicate declined resurrection",
+        target_path="AGENTS.md",
+        tier=EnforcementTier.RULE,
+        retention_class=RetentionClass.SAFETY_INVARIANT,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L1"),
+        state_dir=state_dir,
+    )
+    assert first.proposal is not None
+    # Escalate once to occurrences=2, then decline
+    escalated = propose_item(
+        dedup_key="guard:dup",
+        title="Guard dup",
+        summary="Prevent duplicate declined resurrection",
+        target_path="AGENTS.md",
+        tier=EnforcementTier.RULE,
+        retention_class=RetentionClass.SAFETY_INVARIANT,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L2"),
+        state_dir=state_dir,
+    )
+    assert escalated.proposal is not None and escalated.proposal.occurrences == 2
+    mark_proposal(
+        proposal_id=first.proposal.proposal_id,
+        status=ProposalStatus.DECLINED,
+        state_dir=state_dir,
+    )
+    # Re-proposing with EITHER historical provenance (even with occurrences==2) stays blocked!
+    replay_old = propose_item(
+        dedup_key="guard:dup",
+        title="Guard dup",
+        summary="Prevent duplicate declined resurrection",
+        target_path="AGENTS.md",
+        tier=EnforcementTier.RULE,
+        retention_class=RetentionClass.SAFETY_INVARIANT,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L1"),
+        state_dir=state_dir,
+    )
+    assert replay_old.rc == 1
+    assert replay_old.errors[0].code is LearnErrorCode.ERR_DECLINED_ACTIVE
+
+    # Empty plan_key / bad args return structured CLI rc=1/2 rather than raw Pydantic traceback
+    bad_rec = record_review(
+        plan_key="",
+        plan_sha256="abc",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L1"),
+        state_dir=state_dir,
+    )
+    assert bad_rec.rc == 1
+    assert bad_rec.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+    assert agy_learn_cli_main(["", "--bogus-flag"]) == 2
 
 
 def test_hooks_python39_compatibility_and_cross_session_worktree_rm(

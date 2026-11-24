@@ -10,6 +10,15 @@ script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
 repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
 venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
 
 args=(render-proposal)
 [[ -n ${usage_out:-} ]] && args+=(--out "${usage_out}")
@@ -20,4 +29,4 @@ args=(render-proposal)
 if [[ -x ${venv_py} ]]; then
 	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
 fi
-exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+exec uv run --project "${repo_root}" --offline --locked --no-dev --quiet python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

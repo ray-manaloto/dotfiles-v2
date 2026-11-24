@@ -277,5 +277,6 @@ hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable, .venv is sync
 
 [doctor.checks.agy-learn-heal]
 description = "Self-healing agy-learn ledger and schemas pass read-only health check"
+depends = "py-deps-fresh"
 run = "mise run learn:heal --check --repo ."
 hint = "Inspect '$XDG_STATE_HOME/agy-learn/' via 'mise run learn:heal --check' and resolve any owing_learn or proposal bloat."

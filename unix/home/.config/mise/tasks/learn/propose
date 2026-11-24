@@ -8,7 +8,11 @@
 #USAGE flag "--retention-class <class>" help="Retention class: safety-invariant, workflow-skill, or one-time-note"
 #USAGE flag "--transcript-step <step>" help="Transcript step provenance ref"
 #USAGE flag "--plan-error-ref <ref>" help="Plan error row provenance ref"
+#USAGE flag "--transcript-path <path>" help="Transcript file path provenance"
+#USAGE flag "--plan-path <path>" help="Plan file path provenance"
 #USAGE flag "--proposed-diff <diff>" help="Optional concise diff or snippet"
+#USAGE flag "--proposal-id <id>" help="Optional explicit proposal ID"
+#USAGE flag "--notes <notes>" help="Optional proposal notes"
 #USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
 set -euo pipefail
 
@@ -16,6 +20,15 @@ script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
 repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
 venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
 
 args=(propose)
 [[ -n ${usage_dedup_key:-} ]] && args+=(--dedup-key "${usage_dedup_key}")
@@ -26,10 +39,14 @@ args=(propose)
 [[ -n ${usage_retention_class:-} ]] && args+=(--retention-class "${usage_retention_class}")
 [[ -n ${usage_transcript_step:-} ]] && args+=(--transcript-step "${usage_transcript_step}")
 [[ -n ${usage_plan_error_ref:-} ]] && args+=(--plan-error-ref "${usage_plan_error_ref}")
+[[ -n ${usage_transcript_path:-} ]] && args+=(--transcript-path "${usage_transcript_path}")
+[[ -n ${usage_plan_path:-} ]] && args+=(--plan-path "${usage_plan_path}")
 [[ -n ${usage_proposed_diff:-} ]] && args+=(--proposed-diff "${usage_proposed_diff}")
+[[ -n ${usage_proposal_id:-} ]] && args+=(--proposal-id "${usage_proposal_id}")
+[[ -n ${usage_notes:-} ]] && args+=(--notes "${usage_notes}")
 [[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
 
 if [[ -x ${venv_py} ]]; then
 	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
 fi
-exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+exec uv run --project "${repo_root}" --offline --locked --no-dev --quiet python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

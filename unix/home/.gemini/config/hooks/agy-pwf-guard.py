@@ -654,7 +654,7 @@ def _check_worktree_rm(
         return _allow()
 
     learned_plans: dict[str, Any] = {}
-    pending_key: str | None = None
+    pending_keys: set[str] = set()
     owing_plans: dict[str, Any] = {}
     artifact_raw = payload.get("artifactDirectoryPath")
     if isinstance(artifact_raw, str) and artifact_raw.strip():
@@ -673,8 +673,16 @@ def _check_worktree_rm(
                 if isinstance(op, dict):
                     owing_plans = op
                 pend = raw_state.get("pending_proposal")
-                if isinstance(pend, dict) and isinstance(pend.get("plan_key"), str):
-                    pending_key = pend["plan_key"]
+                if isinstance(pend, dict):
+                    if isinstance(pend.get("plan_key"), str):
+                        pending_keys.add(pend["plan_key"])
+                    pend_list = pend.get("pending_plans")
+                    if isinstance(pend_list, list):
+                        for item in pend_list:
+                            if isinstance(item, dict) and isinstance(
+                                item.get("plan_key"), str
+                            ):
+                                pending_keys.add(item["plan_key"])
 
     shared_reviews = _read_shared_reviews()
     valid_outcomes = ("proposed", "no_new_proposals", "applied")
@@ -692,14 +700,16 @@ def _check_worktree_rm(
                 "(retry-exhausted `/learn` review). Run `/learn` and record a review "
                 "before removing its worktree."
             )
-        if owing_plans.get(plan_key) == digest or pending_key == plan_key:
+        shared_ok = (
+            shared is not None and shared[0] == digest and shared[1] in valid_outcomes
+        )
+        if not shared_ok and (
+            owing_plans.get(plan_key) == digest or plan_key in pending_keys
+        ):
             return _deny(
                 f"PWF/learn guard: run `/learn` on completed plan '{slug}' "
                 "(and update `learning_proposal.md` or record a review) before removing its worktree."
             )
-        shared_ok = (
-            shared is not None and shared[0] == digest and shared[1] in valid_outcomes
-        )
         local_ok = learned_plans.get(plan_key) == digest
         if not (local_ok or shared_ok):
             return _deny(
@@ -1434,6 +1444,33 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 }
             )
             assert res16c == _allow(), f"case 16c shared review should allow: {res16c}"
+            # Stale local pending_proposal / owing_learn must NOT override shared_ok; multi-plan pending_plans denied when unreviewed
+            art16 = root / "art16"
+            art16.mkdir()
+            (art16 / ".post-task-learn-state.json").write_text(
+                json.dumps(
+                    {
+                        "learned_plans": {},
+                        "owing_learn": {str(wt_cross_plan.resolve()): cross_sha},
+                        "pending_proposal": {
+                            "plan_key": "/nonexistent/other.md",
+                            "pending_plans": [{"plan_key": str(wt_cross_plan.resolve())}],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            res16d = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "artifactDirectoryPath": str(art16),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm cross16"},
+                    },
+                }
+            )
+            assert res16d == _allow(), f"case 16d shared_ok should override stale local state: {res16d}"
             checks.append("worktree_rm_cross_session_shared_reviews")
 
             # 17. ROADMAP.md and docs/** on main are not blocked by stale all-complete ENV PLAN_ID

@@ -900,6 +900,18 @@ class OpenCodeAdapter(BaseAdapter):
         stripped = value.strip()
         return not stripped or cls._FALLBACK_TITLE_RE.fullmatch(stripped) is not None
 
+    @classmethod
+    def _matches_oc_title(cls, db_title: str, clean_title: str) -> bool:
+        if cls._is_fallback_title(db_title):
+            return False
+        if db_title == clean_title:
+            return True
+        utf16 = db_title.encode("utf-16-le")
+        if len(utf16) > 80:
+            trunc37 = utf16[:74].decode("utf-16-le", errors="ignore")
+            return clean_title in (f"{trunc37}…", f"{trunc37}...")
+        return False
+
     def _lookup_sqlite(self, cwd: str | None, title: str) -> str | None:
         dirs = _dir_candidates(cwd)
         if not dirs:
@@ -941,7 +953,7 @@ class OpenCodeAdapter(BaseAdapter):
             order_col = "time_updated" if "time_updated" in cols else "rowid"
             rows = conn.execute(
                 f"SELECT id, title FROM {table} WHERE {' AND '.join(clauses)} "
-                f"ORDER BY {order_col} DESC LIMIT 50",
+                f"ORDER BY {order_col} DESC",
                 dirs,
             ).fetchall()
         except sqlite3.Error:
@@ -958,34 +970,19 @@ class OpenCodeAdapter(BaseAdapter):
                 return str(rows[0]["id"])
             return None
 
-        clean_title = re.sub(r"^OC\s*\|\s*", "", raw_title).strip()
+        match = re.match(r"^OC\s*\|\s*(.+)$", raw_title)
+        if match is None:
+            return None
+        clean_title = match.group(1).strip()
         if not clean_title:
-            return str(rows[0]["id"]) if len(rows) == 1 else None
+            return None
 
-        exact_matches = [
-            str(r["id"]) for r in rows if r["title"] and str(r["title"]) == clean_title
+        matches = [
+            str(r["id"])
+            for r in rows
+            if r["title"] and self._matches_oc_title(str(r["title"]), clean_title)
         ]
-        if exact_matches:
-            return exact_matches[0] if len(exact_matches) == 1 else None
-
-        prefix = ""
-        if clean_title.endswith("…"):
-            prefix = clean_title[:-1]
-        elif clean_title.endswith("..."):
-            prefix = clean_title[:-3]
-        if prefix:
-            prefix_matches = [
-                str(r["id"])
-                for r in rows
-                if r["title"] and str(r["title"]).startswith(prefix)
-            ]
-            if prefix_matches:
-                return prefix_matches[0] if len(prefix_matches) == 1 else None
-
-        sub_matches = [
-            str(r["id"]) for r in rows if r["title"] and str(r["title"]) in clean_title
-        ]
-        return sub_matches[0] if len(sub_matches) == 1 else None
+        return matches[0] if len(matches) == 1 else None
 
     def session_id(
         self,

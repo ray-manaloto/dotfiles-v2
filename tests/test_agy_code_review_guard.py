@@ -441,3 +441,77 @@ def test_agy_code_review_guard_macos_python3_9_compatible() -> None:
     assert proc.returncode == 0, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["ok"] is True
+
+
+def test_verification_timestamp_parsing_and_mixed_format_interop(
+    tmp_path: Path,
+) -> None:
+    guard = _load_guard()
+    # Integer nanosecond parsing matches exact UTC epoch seconds without float64 drift
+    assert (
+        guard._parse_timestamp_ns("20261123T202111.123456789Z")
+        == 1795465271_123_456_789
+    )
+    assert guard._parse_timestamp_ns("2026-11-23T20:21:11.000001+00:00") == (
+        1795465271_000_001_000
+    )
+    assert guard._parse_timestamp_ns("20261123T202111.123456789Z\n") is None
+    assert guard._parse_timestamp_ns("not-a-timestamp") is None
+
+    common_dir = tmp_path / ".git"
+    common_dir.mkdir()
+    receipt_path = guard._receipt_path(common_dir)
+
+    def write_entry(entry: dict[str, Any]) -> None:
+        receipt_path.write_text(
+            json.dumps({"latest": "c1", "receipts": {"c1": entry}}),
+            encoding="utf-8",
+        )
+
+    # Mixed legacy ISO Stage 1 + 9-digit ns Stage 2 passes when Stage 2 >= Stage 1
+    write_entry(
+        {
+            "commit_sha": "c1",
+            "tree_sha": "t1",
+            "recorded_at": "2026-11-23T20:21:11+00:00",
+            "verification": {
+                "verified_at": "20261123T202112.000000001+0000",
+                "verified_at_unix_ns": 1795465272_000_000_001,
+                "proof": "Verified post-review cleanly.",
+                "commands": [{"command": "pytest", "exit_code": 0}],
+            },
+        }
+    )
+    assert guard._has_valid_verification_receipt(common_dir, "c1", "t1") is True
+
+    # Backdated Stage 2 fails even across legacy ISO vs ns format
+    write_entry(
+        {
+            "commit_sha": "c1",
+            "tree_sha": "t1",
+            "recorded_at": "2026-11-23T20:21:15+00:00",
+            "verification": {
+                "verified_at": "20261123T202112.000000001+0000",
+                "verified_at_unix_ns": 1795465272_000_000_001,
+                "proof": "Verified post-review cleanly.",
+                "commands": [{"command": "pytest", "exit_code": 0}],
+            },
+        }
+    )
+    assert guard._has_valid_verification_receipt(common_dir, "c1", "t1") is False
+
+    # Malformed verified_at without verified_at_unix_ns fails closed (no string fallback)
+    write_entry(
+        {
+            "commit_sha": "c1",
+            "tree_sha": "t1",
+            "recorded_at": "20261123T202111.000000001+0000",
+            "recorded_at_unix_ns": 1795465271_000_000_001,
+            "verification": {
+                "verified_at": "zzzz-not-a-date",
+                "proof": "Verified post-review cleanly.",
+                "commands": [{"command": "pytest", "exit_code": 0}],
+            },
+        }
+    )
+    assert guard._has_valid_verification_receipt(common_dir, "c1", "t1") is False

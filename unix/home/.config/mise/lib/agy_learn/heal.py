@@ -38,6 +38,16 @@ from dotfiles_py.time_ns import now_ns_pair
 _LOG = get_logger("agy_learn.heal")
 
 
+def _find_git_root(repo_root: Path | None) -> Path | None:
+    if repo_root is None:
+        return None
+    cur = repo_root.expanduser().resolve(strict=False)
+    for cand in (cur, *cur.parents):
+        if (cand / ".git").exists():
+            return cand
+    return None
+
+
 def _resolve_target_file(target_path: str, repo_root: Path | None) -> Path | None:
     raw = Path(os.path.expanduser(target_path))
     if raw.is_absolute():
@@ -46,15 +56,21 @@ def _resolve_target_file(target_path: str, repo_root: Path | None) -> Path | Non
         cand = repo_root / raw
         if cand.is_file():
             return cand
+        git_root = _find_git_root(repo_root)
+        if git_root is not None:
+            git_cand = git_root / raw
+            if git_cand.is_file():
+                return git_cand
     return None
 
 
 def _recent_git_log(repo_root: Path | None) -> str:
-    if repo_root is None or not (repo_root / ".git").exists():
+    git_root = _find_git_root(repo_root)
+    if git_root is None:
         return ""
     try:
         proc = subprocess.run(
-            ["git", "-C", str(repo_root), "log", "-n", "30", "--format=%h %s"],
+            ["git", "-C", str(git_root), "log", "-n", "30", "--format=%h %s"],
             capture_output=True,
             text=True,
             timeout=3,
@@ -87,14 +103,46 @@ def is_proposal_already_applied(
         return None
 
     if proposal.proposed_diff:
-        snippet_lines = [
-            line.lstrip("+").strip()
-            for line in proposal.proposed_diff.splitlines()
-            if line.strip() and not line.startswith(("---", "+++", "@@", "```"))
-        ]
-        meaningful = [line for line in snippet_lines if len(line) >= 16]
-        if meaningful and all(line in content for line in meaningful[:3]):
-            return f"All proposed lines already present in {proposal.target_path}"
+        diff_lines = proposal.proposed_diff.splitlines()
+        is_unified = any(
+            line.startswith(("--- ", "+++ ", "@@ "))
+            or (
+                (line.startswith("+") and not line.startswith("+++"))
+                or (line.startswith("-") and not line.startswith("---"))
+            )
+            for line in diff_lines
+        )
+        if is_unified:
+            added = [
+                line[1:].strip()
+                for line in diff_lines
+                if line.startswith("+")
+                and not line.startswith("+++")
+                and len(line[1:].strip()) >= 12
+            ]
+            removed = [
+                line[1:].strip()
+                for line in diff_lines
+                if line.startswith("-")
+                and not line.startswith("---")
+                and len(line[1:].strip()) >= 12
+            ]
+            if (
+                (added or removed)
+                and all(line in content for line in added[:5])
+                and all(line not in content for line in removed[:5])
+            ):
+                return f"Unified diff already applied in {proposal.target_path}"
+        else:
+            meaningful = [
+                line.strip()
+                for line in diff_lines
+                if line.strip()
+                and not line.startswith("```")
+                and len(line.strip()) >= 16
+            ]
+            if meaningful and all(line in content for line in meaningful[:3]):
+                return f"All proposed lines already present in {proposal.target_path}"
     return None
 
 
@@ -321,6 +369,20 @@ def render_active_proposal_md(
 ) -> LearnResponse:
     """Render a thin `<= 8 KB` active-only `learning_proposal.md` pruning resolved/shipped items."""
     ts, ns = now_ns_pair()
+    if max_bytes < 1:
+        return LearnResponse(
+            command="render-proposal",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_INVALID_INPUT,
+                    message=f"max_bytes must be >= 1, got {max_bytes}",
+                )
+            ],
+            returns=[],
+        )
     resolved_state = resolve_state_dir(state_dir)
     proposals, read_errs = read_proposals(resolved_state)
     if read_errs:
@@ -408,10 +470,17 @@ def render_active_proposal_md(
 
     encoded = body.encode("utf-8")
     if len(encoded) > max_bytes:
-        body = (
-            encoded[: max_bytes - 32].decode("utf-8", errors="ignore").rstrip()
-            + "\n\n_(truncated to 8 KB cap)_\n"
-        )
+        suffix = f"\n\n_(truncated to {max_bytes} B cap)_\n"
+        suffix_bytes = len(suffix.encode("utf-8"))
+        if max_bytes <= suffix_bytes:
+            body = encoded[:max_bytes].decode("utf-8", errors="ignore")
+        else:
+            body = (
+                encoded[: max_bytes - suffix_bytes]
+                .decode("utf-8", errors="ignore")
+                .rstrip()
+                + suffix
+            )
         encoded = body.encode("utf-8")
 
     try:

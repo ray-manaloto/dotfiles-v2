@@ -11,6 +11,15 @@ script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
 repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
 venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
 
 args=(heal)
 [[ ${usage_check:-true} == "true" ]] && args+=(--check)
@@ -19,7 +28,8 @@ args=(heal)
 [[ -n ${usage_proposal_md:-} ]] && args+=(--proposal-md "${usage_proposal_md}")
 [[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
 
-if [[ -x ${venv_py} ]]; then
-	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+if [[ ! -x ${venv_py} ]]; then
+	echo "agy-learn heal: missing .venv/bin/python; run 'mise deps uv' (refusing to mutate disk in read-only heal)" >&2
+	exit 1
 fi
-exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

@@ -36,7 +36,7 @@ files before explicit user approval.
   closing the task.
 - **Valid `0`-survivor review**: If the completed task had zero reusable
   survivors after checking errors and retries, record
-  `mise run learn:record-review --outcome no_new_proposals --survivor-count 0`
+  `mise run learn:record-review --plan-key <plan_path> --plan-sha256 <sha256> --outcome no_new_proposals --survivor-count 0`
   with provenance (`--transcript-step` / `--plan-error-ref`) and stop cleanly.
 
 ## 2. 5-Tier Enforcement Ladder & Retention Classes
@@ -71,7 +71,7 @@ Prefer the highest deterministic tier that enforces an invariant cleanly:
   `hk check` over unit tests for upstream CLIs, git hooks, or doctor snippets.
 - **Repository governance**: Global rules, hooks, and skills are managed in
   `dotfiles-v2`; in `knowledge-base-v2`, wiki mapping/QA rounds use `kb:retro`
-  - `session-retro` while code/ticket tasks use `post-task-learn`.
+  and `session-retro` while code/ticket tasks use `post-task-learn`.
 
 ## 3. Ledger & Thin Proposal Workflow
 

@@ -17,6 +17,7 @@ from typing import Any
 WAKE_DOORBELL_RE = re.compile(r"^wake\s+doorbell\s*:", re.IGNORECASE)
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 MAX_DOORBELL_LEN = 220
+PUNCT_SEP_CHARS = frozenset(";|&()\n")
 SEPARATORS = frozenset(
     {";", "&&", "||", "|", "&", "\n", "then", "do", "else", "elif", "{", "}", "(", ")"}
 )
@@ -42,7 +43,7 @@ def _split_shell_segments(command: str) -> list[list[str]]:
     segments: list[list[str]] = []
     cur: list[str] = []
     for tok in tokens:
-        if tok in SEPARATORS:
+        if tok in SEPARATORS or (tok and all(ch in PUNCT_SEP_CHARS for ch in tok)):
             if cur:
                 segments.append(cur)
                 cur = []
@@ -64,13 +65,30 @@ def _parse_hc_send_segment(segment: list[str]) -> tuple[str, str | None, str] | 
             idx += 1
             while idx < len(segment) and segment[idx].startswith("-"):
                 flag = segment[idx]
+                if flag == "--":
+                    idx += 1
+                    break
+                if flag in {"-S", "--split-string"} and idx + 1 < len(segment):
+                    try:
+                        expanded = shlex.split(segment[idx + 1])
+                    except ValueError:
+                        expanded = []
+                    segment = [*segment[: idx + 2], *expanded, *segment[idx + 2 :]]
+                    idx += 2
+                    continue
+                if flag.startswith("--split-string="):
+                    try:
+                        expanded = shlex.split(flag.split("=", 1)[1])
+                    except ValueError:
+                        expanded = []
+                    segment = [*segment[: idx + 1], *expanded, *segment[idx + 1 :]]
+                    idx += 1
+                    continue
                 if flag in {
                     "-u",
                     "--unset",
                     "-C",
                     "--chdir",
-                    "-S",
-                    "--split-string",
                 } and idx + 1 < len(segment):
                     idx += 2
                     continue
@@ -389,6 +407,12 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     assert res10b.get("decision") == "deny", f"case 10b newline failed: {res10b}"
     res10c = call_cmd('env -u FOO hc send agy-idle "Full payload"')
     assert res10c.get("decision") == "deny", f"case 10c env -u failed: {res10c}"
+    res10d = call_cmd('echo ok\n\nhc send agy-idle "Full payload"')
+    assert res10d.get("decision") == "deny", f"case 10d blank-line failed: {res10d}"
+    res10e = call_cmd('echo ok;\nhc send agy-idle "Full payload"')
+    assert res10e.get("decision") == "deny", f"case 10e semi-nl failed: {res10e}"
+    res10f = call_cmd('env -S "hc send agy-idle \\"Full payload\\""')
+    assert res10f.get("decision") == "deny", f"case 10f env -S failed: {res10f}"
     checks.append("subshell_newline_and_env_hc_send_caught")
 
     if hooks_json_path is not None:

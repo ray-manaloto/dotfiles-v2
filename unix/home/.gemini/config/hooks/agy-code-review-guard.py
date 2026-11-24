@@ -20,6 +20,7 @@ from typing import Any
 NANOSECOND_TIMESTAMP_RE = re.compile(
     r"^([0-9]{8}T[0-9]{6})\.([0-9]{9})(Z|[+-][0-9]{4})$"
 )
+_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -356,17 +357,18 @@ def _now_ns_pair(*, utc: bool = False) -> tuple[str, int]:
     return _format_ns_timestamp(epoch_ns, utc=utc), epoch_ns
 
 
-def _parse_timestamp_ns(ts: str) -> int | None:
+def _parse_timestamp_ns(ts: Any) -> int | None:
     """Parse 9-digit ns timestamp or legacy ISO timestamp into integer epoch nanoseconds."""
-    if not isinstance(ts, str) or not ts:
+    if not isinstance(ts, str) or not ts or "\n" in ts or "\r" in ts:
         return None
-    match = NANOSECOND_TIMESTAMP_RE.match(ts)
+    match = NANOSECOND_TIMESTAMP_RE.fullmatch(ts)
     if match:
         base, frac, tz_str = match.group(1), match.group(2), match.group(3)
         offset = "+0000" if tz_str == "Z" else tz_str
         try:
             dt_obj = datetime.strptime(f"{base}{offset}", "%Y%m%dT%H%M%S%z")
-            return int(dt_obj.timestamp()) * 1_000_000_000 + int(frac)
+            delta = dt_obj.astimezone(timezone.utc) - _EPOCH_UTC
+            return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + int(frac)
         except ValueError:
             return None
     norm = f"{ts[:-1]}+00:00" if ts.endswith("Z") else ts
@@ -376,7 +378,10 @@ def _parse_timestamp_ns(ts: str) -> int | None:
         return None
     if dt_obj.tzinfo is None:
         dt_obj = dt_obj.replace(tzinfo=timezone.utc)
-    return round(dt_obj.timestamp() * 1_000_000_000)
+    delta = dt_obj.astimezone(timezone.utc) - _EPOCH_UTC
+    return (
+        delta.days * 86_400 + delta.seconds
+    ) * 1_000_000_000 + delta.microseconds * 1_000
 
 
 def _load_receipts(common_dir: Path) -> dict[str, dict[str, Any]]:
@@ -456,28 +461,28 @@ def _has_valid_verification_receipt(
     ver = entry.get("verification")
     if not isinstance(ver, dict):
         return False
-    recorded_at = str(entry.get("recorded_at", ""))
+    recorded_at = entry.get("recorded_at")
     verified_at = ver.get("verified_at")
     if not isinstance(verified_at, str) or not verified_at:
         return False
     rec_ns = entry.get("recorded_at_unix_ns")
     ver_ns = ver.get("verified_at_unix_ns")
-    if (
-        isinstance(rec_ns, int)
-        and not isinstance(rec_ns, bool)
-        and isinstance(ver_ns, int)
-        and not isinstance(ver_ns, bool)
-    ):
-        if ver_ns < rec_ns:
-            return False
-    else:
-        parsed_rec = _parse_timestamp_ns(recorded_at)
-        parsed_ver = _parse_timestamp_ns(verified_at)
-        if parsed_rec is not None and parsed_ver is not None:
-            if parsed_ver < parsed_rec:
-                return False
-        elif recorded_at and verified_at < recorded_at:
-            return False
+    effective_rec_ns: int | None = (
+        rec_ns
+        if isinstance(rec_ns, int) and not isinstance(rec_ns, bool)
+        else _parse_timestamp_ns(recorded_at)
+    )
+    effective_ver_ns: int | None = (
+        ver_ns
+        if isinstance(ver_ns, int) and not isinstance(ver_ns, bool)
+        else _parse_timestamp_ns(verified_at)
+    )
+    if effective_ver_ns is None:
+        return False
+    if isinstance(recorded_at, str) and recorded_at and effective_rec_ns is None:
+        return False
+    if effective_rec_ns is not None and effective_ver_ns < effective_rec_ns:
+        return False
     proof = ver.get("proof")
     if not isinstance(proof, str) or len(proof.strip()) < MIN_PROOF_LEN:
         return False

@@ -723,14 +723,16 @@ def restart_one(
                 raise SkipStep("skipped-busy-after-handshake")
 
         def run_optional_verify_turn(addr: str) -> None:
-            if verify_turn and not hc_send(
-                addr,
-                VERIFY_PROMPT,
-                raw=False,
-                wait=True,
-                timeout=min(45.0, timing.wait),
-            ):
-                raise SkipStep("failed-verify-turn", "verify prompt send failed")
+            if verify_turn:
+                if not hc_send(
+                    addr,
+                    VERIFY_PROMPT,
+                    raw=False,
+                    wait=True,
+                    timeout=min(45.0, timing.wait),
+                ):
+                    raise SkipStep("failed-verify-turn", "verify prompt send failed")
+                client.refresh_terminal(addr)
 
         tree_now = client.tree(term.address)
         if adapter.can_in_place_restart(
@@ -754,9 +756,20 @@ def restart_one(
                 in_place_before_started_at=started_before,
             )
             run_optional_verify_turn(verified_addr)
-            p_started_at, p_lstart, p_agy, _ = _collect_verify_proof(
+            p_started_at, p_lstart, p_agy, proof_notes = _collect_verify_proof(
                 client, verified_addr, term.kind, new_pid, term.session_id
             )
+            mismatches = _agy_proof_mismatches(p_agy, term.session_id)
+            if mismatches:
+                return make_outcome(
+                    "failed-verify-timeout",
+                    (*mismatches, *proof_notes),
+                    new_pid=new_pid,
+                    address_override=verified_addr,
+                    process_started_at=p_started_at,
+                    process_lstart=p_lstart,
+                    agy_log_proof=p_agy,
+                )
             return make_outcome(
                 "restarted",
                 ("in-place /restart",),
@@ -780,9 +793,20 @@ def restart_one(
                 timing=timing,
             )
             run_optional_verify_turn(verified_addr)
-            p_started_at, p_lstart, p_agy, _ = _collect_verify_proof(
+            p_started_at, p_lstart, p_agy, proof_notes = _collect_verify_proof(
                 client, verified_addr, term.kind, new_pid, term.session_id
             )
+            mismatches = _agy_proof_mismatches(p_agy, term.session_id)
+            if mismatches:
+                return make_outcome(
+                    "failed-verify-timeout",
+                    (*mismatches, *proof_notes),
+                    new_pid=new_pid,
+                    address_override=verified_addr,
+                    process_started_at=p_started_at,
+                    process_lstart=p_lstart,
+                    agy_log_proof=p_agy,
+                )
             if len(tab.terminals) == 1 and (
                 herdr_app_do("tab.close", "--id", tab.id, "--confirmed", "true") is None
             ):
@@ -814,9 +838,20 @@ def restart_one(
             timing=timing,
         )
         run_optional_verify_turn(verified_addr)
-        p_started_at, p_lstart, p_agy, _ = _collect_verify_proof(
+        p_started_at, p_lstart, p_agy, proof_notes = _collect_verify_proof(
             client, verified_addr, term.kind, new_pid, term.session_id
         )
+        mismatches = _agy_proof_mismatches(p_agy, term.session_id)
+        if mismatches:
+            return make_outcome(
+                "failed-verify-timeout",
+                (*mismatches, *proof_notes),
+                new_pid=new_pid,
+                address_override=verified_addr,
+                process_started_at=p_started_at,
+                process_lstart=p_lstart,
+                agy_log_proof=p_agy,
+            )
         return make_outcome(
             "ok",
             ("clean-env-in-place" if force_clean_env else "keep-env-in-place",),
@@ -1328,9 +1363,25 @@ def cmd_start(
                 expected_git=None,
                 timing=timing_cfg,
             )
-            p_started_at, p_lstart, p_agy, _ = _collect_verify_proof(
+            p_started_at, p_lstart, p_agy, proof_notes = _collect_verify_proof(
                 worker_client, verified_addr, term.kind, new_pid, term.session_id
             )
+            mismatches = _agy_proof_mismatches(p_agy, term.session_id)
+            if mismatches:
+                return make_session_outcome(
+                    where=where,
+                    tab_id=tab.id,
+                    terminal=verified_addr,
+                    kind=term.kind,
+                    session_id=term.session_id,
+                    result="failed-verify-timeout",
+                    new_pid=new_pid,
+                    process_started_at=p_started_at,
+                    process_lstart=p_lstart,
+                    agy_log_proof=p_agy,
+                    elapsed_s=time.monotonic() - t0,
+                    notes=(*mismatches, *proof_notes),
+                )
             return make_session_outcome(
                 where=where,
                 tab_id=tab.id,
@@ -1394,6 +1445,29 @@ def cmd_start(
         else EXIT_OK
     )
     return rec.finish(rc)
+
+
+def _agy_proof_mismatches(
+    agy_proof: AgyLogProof | None, expected_session_id: str | None
+) -> list[str]:
+    if agy_proof is None or agy_proof.log_path is None or agy_proof.verified:
+        return []
+    mismatch: list[str] = []
+    if not agy_proof.pid_matched:
+        mismatch.append(f"cli_pid={agy_proof.pid} not in tree")
+    if expected_session_id and not agy_proof.conversation_matched:
+        mismatch.append(
+            f"cli_conv={agy_proof.conversation_id} != {expected_session_id}"
+        )
+    elif not expected_session_id and not agy_proof.conversation_id:
+        mismatch.append("cli_conv missing in agy log")
+    if agy_proof.expected_hook_count is not None and not agy_proof.hooks_matched:
+        mismatch.append(
+            f"loaded hooks {agy_proof.loaded_hook_count} != hooks.json {agy_proof.expected_hook_count}"
+        )
+    if not mismatch:
+        mismatch.append("agy cli log proof not verified")
+    return mismatch
 
 
 def _collect_verify_proof(
@@ -1484,25 +1558,8 @@ def cmd_verify(
                 started_at, lstart, agy_proof, proof_notes = _collect_verify_proof(
                     live, verified_addr, term.kind, new_pid, term.session_id
                 )
-                if (
-                    agy_proof is not None
-                    and agy_proof.log_path is not None
-                    and not agy_proof.verified
-                ):
-                    mismatch: list[str] = []
-                    if not agy_proof.pid_matched:
-                        mismatch.append(f"cli_pid={agy_proof.pid} not in tree")
-                    if term.session_id and not agy_proof.conversation_matched:
-                        mismatch.append(
-                            f"cli_conv={agy_proof.conversation_id} != {term.session_id}"
-                        )
-                    if (
-                        agy_proof.expected_hook_count is not None
-                        and not agy_proof.hooks_matched
-                    ):
-                        mismatch.append(
-                            f"loaded hooks {agy_proof.loaded_hook_count} != hooks.json {agy_proof.expected_hook_count}"
-                        )
+                mismatch = _agy_proof_mismatches(agy_proof, term.session_id)
+                if mismatch:
                     rec.add_outcome(
                         make_session_outcome(
                             where=where,
