@@ -1335,3 +1335,11 @@ def test_normalize_path_for_mise_doctor_shim_and_activated_modes(monkeypatch) ->
         assert seen_env["PATH"] == os.pathsep.join(
             [str(shims_dir), str(other_venv), str(local_bin), "/usr/bin"]
         )
+
+
+def test_vm_up_normalizes_usr_local_bin_ownership_for_packslip() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    vm_up = (repo_root / "tasks" / "vm" / "up").read_text(encoding="utf-8")
+    assert "sudo install -d -o root -g wheel -m 0755 /usr/local/bin" in vm_up
+    assert "sudo chown root:wheel /usr/local/bin" in vm_up
+    assert "sudo chmod 0755 /usr/local/bin" in vm_up
