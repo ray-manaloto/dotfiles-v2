@@ -114,26 +114,51 @@ rc_running = rc.returncode == 0 and (
 if not rc_running:
     issues.append("agy remote-control status reports not running")
 
-token_ok = token_file.is_file() and token_file.stat().st_size > 0
-if not token_ok:
-    issues.append(f"missing or empty OAuth token file {token_file} (#1401)")
-
+daemon_auth_in_log = False
 auth_error_in_log = False
 if daemon_log.is_file():
     try:
         with daemon_log.open("rb") as fh:
             fh.seek(0, os.SEEK_END)
-            size = fh.tell()
-            fh.seek(max(0, size - 32768))
-            tail = fh.read().decode("utf-8", errors="replace")
+            pos = fh.tell()
+            chunks = []
+            nl_count = 0
+            read_bytes = 0
+            max_tail_bytes = 4 * 1024 * 1024
+            while pos > 0 and nl_count < 81 and read_bytes < max_tail_bytes:
+                step = min(32768, pos, max_tail_bytes - read_bytes)
+                pos -= step
+                fh.seek(pos)
+                block = fh.read(step)
+                chunks.append(block)
+                nl_count += block.count(b"\n")
+                read_bytes += len(block)
+            raw_tail = b"".join(reversed(chunks))
+            if pos > 0:
+                fh.seek(pos - 1)
+                if fh.read(1) != b"\n":
+                    first_nl = raw_tail.find(b"\n")
+                    raw_tail = raw_tail[first_nl + 1:] if first_nl != -1 else b""
+            tail = raw_tail.decode("utf-8", errors="replace")
         for line in tail.splitlines()[-80:]:
             if "You are not logged into Antigravity" in line or "error getting token source" in line:
+                daemon_auth_in_log = False
                 auth_error_in_log = True
-                break
+            elif "Authenticated as " in line:
+                daemon_auth_in_log = True
+                auth_error_in_log = False
         if auth_error_in_log:
             issues.append("antigravity-cli-daemon.log shows recent OAuth failure (#1401)")
     except OSError:
         pass
+
+token_file_ok = token_file.is_file() and token_file.stat().st_size > 0
+token_ok = token_file_ok or (
+    launchctl_running and rc_running and daemon_auth_in_log and not auth_error_in_log
+)
+token_source = "file" if token_file_ok else ("keychain-daemon" if token_ok else "missing")
+if not token_ok:
+    issues.append(f"missing or empty OAuth token file {token_file} (#1401)")
 
 print(json.dumps({
     "plist_exists": plist_exists,
@@ -141,6 +166,7 @@ print(json.dumps({
     "launchctl_running": launchctl_running,
     "rc_running": rc_running,
     "token_ok": token_ok,
+    "token_source": token_source,
     "auth_error_in_log": auth_error_in_log,
     "issues": issues,
 }))

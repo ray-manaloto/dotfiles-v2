@@ -365,8 +365,182 @@ def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
             assert proc.returncode == 0, status_line + proc.stdout + proc.stderr
             parsed = json.loads(proc.stdout)
             assert parsed["token_ok"] is True
+            assert parsed["token_source"] == "file"
             assert parsed["rc_running"] is True, status_line
             assert parsed["issues"] == []
+
+        # Keychain-authenticated agy 1.5.16 daemon (`antigravity-oauth-token` absent, log shows `Authenticated as `)
+        token_file.unlink()
+        daemon_log = fake_home / "Library" / "Logs" / "antigravity-cli-daemon.log"
+        daemon_log.parent.mkdir(parents=True, exist_ok=True)
+        daemon_log.write_text(
+            "starting daemon\nAuthenticated as user@example.com\n", encoding="utf-8"
+        )
+        _make_stub(
+            bin_stub,
+            "agy",
+            'if [ "$1" = "remote-control" ] && [ "$2" = "status" ]; then echo "Daemon state = running"; exit 0; fi; exit 1',
+        )
+        kc_proc = subprocess.run(
+            ["bash", str(guard_script)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_check": "true",
+                "usage_json": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert kc_proc.returncode == 0, kc_proc.stdout + kc_proc.stderr
+        kc_parsed = json.loads(kc_proc.stdout)
+        assert kc_parsed["token_ok"] is True
+        assert kc_parsed["token_source"] == "keychain-daemon"
+        assert kc_parsed["auth_error_in_log"] is False
+        assert kc_parsed["issues"] == []
+
+        # Later auth error overrides earlier `Authenticated as`
+        daemon_log.write_text(
+            "Authenticated as user@example.com\nerror getting token source: expired\n",
+            encoding="utf-8",
+        )
+        err_proc = subprocess.run(
+            ["bash", str(guard_script)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_check": "true",
+                "usage_json": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert err_proc.returncode == 1
+        err_parsed = json.loads(err_proc.stdout)
+        assert err_parsed["auth_error_in_log"] is True
+        assert err_parsed["token_ok"] is False
+        assert err_parsed["token_source"] == "missing"
+        assert any("recent OAuth failure" in i for i in err_parsed["issues"])
+
+        # Recovery (`Authenticated as` after earlier auth error) restores keychain-daemon health
+        daemon_log.write_text(
+            "You are not logged into Antigravity\nAuthenticated as user@example.com\n",
+            encoding="utf-8",
+        )
+        rec_proc = subprocess.run(
+            ["bash", str(guard_script)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_check": "true",
+                "usage_json": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert rec_proc.returncode == 0, rec_proc.stdout + rec_proc.stderr
+        rec_parsed = json.loads(rec_proc.stdout)
+        assert rec_parsed["auth_error_in_log"] is False
+        assert rec_parsed["token_ok"] is True
+        assert rec_parsed["token_source"] == "keychain-daemon"
+        assert rec_parsed["issues"] == []
+
+        # Long (>33 KiB) trailing diagnostic line does not hide an earlier `Authenticated as` line
+        daemon_log.write_text(
+            "Authenticated as user@example.com\n" + ("x" * 34000) + "\n",
+            encoding="utf-8",
+        )
+        long_proc = subprocess.run(
+            ["bash", str(guard_script)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_check": "true",
+                "usage_json": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert long_proc.returncode == 0, long_proc.stdout + long_proc.stderr
+        assert json.loads(long_proc.stdout)["token_source"] == "keychain-daemon"
+
+        # 80 lines spanning >32 KiB (crossing chunk boundaries + UTF-8) detect error cleanly;
+        # an error line quoting `"Authenticated as "` stays a failure.
+        token_file.write_text("tok\n", encoding="utf-8")
+        long_post_line = ("é" * 350) + " post\n"
+        daemon_log.write_text(
+            ("pad line\n" * 4500)
+            + "error getting token source: expected 'Authenticated as '\n"
+            + (long_post_line * 79),
+            encoding="utf-8",
+        )
+        bnd_proc = subprocess.run(
+            ["bash", str(guard_script)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_check": "true",
+                "usage_json": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert bnd_proc.returncode == 1
+        bnd_parsed = json.loads(bnd_proc.stdout)
+        assert bnd_parsed["auth_error_in_log"] is True
+        assert bnd_parsed["token_source"] == "file"
+
+        # Aligned 4 MiB boundary preserves a complete failure record at exact cap start
+        four_mib = 4 * 1024 * 1024
+        err_rec = b"error getting token source: aligned\n"
+        trailing = b"ok diag line\n" * 10
+        prefix_len = four_mib - (len(err_rec) + len(trailing))
+        assert prefix_len > 0
+        daemon_log.write_bytes((b"a" * (prefix_len - 1)) + b"\n" + err_rec + trailing)
+        aligned_proc = subprocess.run(
+            ["bash", str(guard_script)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_check": "true",
+                "usage_json": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert aligned_proc.returncode == 1
+        assert json.loads(aligned_proc.stdout)["auth_error_in_log"] is True
+
+        # Missing token file and no daemon log fails closed
+        token_file.unlink()
+        daemon_log.unlink()
+        miss_proc = subprocess.run(
+            ["bash", str(guard_script)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_check": "true",
+                "usage_json": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert miss_proc.returncode == 1
+        miss_parsed = json.loads(miss_proc.stdout)
+        assert miss_parsed["token_ok"] is False
+        assert miss_parsed["token_source"] == "missing"
+        assert any(
+            "antigravity-oauth-token" in i and "#1401" in i
+            for i in miss_parsed["issues"]
+        )
+        token_file.write_text("tok\n", encoding="utf-8")
 
         # Nonzero exit status from `agy remote-control status` fails even if text matches.
         _make_stub(
