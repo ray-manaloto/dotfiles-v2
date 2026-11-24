@@ -18,6 +18,7 @@ from dotfiles_py.generated.pc_hub_schema import (
 from pc_hub.cli import main as pc_hub_main
 from pc_hub.config import (
     BESZEL_VERSION,
+    CODEBASE_MEMORY_MCP_LINUX_AMD64_SHA256,
     QMD_VERSION,
     default_port_map,
     offload_agentsview_local,
@@ -449,7 +450,7 @@ def test_hub_up_script_invariants() -> None:
     assert 'mv -f "${key_priv}.pub" "${key_pub}"' in up_text
     assert 'rm -f "${key_priv}" "${key_priv}.pub" "${key_pub}"' in up_text
 
-    # pc host lacks ~/.config/mise/config.toml so agentsview and vb are symlinked into ~/.local/bin via mise where.
+    # pc host lacks ~/.config/mise/config.toml so agentsview is symlinked via mise where and vb is installed via npm --prefix.
     assert (
         'mise -C "${REMOTE_HOME}" where "github:kenn-io/agentsview@0.48.0"' in up_text
     )
@@ -457,8 +458,19 @@ def test_hub_up_script_invariants() -> None:
         'ln -sfn "${av_dir}/agentsview" "${REMOTE_HOME}/.local/bin/agentsview"'
         in up_text
     )
-    assert 'mise -C "${REMOTE_HOME}" where "npm:@vercel/board@0.56.1"' in up_text
+    assert (
+        CODEBASE_MEMORY_MCP_LINUX_AMD64_SHA256
+        == "8c3d0341064301e78ecc84cf7348d4e2c6562a0f57448243ea560aaa34de36c1"
+    )
+    assert "codebase-memory-mcp-linux-amd64-portable.tar.gz" in up_text
+    assert CODEBASE_MEMORY_MCP_LINUX_AMD64_SHA256 in up_text
+    assert 'grep -Eq "not a dynamic|statically linked"' in up_text
+    assert (
+        'npm install --no-audit --no-fund --prefix "${board_prefix}" "@vercel/board@0.56.1"'
+        in up_text
+    )
     assert 'ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"' in up_text
+    assert 'mise -C "${REMOTE_HOME}" where "npm:@vercel/board@0.56.1"' not in up_text
     assert (
         'if [[ -x "$HOME/.local/bin/agentsview" ]]; then printf "%s/.local/bin/agentsview" "$HOME";'
         in up_text

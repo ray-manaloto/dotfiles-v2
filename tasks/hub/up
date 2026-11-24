@@ -122,12 +122,18 @@ beszel_pub="$(ssh -o BatchMode=yes "${host}" "awk '{print \$1\" \"\$2}' '${state
 # Install/verify CLI-only codebase-memory-mcp 0.12.1 (zero HTTP exposure) + @tobilu/qmd 2.9.0 + agentsview on pc.
 ssh -o BatchMode=yes "${host}" env REMOTE_HOME="${remote_home}" MAC_SSH="${mac_ssh}" /bin/bash -euo pipefail <<'REMOTE_BINS'
 cbm_ver="0.12.1"
-cbm_sha="8453015145f072c1b9b019cbdd02cea8cc6f18cc5e116036dd20992631c638c7"
+cbm_sha="8c3d0341064301e78ecc84cf7348d4e2c6562a0f57448243ea560aaa34de36c1"
 cbm_bin="${REMOTE_HOME}/.local/bin/codebase-memory-mcp"
-if [[ ! -x ${cbm_bin} ]] || ! "${cbm_bin}" --version 2>/dev/null | grep -Fq "${cbm_ver}"; then
+cbm_ldd=""
+cbm_out=""
+if [[ -x ${cbm_bin} ]]; then
+	cbm_ldd="$(ldd "${cbm_bin}" 2>&1 || true)"
+	cbm_out="$( ("${cbm_bin}" --version) 2>/dev/null || true)"
+fi
+if [[ ! -x ${cbm_bin} ]] || ! grep -Eq "not a dynamic|statically linked" <<<"${cbm_ldd}" || ! grep -Fq "${cbm_ver}" <<<"${cbm_out}"; then
 	tmp_dir="$(mktemp -d)"
 	trap 'rm -rf "${tmp_dir}"' EXIT
-	curl -fsSLo "${tmp_dir}/cbm.tar.gz" "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${cbm_ver}/codebase-memory-mcp-linux-amd64.tar.gz"
+	curl -fsSLo "${tmp_dir}/cbm.tar.gz" "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${cbm_ver}/codebase-memory-mcp-linux-amd64-portable.tar.gz"
 	printf '%s  %s\n' "${cbm_sha}" "${tmp_dir}/cbm.tar.gz" | sha256sum -c - >/dev/null
 	tar -C "${tmp_dir}" -xzf "${tmp_dir}/cbm.tar.gz"
 	found_bin="$(find "${tmp_dir}" -type f -name codebase-memory-mcp | head -n 1)"
@@ -151,19 +157,14 @@ if [[ ! -x "${REMOTE_HOME}/.local/bin/agentsview" ]]; then
 	fi
 	ln -sfn "${av_dir}/agentsview" "${REMOTE_HOME}/.local/bin/agentsview"
 fi
-if [[ ! -x "${REMOTE_HOME}/.local/bin/vb" ]]; then
-	MISE_YES=1 mise -C "${REMOTE_HOME}" install "npm:@vercel/board@0.56.1" >/dev/null
-	vb_dir="$(mise -C "${REMOTE_HOME}" where "npm:@vercel/board@0.56.1")"
-	vb_bin="${vb_dir}/node_modules/.bin/vb"
-	if [[ ! -x ${vb_bin} ]]; then
-		vb_bin="${vb_dir}/bin/vb"
-	fi
-	if [[ ! -x ${vb_bin} ]]; then
-		echo "hub:up: missing vb binary in ${vb_dir}" >&2
-		exit 1
-	fi
-	ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"
+board_prefix="${REMOTE_HOME}/.local/share/pc-hub/board"
+vb_bin="${board_prefix}/node_modules/.bin/vb"
+board_pkg="${board_prefix}/node_modules/@vercel/board/package.json"
+if [[ ! -x ${vb_bin} ]] || ! grep -Fq '"version": "0.56.1"' "${board_pkg}" 2>/dev/null; then
+	mkdir -p "${board_prefix}"
+	npm install --no-audit --no-fund --prefix "${board_prefix}" "@vercel/board@0.56.1" >/dev/null
 fi
+ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"
 
 av_tok="$(tr -d '\r\n' <"${REMOTE_HOME}/.config/agentsview/server-token")"
 python3 - "${REMOTE_HOME}/.agentsview/config.toml" "${av_tok}" "${MAC_SSH:-}" <<'PY'
