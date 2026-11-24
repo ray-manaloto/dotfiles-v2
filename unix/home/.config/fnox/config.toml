@@ -56,6 +56,7 @@ GROQ_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "GROQ_API_K
 AIHUBMIX_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "AIHUBMIX_API_KEY", env = false, if_missing = "warn" }
 CLOUDFLARE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "CLOUDFLARE_API_KEY", env = false, if_missing = "warn" }
 CF_ACCOUNT_ID = { provider = "doppler_dotfiles_dev_personal", value = "CLOUDFLARE_ACCOUNT_ID", env = "exec", if_missing = "warn" }
+CLOUDFLARE_ACCOUNT_ID = { provider = "doppler_dotfiles_dev_personal", value = "CLOUDFLARE_ACCOUNT_ID", env = "exec", if_missing = "warn" }
 
 # Tailscale API access token (admin console, Settings, Keys), sent only through the proxy rule below.
 TAILSCALE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "TAILSCALE_API_KEY", env = false, if_missing = "warn" }

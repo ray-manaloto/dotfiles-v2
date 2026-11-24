@@ -5,14 +5,30 @@ cmd="$(basename "$0")"
 data_dir="${MISE_DATA_DIR:-${HOME}/.local/share/mise}"
 bin=""
 if command -v mise >/dev/null 2>&1; then
-	bin="$(mise which "${cmd}" 2>/dev/null || true)"
+	bin="$(mise which --tool npm:@vercel/board "${cmd}" 2>/dev/null || true)"
+	if [[ -z ${bin} || ${bin} == */command-wrappers/* || ! -x ${bin} ]]; then
+		candidate="$(mise which "${cmd}" 2>/dev/null || true)"
+		if [[ -n ${candidate} && ${candidate} != */command-wrappers/* && -x ${candidate} ]]; then
+			bin="${candidate}"
+		else
+			bin=""
+		fi
+	fi
 fi
 if [[ -z ${bin} || ! -x ${bin} ]]; then
 	direct="${data_dir}/installs/npm-vercel-board/latest/node_modules/.bin/${cmd}"
 	if [[ -x ${direct} ]]; then
 		bin="${direct}"
 	else
-		bin="${data_dir}/shims/${cmd}"
+		for match in "${data_dir}/installs/npm-vercel-board"/*/node_modules/.bin/"${cmd}"; do
+			if [[ -x ${match} ]]; then
+				bin="${match}"
+				break
+			fi
+		done
+		if [[ -z ${bin} || ! -x ${bin} ]]; then
+			bin="${data_dir}/shims/${cmd}"
+		fi
 	fi
 fi
 

@@ -1,3 +1,8 @@
 *
 !docker/ubuntu/Dockerfile
 !unix/home/.config/mise/**
+**/*.local.*
+**/__pycache__
+**/__pycache__/**
+**/*.pyc
+**/.DS_Store

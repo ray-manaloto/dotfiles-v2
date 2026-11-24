@@ -17,16 +17,62 @@ fi
 
 mkdir -p "${agents_dir}" "${claude_dir}"
 
-# Clear any self-referential ../../.agents/skills/ loops left by prior symlinked claude dirs.
-python3 - "${agents_dir}" <<'PY'
+# Clear any self-referential ../../.agents/skills/ loops left by prior symlinked claude dirs,
+# and unlink legacy pre-manifest ~/.agents/skills/<name> symlinks pointing into mise installs
+# so `mise skills sync --global --prune` cleanly adopts them and writes .mise-skills.json.
+python3 - "${agents_dir}" "${MISE_DATA_DIR:-${HOME}/.local/share/mise}/installs" <<'PY'
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 agents_dir = Path(sys.argv[1])
+installs_dir = Path(sys.argv[2])
+
 for entry in sorted(agents_dir.iterdir()):
     if entry.is_symlink() and os.readlink(entry).startswith("../../.agents/skills/"):
         entry.unlink()
+
+manifest_path = agents_dir / ".mise-skills.json"
+recorded: set[str] = set()
+if manifest_path.is_file():
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(manifest_data, dict) and isinstance(manifest_data.get("links"), dict):
+            recorded = set(manifest_data["links"].keys())
+    except (OSError, json.JSONDecodeError):
+        recorded = set()
+
+try:
+    ls_out = subprocess.check_output(
+        ["mise", "-C", str(Path.home()), "skills", "ls", "--json"],
+        text=True,
+    )
+    managed_names = {
+        str(row["name"])
+        for row in json.loads(ls_out)
+        if isinstance(row, dict) and row.get("name")
+    }
+except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+    managed_names = set()
+
+installs_markers = (
+    str(installs_dir).rstrip("/") + "/",
+    str(installs_dir.resolve(strict=False)).rstrip("/") + "/",
+    "/.local/share/mise/installs/",
+)
+
+for name in sorted(managed_names):
+    if name in recorded:
+        continue
+    link = agents_dir / name
+    if not link.is_symlink():
+        continue
+    raw_target = os.readlink(link)
+    resolved_target = str(link.resolve(strict=False))
+    if any(m in raw_target or m in resolved_target for m in installs_markers):
+        link.unlink()
 PY
 
 mise skills sync --global --prune

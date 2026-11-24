@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+#MISE description="Prune stale mise tools, shims, plugins, wrappers, retired pitchfork daemons, dead symlinks, and unmanaged host leftovers"
+#USAGE flag "--apply" help="Execute host prune and cleanup (default: dry-run preview)"
+set -euo pipefail
+
+apply="${usage_apply:-false}"
+home_dir="${HOME}"
+data_dir="${MISE_DATA_DIR:-${home_dir}/.local/share/mise}"
+wrappers_dir="${data_dir}/command-wrappers/bin"
+plugins_dir="${data_dir}/plugins"
+fnox_cfg="${home_dir}/.config/fnox/config.toml"
+
+if [[ ${apply} == "true" ]]; then
+	echo "MODE: APPLY (executing host prune and cleanup)"
+else
+	echo "MODE: DRY-RUN (preview only; pass --apply to execute)"
+fi
+
+if [[ -L "${home_dir}/.agents/skills/antigravity-session-history" || -e "${home_dir}/.agents/skills/antigravity-session-history" ]]; then
+	echo "KEEP  ~/.agents/skills/antigravity-session-history (explicitly preserved)"
+fi
+
+# 1. mise prune --configs, mise prune, and mise reshim --force
+if [[ ${apply} == "true" ]]; then
+	mise -C "${home_dir}" prune --configs --yes
+	mise -C "${home_dir}" prune --yes
+	mise -C "${home_dir}" reshim --force
+else
+	mise -C "${home_dir}" prune --configs --dry-run
+	mise -C "${home_dir}" prune --dry-run
+	echo "DRY-RUN: would run \`mise -C \"${home_dir}\" reshim --force\`"
+fi
+
+# 2. Orphaned command-wrappers/bin/* not declared in [wrappers.*]
+# 3. Stale unconfigured mise plugins and orphaned dirs in ~/.local/share/mise/plugins/
+# 4. Retired stopped pitchfork entries
+# 5. Stale standalone binaries in ~/.local/bin/{uv,uvx,hermes,hermes-acp,hermes-agent}
+# 6. Dead symlinks in ~/.config/opencode/skills/ and ~/.claude/debug/latest
+# 7. Unmanaged ~/.config/opencode/opencode.jsonc (backup before removal)
+# 8. Untracked unix/home/.config/mise/config.local.toml (only when fnox check --all --strict passes with CLOUDFLARE_ACCOUNT_ID)
+python3 - "${apply}" "${home_dir}" "${wrappers_dir}" "${plugins_dir}" "${fnox_cfg}" <<'PY'
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+apply = sys.argv[1] == "true"
+home = Path(sys.argv[2])
+wrappers_dir = Path(sys.argv[3])
+plugins_dir = Path(sys.argv[4])
+fnox_cfg = Path(sys.argv[5])
+
+mise_dir = home / ".config" / "mise"
+resolved_mise_dir = mise_dir.resolve(strict=False)
+
+
+def load_declared_wrappers_and_plugins() -> tuple[set[str], set[str]]:
+    declared_wrappers: set[str] = set()
+    used_tools: set[str] = set()
+    for cfg_name in ("config.toml", "config.macos.toml", "config.linux.toml"):
+        cfg_path = mise_dir / cfg_name
+        if not cfg_path.is_file():
+            continue
+        data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+        wrappers = data.get("wrappers")
+        if isinstance(wrappers, dict):
+            declared_wrappers.update(str(k) for k in wrappers.keys())
+        tools = data.get("tools")
+        if isinstance(tools, dict):
+            for tool_name in tools.keys():
+                used_tools.add(str(tool_name))
+    return declared_wrappers, used_tools
+
+
+declared_wrappers, used_tools = load_declared_wrappers_and_plugins()
+
+# 2. Orphaned command-wrappers/bin/*
+if wrappers_dir.is_dir():
+    for entry in sorted(wrappers_dir.iterdir()):
+        if entry.name in declared_wrappers:
+            continue
+        if apply:
+            entry.unlink()
+            print(f"REMOVED orphan wrapper: {entry}")
+        else:
+            print(f"WOULD REMOVE orphan wrapper: {entry}")
+
+# 3. Stale unconfigured mise plugins + orphaned plugin dirs
+configured_plugin_tokens = set()
+for tool in used_tools:
+    configured_plugin_tokens.add(tool)
+    if ":" in tool:
+        configured_plugin_tokens.add(tool.split(":", 1)[1].replace("/", "-"))
+
+try:
+    registered_plugins = [
+        line.strip()
+        for line in subprocess.check_output(
+            ["mise", "-C", str(home), "plugins", "ls"],
+            text=True,
+        ).splitlines()
+        if line.strip()
+    ]
+except (OSError, subprocess.SubprocessError):
+    registered_plugins = []
+
+for plugin in registered_plugins:
+    if plugin in configured_plugin_tokens:
+        continue
+    if apply:
+        subprocess.run(["mise", "-C", str(home), "plugins", "uninstall", plugin], check=False)
+        print(f"UNINSTALLED stale mise plugin: {plugin}")
+    else:
+        print(f"WOULD UNINSTALL stale mise plugin: {plugin}")
+
+if plugins_dir.is_dir():
+    for pdir in sorted(plugins_dir.iterdir()):
+        if pdir.name in configured_plugin_tokens:
+            continue
+        if apply:
+            if pdir.is_symlink() or pdir.is_file():
+                pdir.unlink()
+            else:
+                shutil.rmtree(pdir)
+            print(f"REMOVED orphan plugin dir: {pdir}")
+        else:
+            print(f"WOULD REMOVE orphan plugin dir: {pdir}")
+
+# 4. Retired stopped pitchfork entries
+if shutil.which("pitchfork"):
+    try:
+        pf_list = json.loads(
+            subprocess.check_output(["pitchfork", "list", "--json"], text=True)
+        )
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        pf_list = []
+    if isinstance(pf_list, list):
+        for row in pf_list:
+            if not isinstance(row, dict):
+                continue
+            daemon_id = str(row.get("id") or "")
+            ns = str(row.get("namespace") or "")
+            name = str(row.get("name") or "")
+            status = str(row.get("status") or "")
+            is_retired = daemon_id in {"dotfiles-v2/vercel-board", "legacy/pitchfork"} or ns.startswith("test.results.")
+            if status == "stopped" and is_retired and ns and name:
+                if apply:
+                    subprocess.run(["pitchfork", "clean", ns, "--daemon", name], check=False)
+                    print(f"CLEANED retired stopped pitchfork entry: {daemon_id}")
+                else:
+                    print(f"WOULD CLEAN retired stopped pitchfork entry: {daemon_id}")
+
+# 5. Stale standalone binaries in ~/.local/bin/{uv,uvx,hermes,hermes-acp,hermes-agent}
+local_bin = home / ".local" / "bin"
+for tool_bin in ("uv", "uvx"):
+    candidate = local_bin / tool_bin
+    if not (candidate.exists() or candidate.is_symlink()):
+        continue
+    try:
+        managed_bin = subprocess.check_output(
+            ["mise", "-C", str(home), "which", tool_bin],
+            text=True,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        managed_bin = ""
+    if managed_bin and Path(managed_bin).is_file() and Path(managed_bin).resolve() != candidate.resolve(strict=False):
+        if apply:
+            candidate.unlink()
+            print(f"REMOVED stale standalone binary: {candidate} (managed: {managed_bin})")
+        else:
+            print(f"WOULD REMOVE stale standalone binary: {candidate} (managed: {managed_bin})")
+
+managed_hermes = home / ".local" / "share" / "hermes-cli.noindex" / "bin" / "hermes"
+if managed_hermes.is_file():
+    for hermes_bin in ("hermes", "hermes-acp", "hermes-agent"):
+        candidate = local_bin / hermes_bin
+        if not (candidate.exists() or candidate.is_symlink()):
+            continue
+        if apply:
+            candidate.unlink()
+            print(f"REMOVED stale standalone binary: {candidate} (managed: {managed_hermes})")
+        else:
+            print(f"WOULD REMOVE stale standalone binary: {candidate} (managed: {managed_hermes})")
+
+# 6. Dead symlinks in ~/.config/opencode/skills/ and ~/.claude/debug/latest
+dead_candidates: list[Path] = []
+oc_skills = home / ".config" / "opencode" / "skills"
+if oc_skills.is_dir():
+    for entry in sorted(oc_skills.iterdir()):
+        if entry.is_symlink() and not entry.exists():
+            dead_candidates.append(entry)
+claude_debug_latest = home / ".claude" / "debug" / "latest"
+if claude_debug_latest.is_symlink() and not claude_debug_latest.exists():
+    dead_candidates.append(claude_debug_latest)
+
+for dead in dead_candidates:
+    if apply:
+        dead.unlink()
+        print(f"REMOVED dead symlink: {dead}")
+    else:
+        print(f"WOULD REMOVE dead symlink: {dead}")
+
+# 7. Unmanaged ~/.config/opencode/opencode.jsonc (back up before removing)
+oc_dir = home / ".config" / "opencode"
+oc_json = oc_dir / "opencode.json"
+oc_jsonc = oc_dir / "opencode.jsonc"
+oc_bak = oc_dir / "opencode.jsonc.bak.pre-cleanup"
+if oc_jsonc.is_file() and not oc_jsonc.is_symlink() and oc_json.exists():
+    if apply:
+        if not oc_bak.exists():
+            shutil.copy2(oc_jsonc, oc_bak)
+        oc_jsonc.unlink()
+        print(f"BACKED UP & REMOVED unmanaged {oc_jsonc} -> {oc_bak}")
+    else:
+        print(f"WOULD BACK UP & REMOVE unmanaged {oc_jsonc} -> {oc_bak}")
+
+# 8. Untracked unix/home/.config/mise/config.local.toml (only if fnox check --all --strict passes with CLOUDFLARE_ACCOUNT_ID)
+config_local = resolved_mise_dir / "config.local.toml"
+if config_local.is_file():
+    is_tracked = (
+        subprocess.run(
+            ["git", "-C", str(resolved_mise_dir), "ls-files", "--error-unmatch", "config.local.toml"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
+    has_cf_id = False
+    if fnox_cfg.is_file():
+        try:
+            fnox_data = tomllib.loads(fnox_cfg.read_text(encoding="utf-8"))
+            secrets = fnox_data.get("secrets")
+            has_cf_id = isinstance(secrets, dict) and "CLOUDFLARE_ACCOUNT_ID" in secrets
+        except tomllib.TOMLDecodeError:
+            has_cf_id = False
+    fnox_ok = False
+    if has_cf_id and fnox_cfg.is_file():
+        fnox_ok = (
+            subprocess.run(
+                ["fnox", "--non-interactive", "--config", str(fnox_cfg), "check", "--all", "--strict"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode
+            == 0
+        )
+    if not is_tracked and has_cf_id and fnox_ok:
+        if apply:
+            config_local.unlink()
+            print(f"REMOVED untracked {config_local} (fnox check --all --strict passed with CLOUDFLARE_ACCOUNT_ID)")
+        else:
+            print(f"WOULD REMOVE untracked {config_local} (fnox check --all --strict passed with CLOUDFLARE_ACCOUNT_ID)")
+    elif not is_tracked:
+        print(f"SKIP  {config_local}: fnox strict check or CLOUDFLARE_ACCOUNT_ID not verified")
+PY

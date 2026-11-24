@@ -103,7 +103,10 @@ args = [
   "RUST_LOG",
   "agy",
 ]
-env = { RUST_LOG = "info,fnox::proxy=warn" }
+env = { RUST_LOG = "info,fnox::proxy=warn,fnox::commands::proxy=error" }
+
+[wrappers.board]
+command = "{{env.HOME}}/.local/bin/board"
 
 [wrappers.codex]
 command = "fnox"
@@ -125,7 +128,7 @@ args = [
   "-c",
   'shell_environment_policy.include_only=["PATH","SHELL","TMPDIR","TEMP","TMP","HOME","LANG","LC_ALL","LC_CTYPE","LOGNAME","USER","HC_*","CLAUDE_CODE_BRIEF","CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS","CLAUDE_CODE_FORK_SUBAGENT","CLAUDE_CODE_NEW_INIT","CLAUDE_CODE_NO_FLICKER","ENABLE_CLAUDEAI_MCP_SERVERS","ENABLE_TOOL_SEARCH","NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S","OTEL_LOG_RAW_API_BODIES"]',
 ]
-env = { RUST_LOG = "info,fnox::proxy=warn" }
+env = { RUST_LOG = "info,fnox::proxy=warn,fnox::commands::proxy=error" }
 
 [wrappers.opencode]
 command = "fnox"
@@ -139,53 +142,76 @@ args = [
   "env",
   "-u",
   "RUST_LOG",
-  "opencode",
-  "--standalone",
+  "{{env.HOME}}/.local/bin/opencode-wrapper",
 ]
-env = { RUST_LOG = "info,fnox::proxy=warn" }
+env = { RUST_LOG = "info,fnox::proxy=warn,fnox::commands::proxy=error" }
+
+[wrappers.vb]
+command = "{{env.HOME}}/.local/bin/vb"
 
 [dotfiles]
-"~/.config/agent-secrets/env.sh" = { mode = "symlink" }
-"~/.config/agents/AGENTS.md" = { mode = "symlink" }
-"~/.config/fnox/config.toml" = { mode = "symlink" }
-"~/.config/git/config" = { mode = "symlink" }
-"~/.config/jouet/rules/npm-claude-code.toml" = { mode = "symlink" }
-"~/.config/opencode/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
-"~/.config/opencode/opencode.json" = { mode = "symlink" }
-"~/.config/pitchfork/config.toml" = { mode = "symlink" }
-"~/.config/starship.toml" = { mode = "symlink" }
-"~/.gemini/GEMINI.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
+"~/.config/agent-secrets/env.sh" = { mode = "symlink", main_checkout = true }
+"~/.config/agents/AGENTS.md" = { mode = "symlink", main_checkout = true }
+"~/.config/fnox/config.toml" = { mode = "symlink", main_checkout = true }
+"~/.config/git/config" = { mode = "symlink", main_checkout = true }
+"~/.config/jouet/rules/npm-claude-code.toml" = { mode = "symlink", main_checkout = true }
+"~/.config/opencode/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", mode = "symlink", main_checkout = true, depends = [
+  "~/.config/agents/AGENTS.md",
+] }
+"~/.config/opencode/opencode.json" = { mode = "symlink", main_checkout = true }
+"~/.config/pitchfork/config.toml" = { mode = "symlink", main_checkout = true }
+"~/.config/starship.toml" = { mode = "symlink", main_checkout = true }
+"~/.gemini/GEMINI.md" = { source = "~/.config/agents/AGENTS.md", mode = "symlink", main_checkout = true, depends = [
+  "~/.config/agents/AGENTS.md",
+] }
 "~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
-"~/.gemini/config/hooks/agy-code-review-guard.py" = { mode = "symlink" }
-"~/.gemini/config/hooks/agy-hc-send-guard.py" = { mode = "symlink" }
-"~/.gemini/config/hooks/agy-interactive-questions.py" = { mode = "symlink" }
-"~/.gemini/config/hooks/agy-pwf-guard.py" = { mode = "symlink" }
-"~/.gemini/config/hooks/agy-skill-cutoff.py" = { mode = "symlink" }
-"~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink" }
-"~/.gemini/config/rules/agy-peer-messaging.md" = { mode = "symlink" }
-"~/.gemini/config/rules/code-review-protocol.md" = { mode = "symlink" }
-"~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink" }
-"~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink" }
-"~/.gemini/config/rules/research-due-diligence.md" = { mode = "symlink" }
-"~/.gemini/config/rules/skill-cutoff-agy.md" = { mode = "symlink" }
-"~/.agents/skills/agy-session-ops" = { mode = "symlink" }
-"~/.agents/skills/herdr-roll" = { mode = "symlink" }
-"~/.agents/skills/mise-bootstrap-ops" = { mode = "symlink" }
-"~/.agents/skills/post-task-learn" = { mode = "symlink" }
-"~/.agents/skills/pwf-status" = { mode = "symlink" }
-"~/.agents/skills/vercel-board" = { mode = "symlink" }
+"~/.gemini/config/hooks/agy-code-review-guard.py" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/hooks/agy-hc-send-guard.py" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/hooks/agy-interactive-questions.py" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/hooks/agy-pwf-guard.py" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/hooks/agy-skill-cutoff.py" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/hooks/post-task-learn.py" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/rules/agy-peer-messaging.md" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/rules/code-review-protocol.md" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/rules/interactive-questions.md" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/rules/planning-with-files-agy.md" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/rules/research-due-diligence.md" = { mode = "symlink", main_checkout = true }
+"~/.gemini/config/rules/skill-cutoff-agy.md" = { mode = "symlink", main_checkout = true }
+"~/.agents/skills/agy-session-ops" = { mode = "symlink", main_checkout = true }
+"~/.agents/skills/herdr-roll" = { mode = "symlink", main_checkout = true }
+"~/.agents/skills/mise-bootstrap-ops" = { mode = "symlink", main_checkout = true }
+"~/.agents/skills/post-task-learn" = { mode = "symlink", main_checkout = true }
+"~/.agents/skills/pwf-status" = { mode = "symlink", main_checkout = true }
+"~/.agents/skills/vercel-board" = { mode = "symlink", main_checkout = true }
 "~/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true, permissions = "0600" }
-"~/.claude/skills/agy-session-ops" = { source = "../../.agents/skills/agy-session-ops", mode = "symlink" }
-"~/.claude/skills/herdr-roll" = { source = "../../.agents/skills/herdr-roll", mode = "symlink" }
-"~/.claude/skills/mise-bootstrap-ops" = { source = "../../.agents/skills/mise-bootstrap-ops", mode = "symlink" }
-"~/.claude/skills/post-task-learn" = { source = "../../.agents/skills/post-task-learn", mode = "symlink" }
-"~/.claude/skills/pwf-status" = { source = "../../.agents/skills/pwf-status", mode = "symlink" }
-"~/.claude/skills/vercel-board" = { source = "../../.agents/skills/vercel-board", mode = "symlink" }
-"~/.codex/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
+"~/.claude/skills/agy-session-ops" = { source = "~/.agents/skills/agy-session-ops", mode = "symlink", relative = true, main_checkout = true, depends = [
+  "~/.agents/skills/agy-session-ops",
+] }
+"~/.claude/skills/herdr-roll" = { source = "~/.agents/skills/herdr-roll", mode = "symlink", relative = true, main_checkout = true, depends = [
+  "~/.agents/skills/herdr-roll",
+] }
+"~/.claude/skills/mise-bootstrap-ops" = { source = "~/.agents/skills/mise-bootstrap-ops", mode = "symlink", relative = true, main_checkout = true, depends = [
+  "~/.agents/skills/mise-bootstrap-ops",
+] }
+"~/.claude/skills/post-task-learn" = { source = "~/.agents/skills/post-task-learn", mode = "symlink", relative = true, main_checkout = true, depends = [
+  "~/.agents/skills/post-task-learn",
+] }
+"~/.claude/skills/pwf-status" = { source = "~/.agents/skills/pwf-status", mode = "symlink", relative = true, main_checkout = true, depends = [
+  "~/.agents/skills/pwf-status",
+] }
+"~/.claude/skills/vercel-board" = { source = "~/.agents/skills/vercel-board", mode = "symlink", relative = true, main_checkout = true, depends = [
+  "~/.agents/skills/vercel-board",
+] }
+"~/.codex/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", mode = "symlink", main_checkout = true, depends = [
+  "~/.config/agents/AGENTS.md",
+] }
 "~/.codex/config.toml/mcp-jdx" = { source = "../../.codex/mcp-jdx.toml", merge = true, permissions = "0600" }
-"~/.gemini/config/skills" = { source = "~/.agents/skills", mode = "symlink", relative = true }
-"~/.zcode/AGENTS.md" = { source = "../agents/AGENTS.md", mode = "symlink" }
-"~/.zcode/cli/setting.json" = { mode = "symlink" }
+"~/.gemini/config/skills" = { source = "~/.agents/skills", mode = "symlink", relative = true, main_checkout = true }
+"~/.local/bin/opencode-wrapper" = { mode = "symlink", main_checkout = true }
+"~/.zcode/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", mode = "symlink", main_checkout = true, depends = [
+  "~/.config/agents/AGENTS.md",
+] }
+"~/.zcode/cli/setting.json" = { mode = "symlink", main_checkout = true }
 
 [bootstrap.hooks.pre-dotfiles]
 run = 'if [ -L ~/.claude/skills ]; then rm -f ~/.claude/skills; fi && mkdir -p ~/.agents/skills ~/.claude/skills && if [ -d ~/.gemini/config/skills ] && [ ! -L ~/.gemini/config/skills ]; then rm -f ~/.gemini/config/skills/.DS_Store && for d in ~/.gemini/config/skills/*; do [ -e "$d" ] || [ -L "$d" ] || continue; b="$(basename "$d")"; if [ -d "$d" ] && [ ! -L "$d" ]; then rm -f "$d/.DS_Store"; fi; if [ -d "$d" ] && [ ! -L "$d" ] && [ -L "$d/SKILL.md" ] && [ "$(ls -A "$d" | wc -l)" -eq 1 ]; then rm -rf "$d"; elif [ ! -e ~/.agents/skills/"$b" ] && [ ! -L ~/.agents/skills/"$b" ]; then mv "$d" ~/.agents/skills/"$b"; fi; done && rmdir ~/.gemini/config/skills; fi'
