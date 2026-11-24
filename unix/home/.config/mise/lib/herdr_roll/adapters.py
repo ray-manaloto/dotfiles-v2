@@ -6,7 +6,7 @@ import re
 import shlex
 import shutil
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
 from urllib.parse import quote
@@ -162,7 +162,7 @@ def _dir_candidates(cwd: str | None) -> tuple[str, ...]:
     return (raw,) if raw == resolved else (resolved, raw)
 
 
-def _extract_flag_value(argv: list[str], names: set[str]) -> str | None:
+def _extract_flag_value(argv: list[str], names: Collection[str]) -> str | None:
     for idx, word in enumerate(argv):
         for flag in names:
             if word == flag and idx + 1 < len(argv):
@@ -321,6 +321,10 @@ class AgyAdapter(BaseAdapter):
 
     kind = HarnessKind.AGY
 
+    SESSION_FLAGS: ClassVar[frozenset[str]] = frozenset(
+        {"--conversation", "--resume", "-r"}
+    )
+
     KEEP: ClassVar[dict[str, int | str]] = {
         "--add-dir": 1,
         "--agent": 1,
@@ -339,6 +343,8 @@ class AgyAdapter(BaseAdapter):
         "-c": 0,
         "--continue": 0,
         "--conversation": 1,
+        "-r": 1,
+        "--resume": 1,
         "--disable-slash-commands": 0,
         "-i": 1,
         "--prompt-interactive": 1,
@@ -374,7 +380,7 @@ class AgyAdapter(BaseAdapter):
     ) -> str | None:
         del address, cwd, title, screen_text
         for source in (unwrap_launchers(fg_argv), unwrap_launchers(term_argv)):
-            conv = _extract_flag_value(source, {"--conversation"})
+            conv = _extract_flag_value(source, self.SESSION_FLAGS)
             if conv and UUID_RE.fullmatch(conv):
                 return conv
         if tree_pids:
@@ -424,7 +430,8 @@ class AgyAdapter(BaseAdapter):
             return False, "process PID did not advance"
         if program_name(fg_argv) not in {"agy", "agy-hc"}:
             return False, f"unexpected foreground {program_name(fg_argv)!r}"
-        if session_id not in fg_argv:
+        sid_in_argv = _extract_flag_value(unwrap_launchers(fg_argv), self.SESSION_FLAGS)
+        if not sid_in_argv or sid_in_argv.lower() != session_id.lower():
             return False, f"--conversation {session_id} missing from argv"
         if status_state not in IDLE_STATES:
             return False, f"status is {status_state!r}"

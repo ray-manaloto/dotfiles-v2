@@ -278,7 +278,7 @@ def _build_app(raw_argv: tuple[str, ...]) -> cyclopts.App:
         fresh_tab: Annotated[
             bool, cyclopts.Parameter(name="--fresh-tab", negative="")
         ] = False,
-        busy_wait: Annotated[float, cyclopts.Parameter(name="--busy-wait")] = 30.0,
+        busy_wait: Annotated[float, cyclopts.Parameter(name="--busy-wait")] = 90.0,
         settle: Annotated[float, cyclopts.Parameter(name="--settle")] = 45.0,
         handshake: Annotated[
             bool, cyclopts.Parameter(name="--handshake", negative="")

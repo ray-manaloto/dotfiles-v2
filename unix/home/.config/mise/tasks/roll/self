@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #MISE description="Spawn a detached parentless roll tab to safely restart the calling Herdr tab"
 #USAGE flag "--fresh-tab" help="Open a new tab and close the current one after verification"
-#USAGE flag "--busy-wait <seconds>" help="Max seconds the roll tab waits for this session turn to end" default="30"
+#USAGE flag "--busy-wait <seconds>" help="Max seconds the roll tab waits for this session turn to end" default="90"
 #USAGE flag "--settle <seconds>" help="Exit and resume verification timeout in seconds" default="45"
 #USAGE flag "--handshake" help="Send READY-TO-RESTART handshake before exit"
 #USAGE flag "--apply" help="Spawn the detached roll tab now (default: print planned tab.new JSON)"
@@ -25,7 +25,7 @@ if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
 	fi
 fi
 
-args=(self --busy-wait "${usage_busy_wait:-30}" --settle "${usage_settle:-45}")
+args=(self --busy-wait "${usage_busy_wait:-90}" --settle "${usage_settle:-45}")
 [[ ${usage_fresh_tab:-false} == "true" ]] && args+=(--fresh-tab)
 [[ ${usage_handshake:-false} == "true" ]] && args+=(--handshake)
 [[ ${usage_apply:-false} == "true" ]] && args+=(--apply)

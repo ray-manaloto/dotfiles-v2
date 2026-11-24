@@ -24,6 +24,7 @@ from herdr_roll.adapters import (
     ADAPTERS,
     HARNESS_BINARIES,
     AdapterSkipError,
+    HarnessAdapter,
     claude_record_for_tree,
     harness_running,
 )
@@ -65,6 +66,7 @@ from herdr_roll.models import (
     SelfPlanResponse,
     SessionOutcome,
     SnapshotSummary,
+    TerminalSnapshot,
     Timing,
     make_session_outcome,
     write_atomic,
@@ -530,6 +532,64 @@ def verify_target(
     return new_pid, address
 
 
+def _terminal_status_state(client: LiveClient, address: str) -> str | None:
+    info = client.info.get(address) or {}
+    st_obj = info.get("status")
+    return (
+        str(st_obj.get("state"))
+        if isinstance(st_obj, dict) and st_obj.get("state")
+        else None
+    )
+
+
+def _is_terminal_ready_for_stop(
+    client: LiveClient,
+    term: TerminalSnapshot,
+    adapter: HarnessAdapter,
+    timing: Timing,
+) -> bool:
+    client.refresh_terminal(term.address)
+    cur_pid, _ = client.foreground(term.address)
+    cur_st_str = _terminal_status_state(client, term.address)
+    scr = hc_read(term.address, lines=0)
+    if not adapter.is_idle(cur_st_str, cur_pid, client.tree(term.address), scr):
+        return False
+    jobs = client.active_jobs(
+        term.address,
+        term.kind,
+        HARNESS_BINARIES,
+        confirm_delay=timing.job_confirm_delay,
+    )
+    return not jobs
+
+
+def _wait_until_ready_for_stop(
+    client: LiveClient,
+    term: TerminalSnapshot,
+    adapter: HarnessAdapter,
+    timing: Timing,
+) -> None:
+    def probe() -> bool | None:
+        return (
+            True if _is_terminal_ready_for_stop(client, term, adapter, timing) else None
+        )
+
+    if timing.busy_wait > 0:
+        idle_ok = adaptive_poll(
+            probe, timing.busy_wait, min_interval=2.0, max_interval=5.0
+        )
+    else:
+        idle_ok = probe()
+    if not idle_ok:
+        client.refresh_terminal(term.address)
+        jobs = client.active_jobs(
+            term.address, term.kind, HARNESS_BINARIES, confirm_delay=0.0
+        )
+        cur_state = _terminal_status_state(client, term.address)
+        detail = jobs[0] if jobs else f"status={cur_state}"
+        raise SkipStep("skipped-busy", detail)
+
+
 def restart_one(
     target: TargetTuple,
     *,
@@ -657,35 +717,7 @@ def restart_one(
         if modal:
             raise SkipStep("blocked-dialog", modal)
 
-        def is_ready_for_stop() -> bool | None:
-            client.refresh_terminal(term.address)
-            cur_pid, _ = client.foreground(term.address)
-            cur_info = client.info.get(term.address) or {}
-            cur_st = (cur_info.get("status") or {}).get("state")
-            cur_st_str = str(cur_st) if isinstance(cur_st, str) else None
-            scr = hc_read(term.address, lines=0)
-            if not adapter.is_idle(cur_st_str, cur_pid, client.tree(term.address), scr):
-                return None
-            jobs = client.active_jobs(
-                term.address,
-                term.kind,
-                HARNESS_BINARIES,
-                confirm_delay=timing.job_confirm_delay,
-            )
-            return True if not jobs else None
-
-        if timing.busy_wait > 0:
-            idle_ok = adaptive_poll(
-                is_ready_for_stop, timing.busy_wait, min_interval=2.0, max_interval=5.0
-            )
-        else:
-            idle_ok = is_ready_for_stop()
-        if not idle_ok:
-            jobs = client.active_jobs(
-                term.address, term.kind, HARNESS_BINARIES, confirm_delay=0.0
-            )
-            detail = jobs[0] if jobs else f"status={st_state}"
-            raise SkipStep("skipped-busy", detail)
+        _wait_until_ready_for_stop(client, term, adapter, timing)
 
         git_before = git_status_porcelain(cwd)
         if run_dir is not None:
@@ -711,7 +743,7 @@ def restart_one(
         if handshake:
             token = f"{run_dir.name if run_dir else 'manual'}-{term.address}"
             _handshake(client, target, timing, token)
-            if not is_ready_for_stop():
+            if not _is_terminal_ready_for_stop(client, term, adapter, timing):
                 raise SkipStep("skipped-busy-after-handshake")
 
         def run_optional_verify_turn(addr: str) -> None:
@@ -1146,44 +1178,11 @@ def cmd_stop(
             if modal:
                 raise SkipStep("blocked-dialog", modal)
 
-            def is_ready_for_stop() -> bool | None:
-                live.refresh_terminal(term.address)
-                cur_pid, _ = live.foreground(term.address)
-                cur_info = live.info.get(term.address) or {}
-                cur_st = (cur_info.get("status") or {}).get("state")
-                cur_st_str = str(cur_st) if isinstance(cur_st, str) else None
-                scr = hc_read(term.address, lines=0)
-                if not adapter.is_idle(
-                    cur_st_str, cur_pid, live.tree(term.address), scr
-                ):
-                    return None
-                jobs = live.active_jobs(
-                    term.address,
-                    term.kind,
-                    HARNESS_BINARIES,
-                    confirm_delay=timing_cfg.job_confirm_delay,
-                )
-                return True if not jobs else None
-
-            if timing_cfg.busy_wait > 0:
-                idle_ok = adaptive_poll(
-                    is_ready_for_stop,
-                    timing_cfg.busy_wait,
-                    min_interval=2.0,
-                    max_interval=5.0,
-                )
-            else:
-                idle_ok = is_ready_for_stop()
-            if not idle_ok:
-                jobs = live.active_jobs(
-                    term.address, term.kind, HARNESS_BINARIES, confirm_delay=0.0
-                )
-                detail = jobs[0] if jobs else f"status={st_state}"
-                raise SkipStep("skipped-busy", detail)
+            _wait_until_ready_for_stop(live, term, adapter, timing_cfg)
 
             if handshake:
                 _handshake(live, item, timing_cfg, f"{run_id}-{term.address}")
-                if not is_ready_for_stop():
+                if not _is_terminal_ready_for_stop(live, term, adapter, timing_cfg):
                     raise SkipStep("skipped-busy-after-handshake")
             _wait_for_exit(live, item, timing_cfg)
             return make_session_outcome(
@@ -1631,7 +1630,7 @@ def cmd_verify(
 def cmd_self(
     *,
     fresh_tab: bool = False,
-    busy_wait: float = 30.0,
+    busy_wait: float = 90.0,
     settle: float = 45.0,
     handshake: bool = False,
     apply: bool = False,

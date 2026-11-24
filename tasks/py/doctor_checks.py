@@ -736,6 +736,173 @@ def _collect_host_tools_and_wrappers(
     return declared_wrappers, used_tools
 
 
+_STAGING_DIR_RE = re.compile(r".+-[a-z2-7]{8}")
+
+
+def _collect_installs_symlink_targets(installs_dir: Path) -> list[tuple[str, str]]:
+    """Collect `(parent_realpath, target_realpath)` pairs for symlinks at depth 1-2 under `installs_dir`."""
+    pairs: list[tuple[str, str]] = []
+    try:
+        with os.scandir(installs_dir) as top_it:
+            top_entries = list(top_it)
+    except OSError:
+        return pairs
+    installs_real = os.path.realpath(installs_dir)
+    for entry in top_entries:
+        try:
+            if entry.is_symlink():
+                pairs.append((installs_real, os.path.realpath(entry.path)))
+                continue
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            parent_real = os.path.realpath(entry.path)
+            with os.scandir(entry.path) as sub_it:
+                for sub in sub_it:
+                    if sub.is_symlink():
+                        pairs.append((parent_real, os.path.realpath(sub.path)))
+        except OSError:
+            continue
+    return pairs
+
+
+def _collect_mise_ls_install_refs(home: Path) -> tuple[set[str] | None, str | None]:
+    """Query `mise -C <home> ls --installed --json` and collect raw/norm/real path references."""
+    try:
+        proc = subprocess.run(
+            ["mise", "-C", str(home), "ls", "--installed", "--json"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+        return None, f"`mise -C {home} ls --installed --json` failed: {exc}"
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"rc={proc.returncode}"
+        return (
+            None,
+            f"`mise -C {home} ls --installed --json` exited {proc.returncode}: {detail}",
+        )
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return (
+            None,
+            f"`mise -C {home} ls --installed --json` returned invalid JSON: {exc}",
+        )
+    if not isinstance(data, dict):
+        return (
+            None,
+            f"`mise -C {home} ls --installed --json` returned {type(data).__name__}, expected object",
+        )
+    refs: set[str] = set()
+    for rows in data.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for key in ("install_path", "symlinked_to"):
+                val = row.get(key)
+                if isinstance(val, str) and val:
+                    refs.add(val)
+                    refs.add(os.path.normpath(val))
+                    refs.add(os.path.realpath(val))
+    return refs, None
+
+
+def _collect_ps_cmdlines() -> tuple[list[str] | None, str | None]:
+    """Return running process command lines from `ps -axo args=` or an error string."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-axo", "args="],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+        return None, f"`ps -axo args=` failed: {exc}"
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or f"rc={proc.returncode}"
+        return None, f"`ps -axo args=` exited {proc.returncode}: {detail}"
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    if not lines:
+        return None, "`ps -axo args=` returned empty process list"
+    return lines, None
+
+
+def find_orphaned_mise_staging_dirs(
+    installs_dir: Path, home: Path
+) -> tuple[list[Path], list[str]]:
+    """Return `(orphaned_dirs, probe_errors)` for inactive `<tool>-<8-char>` mise staging dirs."""
+    if not installs_dir.is_dir():
+        return [], []
+    candidates: list[Path] = []
+    try:
+        with os.scandir(installs_dir) as it:
+            entries = sorted(it, key=lambda e: e.name)
+    except OSError:
+        return [], []
+    for entry in entries:
+        try:
+            if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        if not _STAGING_DIR_RE.fullmatch(entry.name):
+            continue
+        cand = Path(entry.path)
+        if os.path.lexists(cand / ".mise.backend.toml"):
+            continue
+        candidates.append(cand)
+    if not candidates:
+        return [], []
+
+    ls_refs, ls_err = _collect_mise_ls_install_refs(home)
+    if ls_refs is None:
+        return [], [f"staging-dir-check-failed: {ls_err}"]
+    ps_lines, ps_err = _collect_ps_cmdlines()
+    if ps_lines is None:
+        return [], [f"staging-dir-check-failed: {ps_err}"]
+    symlink_pairs = _collect_installs_symlink_targets(installs_dir)
+
+    orphans: list[Path] = []
+    for cand in candidates:
+        cand_str = str(cand)
+        cand_norm = os.path.normpath(cand_str)
+        cand_real = os.path.realpath(cand)
+        real_prefix = f"{cand_real}{os.sep}"
+        norm_prefix = f"{cand_norm}{os.sep}"
+        str_prefix = f"{cand_str}{os.sep}"
+
+        if any(
+            parent_real != cand_real
+            and (target_real == cand_real or target_real.startswith(real_prefix))
+            for parent_real, target_real in symlink_pairs
+        ):
+            continue
+        if (
+            cand_str in ls_refs
+            or cand_norm in ls_refs
+            or cand_real in ls_refs
+            or any(
+                ref.startswith((real_prefix, norm_prefix, str_prefix))
+                for ref in ls_refs
+            )
+        ):
+            continue
+        if any(
+            cand_real in line or cand_str in line or cand_norm in line
+            for line in ps_lines
+        ):
+            continue
+        orphans.append(cand)
+    return orphans, []
+
+
 def _collect_installed_bin_names(installs_dir: Path) -> set[str]:
     """Collect executable filenames under `installs/` cleanly without walking deep deps."""
     names: set[str] = set()
@@ -847,6 +1014,16 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
                 errors.append(f"broken-global-bin-path: {p}")
     except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
         errors.append(f"mise-bin-paths-failed: {exc}")
+
+    # 1b. Inactive orphaned <tool>-<8-char> mise staging/install dirs
+    orphaned_staging_dirs, staging_probe_errs = find_orphaned_mise_staging_dirs(
+        installs_dir, home
+    )
+    errors.extend(staging_probe_errs)
+    for staging_dir in orphaned_staging_dirs:
+        errors.append(
+            f"orphaned-mise-staging-dir: {staging_dir} (run `mise run host:prune --apply`)"
+        )
 
     declared_wrappers, used_tools = _collect_host_tools_and_wrappers(
         host_mise_dir, state_dir

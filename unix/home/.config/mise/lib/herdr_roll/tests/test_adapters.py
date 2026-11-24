@@ -113,6 +113,98 @@ class AdapterTests(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.code, "skipped-unknown-flag")
 
+    def test_agy_resume_short_and_long_flags(self) -> None:
+        adapter = AgyAdapter()
+        sid = "e4b6c8ee-177f-4fc6-8725-861036790dcf"
+        other_sid = "11111111-2222-3333-4444-555555555555"
+        variants = [
+            ["agy", "-r", sid, "--model", "gemini-pro"],
+            ["agy", f"-r={sid}", "--model", "gemini-pro"],
+            ["agy", "--resume", sid, "--model", "gemini-pro"],
+            ["agy", f"--resume={sid}", "--model", "gemini-pro"],
+            [
+                "fnox",
+                "proxy",
+                "run",
+                "--",
+                "/bin/agy",
+                f"--conversation={sid}",
+                "--model",
+                "gemini-pro",
+            ],
+        ]
+        for fg in variants:
+            self.assertEqual(
+                adapter.session_id(
+                    address="t3xb",
+                    tree_pids=[],
+                    fg_argv=fg,
+                    term_argv=[],
+                    cwd="/workspace/repo",
+                    title="",
+                    screen_text="",
+                ),
+                sid,
+            )
+            snap = _term(HarnessKind.AGY, fg_argv=tuple(fg), session_id=sid)
+            self.assertEqual(
+                adapter.resume_argv(
+                    snap,
+                    session_id=sid,
+                    is_coordinator=False,
+                    prompt=None,
+                    screen_text="",
+                ),
+                ["agy-hc", "--conversation", sid, "--model", "gemini-pro"],
+            )
+            ok, reason = adapter.verify_resumed(
+                old_pid=100,
+                new_pid=200,
+                fg_argv=fg,
+                tree_pids=[200],
+                status_state="idle",
+                screen_text="",
+                session_id=sid.upper(),
+            )
+            self.assertTrue(ok, reason)
+
+        # Prompt containing session_id without a conversation/resume flag must not verify.
+        ok_prompt_only, _ = adapter.verify_resumed(
+            old_pid=100,
+            new_pid=200,
+            fg_argv=["agy", "-i", sid],
+            tree_pids=[200],
+            status_state="idle",
+            screen_text="",
+            session_id=sid,
+        )
+        self.assertFalse(ok_prompt_only)
+
+        ok_mismatch, _ = adapter.verify_resumed(
+            old_pid=100,
+            new_pid=200,
+            fg_argv=["agy", "--resume", other_sid],
+            tree_pids=[200],
+            status_state="idle",
+            screen_text="",
+            session_id=sid,
+        )
+        self.assertFalse(ok_mismatch)
+
+        for dangling in (["agy", "-r"], ["agy", "--resume"]):
+            dangling_snap = _term(
+                HarnessKind.AGY, fg_argv=tuple(dangling), session_id=sid
+            )
+            with self.assertRaises(AdapterSkipError) as ctx:
+                adapter.resume_argv(
+                    dangling_snap,
+                    session_id=sid,
+                    is_coordinator=False,
+                    prompt=None,
+                    screen_text="",
+                )
+            self.assertEqual(ctx.exception.code, "skipped-dangling-flag")
+
     def test_codex_deduplicates_wrapper_flags_and_prefers_live_rollout_root(
         self,
     ) -> None:

@@ -385,6 +385,114 @@ class EngineTests(unittest.TestCase):
                     ],
                 )
 
+            with (
+                mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t3xb"}),
+                mock.patch(
+                    "herdr_roll.engine.herdr_app_do",
+                    return_value={"tab": "tb-new", "terminal": "t-new"},
+                ) as do_default_mock,
+            ):
+                rc_default = engine.cmd_self(apply=True)
+                self.assertEqual(rc_default, 0)
+                default_argv_idx = do_default_mock.call_args[0].index("--argv") + 1
+                default_spawned = orjson.loads(
+                    do_default_mock.call_args[0][default_argv_idx]
+                )
+                self.assertIn("--busy-wait", default_spawned)
+                bw_idx = default_spawned.index("--busy-wait")
+                self.assertEqual(default_spawned[bw_idx + 1], "90")
+
+        with mock.patch("herdr_roll.cli.cmd_self", return_value=0) as cli_self_mock:
+            self.assertEqual(cli.main(["self", "--apply"]), 0)
+        cli_self_mock.assert_called_once()
+        self.assertEqual(cli_self_mock.call_args.kwargs["busy_wait"], 90.0)
+
+        self_task_txt = (
+            Path(__file__).resolve().parents[3] / "tasks" / "roll" / "self"
+        ).read_text(encoding="utf-8")
+        self.assertIn('default="90"', self_task_txt)
+        self.assertIn("${usage_busy_wait:-90}", self_task_txt)
+
+    def test_skipped_busy_refreshes_live_status_after_poll_timeout(self) -> None:
+        space = SpaceSnapshot(id="sp1", name="dotfiles-v2")
+        tab = TabSnapshot(id="tb1", name="worker")
+        term = TerminalSnapshot(
+            address="t8",
+            kind=HarnessKind.AGY,
+            session_id="e4b6c8ee-177f-4fc6-8725-861036790dcf",
+            cwd="/tmp/repo",
+            fg_pid=200,
+            fg_argv=["agy", "--conversation", "e4b6c8ee-177f-4fc6-8725-861036790dcf"],
+        )
+        fake_client = mock.MagicMock(spec=LiveClient)
+        fake_client.info = {
+            "t8": {"status": {"state": "working", "app": "antigravity"}}
+        }
+        fake_client.foreground.return_value = (200, ["agy"])
+        fake_client.tree.return_value = [200]
+        fake_client.active_jobs.return_value = []
+
+        def refresh_transitions(_addr: str) -> None:
+            # Transition from initial "working" to "other" so stale st_state would differ.
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                fake_client.info["t8"] = {
+                    "status": {"state": "paused", "app": "antigravity"}
+                }
+
+        calls = {"n": 0}
+        fake_client.refresh_terminal.side_effect = refresh_transitions
+
+        with (
+            mock.patch("herdr_roll.engine.assert_same_tab"),
+            mock.patch("herdr_roll.engine.hc_read", return_value="ready"),
+            mock.patch("herdr_roll.engine.adaptive_poll", return_value=None),
+        ):
+            outcome = engine.restart_one(
+                (space, tab, term),
+                timing=Timing(busy_wait=5.0, settle=1.0),
+                run_dir=None,
+                apply=True,
+                live=fake_client,
+            )
+        self.assertEqual(outcome.result, "skipped-busy")
+        self.assertEqual(outcome.notes, ["status=paused"])
+
+        # Same live status refresh applies on cmd_stop skipped-busy timeout.
+        calls["n"] = 0
+        fake_client.info["t8"] = {"status": {"state": "working", "app": "antigravity"}}
+        fake_client.me = None
+        stop_graph = GraphSnapshot(
+            taken_at="20261123T000000.000000000-0600",
+            spaces=[
+                SpaceSnapshot(
+                    id="sp1",
+                    name="dotfiles-v2",
+                    tabs=[TabSnapshot(id="tb1", name="worker", terminals=[term])],
+                )
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch("herdr_roll.engine.state_dir", return_value=Path(tmp)),
+                mock.patch("herdr_roll.engine.LiveClient", return_value=fake_client),
+                mock.patch("herdr_roll.engine.build_graph", return_value=stop_graph),
+                mock.patch("herdr_roll.engine.assert_same_tab"),
+                mock.patch("herdr_roll.engine.hc_read", return_value="ready"),
+            ):
+                rc_stop = engine.cmd_stop(
+                    tabs=("t8",), apply=True, argv=("stop", "--tabs", "t8", "--apply")
+                )
+            self.assertEqual(rc_stop, 0)
+            runs = [
+                orjson.loads(line)
+                for line in (Path(tmp) / "runs.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual(runs[-1]["outcomes"][0]["result"], "skipped-busy")
+            self.assertEqual(runs[-1]["outcomes"][0]["notes"], ["status=paused"])
+
     def test_cmd_restart_close_self_on_ok_only_on_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_root = Path(tmp) / "state"
