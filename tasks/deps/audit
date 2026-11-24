@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#MISE description="Cross-OS dependency, OCI digest, Python, hk preset, harness, and OpenWiki audit"
+#USAGE flag "--offline" help="Skip upstream network queries and verify local parity/locks only"
+#USAGE flag "--json" help="Emit schema-validated DepsAuditResponse JSON"
+#USAGE flag "--source <kind>" help="Filter by source kind: mise-binary, mise-tool, uv-package, oci-image, hk-preset, native-harness, or kb-workspace"
+#USAGE flag "--fail-on-outdated" help="Exit non-zero if outdated dependencies are found"
+#USAGE flag "--state-dir <path>" help="Override state directory for JSONL audit logs"
+#USAGE flag "--write-log" help="Append structured JSONL summary to state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} == /* ]]; then
+			common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		else
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		fi
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+
+if [[ ! -x ${venv_py} ]]; then
+	echo "deps:audit: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from deps_audit.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" --help
+fi
+
+args=(--repo "${repo_root}")
+[[ ${usage_offline:-false} == "true" ]] && args+=(--offline)
+[[ ${usage_json:-false} == "true" ]] && args+=(--json)
+[[ -n ${usage_source:-} ]] && args+=(--source "${usage_source}")
+[[ ${usage_fail_on_outdated:-false} == "true" ]] && args+=(--fail-on-outdated)
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+[[ ${usage_write_log:-false} == "true" ]] && args+=(--write-log)
+
+exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from deps_audit.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

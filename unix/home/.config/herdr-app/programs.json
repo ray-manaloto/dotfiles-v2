@@ -1,13 +1,13 @@
 {
   "programs": {
     "antigravity": {
-      "run": ["agy-hc"]
+      "run": ["agy"]
     },
     "codex": {
-      "run": ["codex-hc", "--no-daemon"]
+      "run": ["codex", "--no-daemon"]
     },
     "opencode": {
-      "run": ["opencode-hc"]
+      "run": ["opencode", "--standalone"]
     }
   }
 }

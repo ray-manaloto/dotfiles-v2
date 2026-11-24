@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #MISE description="Build the Ubuntu 26.10 mise image with userspace Tailscale SSH, sync checkout, and start non-privileged container(s)"
+#MISE secrets=["TAILSCALE_API_KEY"]
 #USAGE flag "--target <target>" default="pc" help="Target environment: pc, mac, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
 #USAGE flag "--tag <tag>" default="dotfiles-v2:dev" help="Docker image tag"
@@ -39,7 +40,11 @@ resolve_apt_cache_url() {
 }
 
 mint_tailscale_authkey() {
-	local desc="$1" payload curl_cmd resp key
+	local desc="$1" payload resp key
+	if [[ -z ${TAILSCALE_API_KEY:-} ]]; then
+		echo "TAILSCALE_API_KEY is unset; run via 'mise run container:up' so [secrets.fnox] profile=infra injects it" >&2
+		return 1
+	fi
 	payload="$(jq -cn --arg desc "${desc}" '{
 		capabilities: {
 			devices: {
@@ -54,13 +59,11 @@ mint_tailscale_authkey() {
 		expirySeconds: 300,
 		description: $desc
 	}')"
-	# shellcheck disable=SC2016
-	curl_cmd='curl -fsS -m 15 -X POST -H "Authorization: Bearer ${TAILSCALE_API_KEY}" -H "Content-Type: application/json" -d @- https://api.tailscale.com/api/v2/tailnet/-/keys'
-	if [[ -n ${TAILSCALE_API_KEY:-} && -n ${HTTPS_PROXY:-} ]]; then
-		resp="$(printf '%s' "${payload}" | /bin/bash -c "${curl_cmd}")"
-	else
-		resp="$(printf '%s' "${payload}" | fnox --non-interactive --config "${HOME}/.config/fnox/config.toml" proxy run -- /bin/bash -c "${curl_cmd}")"
-	fi
+	resp="$(printf '%s' "${payload}" | curl -fsS -m 15 -X POST \
+		-K <(printf 'header = "Authorization: Bearer %s"\n' "${TAILSCALE_API_KEY}") \
+		-H "Content-Type: application/json" \
+		-d @- \
+		https://api.tailscale.com/api/v2/tailnet/-/keys)"
 	key="$(printf '%s' "${resp}" | jq -er '.key')"
 	if [[ -z ${key} ]]; then
 		echo "failed to mint Tailscale auth key for ${desc}" >&2

@@ -1,7 +1,7 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # ref: https://mise.jdx.dev/configuration.html
 
-min_version = "2026.11.13"
+min_version = "2026.11.14"
 
 [tool_config]
 locked = true
@@ -12,12 +12,14 @@ locked = true
 ], postinstall = { when = "always", run = '''d="$HOME/.local/share/docker/cli-plugins" f="$HOME/.docker/config.json"; mkdir -p "$d" "$HOME/.docker"; ln -sfn "$MISE_TOOL_INSTALL_PATH/docker-cli-plugin-docker-buildx" "$d/docker-buildx"; [ -s "$f" ] || echo '{}' > "$f"; if command -v jq >/dev/null 2>&1; then jq -e --arg d "$d" '.cliPluginsExtraDirs[0] == $d' "$f" >/dev/null || { jq --arg d "$d" '.cliPluginsExtraDirs = [$d] + ((.cliPluginsExtraDirs // []) - [$d])' "$f" > "$f.new" && mv "$f.new" "$f"; }; fi''' } }
 "aqua:owenlamont/ryl" = "0.30.0"
 age = "1.3.2"
+agent-browser = "0.44.0"
 aube = { version = "2.11.0", workflow = [
   "release-plz.yml@refs/heads/main",
   "release.yml@refs/heads/main",
 ], minimum_release_age = "0s" }
 bat = "0.26.1"
 betterleaks = "1.10.1"
+bun = "1.4.4"
 cmake = "4.5.1"
 communique = { version = "1.9.0", workflow = "release.yml@refs/heads/main", minimum_release_age = "0s" }
 delta = "0.22.0"
@@ -28,7 +30,8 @@ editorconfig-checker = "4.0.2"
 fd = "10.5.2"
 fnox = { version = "1.50.0", workflow = "release.yml", minimum_release_age = "0s" }
 fzf = "0.75.0"
-"github:0xMassi/webclaw" = { version = "0.7.4", minimum_release_age = "0s" }
+"github:0xMassi/webclaw" = { version = "0.7.5", minimum_release_age = "0s" }
+"github:Dicklesworthstone/destructive_command_guard" = { version = "0.17.1", bin = "dcg", platforms = { macos-arm64 = { asset_pattern = "dcg-aarch64-apple-darwin.tar.xz" }, linux-arm64 = { asset_pattern = "dcg-aarch64-unknown-linux-gnu.tar.xz" }, linux-x64 = { asset_pattern = "dcg-x86_64-unknown-linux-musl.tar.xz" } } }
 "github:agent-sh/agnix" = { version = "0.61.0", minimum_release_age = "0s" }
 "github:kenn-io/agentsview" = { version = "0.48.0", minimum_release_age = "0s" }
 "github:microsoft/vcpkg-tool" = { version = "2026-10-29", additional_asset_patterns = [
@@ -46,16 +49,17 @@ lychee = "0.24.2"
 ninja = "1.13.2"
 node = "26.13.1"
 "npm:@vercel/board" = { version = "0.56.1", minimum_release_age = "0s" }
-"npm:ctx7" = { version = "0.12.2", minimum_release_age = "0s" }
+"npm:apify-cli" = "1.14.0"
+"npm:ctx7" = { version = "0.13.0", minimum_release_age = "0s" }
 "npm:firecrawl-cli" = { version = "1.30.0", minimum_release_age = "0s" }
 "npm:openwiki" = { version = "0.9.0", allow_builds = [
   "better-sqlite3",
 ], minimum_release_age = "0s" }
-"npm:renovate" = { version = "44.260.2", trust_policy_excludes = [
+"npm:renovate" = { version = "44.260.3", trust_policy_excludes = [
   "@yarnpkg/libzip@3.2.2",
 ] }
 "npm:skills" = { version = "1.9.0", minimum_release_age = "0s" }
-"npm:zcode-app-cli" = { version = "3.18.2-48", prerelease = true, minimum_release_age = "0s" }
+"npm:zcode-app-cli" = { version = "4.0.0-49", prerelease = true, minimum_release_age = "0s" }
 osv-scanner = "2.7.1"
 oxfmt = "0.80.0"
 "packslip:grafana/flint" = "0.22.15"
@@ -93,7 +97,7 @@ LAST30DAYS_CONFIG_DIR = "{{ vars.last30days_config_dir }}"
 LAST30DAYS_MEMORY_DIR = "{{ vars.last30days_memory_dir }}"
 UV_SYSTEM_CERTS = "1"
 VCPKG_DISABLE_METRICS = "1"
-VCPKG_ROOT = { value = "{{ tools['github:microsoft/vcpkg-tool'].path }}", tools = true }
+VCPKG_ROOT = { value = "{% if tools['github:microsoft/vcpkg-tool'] is defined %}{{ tools['github:microsoft/vcpkg-tool'].path }}{% endif %}", tools = true }
 XDG_CACHE_HOME = "{{ xdg_cache_home }}"
 XDG_CONFIG_HOME = "{{ xdg_config_home }}"
 XDG_DATA_HOME = "{{ xdg_data_home }}"
@@ -102,35 +106,16 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 [hooks]
 # Note: during `mise upgrade --bump`, mise runs `postinstall` inside install_all_versions
 # before reloading updated config.toml for its final auto_sync_skills pass.
-postinstall = { task = "bootstrap:skills" }
-
-[wrappers.agy]
-command = "{{env.HOME}}/.local/bin/agy-wrapper"
+postinstall = [{ task = "bootstrap:skills" }, { task = "host:harden-bins" }]
 
 [wrappers.board]
 command = "{{env.HOME}}/.local/bin/board"
 
-[wrappers.codex]
-command = "{{env.HOME}}/.local/bin/codex-wrapper"
-
-[wrappers.opencode]
-command = "fnox"
-args = [
-  "--non-interactive",
-  "--config",
-  "{{env.HOME}}/.config/fnox/config.toml",
-  "proxy",
-  "run",
-  "--",
-  "env",
-  "-u",
-  "RUST_LOG",
-  "{{env.HOME}}/.local/bin/opencode-wrapper",
-]
-env = { RUST_LOG = "info,fnox::proxy=warn,fnox::commands::proxy=error" }
-
 [wrappers.vb]
 command = "{{env.HOME}}/.local/bin/vb"
+
+[shell_alias]
+opencode-paid = "fnox --non-interactive -c ~/.config/fnox/opencode-paid.toml -P opencode-paid --no-defaults proxy run -- opencode --standalone"
 
 [dotfile_groups.gemini-hooks]
 root = ".gemini/config/hooks"
@@ -163,17 +148,30 @@ mode = "symlink-each"
 exclude = ["*"]
 
 [dotfile_groups.agents-skills.entries]
+"~/.agents/skills/agentsview-finding-history" = { source = "agentsview-finding-history", mode = "symlink", main_checkout = true }
 "~/.agents/skills/agy-session-ops" = { source = "agy-session-ops", mode = "symlink", main_checkout = true }
+"~/.agents/skills/apify-ultimate-scraper" = { source = "apify-ultimate-scraper", mode = "symlink", main_checkout = true }
+"~/.agents/skills/exa-search" = { source = "exa-search", mode = "symlink", main_checkout = true }
+"~/.agents/skills/find-docs" = { source = "find-docs", mode = "symlink", main_checkout = true }
+"~/.agents/skills/firecrawl" = { source = "firecrawl", mode = "symlink", main_checkout = true }
 "~/.agents/skills/herdr-roll" = { source = "herdr-roll", mode = "symlink", main_checkout = true }
 "~/.agents/skills/mise-bootstrap-ops" = { source = "mise-bootstrap-ops", mode = "symlink", main_checkout = true }
 "~/.agents/skills/post-task-learn" = { source = "post-task-learn", mode = "symlink", main_checkout = true }
 "~/.agents/skills/pwf-status" = { source = "pwf-status", mode = "symlink", main_checkout = true }
+"~/.agents/skills/toolchain-update-review" = { source = "toolchain-update-review", mode = "symlink", main_checkout = true }
 "~/.agents/skills/vercel-board" = { source = "vercel-board", mode = "symlink", main_checkout = true }
 
 [dotfiles]
 "~/.config/agent-secrets/env.sh" = { main_checkout = true }
 "~/.config/agents/AGENTS.md" = { main_checkout = true }
+"~/.config/dcg/config.toml" = { main_checkout = true }
+"~/.config/dcg/packs/mise-protect.yaml" = { main_checkout = true }
+"~/.config/fnox/config.headless.toml" = { main_checkout = true }
 "~/.config/fnox/config.toml" = { main_checkout = true }
+"~/.config/fnox/mcp.toml" = { main_checkout = true }
+"~/.config/fnox/opencode-paid.toml" = { main_checkout = true }
+"~/.config/fnox/research.toml" = { main_checkout = true }
+"~/.config/fnox/shared.toml" = { main_checkout = true }
 "~/.config/git/config" = { main_checkout = true }
 "~/.config/git/ignore" = { main_checkout = true }
 "~/.config/opencode/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", main_checkout = true, depends = [
@@ -185,18 +183,19 @@ exclude = ["*"]
 "~/.config/zsh/.zshenv" = { source = "~/.zshenv", main_checkout = true, depends = [
   "~/.zshenv",
 ] }
+"~/.claude/settings.json/dcg-hooks" = { source = "assets/claude/dcg-hooks.json", merge = true, permissions = "0600" }
 "~/.claude/settings.json/learn-hooks" = { source = "assets/claude/learn-hooks.json", merge = true, permissions = "0600" }
 "~/.codex/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", main_checkout = true, depends = [
   "~/.config/agents/AGENTS.md",
 ] }
-"~/.codex/config.toml/mcp-jdx" = { source = "../../.codex/mcp-jdx.toml", merge = true, permissions = "0600" }
+"~/.codex/config.toml/shell-env-policy" = { source = "assets/codex/mcp-fnox-policy.toml", merge = true, permissions = "0600" }
+"~/.codex/hooks.json/dcg-hooks" = { source = "assets/codex/dcg-hooks.json", merge = true, permissions = "0600" }
 "~/.codex/hooks.json/learn-hooks" = { source = "assets/codex/learn-hooks.json", merge = true, permissions = "0600" }
 "~/.gemini/GEMINI.md" = { source = "~/.config/agents/AGENTS.md", main_checkout = true, depends = [
   "~/.config/agents/AGENTS.md",
 ] }
 "~/.gemini/antigravity-cli/settings.json/orchestrator-neon" = { source = "assets/gemini/settings-orchestrator.json", merge = true, permissions = "0600" }
 "~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
-"~/.gemini/config/mcp_config.json/mcp-jdx" = { source = "assets/gemini/mcp-jdx.json", merge = true, permissions = "0600" }
 "~/.gemini/config/skills" = { source = "~/.agents/skills", relative = true, main_checkout = true, depends = [
   "agents-skills",
 ] }
@@ -231,11 +230,7 @@ exclude = ["*"]
 	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run prepare-commit-msg --from-hook
 	event = prepare-commit-msg
 ''' }
-"~/.local/bin/agy-wrapper" = { main_checkout = true }
 "~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", main_checkout = true }
-"~/.local/bin/codex-wrapper" = { main_checkout = true }
-"~/.local/bin/opencode-hc" = { main_checkout = true }
-"~/.local/bin/opencode-wrapper" = { main_checkout = true }
 "~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", main_checkout = true }
 "~/.zcode/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", main_checkout = true, depends = [
   "~/.config/agents/AGENTS.md",
@@ -246,7 +241,7 @@ exclude = ["*"]
 [bootstrap.hooks.pre-dotfiles]
 run = '''
 if [ -z "${CI:-}" ] && [ "${DOTFILES_ALLOW_WORKTREE_DOTFILES:-}" != "1" ] && command -v git >/dev/null 2>&1; then
-  for _df_raw_cfg in "{{ mise_config_dir }}" "{{ cwd }}"; do
+  for _df_raw_cfg in "{{ mise_config_dir }}" "{{ config_root }}"; do
     _df_cfg="$(cd "${_df_raw_cfg}" 2>/dev/null && pwd -P || true)"
     [ -n "${_df_cfg}" ] || continue
     _df_gd="$(git -C "${_df_cfg}" rev-parse --git-dir 2>/dev/null || true)"
@@ -340,6 +335,7 @@ mode = "0700"
 description = "Install idempotent native AI harness CLIs"
 depends = [
   "bootstrap:claude",
+  "bootstrap:herdr-app",
   "bootstrap:herdr-core",
   "bootstrap:opencode",
   "bootstrap:zcode",

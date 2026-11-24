@@ -25,6 +25,29 @@ url = "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-da
 url_api = "https://api.github.com/repos/FiloSottile/age/releases/assets/535541897"
 provenance = "github-attestations"
 
+[[tools.agent-browser]]
+version = "0.44.0"
+backend = "aqua:vercel-labs/agent-browser"
+specifiers = ["0.44.0"]
+
+[tools.agent-browser."platforms.linux-arm64"]
+checksum = "sha256:51f3f45a77a49978213112c95654d448e3fe79e570ed02bb25842fb33c85610c"
+checksum_source = "mise-versions"
+url = "https://github.com/vercel-labs/agent-browser/releases/download/v0.44.0/agent-browser-linux-arm64"
+url_api = "https://api.github.com/repos/vercel-labs/agent-browser/releases/assets/784826788"
+
+[tools.agent-browser."platforms.linux-x64"]
+checksum = "sha256:5ad4e4524bcb6deda216b874f216b2b57d824190a2b1e414d5bcf93b9b9fdcca"
+checksum_source = "mise-versions"
+url = "https://github.com/vercel-labs/agent-browser/releases/download/v0.44.0/agent-browser-linux-musl-x64"
+url_api = "https://api.github.com/repos/vercel-labs/agent-browser/releases/assets/784826791"
+
+[tools.agent-browser."platforms.macos-arm64"]
+checksum = "sha256:b762e6bfb6f5c545f5e749afdfa23c780cce586bdff8d4fcf8e61f9dabe1d9c6"
+checksum_source = "mise-versions"
+url = "https://github.com/vercel-labs/agent-browser/releases/download/v0.44.0/agent-browser-darwin-arm64"
+url_api = "https://api.github.com/repos/vercel-labs/agent-browser/releases/assets/784826793"
+
 [[tools."aqua:docker/buildx"]]
 version = "0.39.1"
 backend = "aqua:docker/buildx"
@@ -127,6 +150,39 @@ checksum = "sha256:ca91eb3b006f15478411f235b5e2712fb15cea74f6701ebadc2364efe0af1
 url = "https://github.com/betterleaks/betterleaks/releases/download/v1.10.1/betterleaks_1.10.1_darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/betterleaks/betterleaks/releases/assets/740237732"
 provenance = "cosign"
+
+[[tools.bun]]
+version = "1.4.4"
+backend = "core:bun"
+specifiers = ["1.4.4"]
+
+[tools.bun."platforms.linux-arm64"]
+checksum = "sha256:baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-aarch64.zip"
+
+[tools.bun."platforms.linux-arm64-musl"]
+checksum = "sha256:57f01b02ac7113c61c935f28f38c2eab849e3c970dab21f8b640a87b1ef65009"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-aarch64-musl.zip"
+
+[tools.bun."platforms.linux-x64"]
+checksum = "sha256:bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip"
+
+[tools.bun."platforms.linux-x64-baseline"]
+checksum = "sha256:e0446eb55995772eb9894bebae9a6be368d985a8b9271ee124486f9946eedd76"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64-baseline.zip"
+
+[tools.bun."platforms.linux-x64-musl"]
+checksum = "sha256:a5a8ccc5e74dcb883fe974f125a7bdb3b41e5195ed1b870e73f17effd3eb2b2d"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64-musl.zip"
+
+[tools.bun."platforms.linux-x64-musl-baseline"]
+checksum = "sha256:6e9c37098b293920aed28bfb51ab240e26d23bfdd9bbfecb3ad428ac166549bc"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64-musl-baseline.zip"
+
+[tools.bun."platforms.macos-arm64"]
+checksum = "sha256:c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-darwin-aarch64.zip"
 
 [[tools.cmake]]
 version = "4.5.1"
@@ -379,27 +435,69 @@ url_api = "https://api.github.com/repos/cli/cli/releases/assets/761188673"
 provenance = "github-attestations"
 
 [[tools."github:0xMassi/webclaw"]]
-version = "0.7.4"
+version = "0.7.5"
 backend = "github:0xMassi/webclaw"
-specifiers = ["0.7.4"]
+specifiers = ["0.7.5"]
 
 [tools."github:0xMassi/webclaw"."platforms.linux-arm64"]
-checksum = "sha256:dbdcd336ac48c6161d52f3ede6291de65ecb5ce89603c6ec48ac6e7755f0325c"
+checksum = "sha256:891f13bdfd6af9ce729d5e1b22eed468dfc8bc8857e663a7403ba70acfb02972"
 checksum_source = "mise-versions"
-url = "https://github.com/0xMassi/webclaw/releases/download/v0.7.4/webclaw-v0.7.4-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/0xMassi/webclaw/releases/assets/736300444"
+url = "https://github.com/0xMassi/webclaw/releases/download/v0.7.5/webclaw-v0.7.5-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/0xMassi/webclaw/releases/assets/783434823"
 
 [tools."github:0xMassi/webclaw"."platforms.linux-x64"]
-checksum = "sha256:91817a377f343b368828ed79c9ae765bfa7ce3203c0fc9a49204154b44ead167"
+checksum = "sha256:085461c1bb4033ddb4e9be49f1852585fbec2a1e02b7b700e8a0a49618ff8369"
 checksum_source = "mise-versions"
-url = "https://github.com/0xMassi/webclaw/releases/download/v0.7.4/webclaw-v0.7.4-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/0xMassi/webclaw/releases/assets/736300446"
+url = "https://github.com/0xMassi/webclaw/releases/download/v0.7.5/webclaw-v0.7.5-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/0xMassi/webclaw/releases/assets/783434815"
 
 [tools."github:0xMassi/webclaw"."platforms.macos-arm64"]
-checksum = "sha256:b3aed64ee8afbef8bda2064f940e7ec53adca8e199355c33b4457dfc031ddd8a"
+checksum = "sha256:391946f10896f07e8b1051aa70c659d480b9095a05e3eed26aac5afe97bd3d3f"
 checksum_source = "mise-versions"
-url = "https://github.com/0xMassi/webclaw/releases/download/v0.7.4/webclaw-v0.7.4-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/0xMassi/webclaw/releases/assets/736300441"
+url = "https://github.com/0xMassi/webclaw/releases/download/v0.7.5/webclaw-v0.7.5-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/0xMassi/webclaw/releases/assets/783434826"
+
+[[tools."github:Dicklesworthstone/destructive_command_guard"]]
+version = "0.17.1"
+backend = "github:Dicklesworthstone/destructive_command_guard"
+specifiers = ["0.17.1"]
+
+[tools."github:Dicklesworthstone/destructive_command_guard".options]
+asset_pattern = "dcg-aarch64-unknown-linux-gnu.tar.xz"
+
+[tools."github:Dicklesworthstone/destructive_command_guard"."platforms.linux-arm64"]
+checksum = "sha256:cbbe946405249bc376dafdc41c2d9e97ca5f1ea15a81bf28e9c0053cb0acc15c"
+checksum_source = "mise-versions"
+url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.1/dcg-aarch64-unknown-linux-gnu.tar.xz"
+url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/783362443"
+
+[[tools."github:Dicklesworthstone/destructive_command_guard"]]
+version = "0.17.1"
+backend = "github:Dicklesworthstone/destructive_command_guard"
+specifiers = ["0.17.1"]
+
+[tools."github:Dicklesworthstone/destructive_command_guard".options]
+asset_pattern = "dcg-x86_64-unknown-linux-musl.tar.xz"
+
+[tools."github:Dicklesworthstone/destructive_command_guard"."platforms.linux-x64"]
+checksum = "sha256:34ede837d5ef03df1fd98769718a6f6eaacaf6fca01d2455281567ccd2e1afde"
+checksum_source = "mise-versions"
+url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.1/dcg-x86_64-unknown-linux-musl.tar.xz"
+url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/783362543"
+
+[[tools."github:Dicklesworthstone/destructive_command_guard"]]
+version = "0.17.1"
+backend = "github:Dicklesworthstone/destructive_command_guard"
+specifiers = ["0.17.1"]
+
+[tools."github:Dicklesworthstone/destructive_command_guard".options]
+asset_pattern = "dcg-aarch64-apple-darwin.tar.xz"
+
+[tools."github:Dicklesworthstone/destructive_command_guard"."platforms.macos-arm64"]
+checksum = "sha256:a096296cf64e813a82c911717c9b2d4b252a78583539ac472401409d16bd9be9"
+checksum_source = "mise-versions"
+url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.1/dcg-aarch64-apple-darwin.tar.xz"
+url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/783362360"
 
 [[tools."github:agent-sh/agnix"]]
 version = "0.61.0"
@@ -717,11 +815,17 @@ aube = { path = "locks/npm-vercel-board/0.56.1", digest = "sha256:906f0efbeae192
 backend = "npm:@vercel/board"
 specifiers = ["0.56.1"]
 
+[[tools."npm:apify-cli"]]
+version = "1.14.0"
+aube = { path = "locks/npm-apify-cli/1.14.0", digest = "sha256:e19fc65ba40cebdff93e8afed73de1d74226969c6d3e66718ec8f48013ac03ee" }
+backend = "npm:apify-cli"
+specifiers = ["1.14.0"]
+
 [[tools."npm:ctx7"]]
-version = "0.12.2"
-aube = { path = "locks/npm-ctx7/0.12.2", digest = "sha256:531f54dac7c403563eccd9fc8cdac9441e4715ba3a14717586d34a239c09f58f" }
+version = "0.13.0"
+aube = { path = "locks/npm-ctx7/0.13.0", digest = "sha256:4e22f463ac7424ba50e673fbb46e70051985215f2a71564e236e4b2650fa8f0a" }
 backend = "npm:ctx7"
-specifiers = ["0.12.2"]
+specifiers = ["0.13.0"]
 
 [[tools."npm:firecrawl-cli"]]
 version = "1.30.0"
@@ -742,10 +846,10 @@ allow_builds = '["better-sqlite3"]'
 repository = "github.com/langchain-ai/openwiki"
 
 [[tools."npm:renovate"]]
-version = "44.260.2"
-aube = { path = "locks/npm-renovate/44.260.2~aa673d8d", digest = "sha256:f116a27aa8bcf9b425a2b1ee37b651d24118302408980aba07400a46e31eb62b" }
+version = "44.260.3"
+aube = { path = "locks/npm-renovate/44.260.3~aa673d8d", digest = "sha256:ad6f63c9adf6c88465d61d9d43a7aeac870001f8327ce32494e10a873c49501d" }
 backend = "npm:renovate"
-specifiers = ["44.260.2"]
+specifiers = ["44.260.3"]
 
 [tools."npm:renovate".options]
 trust_policy_excludes = '["@yarnpkg/libzip@3.2.2"]'
@@ -757,10 +861,10 @@ backend = "npm:skills"
 specifiers = ["1.9.0"]
 
 [[tools."npm:zcode-app-cli"]]
-version = "3.18.2-48"
-aube = { path = "locks/npm-zcode-app-cli/3.18.2-48", digest = "sha256:6acc4b9bd2bf4371d5983a878f9943e71fa80c8efabb27062c8369c216ea483d" }
+version = "4.0.0-49"
+aube = { path = "locks/npm-zcode-app-cli/4.0.0-49", digest = "sha256:9803a24afdad3358f5e9dda9663cc6e76920bb0428b25b5305b03216b66b5168" }
 backend = "npm:zcode-app-cli"
-specifiers = ["3.18.2-48"]
+specifiers = ["4.0.0-49"]
 
 [[tools.osv-scanner]]
 version = "2.7.1"

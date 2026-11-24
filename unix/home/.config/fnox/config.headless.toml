@@ -1,0 +1,9 @@
+#:schema https://fnox.jdx.dev/schema.json
+# Headless fnox config for Linux containers (`pc`/`mac`) and Tart `vm` (no macOS Keychain/D-Bus).
+# Resolves age identity via FNOX_AGE_KEY -> FNOX_AGE_KEY_FILE -> ~/.config/fnox/age.txt.
+
+import = ["./shared.toml"]
+
+[providers.age]
+type = "age"
+recipients = ["age16djrq9gc4kgdaxve0lua75q97qed6g858ec4s830hpry6nx8qalqns0x8d"]

@@ -1,7 +1,7 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # ref: https://mise.jdx.dev/configuration.html
 
-min_version = "2026.11.13"
+min_version = "2026.11.14"
 
 # User/global developer tools live in unix/home/.config/mise/config.toml so
 # this project config never duplicates project-scoped .agents/.claude skills.
@@ -17,6 +17,9 @@ private_user = "{{ env.USER | default(value='') }}"
 exec_auto_install = false
 experimental = true
 python.uv_venv_auto = "source"
+
+[secrets.fnox]
+profile = "infra"
 
 [deps.uv]
 auto = false
@@ -85,11 +88,6 @@ hint = "Inspect `mise -C ~ doctor --json` and eliminate any errors or PATH-order
 description = "Host shims, command-wrappers, mise plugins, pitchfork daemons, vb, local bins, opencode.jsonc, config.local.toml, and skills parity are clean"
 run = "python3 -I -B tasks/py/doctor_checks.py host-hygiene"
 hint = "Run `mise run host:prune --apply` and `mise run bootstrap:skills` to clear stale host residue."
-
-[doctor.checks.cli-wrappers-smoke]
-description = "Active CLI wrappers for opencode, codex, and agy pass subcommand help smoke tests without proxy warnings"
-run = "python3 -I -B tasks/py/doctor_checks.py cli-wrappers-smoke"
-hint = "Ensure [wrappers.*] and ~/.local/bin/opencode-wrapper match Wave 1B/1C wrapper contracts."
 
 [doctor.checks.uv-env-integrity]
 description = "uv lockfile, environment packages, and locked dry-run sync pass offline checks"
@@ -278,22 +276,20 @@ python3 -I -B unix/home/.gemini/config/hooks/agy-hc-send-guard.py --self-check -
 hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md."
 
 [doctor.checks.vercel-board-config]
-description = "jdx tools, @vercel/board, pitchfork config, mcp-jdx, bootstrap:skills, and canonical skills are valid"
+description = "jdx tools, @vercel/board, pitchfork config, bootstrap:skills, canonical skills, and 0 global mcp-jdx are valid"
 run = '''
 (test -f pitchfork.toml || test -f unix/home/.config/pitchfork/config.toml)
 test -x unix/home/.config/mise/tasks/bootstrap/skills
 test -x unix/home/.config/mise/assets/board/vb-proxy-wrapper.sh
 test -f unix/home/.agents/skills/vercel-board/SKILL.md
-test -f unix/home/.claude.mcp-jdx.json
-test -f unix/home/.codex/mcp-jdx.toml
+test ! -e unix/home/.claude.mcp-jdx.json
+test ! -e unix/home/.codex/mcp-jdx.toml
+test ! -e unix/home/.config/mise/assets/gemini/mcp-jdx.json
 node --check unix/home/.config/mise/assets/board/server.mjs
 python3 - <<'PY'
-import json
 import tomllib
 from pathlib import Path
 
-json.loads(Path("unix/home/.claude.mcp-jdx.json").read_text(encoding="utf-8"))
-tomllib.loads(Path("unix/home/.codex/mcp-jdx.toml").read_text(encoding="utf-8"))
 mise_dir = Path("unix/home/.config/mise")
 cfg = tomllib.loads((mise_dir / "config.toml").read_text(encoding="utf-8"))
 tools = set(cfg.get("tools", {}))
@@ -312,6 +308,8 @@ for cfg_path in sorted(mise_dir.glob("config*.toml")):
         for grp in dg.values():
             if isinstance(grp, dict):
                 all_groups.append(grp)
+
+assert not any("mcp-jdx" in k for k in all_dotfiles), "Unexpected global mcp-jdx target in [dotfiles]"
 
 skills_task_txt = (mise_dir / "tasks" / "bootstrap" / "skills").read_text(encoding="utf-8")
 
@@ -348,15 +346,13 @@ for key in (
     "~/.agents/skills/vercel-board",
     "~/.claude/skills/vercel-board",
     "~/.gemini/config/skills",
-    "~/.claude.json/mcp-jdx",
-    "~/.codex/config.toml/mcp-jdx",
 ):
     assert has_target(key), f"Missing {key} across unix/home/.config/mise/config*.toml [dotfiles]/[dotfile_groups] and bootstrap:skills"
 deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
 PY
 '''
-hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, mcp-jdx, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly."
+hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, bootstrap:skills, canonical ~/.agents/skills, and 0 global mcp-jdx are configured cleanly."
 
 [doctor.checks.herdr-roll]
 description = "Clean-room herdr_roll engine tests and executable roll:* tasks pass validation"
@@ -387,10 +383,10 @@ depends = "py-deps-fresh"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
 hint = "Inspect trust drift with `mise run codex:hook-trust --check --json` and repair cleanly with `--repair`."
 
-[doctor.checks.codex-daemon-health]
-description = "Running Codex app-server-daemon processes do not pin deleted fnox-proxy-ca-*.pem paths"
-run = "python3 -I -B tasks/py/doctor_checks.py codex-daemon-health"
-hint = "Restart any stale Codex daemon spawned via wrapper-stripped or missing SSL_CERT_FILE."
+[doctor.checks.mise-binary-integrity]
+description = "Compiled mise install binaries are hardened (0555/a-w) and dcg guardrails/hooks are configured"
+run = "python3 -I -B tasks/py/doctor_checks.py mise-binary-integrity"
+hint = "Run `mise run host:harden-bins` and `mise -C unix/home/.config/mise install` to harden installs and configure dcg."
 
 [doctor.checks.agy-rc-health]
 description = "Antigravity CLI Remote Control guard and LaunchAgent health pass on macOS hosts"

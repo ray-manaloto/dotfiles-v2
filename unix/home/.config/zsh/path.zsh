@@ -20,6 +20,10 @@ path=($_core_prefix /usr/bin /bin /usr/sbin /sbin $path)
 if [[ $OSTYPE == darwin* ]]; then
 	[[ -d "$HOME/Library/Application Support/JetBrains/Toolbox/scripts" ]] && path+=("$HOME/Library/Application Support/JetBrains/Toolbox/scripts")
 	[[ -d /Applications/Obsidian.app/Contents/MacOS ]] && path+=(/Applications/Obsidian.app/Contents/MacOS)
+	if [[ ! -r "$HOME/.config/dotfiles-v2/vm-env.sh" && ${MISE_ENV:-} != *vm* ]]; then
+		[[ -d "$HOME/.local/share/hermes-cli.noindex/bin" ]] && path+=("$HOME/.local/share/hermes-cli.noindex/bin")
+		[[ -d /Applications/Orca.app/Contents/Resources/bin ]] && path+=(/Applications/Orca.app/Contents/Resources/bin)
+	fi
 fi
 [[ -d "$HOME/.antigravity-ide/antigravity-ide/bin" ]] && path+=("$HOME/.antigravity-ide/antigravity-ide/bin")
 [[ -d "$HOME/.gemini/antigravity-cli/bin" ]] && path+=("$HOME/.gemini/antigravity-cli/bin")

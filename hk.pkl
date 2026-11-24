@@ -218,8 +218,25 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
       List(
         "unix/home/.config/mise/config*.toml",
         "unix/home/.config/herdr-app/programs.json",
+        "unix/home/.config/fnox/*.toml",
+        "unix/home/.gemini/config/hooks.json",
       )
     check = "python3 -I -B tasks/py/doctor_checks.py config-hygiene"
+  }
+  ["dcg-packs"] = new Step {
+    glob = List("unix/home/.config/dcg/config.toml", "unix/home/.config/dcg/packs/*.yaml")
+    check =
+      #"rc=0; tombi lint --error-on-warnings unix/home/.config/dcg/config.toml || rc=1; if command -v dcg >/dev/null 2>&1; then for f in unix/home/.config/dcg/packs/*.yaml; do [ -f "$f" ] && { dcg pack validate "$f" || rc=1; }; done; elif [ -n "${CI:-}" ]; then echo 'dcg binary missing in CI' >&2; rc=1; fi; exit $rc"#
+  }
+  ["no-installs-clobber"] = new Step {
+    glob = List("tasks/**", "unix/home/.config/mise/tasks/**", "docker/**")
+    exclude =
+      List(
+        "unix/home/.config/mise/tasks/host/harden-bins",
+        "unix/home/.config/mise/tasks/host/prune",
+      )
+    check =
+      #"if rg -n --pcre2 '(?:^|[;&|(\s])(?:(?:ln|cp|mv|install|tee|rm|chmod|chown|tar|unzip|rsync|curl[^\n]*\s-[^\n]*o)\b|>>?)[^\n]*(?:\.local/share/mise/installs|/opt/mise/installs)' {{ files }}; then echo 'Direct writes/clobbering under mise installs/ are forbidden' >&2; exit 1; fi"#
   }
   ["private-paths"] = new Step {
     check = "mise run privacy:scan -- {{ files }}"
@@ -281,6 +298,8 @@ hooks {
       ["agnix"] = fastSteps["agnix"]
       ["mise-lock-integrity"] = fastSteps["mise-lock-integrity"]
       ["config-hygiene"] = fastSteps["config-hygiene"]
+      ["dcg-packs"] = fastSteps["dcg-packs"]
+      ["no-installs-clobber"] = fastSteps["no-installs-clobber"]
       ["codegen-check"] = fastSteps["codegen-check"]
       ["schema-first-ast"] = fastSteps["schema-first-ast"]
       ["schema-contract-check"] = fastSteps["schema-contract-check"]

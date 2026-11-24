@@ -1,14 +1,14 @@
-"""Tests for smart CLI wrappers (`codex-wrapper`, `codex-hc`, `agy-wrapper`) and operational host/enter tasks."""
+"""Tests for operational host, secret, Remote Control, and env:enter tasks."""
 
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BIN_DIR = REPO_ROOT / "unix" / "home" / ".local" / "bin"
 TASKS_DIR = REPO_ROOT / "tasks"
 MISE_TASKS_DIR = REPO_ROOT / "unix" / "home" / ".config" / "mise" / "tasks"
 
@@ -20,211 +20,284 @@ def _make_stub(directory: Path, name: str, script_body: str) -> Path:
     return path
 
 
-def test_codex_wrapper_strips_ephemeral_env_and_respects_herdr_mode(
+def test_secret_set_and_delete_clear_fnox_daemon_and_reject_existing(
     tmp_path: Path,
 ) -> None:
     bin_stub = tmp_path / "bin"
     bin_stub.mkdir()
-    real_home = tmp_path / "home"
-    (real_home / ".local" / "bin").mkdir(parents=True)
-    (real_home / ".config" / "fnox").mkdir(parents=True)
-    (real_home / ".config" / "fnox" / "config.toml").write_text("", encoding="utf-8")
-
-    # Stub ~/.local/bin/codex and fnox recording argv + env keys cleanly
+    call_log = tmp_path / "calls.log"
     _make_stub(
-        real_home / ".local" / "bin",
-        "codex",
-        'python3 -c \'import json, os, sys; print(json.dumps({"argv": sys.argv[1:], "env": dict(os.environ)}))\' "$@"',
+        bin_stub,
+        "doppler",
+        f'printf "doppler %s\\n" "$*" >> "{call_log}"\n'
+        'if [ "$1" = "secrets" ] && [ "$2" = "--only-names" ]; then\n'
+        "  echo '{\"EXISTING_KEY\":{}}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n",
     )
+    (tmp_path / ".config" / "fnox").mkdir(parents=True)
+    (tmp_path / ".config" / "fnox" / "config.toml").write_text("", encoding="utf-8")
     _make_stub(
         bin_stub,
         "fnox",
-        'while [ "$#" -gt 0 ]; do case "$1" in --) shift; break ;; *) shift ;; esac; done\nFNOX_WRAPPED=1 exec "$@"',
+        f'printf "fnox %s\\n" "$*" >> "{call_log}"\nexit 0\n',
     )
-
-    env = {
-        "HOME": str(real_home),
+    base_env = {
+        "HOME": str(tmp_path),
         "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
-        "HTTP_PROXY": "http://127.0.0.1:9999",
-        "HTTPS_PROXY": "http://127.0.0.1:9999",
-        "ALL_PROXY": "http://127.0.0.1:9999",
-        "SSL_CERT_FILE": "/tmp/fnox-proxy-ca-deleted.pem",
-        "NODE_EXTRA_CA_CERTS": "/tmp/fnox-proxy-ca-deleted.pem",
-        "REQUESTS_CA_BUNDLE": "/tmp/fnox-proxy-ca-deleted.pem",
-        "CURL_CA_BUNDLE": "/tmp/fnox-proxy-ca-deleted.pem",
-        "GIT_SSL_CAINFO": "/tmp/fnox-proxy-ca-deleted.pem",
-        "CARGO_HTTP_CAINFO": "/tmp/fnox-proxy-ca-deleted.pem",
-        "DENO_CERT": "/tmp/fnox-proxy-ca-deleted.pem",
-        "RUST_LOG": "debug",
     }
+    set_task = MISE_TASKS_DIR / "secret" / "set"
+    del_task = MISE_TASKS_DIR / "secret" / "delete"
 
-    for sub in (
-        ["app-server", "--listen", "stdio://"],
-        ["remote-control"],
-        ["update"],
-        ["login"],
-        ["doctor"],
-        ["features", "list"],
-        ["--version"],
-        ["--help"],
-        [],
-    ):
-        proc = subprocess.run(
-            [str(BIN_DIR / "codex-wrapper"), *sub],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        payload = json.loads(proc.stdout)
-        assert payload["argv"] == sub
-        assert "--disable" not in payload["argv"]
-        assert "-c" not in payload["argv"]
-        assert "FNOX_WRAPPED" not in payload["env"]
-        for stripped in (
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "SSL_CERT_FILE",
-            "NODE_EXTRA_CA_CERTS",
-            "REQUESTS_CA_BUNDLE",
-            "CURL_CA_BUNDLE",
-            "GIT_SSL_CAINFO",
-            "CARGO_HTTP_CAINFO",
-            "DENO_CERT",
-            "RUST_LOG",
-        ):
-            assert stripped not in payload["env"], stripped
+    bad_name = subprocess.run(
+        ["bash", str(set_task)],
+        env={**base_env, "usage_name": "lowercase_bad"},
+        input="val\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert bad_name.returncode == 1
+    assert "UPPER_SNAKE" in bad_name.stderr
 
-    # Herdr isolation (CODEX_HERDR=1 / codex-hc) passes --disable daemon_auto_start without -c overrides
-    hc_proc = subprocess.run(
-        [str(BIN_DIR / "codex-wrapper"), "fix bug"],
-        env={**env, "CODEX_HERDR": "1"},
+    dup = subprocess.run(
+        ["bash", str(set_task)],
+        env={**base_env, "usage_name": "EXISTING_KEY"},
+        input="val\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert dup.returncode == 1
+    assert "--replace" in dup.stderr
+
+    ok_set = subprocess.run(
+        ["bash", str(set_task)],
+        env={**base_env, "usage_name": "NEW_KEY"},
+        input="secret-value\n",
         capture_output=True,
         text=True,
         check=True,
     )
-    hc_payload = json.loads(hc_proc.stdout)
-    assert hc_payload["argv"] == ["--disable", "daemon_auto_start", "fix bug"]
-    assert hc_payload["env"].get("FNOX_WRAPPED") == "1"
+    assert "stored NEW_KEY" in ok_set.stdout
 
-    # Bash 3.2 set -u empty extra_flags + --remote-auth-token-env + -- + bypass subcommands + shim skip
-    no_daemon = subprocess.run(
-        [str(BIN_DIR / "codex-hc"), "--no-daemon", "fix bug"],
-        env=env,
+    ok_rep = subprocess.run(
+        ["bash", str(set_task)],
+        env={**base_env, "usage_name": "EXISTING_KEY", "usage_replace": "true"},
+        input="updated\n",
         capture_output=True,
         text=True,
         check=True,
     )
-    no_daemon_payload = json.loads(no_daemon.stdout)
-    assert no_daemon_payload["argv"] == ["--no-daemon", "fix bug"]
-    assert no_daemon_payload["env"].get("FNOX_WRAPPED") == "1"
+    assert "stored EXISTING_KEY" in ok_rep.stdout
 
-    tok_bypass = subprocess.run(
-        [
-            str(BIN_DIR / "codex-wrapper"),
-            "--remote-auth-token-env",
-            "MY_TOK",
-            "mcp",
-            "list",
-        ],
-        env={**env, "CODEX_HERDR": "1"},
+    ok_del = subprocess.run(
+        ["bash", str(del_task)],
+        env={**base_env, "usage_names": "NEW_KEY EXISTING_KEY"},
         capture_output=True,
         text=True,
         check=True,
     )
-    assert json.loads(tok_bypass.stdout)["env"].get("FNOX_WRAPPED") is None
+    assert "deleted NEW_KEY EXISTING_KEY" in ok_del.stdout
 
-    end_opts_bypass = subprocess.run(
-        [str(BIN_DIR / "codex-wrapper"), "--", "exec-server", "--help"],
-        env={**env, "CODEX_HERDR": "1"},
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert json.loads(end_opts_bypass.stdout)["env"].get("FNOX_WRAPPED") is None
+    log_txt = call_log.read_text(encoding="utf-8")
+    assert log_txt.count("daemon clear") == 3
+    assert "doppler secrets set NEW_KEY" in log_txt
+    assert "doppler secrets delete NEW_KEY EXISTING_KEY" in log_txt
 
 
-def test_agy_wrapper_bypasses_fnox_for_management_subcommands(tmp_path: Path) -> None:
+def test_host_prune_cleans_zsh_completions_and_reads_imported_fnox_secrets(
+    tmp_path: Path,
+) -> None:
     bin_stub = tmp_path / "bin"
     bin_stub.mkdir()
-    real_home = tmp_path / "home"
-    (real_home / ".local" / "bin").mkdir(parents=True)
-    (real_home / ".config" / "fnox").mkdir(parents=True)
-    (real_home / ".config" / "fnox" / "config.toml").write_text("", encoding="utf-8")
-
-    _make_stub(
-        real_home / ".local" / "bin",
-        "agy",
-        'python3 -c \'import json, os, sys; print(json.dumps({"argv": sys.argv[1:], "fnox": os.environ.get("FNOX_WRAPPED"), "ssl": os.environ.get("SSL_CERT_FILE"), "rust_log": os.environ.get("RUST_LOG")}))\' "$@"',
+    fake_home = tmp_path / "home"
+    (fake_home / ".cache" / "zsh" / "completions").mkdir(parents=True)
+    (fake_home / ".config" / "fnox").mkdir(parents=True)
+    mise_dir = fake_home / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text("[tools]\n", encoding="utf-8")
+    clean_git_env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    subprocess.run(
+        ["git", "-C", str(mise_dir), "init", "-q"],
+        env=clean_git_env,
+        check=True,
     )
+    subprocess.run(
+        ["git", "-C", str(mise_dir), "config", "user.email", "test@example.com"],
+        env=clean_git_env,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(mise_dir), "config", "user.name", "Test User"],
+        env=clean_git_env,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(mise_dir), "add", "config.toml"],
+        env=clean_git_env,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(mise_dir), "commit", "-q", "--no-verify", "-m", "init"],
+        env=clean_git_env,
+        check=True,
+    )
+    config_local = mise_dir / "config.local.toml"
+    config_local.write_text(
+        '[env]\nCLOUDFLARE_ACCOUNT_ID = "acct-123"\n', encoding="utf-8"
+    )
+
+    (fake_home / ".config" / "fnox" / "shared.toml").write_text(
+        '[secrets.CLOUDFLARE_ACCOUNT_ID]\nprovider = "age"\n', encoding="utf-8"
+    )
+    (fake_home / ".config" / "fnox" / "config.toml").write_text(
+        'import = ["./shared.toml"]\n', encoding="utf-8"
+    )
+
+    zcomp = fake_home / ".cache" / "zsh" / "completions"
+    dead_link = zcomp / "_sbx"
+    dead_link.symlink_to(fake_home / "missing-comp")
+    zero_file = zcomp / "._empty123"
+    zero_file.write_text("", encoding="utf-8")
+    keep_file = zcomp / "_valid"
+    keep_file.write_text("#compdef mise\n", encoding="utf-8")
+
+    fnox_log = tmp_path / "fnox.log"
+    _make_stub(bin_stub, "mise", 'if [ "$1" = "registry" ]; then exit 0; fi; exit 0')
     _make_stub(
         bin_stub,
         "fnox",
-        'while [ "$#" -gt 0 ]; do case "$1" in --) shift; break ;; *) shift ;; esac; done\nFNOX_WRAPPED=1 exec "$@"',
+        f'printf "%s\\n" "$*" >> "{fnox_log}"\nexit 0',
     )
 
+    prune_task = MISE_TASKS_DIR / "host" / "prune"
     env = {
-        "HOME": str(real_home),
-        "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
-        "HTTPS_PROXY": "http://127.0.0.1:9999",
-        "SSL_CERT_FILE": "/tmp/fnox-proxy-ca-deleted.pem",
-        "RUST_LOG": "trace",
+        "HOME": str(fake_home),
+        "MISE_DATA_DIR": str(tmp_path / "mise_data"),
+        "PATH": f"{bin_stub}:{Path(sys.executable).parent}:/usr/bin:/bin:/usr/sbin:/sbin",
     }
-
-    for sub in (
-        ["remote-control", "status"],
-        ["update"],
-        ["changelog"],
-        ["install"],
-        ["models"],
-        ["help"],
-        ["--version"],
-        ["--help"],
-    ):
-        proc = subprocess.run(
-            [str(BIN_DIR / "agy-wrapper"), *sub],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        data = json.loads(proc.stdout)
-        assert data["argv"] == sub
-        assert data["fnox"] is None
-        assert data["ssl"] is None
-        assert data["rust_log"] is None
-
-    interactive = subprocess.run(
-        [str(BIN_DIR / "agy-wrapper"), "chat"],
+    dry = subprocess.run(
+        ["bash", str(prune_task)],
         env=env,
         capture_output=True,
         text=True,
         check=True,
     )
-    idata = json.loads(interactive.stdout)
-    assert idata["argv"] == ["chat"]
-    assert idata["fnox"] == "1"
-    assert idata["rust_log"] is None
+    assert f"WOULD REMOVE dead symlink: {dead_link}" in dry.stdout
+    assert f"WOULD REMOVE zero-byte file: {zero_file}" in dry.stdout
+    assert f"WOULD BACK UP & REMOVE untracked {config_local}" in dry.stdout
+    assert dead_link.is_symlink()
+    assert zero_file.exists()
+    assert config_local.is_file()
 
-    # Boolean flags (--remote-agent, --sandbox) must NOT swallow bypass subcommand; root value flags (-v) DO
-    bool_bypass = subprocess.run(
-        [str(BIN_DIR / "agy-wrapper"), "--remote-agent", "--sandbox", "mic-serve"],
-        env=env,
+    app = subprocess.run(
+        ["bash", str(prune_task)],
+        env={**env, "usage_apply": "true"},
         capture_output=True,
         text=True,
         check=True,
     )
-    assert json.loads(bool_bypass.stdout)["fnox"] is None
+    assert f"REMOVED dead symlink: {dead_link}" in app.stdout
+    assert f"REMOVED zero-byte file: {zero_file}" in app.stdout
+    assert f"BACKED UP & REMOVED untracked {config_local}" in app.stdout
+    assert not dead_link.is_symlink()
+    assert not zero_file.exists()
+    assert not config_local.exists()
+    assert list(
+        (fake_home / ".local" / "state" / "dotfiles-v2").glob("config.local.toml.bak.*")
+    )
+    assert "check --all --strict" in fnox_log.read_text(encoding="utf-8")
+    assert keep_file.is_file()
 
-    val_interactive = subprocess.run(
-        [str(BIN_DIR / "agy-wrapper"), "-v", "models", "chat"],
-        env=env,
+
+def test_host_prune_mcps_audits_and_prunes_preserving_backups(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    (fake_home / ".gemini" / "config").mkdir(parents=True)
+    (fake_home / ".codex").mkdir(parents=True)
+    mcp_cfg = fake_home / ".gemini" / "config" / "mcp_config.json"
+    mcp_cfg.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "exa": {"url": "https://mcp.exa.ai/mcp"},
+                    "custom-keep": {"command": "echo"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    agy_cfg = fake_home / ".gemini" / "config" / "config.json"
+    agy_cfg.write_text(
+        json.dumps(
+            {
+                "enabledPlugins": {
+                    "apify@apify-plugins": True,
+                    "apify-other@custom": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    claude_json = fake_home / ".claude.json"
+    claude_json.write_text(
+        json.dumps({"mcpServers": {"mcp-jdx": {}, "keep": {}}}), encoding="utf-8"
+    )
+    codex_cfg = fake_home / ".codex" / "config.toml"
+    codex_cfg.write_text(
+        '[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n'
+        '[[projects."/workspace/repo"]]\ntrust_level = "trusted"\n'
+        '[mcp_servers.keepme]\ncommand = "echo"\n',
+        encoding="utf-8",
+    )
+    task = MISE_TASKS_DIR / "host" / "prune-mcps"
+    chk = subprocess.run(
+        ["bash", str(task)],
+        env={
+            "HOME": str(fake_home),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "usage_check": "true",
+        },
         capture_output=True,
         text=True,
         check=True,
     )
-    assert json.loads(val_interactive.stdout)["fnox"] == "1"
+    assert "FOUND gemini-mcp" in chk.stdout
+    assert "FOUND gemini-plugin" in chk.stdout
+    assert "FOUND claude-mcp" in chk.stdout
+    assert "FOUND codex-mcp" in chk.stdout
+
+    app = subprocess.run(
+        ["bash", str(task)],
+        env={
+            "HOME": str(fake_home),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "usage_apply": "true",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "PRUNED" in app.stdout
+    assert "exa" not in json.loads(mcp_cfg.read_text())["mcpServers"]
+    assert "custom-keep" in json.loads(mcp_cfg.read_text())["mcpServers"]
+    enabled = json.loads(agy_cfg.read_text())["enabledPlugins"]
+    assert "apify@apify-plugins" not in enabled
+    assert "apify-other@custom" in enabled
+    assert "mcp-jdx" not in json.loads(claude_json.read_text())["mcpServers"]
+    codex_after = codex_cfg.read_text()
+    assert "context7" not in codex_after
+    assert '[[projects."/workspace/repo"]]' in codex_after
+    assert "keepme" in codex_after
+    backups = list(
+        (fake_home / ".local" / "state" / "dotfiles-v2" / "backups").glob("*.bak")
+    )
+    assert len(backups) == 4
 
 
 def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
@@ -244,9 +317,8 @@ def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
     fake_home = tmp_path / "home"
     (fake_home / "Library" / "LaunchAgents").mkdir(parents=True)
     (fake_home / ".gemini" / "antigravity-cli").mkdir(parents=True)
-    (fake_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").write_text(
-        "tok\n", encoding="utf-8"
-    )
+    token_file = fake_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    token_file.write_text("tok\n", encoding="utf-8")
     plist = (
         fake_home
         / "Library"
@@ -287,21 +359,30 @@ def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
         assert parsed["rc_running"] is True
         assert parsed["issues"] == []
 
-        # Poisoned SSL plist triggers clean stop + start recreate (not kickstart)
+        # #1269 stuck loaded LaunchAgent triggers launchctl kickstart -k (not stop/start)
         rc_log = tmp_path / "rc.log"
         _make_stub(
             bin_stub,
             "agy",
             f'printf "agy %s\\n" "$*" >> "{rc_log}"\n'
-            'if [ "$1" = "remote-control" ] && [ "$2" = "status" ]; then echo "Daemon status: running"; exit 0; fi\n'
-            'if [ "$1" = "remote-control" ] && [ "$2" = "start" ]; then\n'
-            f'  cat <<EOF > "{plist}"\n<plist><dict><key>Label</key><string>com.google.antigravity-cli-daemon</string></dict></plist>\nEOF\n'
-            "  exit 0\nfi\nexit 0\n",
+            'if [ "$1" = "remote-control" ] && [ "$2" = "status" ]; then\n'
+            '  if [ -f "'
+            + str(tmp_path / "kicked")
+            + '" ]; then echo "Daemon status: running"; else echo "Daemon status: stopped"; fi\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
         )
-        plist.write_text(
-            "<plist><dict><key>EnvironmentVariables</key><dict><key>SSL_CERT_FILE</key>"
-            "<string>/tmp/fnox-proxy-ca-123.pem</string></dict></dict></plist>\n",
-            encoding="utf-8",
+        _make_stub(
+            bin_stub,
+            "launchctl",
+            f'printf "launchctl %s\\n" "$*" >> "{rc_log}"\n'
+            'if [ "$1" = "kickstart" ]; then\n'
+            f'  touch "{tmp_path / "kicked"}"\n'
+            "  exit 0\n"
+            "fi\n"
+            f'if [ -f "{tmp_path / "kicked"}" ]; then echo "state = running"; else echo "state = waiting"; fi\n'
+            "exit 0\n",
         )
         rep = subprocess.run(
             ["bash", str(guard_script)],
@@ -317,8 +398,39 @@ def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
         )
         assert rep.returncode == 0, rep.stdout + rep.stderr
         rc_calls = rc_log.read_text(encoding="utf-8")
-        assert "agy remote-control stop" in rc_calls
-        assert "agy remote-control start" in rc_calls
+        assert "launchctl kickstart -k" in rc_calls
+        assert "agy remote-control stop" not in rc_calls
+
+        # #1401 missing token triggers clean stop + reseed + start
+        token_file.unlink()
+        rc_log.write_text("", encoding="utf-8")
+        _make_stub(
+            bin_stub,
+            "agy",
+            f'printf "agy %s\\n" "$*" >> "{rc_log}"\n'
+            'if [ "$1" = "--print" ]; then printf "tok" > "'
+            + str(token_file)
+            + '"; exit 0; fi\n'
+            'if [ "$1" = "remote-control" ] && [ "$2" = "status" ]; then echo "Daemon status: running"; exit 0; fi\n'
+            "exit 0\n",
+        )
+        rep2 = subprocess.run(
+            ["bash", str(guard_script)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_repair": "true",
+                "usage_json": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert rep2.returncode == 0, rep2.stdout + rep2.stderr
+        rc_calls2 = rc_log.read_text(encoding="utf-8")
+        assert "agy remote-control stop" in rc_calls2
+        assert "agy --print /status" in rc_calls2
+        assert "agy remote-control start" in rc_calls2
 
     # Non-Darwin skip path works everywhere (stubbed Linux uname)
     non_darwin_bin = tmp_path / "non_darwin_bin"
@@ -337,88 +449,6 @@ def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
         check=True,
     )
     assert json.loads(skip_proc.stdout) == {"status": "skipped", "reason": "non-darwin"}
-
-
-def test_codex_mcp_wrap_checks_and_preserves_comments_and_sections(
-    tmp_path: Path,
-) -> None:
-    task = MISE_TASKS_DIR / "codex" / "mcp-wrap"
-    codex_cfg = tmp_path / "codex_config.toml"
-    fnox_cfg = tmp_path / "fnox.toml"
-    fnox_cfg.write_text(
-        '[[proxy.rules]]\ndomain = "api.exa.ai"\nsecret = "EXA_API_KEY"\n',
-        encoding="utf-8",
-    )
-    # 1. inherit = "none" with HC_* still fails --check; inherit = "all" without HC_* also fails
-    codex_cfg.write_text(
-        '[shell_environment_policy]\ninherit = "none"\ninclude_only = ["PATH", "HC_*"]\n',
-        encoding="utf-8",
-    )
-    chk_bad_inherit = subprocess.run(
-        ["bash", str(task)],
-        env={
-            "HOME": str(tmp_path),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_check": "true",
-            "usage_config": str(codex_cfg),
-            "usage_fnox_config": str(fnox_cfg),
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert chk_bad_inherit.returncode == 1
-    assert "inherit" in chk_bad_inherit.stdout
-
-    codex_cfg.write_text(
-        '[shell_environment_policy]\ninherit = "all"\ninclude_only = ["PATH"]\n\n'
-        "# trailing section comment must stay\n"
-        '[mcp_servers."my.exa"]\n'
-        'command = "npx"  # keep comment\n'
-        'args = ["-y", "https://api.exa.ai/mcp"]\n\n'
-        '[other]\nfoo = "bar"\n',
-        encoding="utf-8",
-    )
-    chk_missing_hc = subprocess.run(
-        ["bash", str(task)],
-        env={
-            "HOME": str(tmp_path),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_check": "true",
-            "usage_config": str(codex_cfg),
-            "usage_fnox_config": str(fnox_cfg),
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert chk_missing_hc.returncode == 1
-    assert "HC_*" in chk_missing_hc.stdout
-
-    app = subprocess.run(
-        ["bash", str(task)],
-        env={
-            "HOME": str(tmp_path),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_apply": "true",
-            "usage_config": str(codex_cfg),
-            "usage_fnox_config": str(fnox_cfg),
-        },
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "updated" in app.stdout
-    out_txt = codex_cfg.read_text(encoding="utf-8")
-    assert "# trailing section comment must stay" in out_txt
-    assert "# keep comment" in out_txt
-    assert '[other]\nfoo = "bar"' in out_txt
-    import tomllib
-
-    parsed = tomllib.loads(out_txt)
-    assert parsed["shell_environment_policy"]["inherit"] == "all"
-    assert "HC_*" in parsed["shell_environment_policy"]["include_only"]
-    assert "fnox" in parsed["mcp_servers"]["my.exa"]["command"]
 
 
 def test_env_enter_falls_back_to_docker_when_tailscale_ssh_unavailable(

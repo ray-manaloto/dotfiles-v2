@@ -39,9 +39,20 @@ description: >-
 ## 3. Binary Verification (`packslip v1.11.5` & Digest-Pinned Docker)
 
 - With `jdx/packslip` `v1.11.5` (PR `#347`, fixing `#346`'s 8 MiB `/releases`
-  response cap), copy digest-pinned `ghcr.io/jdx/mise` (`2026.11.13`) in Docker
+  response cap), copy digest-pinned `ghcr.io/jdx/mise` (`2026.11.14`) in Docker
   and run `packslip install github.com/jdx/mise --version ... --pin <pin> --system --bin-dir /usr/local/bin --force`
   on macOS.
+- `[hooks] postinstall` runs `bootstrap:skills` and `host:harden-bins` (`chmod a-w`
+  on compiled Mach-O/ELF binaries inside `$MISE_DATA_DIR/installs` while leaving
+  parent directories `0755` for `mise` upgrades/pruning), paired with
+  `dcg` (`~/.config/dcg/{config.toml,packs/mise-protect.yaml}`) across harnesses.
+- Root `mise.toml` declares `[secrets.fnox] profile = "infra"` so infra tasks
+  (`container:up`, `vm:up` with `#MISE secrets=["TAILSCALE_API_KEY"]`) resolve
+  secrets natively; headless Linux/VM use `config.headless.toml` without Keychain.
+- Keep `0` global MCPs across harnesses (CLI+Skill first: `find-docs`, `exa-search`,
+  `firecrawl`, `apify-ultimate-scraper`, `agentsview-finding-history`, `toolchain-update-review`),
+  preserve `NODE_EXTRA_CA_CERTS` under `fnox proxy run` for Node 26 CLIs, and on
+  Env 2-4 guests use `env -u ALL_PROXY -u all_proxy HTTPS_PROXY=http://127.0.0.1:1055 NODE_USE_ENV_PROXY=1`.
 
 ## 4. Non-Root macOS LaunchAgents
 

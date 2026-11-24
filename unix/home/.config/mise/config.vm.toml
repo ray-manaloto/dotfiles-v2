@@ -5,7 +5,7 @@
 HERMES_TUI_DIR = false
 
 [bootstrap]
-# Exclude macos-host group (programs.json, agy-hc, codex-hc) inside VM.
+# Exclude macos-host group (`programs.json`) inside VM.
 dotfile_groups = [
   "gemini-hooks",
   "gemini-rules",
@@ -39,6 +39,6 @@ stderr_path = "~/Library/Logs/tailscaled.err.log"
 "~/.bash_profile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "append" }
 "~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
 "~/.config/dotfiles-v2/vm-env.sh" = { source = "assets/vm/vm-env.sh", main_checkout = true }
-"~/.config/herdr-app/programs.json" = { enabled = false }
-"~/.local/bin/agy-hc" = { enabled = false }
-"~/.local/bin/codex-hc" = { enabled = false }
+"~/.config/fnox/config.toml" = { source = "~/.config/fnox/config.headless.toml", main_checkout = true, depends = [
+  "~/.config/fnox/config.headless.toml",
+] }

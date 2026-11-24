@@ -325,20 +325,32 @@ else:
 
 # 3d. Disabled backend data directories (`conda-packages`, `dotnet-root`) when disabled and unreferenced
 def _load_enabled_backends() -> set[str] | None:
-    cfg_path = mise_dir / "config.toml"
-    if not cfg_path.is_file():
-        return None
-    try:
-        cfg_data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
-    settings_tbl = cfg_data.get("settings")
-    if not isinstance(settings_tbl, dict):
-        return None
-    enabled = settings_tbl.get("enable_backends")
-    if not isinstance(enabled, list):
-        return None
-    return {str(item) for item in enabled if isinstance(item, str)}
+    cfg_paths: list[Path] = []
+    base_cfg = mise_dir / "config.toml"
+    if base_cfg.is_file():
+        cfg_paths.append(base_cfg)
+    for extra_cfg in sorted(mise_dir.glob("config.*.toml")):
+        if extra_cfg.name != "config.local.toml" and extra_cfg.is_file():
+            cfg_paths.append(extra_cfg)
+    conf_d_dir = mise_dir / "conf.d"
+    if conf_d_dir.is_dir():
+        cfg_paths.extend(p for p in sorted(conf_d_dir.rglob("*.toml")) if p.is_file())
+    local_cfg = mise_dir / "config.local.toml"
+    if local_cfg.is_file():
+        cfg_paths.append(local_cfg)
+
+    enabled_backends_val: set[str] | None = None
+    for cfg_path in cfg_paths:
+        try:
+            cfg_data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return None
+        settings_tbl = cfg_data.get("settings")
+        if isinstance(settings_tbl, dict) and "enable_backends" in settings_tbl:
+            enabled = settings_tbl.get("enable_backends")
+            if isinstance(enabled, list):
+                enabled_backends_val = {str(item) for item in enabled if isinstance(item, str)}
+    return enabled_backends_val
 
 
 enabled_backends = _load_enabled_backends()
@@ -351,17 +363,23 @@ if enabled_backends is not None:
     if disabled_candidates:
         ps_lines, ps_err = _collect_ps_cmdlines()
         launch_refs, la_err = _collect_launchagent_refs(home)
-        if ps_lines is None or launch_refs is None:
-            reason = ps_err or la_err or "probe error"
+        install_names: list[str] | None = []
+        install_err: str | None = None
+        if installs_dir.is_dir():
+            try:
+                install_names = [e.name.lower() for e in installs_dir.iterdir()]
+            except OSError as exc:
+                install_names = None
+                install_err = f"failed to scan {installs_dir}: {exc}"
+        if ps_lines is None or launch_refs is None or install_names is None:
+            reason = ps_err or la_err or install_err or "probe error"
             print(f"SKIP  disabled-backend data dir prune: {reason}")
         else:
-            install_names = (
-                [e.name.lower() for e in installs_dir.iterdir()]
-                if installs_dir.is_dir()
-                else []
-            )
             for backend, target_dir in disabled_candidates:
-                if any(name.startswith((f"{backend}-", f"{backend}:")) for name in install_names):
+                if any(
+                    name == backend or name.startswith((f"{backend}-", f"{backend}:"))
+                    for name in install_names
+                ):
                     continue
                 target_str = str(target_dir)
                 target_real = os.path.realpath(target_dir)
@@ -457,13 +475,25 @@ if oc_skills.is_dir():
 claude_debug_latest = home / ".claude" / "debug" / "latest"
 if claude_debug_latest.is_symlink() and not claude_debug_latest.exists():
     dead_candidates.append(claude_debug_latest)
+zsh_completions = home / ".cache" / "zsh" / "completions"
+if zsh_completions.is_dir():
+    for entry in sorted(zsh_completions.iterdir()):
+        if entry.is_symlink() and not entry.exists():
+            dead_candidates.append(entry)
+        elif entry.is_file() and not entry.is_symlink():
+            try:
+                if entry.stat().st_size == 0:
+                    dead_candidates.append(entry)
+            except OSError:
+                pass
 
 for dead in dead_candidates:
+    kind = "zero-byte file" if (dead.is_file() and not dead.is_symlink()) else "dead symlink"
     if apply:
         dead.unlink()
-        print(f"REMOVED dead symlink: {dead}")
+        print(f"REMOVED {kind}: {dead}")
     else:
-        print(f"WOULD REMOVE dead symlink: {dead}")
+        print(f"WOULD REMOVE {kind}: {dead}")
 
 # 7. Unmanaged ~/.config/opencode/opencode.jsonc (backup before removing; never overwrite existing backup)
 oc_dir = home / ".config" / "opencode"
@@ -517,14 +547,34 @@ if config_local.is_file():
     except (OSError, tomllib.TOMLDecodeError):
         only_migrated_env = False
 
-    has_cf_id = False
-    if fnox_cfg.is_file():
+    def _fnox_has_secret(cfg_path: Path, secret_name: str, seen: set[Path] | None = None) -> bool:
+        visited = seen if seen is not None else set()
+        resolved = cfg_path.resolve(strict=False)
+        if resolved in visited or not resolved.is_file():
+            return False
+        visited.add(resolved)
         try:
-            fnox_data = tomllib.loads(fnox_cfg.read_text(encoding="utf-8"))
-            secrets = fnox_data.get("secrets")
-            has_cf_id = isinstance(secrets, dict) and "CLOUDFLARE_ACCOUNT_ID" in secrets
-        except tomllib.TOMLDecodeError:
-            has_cf_id = False
+            data = tomllib.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return False
+        secrets = data.get("secrets")
+        if isinstance(secrets, dict) and secret_name in secrets:
+            return True
+        profiles = data.get("profiles")
+        if isinstance(profiles, dict):
+            for prof in profiles.values():
+                if isinstance(prof, dict) and isinstance(prof.get("secrets"), dict):
+                    if secret_name in prof["secrets"]:
+                        return True
+        imports = data.get("import")
+        if isinstance(imports, list):
+            for imp in imports:
+                if isinstance(imp, str) and imp:
+                    if _fnox_has_secret(resolved.parent / imp, secret_name, visited):
+                        return True
+        return False
+
+    has_cf_id = _fnox_has_secret(fnox_cfg, "CLOUDFLARE_ACCOUNT_ID")
     fnox_ok = False
     if has_cf_id and fnox_cfg.is_file():
         fnox_ok = (

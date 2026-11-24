@@ -1,0 +1,6 @@
+#:schema https://fnox.jdx.dev/schema.json
+# Project-local bridge for root mise.toml `[secrets.fnox] profile = "infra"`
+# so `mise task validate`, `hk check --all`, and `ci.yml` resolve `[profiles.infra]` cleanly
+# before host/container `~/.config/fnox/config.toml` is applied.
+
+import = ["./unix/home/.config/fnox/shared.toml"]

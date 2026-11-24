@@ -142,7 +142,10 @@ try:
 except json.JSONDecodeError:
     rows = []
 found = any(
-    isinstance(row, dict) and (row.get("id") == want or row.get("name") == want)
+    isinstance(row, dict)
+    and (row.get("id") == want or row.get("name") == want)
+    and row.get("scope") in {None, "user"}
+    and row.get("enabled") is not False
     for row in (rows if isinstance(rows, list) else [])
 )
 sys.exit(0 if found else 1)
@@ -173,7 +176,7 @@ PY
 		then
 			codex plugin marketplace add ray-manaloto/skills </dev/null >/dev/null 2>&1 || echo "WARN: codex plugin marketplace add ray-manaloto/skills skipped/failed" >&2
 		fi
-		codex_plugins_json="$(codex plugin list --json </dev/null 2>/dev/null || echo '{}')"
+		codex_plugins_json="$(codex plugin list -m ray-manaloto-skills --json </dev/null 2>/dev/null || echo '{}')"
 		if ! python3 - "${codex_plugins_json}" <<'PY'
 import json
 import sys
@@ -182,12 +185,20 @@ try:
     data = json.loads(sys.argv[1])
 except json.JSONDecodeError:
     data = {}
-for mp in (data.get("marketplaces") or []) if isinstance(data, dict) else []:
-    if isinstance(mp, dict) and mp.get("name") == "ray-manaloto-skills":
-        for p in mp.get("plugins") or []:
-            if isinstance(p, dict) and p.get("name") == "skills" and p.get("installed"):
-                sys.exit(0)
-sys.exit(1)
+installed = data.get("installed") if isinstance(data, dict) else []
+found = any(
+    isinstance(p, dict)
+    and (
+        p.get("pluginId") == "skills@ray-manaloto-skills"
+        or (
+            p.get("marketplaceName") == "ray-manaloto-skills"
+            and p.get("name") == "skills"
+            and p.get("installed") is True
+        )
+    )
+    for p in (installed if isinstance(installed, list) else [])
+)
+sys.exit(0 if found else 1)
 PY
 		then
 			codex plugin add skills@ray-manaloto-skills </dev/null >/dev/null 2>&1 || echo "WARN: codex plugin add skills@ray-manaloto-skills skipped/failed" >&2

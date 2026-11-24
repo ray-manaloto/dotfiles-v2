@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/deps_audit.schema.json",
+  "title": "DepsAuditModels",
+  "description": "Schema-first models, enums, and typed responses for cross-OS dependency and toolchain auditing (`deps:audit`).",
+  "$defs": {
+    "DepsAuditSourceKind": {
+      "type": "string",
+      "description": "Audited dependency surface category.",
+      "enum": [
+        "mise-binary",
+        "mise-tool",
+        "uv-package",
+        "oci-image",
+        "hk-preset",
+        "native-harness",
+        "kb-workspace"
+      ]
+    },
+    "DepsAuditStatus": {
+      "type": "string",
+      "description": "Evaluated version currency status for an audited entry.",
+      "enum": ["current", "outdated", "pinned-held", "unknown", "error"]
+    },
+    "DepsAuditErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for deps_audit operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_CONFIG_PARSE",
+        "ERR_COMMAND_FAILED",
+        "ERR_NETWORK_FAILED",
+        "ERR_IO_FAILURE"
+      ]
+    },
+    "DepsAuditReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for deps_audit operations.",
+      "enum": ["RET_OK", "RET_OUTDATED", "RET_OFFLINE", "RET_PARTIAL"]
+    },
+    "DepsAuditErrorEntry": {
+      "type": "object",
+      "description": "Typed deps_audit domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/DepsAuditErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "DepsAuditReturnEntry": {
+      "type": "object",
+      "description": "Typed deps_audit domain return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/DepsAuditReturnCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "AuditItem": {
+      "type": "object",
+      "description": "Single audited toolchain, package, OCI image, preset, harness, or OpenWiki entry.",
+      "additionalProperties": false,
+      "required": ["name", "source_kind", "file_path", "os_scope", "status"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_kind": {
+          "$ref": "#/$defs/DepsAuditSourceKind"
+        },
+        "file_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "os_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "current_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "latest_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/DepsAuditStatus"
+        },
+        "release_url": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "compare_url": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "note": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "AuditCategoryStats": {
+      "type": "object",
+      "description": "Per-source-kind audited item counters.",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "total",
+        "current",
+        "outdated",
+        "pinned_held",
+        "unknown",
+        "error"
+      ],
+      "properties": {
+        "source_kind": {
+          "$ref": "#/$defs/DepsAuditSourceKind"
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "current": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outdated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pinned_held": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "DepsAuditSummary": {
+      "type": "object",
+      "description": "Aggregate summary across all audited dependency surfaces.",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "current",
+        "outdated",
+        "pinned_held",
+        "unknown",
+        "error",
+        "categories",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "current": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outdated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pinned_held": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuditCategoryStats"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsAuditErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsAuditReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "DepsAuditResponse": {
+      "type": "object",
+      "description": "Top-level typed response envelope for `mise run deps:audit`.",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "repo_root",
+        "offline",
+        "rc",
+        "summary",
+        "items",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "offline": {
+          "type": "boolean"
+        },
+        "rc": {
+          "type": "integer"
+        },
+        "summary": {
+          "$ref": "#/$defs/DepsAuditSummary"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuditItem"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsAuditErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DepsAuditReturnEntry"
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

@@ -23,12 +23,12 @@ and C++26 workstation setup.
   must run `mac` and `pc` (and `vm` where applicable) concurrently whenever
   possible with per-target log buffering and fail-closed exit aggregation.
 - **Option A `mise bootstrap` architecture:**
-  - `docker/ubuntu/Dockerfile` copies `mise 2026.11.13` from digest-pinned
-    multi-arch `ghcr.io/jdx/mise:2026.11.13@sha256:06a4e5b507ac24d0279d6d2fc1f0849cb54fd0c1eb305a93db028398364b45f9`
+  - `docker/ubuntu/Dockerfile` copies `mise 2026.11.14` from digest-pinned
+    multi-arch `ghcr.io/jdx/mise:2026.11.14@sha256:7178a0bc7eb30d5090f81237fc0a7830f57e52126b9d8df656e24547437a1e53`
     (official `mise` Docker cookbook pattern), then runs a 2-phase
     `mise bootstrap` with BuildKit `apt` / `downloads-cas` (`download_cache = true`,
     `10GiB`) caches and optional `acu-trial` `ubuntu-cache` (`DOTFILES_APT_CACHE`,
-    auto-probed on `pc:3142` via `/healthz`). `tasks/vm/up` installs `mise 2026.11.13`
+    auto-probed on `pc:3142` via `/healthz`). `tasks/vm/up` installs `mise 2026.11.14`
     on macOS via pinned `packslip v1.11.5` (`packslip install --pin ps1_nlhmwtfeufglxv5myvwvronk7a`,
     retiring the `v1.11.4` `#346` workaround fixed by `PR #347`).
   - Phase 1a (`root`) runs `container-prune-ubuntu` (removes stock `ubuntu`
@@ -64,7 +64,7 @@ and C++26 workstation setup.
   native `send_message` (include sender `conversationId` and request explicit
   receipt confirmation), discover the live peer tab dynamically with
   `hc ls --json` / `hc get <id> --json` matching `--conversation <uuid>`
-  (never hardcode stale tab IDs across `agy-hc` restarts), and send a 1-line
+  (never hardcode stale tab IDs across `agy` restarts), and send a 1-line
   `hc send <tab-id> "Wake doorbell: ..."` (`<= 220` chars) only when
   `status.state` is `"idle"` or `"done"` (omit `--if idle` when `"done"`). Never
   send payloads via `hc send`, and never touch `ANTIGRAVITY_CSRF_TOKEN`. Queue
@@ -73,12 +73,14 @@ and C++26 workstation setup.
   `knowledge-base-v2` directly from `dotfiles-v2`. For multi-harness async
   collaboration across `pc`, `mac`, `vm`, and Mac host (`claude`, `codex`,
   `agy`, `opencode`, `zcode`), run `mise run board:up` (`pitchfork`-supervised
-  `@vercel/board`), wire jdx MCP servers via `~/.claude.json/mcp-jdx` and
-  `~/.codex/config.toml/mcp-jdx`, keep canonical repo skills under
-  `unix/home/.agents/skills/` with `~/.gemini/config/skills -> ~/.agents/skills`,
+  `@vercel/board`), use CLI+Skill first with `0` global MCPs across harnesses
+  (keeping `openwiki mcp` repo-local to `knowledge-base-v2`), keep canonical repo
+  skills under `unix/home/.agents/skills/` with `~/.gemini/config/skills -> ~/.agents/skills`,
   and mirror `mise skills sync --global --prune` (`aube`, `communique`, `flint`,
   `fnox`, `hk-configure`, `hk-debug`, `pitchfork`, `usage`) into `~/.claude/skills/`
-  via `bootstrap:skills`.
+  via `bootstrap:skills`. Pass `NODE_EXTRA_CA_CERTS` (with `fnox proxy run`) for
+  Node 26 CLI TLS, and on Env 2-4 guests use `HTTPS_PROXY=http://127.0.0.1:1055 NODE_USE_ENV_PROXY=1`
+  with `unset ALL_PROXY all_proxy` cleanly.
 - **Schemas, hooks & verification:** Declare public `$schema` / `#:schema`
   headers on config files. Prefer `mise` / `jdx` ecosystem tools, native
   compiled `hk` builtins, `mise fmt` for mise configs, and `mise doctor project`
@@ -115,7 +117,13 @@ and C++26 workstation setup.
   `/opt/homebrew/bin/mise` stays absent.
 - **Harnesses & container scripts:** Install AI CLIs (`claude`, `codex`, `agy`,
   `opencode`) via native installers only (`[tasks.bootstrap]`, blocked with
-  `mise` in `disable_tools` & `auto_install_disable_tools`). Omit `--bare` when
+  `mise` in `disable_tools` & `auto_install_disable_tools`). Never mutate
+  `~/.local/share/mise/installs` or `/opt/mise/installs` directly (`postinstall`
+  runs `host:harden-bins` to mark compiled binaries `0555`/`a-w`, and `dcg`
+  enforces `custom.mise_protect` across Claude/Codex/AGY); use native `mise`
+  commands (`mise install`/`upgrade`/`prune`), Arch B `[secrets.fnox]` (`profile = "infra"`
+  in root `mise.toml` and scoped `fnox -c ~/.config/fnox/<profile>.toml -P <profile> --no-defaults proxy run`
+  / `opencode-paid`), and Codex `[shell_environment_policy]` (`inherit = "all"`). Omit `--bare` when
   authenticating Claude with `CLAUDE_CODE_OAUTH_TOKEN`, redirect `</dev/null`
   on interactive/agent CLIs inside `bash -s` / `docker exec -i` / `tart exec -i`
   heredocs, and avoid creating the container user home directory or `/opt/mise`

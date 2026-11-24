@@ -71,6 +71,7 @@ class AdapterTests(unittest.TestCase):
         ]
         self.assertEqual(detect_kind("antigravity", fg, []), HarnessKind.AGY)
         adapter = AgyAdapter()
+        self.assertTrue(adapter.matches(None, [], ["/usr/local/bin/agy"]))
         sid = adapter.session_id(
             address="t3xb",
             tree_pids=[200],
@@ -89,7 +90,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(
             cmd,
             [
-                "agy-hc",
+                "agy",
                 "--conversation",
                 sid,
                 "--dangerously-skip-permissions",
@@ -155,7 +156,7 @@ class AdapterTests(unittest.TestCase):
                     prompt=None,
                     screen_text="",
                 ),
-                ["agy-hc", "--conversation", sid, "--model", "gemini-pro"],
+                ["agy", "--conversation", sid, "--model", "gemini-pro"],
             )
             ok, reason = adapter.verify_resumed(
                 old_pid=100,
@@ -218,6 +219,7 @@ class AdapterTests(unittest.TestCase):
             "-u",
             "RUST_LOG",
             "codex",
+            "--no-daemon",
             "--disable",
             "daemon_auto_start",
             "-c",
@@ -241,6 +243,7 @@ class AdapterTests(unittest.TestCase):
             "Old prompt",
         )
         adapter = CodexAdapter()
+        self.assertTrue(adapter.matches(None, [], ["/usr/local/bin/codex"]))
         screen = (
             "› Ask Codex to do anything\n  GPT-6.2-Astra medium · /workspace/repo\n"
         )
@@ -256,10 +259,12 @@ class AdapterTests(unittest.TestCase):
             prompt=None,
             screen_text=screen,
         )
+        self.assertEqual(cmd.count("--no-daemon"), 1)
         self.assertEqual(
             cmd,
             [
-                "codex-hc",
+                "codex",
+                "--no-daemon",
                 "resume",
                 "01a20000-0000-7000-8000-000000000099",
                 "--model",
@@ -620,7 +625,8 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(
                 cmd,
                 [
-                    "codex-hc",
+                    "codex",
+                    "--no-daemon",
                     "resume",
                     "01a1f5ba-9341-7890-976e-75cc768f8dd5",
                     "--model",
@@ -645,7 +651,8 @@ class AdapterTests(unittest.TestCase):
                     screen_text=screen,
                 ),
                 [
-                    "codex-hc",
+                    "codex",
+                    "--no-daemon",
                     "resume",
                     newer_id,
                     "--model",

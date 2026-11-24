@@ -1,0 +1,19 @@
+#:schema https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/main/config.schema.json
+# Destructive Command Guard (`dcg`) policy for dotfiles-v2 harnesses.
+
+[general]
+color = "auto"
+self_heal_hook = false
+check_updates = false
+
+[packs]
+enabled = [
+  "containers.docker",
+  "containers.compose",
+  "secret_disclosure",
+  "system.permissions",
+]
+custom_paths = ["~/.config/dcg/packs/*.yaml"]
+
+[heredoc]
+enabled = true

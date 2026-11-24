@@ -363,8 +363,8 @@ class AgyAdapter(BaseAdapter):
     ) -> bool:
         return (
             status_app == "antigravity"
-            or program_name(fg_argv) == "agy"
-            or program_name(term_argv) == "agy-hc"
+            or program_name(fg_argv) in {"agy", "agy-hc"}
+            or program_name(term_argv) in {"agy", "agy-hc"}
         )
 
     def session_id(
@@ -409,7 +409,7 @@ class AgyAdapter(BaseAdapter):
         del is_coordinator, screen_text
         words = unwrap_launchers(term.fg_argv) or unwrap_launchers(term.term_argv)
         kept = _filter_by_table(words[1:], self.KEEP, self.DROP) if words else []
-        cmd = ["agy-hc", "--conversation", session_id, *kept]
+        cmd = ["agy", "--conversation", session_id, *kept]
         if prompt:
             cmd.extend(["-i", prompt])
         return cmd
@@ -473,7 +473,6 @@ class CodexAdapter(BaseAdapter):
             "--dangerously-bypass-approvals-and-sandbox",
             "--dangerously-bypass-hook-trust",
             "--no-alt-screen",
-            "--no-daemon",
             "--not-so-yolo",
             "--oss",
             "--search",
@@ -482,15 +481,17 @@ class CodexAdapter(BaseAdapter):
             "--yolo",
         }
     )
-    DROP_BOOL_FLAGS = frozenset({"--all", "--include-non-interactive", "--last"})
+    DROP_BOOL_FLAGS = frozenset(
+        {"--all", "--include-non-interactive", "--last", "--no-daemon"}
+    )
 
     def matches(
         self, status_app: str | None, fg_argv: list[str], term_argv: list[str]
     ) -> bool:
         return (
             status_app == "codex"
-            or program_name(fg_argv) == "codex"
-            or program_name(term_argv) == "codex-hc"
+            or program_name(fg_argv) in {"codex", "codex-hc"}
+            or program_name(term_argv) in {"codex", "codex-hc"}
         )
 
     def session_id(
@@ -622,7 +623,7 @@ class CodexAdapter(BaseAdapter):
     ) -> list[str]:
         del is_coordinator
         flags = self.codex_flags(term.fg_argv or term.term_argv, screen_text)
-        cmd = ["codex-hc", "resume", session_id, *flags]
+        cmd = ["codex", "--no-daemon", "resume", session_id, *flags]
         if prompt:
             cmd.append(prompt)
         return cmd

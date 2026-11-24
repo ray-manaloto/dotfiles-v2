@@ -3,3 +3,8 @@
 
 [bootstrap.user]
 login_shell = "zsh"
+
+[dotfiles]
+"~/.config/fnox/config.toml" = { source = "~/.config/fnox/config.headless.toml", main_checkout = true, depends = [
+  "~/.config/fnox/config.headless.toml",
+] }

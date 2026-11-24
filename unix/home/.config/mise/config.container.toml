@@ -186,5 +186,4 @@ emulate sh -c '. /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-sec
 
 [dotfiles]
 "~/.bashrc/dotfiles-v2" = { line = ". /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-secrets.sh", position = "prepend" }
-"~/.claude/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true, permissions = "0600" }
 "~/.profile/dotfiles-v2" = { line = ". /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-secrets.sh", position = "append" }

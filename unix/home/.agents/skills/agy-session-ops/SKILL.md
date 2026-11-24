@@ -1,15 +1,15 @@
 ---
 name: agy-session-ops
 description: >-
-  Use when restarting or resuming an Antigravity CLI session with agy-hc,
-  reloading settings.json or the fnox proxy, coordinating via hybrid native
+  Use when restarting or resuming an Antigravity CLI session cleanly,
+  reloading settings.json or mcp_config.json, coordinating via hybrid native
   send_message and idle Herdr wake doorbells with peer agy sessions, or
   verifying host ~/.gemini/config/ sync.
 ---
 
 # Antigravity Session & Peer Coordination Checklist
 
-## 1. Restart / Resume via `agy-hc`
+## 1. Restart / Resume Antigravity (`agy`)
 
 1. Check `hc get "$HC_TERMINAL_ID" --json` first to verify whether the tab
    wraps a login shell (`/bin/zsh -l`) and read `foreground.argv` for the active
@@ -21,15 +21,15 @@ description: >-
    mise run host:sync-gemini --check
    ```
 
-   If drifted, run `mise run host:sync-gemini` first so updated hooks, rules,
-   and skills load when `agy` restarts.
+   If drifted, run `mise run host:sync-gemini` first so updated hooks (including
+   `agy-dcg-guard.py`), rules, and skills load when `agy` restarts.
 
 3. Give exact manual resume steps: `/exit` in the session -> verify `pwd` ->
-   `agy-hc --conversation <id>` (launches `[wrappers.agy]` under a fresh `fnox`
-   proxy and reloads `~/.gemini/antigravity-cli/settings.json`).
+   `agy --conversation <id>` (reloads `~/.gemini/antigravity-cli/settings.json`
+   without ephemeral whole-harness CA wrappers).
 
 4. Verify after resume: run a blocked/allowed check such as `fnox --version` for
-   `settings.json` and a live research query for `fnox` proxy Doppler tokens.
+   `settings.json` and a live research query via scoped `fnox -c ~/.config/fnox/research.toml -P research --no-defaults proxy run` when Doppler tokens are needed.
 
 ## 2. Hybrid `agy <-> agy` Peer Messaging (Native + Idle/Done Doorbell)
 
@@ -40,7 +40,7 @@ description: >-
 
 2. Discover the live peer tab dynamically by matching `--conversation <uuid>` via
    `hc ls --json` and `hc get <tab-id> --json` (do not reuse hardcoded pre-restart
-   tab IDs after `agy-hc`). If `status.state` is `"idle"` or `"done"`, send a
+   tab IDs after `agy` restarts). If `status.state` is `"idle"` or `"done"`, send a
    single 1-line Herdr wake doorbell (`<= 220` chars, omitting `--if idle` when
    `state == "done"`):
 

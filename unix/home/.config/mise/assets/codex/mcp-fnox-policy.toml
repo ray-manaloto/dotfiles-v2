@@ -1,6 +1,5 @@
-# Reference policy and per-MCP `fnox` wrapping template for ~/.codex/config.toml.
-# Managed via `mise run codex:mcp-wrap [--check | --apply]` so Codex can drop `-c` overrides
-# on bare `codex` (enabling `app-server-daemon`) while `codex-hc` preserves per-tab `HC_*` isolation.
+# Declarative Codex [shell_environment_policy] merged into ~/.codex/config.toml via mise dotfiles.
+# Preserves per-tab HC_* isolation and explicit runtime environment toggles without whole-harness wrappers.
 
 [shell_environment_policy]
 inherit = "all"

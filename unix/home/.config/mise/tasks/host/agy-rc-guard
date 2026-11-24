@@ -80,17 +80,9 @@ agy_bin = sys.argv[6]
 
 issues = []
 plist_exists = plist.is_file()
-poisoned_ssl = False
 if plist_exists:
     try:
-        pdata = plistlib.loads(plist.read_bytes())
-        env_map = pdata.get("EnvironmentVariables") or {}
-        if isinstance(env_map, dict):
-            for key in ("SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
-                val = str(env_map.get(key) or "")
-                if "fnox-proxy-ca-" in val or ("127.0.0.1:" in val and key.endswith("PROXY")):
-                    poisoned_ssl = True
-                    issues.append(f"plist contains ephemeral proxy var {key}")
+        plistlib.loads(plist.read_bytes())
     except Exception as exc:
         issues.append(f"unreadable plist: {exc}")
 else:
@@ -143,7 +135,6 @@ if daemon_log.is_file():
 
 print(json.dumps({
     "plist_exists": plist_exists,
-    "poisoned_ssl": poisoned_ssl,
     "launchctl_loaded": launchctl_loaded,
     "launchctl_running": launchctl_running,
     "rc_running": rc_running,
@@ -158,11 +149,11 @@ state_json="$(read_state)"
 
 if [[ ${repair} == "true" ]]; then
 	needs_reseed="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (not d["token_ok"] or d["auth_error_in_log"]) else "0")' "${state_json}")"
-	needs_recreate="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (not d["plist_exists"] or d["poisoned_ssl"] or not d["launchctl_loaded"]) else "0")' "${state_json}")"
-	needs_kickstart="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (d["plist_exists"] and not d["poisoned_ssl"] and d["launchctl_loaded"] and (not d["launchctl_running"] or not d["rc_running"])) else "0")' "${state_json}")"
+	needs_recreate="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (not d["plist_exists"] or not d["launchctl_loaded"]) else "0")' "${state_json}")"
+	needs_kickstart="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (d["plist_exists"] and d["launchctl_loaded"] and (not d["launchctl_running"] or not d["rc_running"])) else "0")' "${state_json}")"
 	needs_start="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if not d["plist_exists"] else "0")' "${state_json}")"
 
-	# #1401 / #1269: stop & recreate LaunchAgent cleanly whenever token reseed, poisoned proxy env, or unloaded plist occurs.
+	# #1401 / #1269: stop & recreate LaunchAgent cleanly whenever token reseed or an unloaded plist occurs.
 	if [[ (${needs_reseed} -eq 1 || ${needs_recreate} -eq 1) && ${needs_start} -eq 0 ]]; then
 		"${agy_bin}" remote-control stop </dev/null >/dev/null 2>&1 || true
 		needs_start=1

@@ -416,7 +416,7 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
         # mise-version-parity catches skew
         (root / "docker" / "ubuntu").mkdir(parents=True)
         (root / "docker" / "ubuntu" / "Dockerfile").write_text(
-            "FROM ghcr.io/jdx/mise:2026.11.13@sha256:0000 AS mise\n", encoding="utf-8"
+            "FROM ghcr.io/jdx/mise:2026.11.14@sha256:0000 AS mise\n", encoding="utf-8"
         )
         (root / "mise.toml").write_text(
             'min_version = "2026.11.12"\n', encoding="utf-8"
@@ -425,7 +425,7 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
         assert any("version skew detected" in e for e in v_errs)
 
         # config-hygiene catches non-canonical short name (with zero opt-out exceptions across config*.toml),
-        # missing prerelease, --standalone, missing proxy RUST_LOG, programs.json, and raw .. traversal
+        # missing prerelease, programs.json, and raw .. traversal
         mise_dir = root / "unix" / "home" / ".config" / "mise"
         mise_dir.mkdir(parents=True)
         (mise_dir / "config.toml").write_text(
@@ -435,13 +435,8 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
             '"aqua:oxc-project/oxc/oxfmt" = "0.80.0"\n'
             '"aqua:anchore/syft" = "1.57.2"\n'
             '"npm:zcode-app-cli" = "3.18.2-48"\n\n'
-            "[wrappers.opencode]\n"
-            'command = "fnox"\n'
-            'args = ["proxy", "run", "--", "opencode", "--standalone"]\n'
-            'env = { RUST_LOG = "info" }\n\n'
             "[dotfiles]\n"
-            '"~/.zshenv" = { source = "../../.zshenv", mode = "symlink" }\n'
-            '"~/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true }\n',
+            '"~/.zshenv" = { source = "../../.zshenv", mode = "symlink" }\n',
             encoding="utf-8",
         )
         (mise_dir / "config.macos.toml").write_text(
@@ -490,11 +485,8 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
             for e in c_errs
         )
         assert any("prerelease = true" in e and "zcode-app-cli" in e for e in c_errs)
-        assert any("not hardcode `--standalone`" in e for e in c_errs)
-        assert any("fnox::commands::proxy=error" in e for e in c_errs)
         assert any("raw parent traversal" in e for e in c_errs)
-        assert not any("mcp-jdx" in e for e in c_errs)
-        assert any("must invoke `codex-hc`" in e for e in c_errs)
+        assert any("must invoke ['codex', '--no-daemon']" in e for e in c_errs)
 
 
 def test_check_mise_lock_integrity_accepts_canonical_npm_registry_tool() -> None:
@@ -538,7 +530,7 @@ def test_live_host_gates_ci_skip_and_mise_audit_fixable(monkeypatch) -> None:
     monkeypatch.setenv("CI", "1")
     assert doc_mod.check_mise_doctor_clean()[0] == []
     assert doc_mod.check_host_hygiene(repo_root)[0] == []
-    assert doc_mod.check_cli_wrappers_smoke()[0] == []
+    assert doc_mod.check_mise_binary_integrity(repo_root)[0] == []
 
     # mise-doctor-clean fails on warnings even when rc=0
     monkeypatch.delenv("CI", raising=False)
@@ -555,20 +547,12 @@ def test_live_host_gates_ci_skip_and_mise_audit_fixable(monkeypatch) -> None:
     doc_errs, _ = doc_mod.check_mise_doctor_clean()
     assert any("PATH order warning" in e for e in doc_errs)
 
-    # cli-wrappers-smoke fails on Unrecognized flag or fnox proxy warning
-    monkeypatch.setattr(doc_mod.shutil, "which", lambda cmd, **_kw: f"/bin/{cmd}")
-    monkeypatch.setattr(
-        doc_mod.subprocess,
-        "run",
-        lambda *a, **kw: subprocess.CompletedProcess(
-            args=a[0],
-            returncode=0,
-            stdout="",
-            stderr="WARN fnox::commands::proxy: not sandboxing\n",
-        ),
-    )
-    smoke_errs, _ = doc_mod.check_cli_wrappers_smoke()
-    assert any("WARN fnox::commands::proxy" in e for e in smoke_errs)
+    # mise-binary-integrity validates clean repo hooks/dcg and catches missing MISE installs write-bit
+    monkeypatch.setattr(doc_mod.shutil, "which", lambda _cmd: None)
+    with tempfile.TemporaryDirectory() as clean_data:
+        monkeypatch.setenv("MISE_DATA_DIR", clean_data)
+        bin_errs, _ = doc_mod.check_mise_binary_integrity(repo_root)
+        assert bin_errs == [], bin_errs
 
     # mise-audit-fixable: unpatched python CVE-2026-124249 is advisory only; fixed advisory fails
     fixable_0, adv_1 = doc_mod.evaluate_mise_audit_payload(
@@ -602,18 +586,33 @@ def test_live_host_gates_ci_skip_and_mise_audit_fixable(monkeypatch) -> None:
     )
     assert len(fixable_1) == 1 and "3.15.3" in fixable_1[0]
 
-    # check_cli_wrappers_smoke skips on container=docker and VM vm-env.sh
-    monkeypatch.delenv("CI", raising=False)
-    monkeypatch.setenv("container", "docker")
-    assert doc_mod.check_cli_wrappers_smoke()[0] == []
-    monkeypatch.delenv("container", raising=False)
+    # check_mise_binary_integrity ignores writable installs when CI=1, even if VM/container markers exist
     with tempfile.TemporaryDirectory() as tmp:
         fake_home = Path(tmp) / "home"
         vm_env = fake_home / ".config" / "dotfiles-v2" / "vm-env.sh"
         vm_env.parent.mkdir(parents=True)
         vm_env.write_text("# vm\n", encoding="utf-8")
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
-        assert doc_mod.check_cli_wrappers_smoke()[0] == []
+
+        tmp_data = Path(tmp) / "mise-data"
+        bin_dir = tmp_data / "installs" / "sample" / "1.0" / "bin"
+        bin_dir.mkdir(parents=True)
+        writable_elf = bin_dir / "sample"
+        writable_elf.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 16)
+        writable_elf.chmod(0o755)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_data))
+
+        monkeypatch.setenv("CI", "1")
+        monkeypatch.setenv("container", "docker")
+        assert doc_mod.check_mise_binary_integrity(repo_root)[0] == []
+
+        monkeypatch.delenv("CI", raising=False)
+        live_errs, _ = doc_mod.check_mise_binary_integrity(repo_root)
+        assert any("compiled binary(ies) writable" in e for e in live_errs), live_errs
+
+        monkeypatch.delenv("container", raising=False)
+        monkeypatch.setenv("MISE_DATA_DIR", str(Path(tmp) / "empty-mise-data"))
+        assert doc_mod.check_mise_binary_integrity(repo_root)[0] == []
 
         # check_host_hygiene skips vb-zsh-check when ~/.config/board/env.sh is absent
         monkeypatch.setattr(doc_mod.platform, "system", lambda: "Darwin")
@@ -717,41 +716,219 @@ def test_doctor_online_uv_audit_nested_adverse_and_zcode_failures() -> None:
         assert "FAIL  zcode-doctor" in proc.stderr
 
 
-def test_opencode_wrapper_routing_and_worktree_rm_common_dir() -> None:
+def test_worktree_rm_common_dir_and_dcg_hardening(monkeypatch) -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    wrapper = repo_root / "unix" / "home" / ".local" / "bin" / "opencode-wrapper"
     worktree_rm = repo_root / "tasks" / "worktree" / "rm"
+    harden_task = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "host"
+        / "harden-bins"
+    )
+    agy_dcg = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".gemini"
+        / "config"
+        / "hooks"
+        / "agy-dcg-guard.py"
+    )
+    doc_mod = _load_task_module("doctor_checks")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        fake_home = tmp_path / "home"
-        oc_bin = fake_home / ".opencode" / "bin" / "opencode"
-        oc_bin.parent.mkdir(parents=True)
-        oc_bin.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\"\n", encoding="utf-8")
-        oc_bin.chmod(0o755)
+        # 1. agy-dcg-guard handles empty stdin, Antigravity toolCall, ask/exit-2, and allow cleanly
+        empty_p = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(agy_dcg)],
+            input="   \n",
+            env={"PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(empty_p.stdout) == {"decision": "allow"}
 
-        env = {"HOME": str(fake_home), "PATH": ""}
-        for args, want_standalone in (
-            ([], True),
-            (["run", "hello"], True),
-            (["run", "--help"], False),
-            (["update", "--help"], False),
-            (["upgrade", "--help"], False),
-            (["mcp", "--help"], False),
-            (["service", "--help"], False),
-            (["--prompt", "--standalone", "--help"], False),
-            (["--server", "http://127.0.0.1:4096"], False),
+        stub_dcg = tmp_path / "dcg"
+        stub_dcg.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "assert '--agent' in sys.argv and 'antigravity' in sys.argv, sys.argv\n"
+            "data = json.load(sys.stdin)\n"
+            "cmd = (data.get('tool_input') or {}).get('command', '')\n"
+            "if 'ln -sf' in cmd:\n"
+            "    print(json.dumps({'hookSpecificOutput': {'permissionDecision': 'deny', 'permissionDecisionReason': 'blocked'}}))\n"
+            "elif 'ask-cmd' in cmd:\n"
+            "    print(json.dumps({'hookSpecificOutput': {'permissionDecision': 'ask', 'permissionDecisionReason': 'confirm risky'}}))\n"
+            "elif 'exit2-cmd' in cmd:\n"
+            "    sys.stderr.write('blocked by exit 2')\n"
+            "    raise SystemExit(2)\n",
+            encoding="utf-8",
+        )
+        stub_dcg.chmod(0o755)
+        for payload in (
+            {
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": "ln -sf x ~/.local/share/mise/installs/y"},
+                }
+            },
+            {
+                "tool_input": {
+                    "CommandLine": "ln -sf x ~/.local/share/mise/installs/y",
+                }
+            },
         ):
-            proc = subprocess.run(
-                ["/bin/bash", str(wrapper), *args],
-                env=env,
+            deny_p = subprocess.run(
+                ["/usr/bin/python3", "-I", "-B", str(agy_dcg)],
+                input=json.dumps(payload),
+                env={"DCG_BIN": str(stub_dcg), "PATH": "/usr/bin:/bin"},
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            out = proc.stdout.strip()
-            has_standalone = out.startswith("--standalone")
-            assert has_standalone is want_standalone, f"args={args} out={out!r}"
+            assert json.loads(deny_p.stdout) == {
+                "decision": "deny",
+                "reason": "blocked",
+            }
+
+        ask_p = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(agy_dcg)],
+            input=json.dumps(
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "ask-cmd"},
+                    }
+                }
+            ),
+            env={"DCG_BIN": str(stub_dcg), "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(ask_p.stdout) == {
+            "decision": "deny",
+            "reason": "confirm risky",
+        }
+
+        exit2_p = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(agy_dcg)],
+            input=json.dumps(
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "exit2-cmd"},
+                    }
+                }
+            ),
+            env={"DCG_BIN": str(stub_dcg), "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(exit2_p.stdout) == {
+            "decision": "deny",
+            "reason": "blocked by exit 2",
+        }
+
+        allow_p = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(agy_dcg)],
+            input=json.dumps(
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "ls -la ~/.local/share/mise/installs"},
+                    }
+                }
+            ),
+            env={"DCG_BIN": str(stub_dcg), "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(allow_p.stdout) == {"decision": "allow"}
+
+        # 2. host:harden-bins marks Mach-O/ELF binaries 0555 and leaves scripts/site-packages 0755
+        installs_dir = tmp_path / "mise_data" / "installs"
+        bin_dir = installs_dir / "tool" / "1.0" / "bin"
+        sp_dir = installs_dir / "pkg" / "site-packages"
+        bin_dir.mkdir(parents=True)
+        sp_dir.mkdir(parents=True)
+        elf_bin = bin_dir / "tool"
+        elf_bin.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 16)
+        elf_bin.chmod(0o755)
+        shell_helper = bin_dir / "helper.sh"
+        shell_helper.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        shell_helper.chmod(0o755)
+        so_mod = sp_dir / "mod.so"
+        so_mod.write_bytes(b"\x7fELF\x02\x01\x01\x00")
+        so_mod.chmod(0o755)
+
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "mise_data"))
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.setattr(doc_mod.shutil, "which", lambda _cmd: None)
+        pre_errs, _ = doc_mod.check_mise_binary_integrity(repo_root)
+        assert any("compiled binary(ies) writable" in e for e in pre_errs), pre_errs
+
+        subprocess.run(
+            ["bash", str(harden_task)],
+            env={
+                "HOME": str(tmp_path),
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_dir": str(installs_dir),
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert (elf_bin.stat().st_mode & 0o777) == 0o555
+        assert (shell_helper.stat().st_mode & 0o777) == 0o755
+        assert (so_mod.stat().st_mode & 0o777) == 0o755
+        post_errs, _ = doc_mod.check_mise_binary_integrity(repo_root)
+        assert post_errs == [], post_errs
+
+        # 3. check_config_hygiene detects bidirectional [dotfiles] mismatch
+        fx_repo = tmp_path / "fx_repo"
+        fx_mise = fx_repo / "unix" / "home" / ".config" / "mise"
+        fx_mise.mkdir(parents=True)
+        (fx_repo / "unix" / "home" / ".zshenv").write_text(
+            "# zshenv\n", encoding="utf-8"
+        )
+        (fx_repo / "unix" / "home" / ".extra-unregistered").write_text(
+            "x\n", encoding="utf-8"
+        )
+        fx_prog = fx_repo / "unix" / "home" / ".config" / "herdr-app"
+        fx_prog.mkdir(parents=True)
+        (fx_prog / "programs.json").write_text(
+            json.dumps(
+                {
+                    "programs": {
+                        "antigravity": {"run": ["agy"]},
+                        "codex": {"run": ["codex", "--no-daemon"]},
+                        "opencode": {"run": ["opencode", "--standalone"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (fx_mise / "config.toml").write_text(
+            '[dotfiles]\n"~/.zshenv" = { main_checkout = true }\n'
+            '"~/.config/herdr-app/programs.json" = { main_checkout = true }\n'
+            '"~/.missing-file" = { main_checkout = true }\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+        parity_errs = doc_mod.check_config_hygiene(fx_repo)
+        assert any(
+            "unregistered dotfile unix/home/.extra-unregistered" in e
+            for e in parity_errs
+        )
+        assert any("missing unix/home/.missing-file" in e for e in parity_errs)
 
         # tasks/worktree/rm resolves --git-common-dir from inside a sibling worktree
         git_env = _clean_git_env()
@@ -1499,9 +1676,9 @@ def test_doctor_checks_registry_aliases_and_container_lock_and_daemon_health(
             json.dumps(
                 {
                     "programs": {
-                        "antigravity": {"run": ["agy-hc"]},
-                        "codex": {"run": ["codex-hc"]},
-                        "opencode": {"run": ["opencode-hc"]},
+                        "antigravity": {"run": ["agy"]},
+                        "codex": {"run": ["codex", "--no-daemon"]},
+                        "opencode": {"run": ["opencode", "--standalone"]},
                     }
                 }
             ),
@@ -1510,26 +1687,27 @@ def test_doctor_checks_registry_aliases_and_container_lock_and_daemon_health(
         hygiene_errs = doc_mod.check_config_hygiene(root)
         assert hygiene_errs == []
 
-        # codex-daemon-health isolates HOME, ignores opencode-pty/codex.system, and catches app-server
+        # host-hygiene catches dangling symlink and zero-byte file in ~/.cache/zsh/completions
         fake_home = root / "isolated_home"
-        fake_home.mkdir()
+        zcomp = fake_home / ".cache" / "zsh" / "completions"
+        zcomp.mkdir(parents=True)
+        (zcomp / "_dead").symlink_to(fake_home / "nonexistent-target")
+        (zcomp / "_empty").write_text("", encoding="utf-8")
+        (zcomp / "_valid").write_text("#compdef foo\n", encoding="utf-8")
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.delenv("CI", raising=False)
-        monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
-        deleted_pem = root / "definitely-missing-fnox-proxy-ca-test-999.pem"
-
-        def fake_check_output(cmd, **_kwargs):
-            if "-o" in cmd and "pid=,args=" in cmd:
-                return (
-                    " 111 /Users/u/.cache/opencode-pty daemon --runtime /tmp/pty\n"
-                    " 112 /usr/bin/codex.system --flag\n"
-                    " 222 /Users/u/.local/bin/codex app-server --listen stdio://\n"
-                )
-            return f" 222 /Users/u/.local/bin/codex app-server SSL_CERT_FILE={deleted_pem}\n"
-
-        monkeypatch.setattr(doc_mod.subprocess, "check_output", fake_check_output)
-        d_errs, _ = doc_mod.check_codex_daemon_health()
-        assert len(d_errs) == 1
-        assert "PID 222" in d_errs[0]
-        assert "PID 111" not in d_errs[0]
-        assert "PID 112" not in d_errs[0]
+        monkeypatch.setattr(doc_mod.shutil, "which", lambda _cmd: None)
+        monkeypatch.setattr(
+            doc_mod.subprocess,
+            "check_output",
+            lambda *a, **k: "",
+        )
+        h_errs, _ = doc_mod.check_host_hygiene(Path(__file__).resolve().parents[1])
+        assert any(
+            "stale-zsh-completion: dead symlink" in e and "_dead" in e for e in h_errs
+        )
+        assert any(
+            "stale-zsh-completion: zero-byte file" in e and "_empty" in e
+            for e in h_errs
+        )
+        assert not any("_valid" in e for e in h_errs)

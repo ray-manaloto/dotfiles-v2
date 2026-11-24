@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#MISE description="Harden compiled Mach-O and ELF binaries inside mise installs/ as read-only (0555/a-w) while keeping parent dirs writable"
+#USAGE flag "--dry-run" help="Report binaries that would be hardened without changing permissions"
+#USAGE flag "--dir <path>" help="Override installs directory to harden (defaults to $MISE_DATA_DIR/installs)"
+#USAGE flag "--quiet" help="Suppress summary line when no binaries changed"
+set -euo pipefail
+
+dry_run="${usage_dry_run:-false}"
+quiet="${usage_quiet:-false}"
+data_dir="${MISE_DATA_DIR:-${HOME}/.local/share/mise}"
+installs_dir="${usage_dir:-${data_dir}/installs}"
+
+if [[ ! -d ${installs_dir} ]]; then
+	[[ ${quiet} == "true" ]] || echo "host:harden-bins: installs dir absent (${installs_dir}), nothing to do"
+	exit 0
+fi
+
+py_bin=""
+if command -v python3 >/dev/null 2>&1; then
+	py_bin="$(command -v python3)"
+elif [[ -x /usr/bin/python3 ]]; then
+	py_bin="/usr/bin/python3"
+fi
+
+if [[ -z ${py_bin} ]]; then
+	echo "host:harden-bins: WARN python3 unavailable; skipping binary hardening" >&2
+	exit 0
+fi
+
+exec "${py_bin}" -I -B - "${installs_dir}" "${dry_run}" "${quiet}" <<'PY'
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+dry_run = sys.argv[2] == "true"
+quiet = sys.argv[3] == "true"
+
+SKIP_DIRS = frozenset({
+    "site-packages",
+    "node_modules",
+    ".venv",
+    ".git",
+    "__pycache__",
+})
+
+MAGICS = (
+    b"\x7fELF",
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+)
+
+
+def is_compiled_binary(path: str) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            hdr = fh.read(4)
+    except OSError:
+        return False
+    return hdr in MAGICS
+
+
+checked = 0
+changed = 0
+
+for cur_dir, dirnames, filenames in os.walk(root, followlinks=False):
+    dirnames[:] = [
+        d for d in dirnames
+        if d not in SKIP_DIRS and not os.path.islink(os.path.join(cur_dir, d))
+    ]
+    for fname in filenames:
+        fpath = os.path.join(cur_dir, fname)
+        try:
+            st = os.lstat(fpath)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        if (st.st_mode & 0o111) == 0:
+            continue
+        if not is_compiled_binary(fpath):
+            continue
+        checked += 1
+        if (st.st_mode & 0o222) != 0:
+            changed += 1
+            if dry_run:
+                print(f"DRY-RUN harden-bins: chmod a-w {fpath}")
+            else:
+                try:
+                    os.chmod(fpath, stat.S_IMODE(st.st_mode) & ~0o222)
+                except OSError as exc:
+                    print(f"host:harden-bins: failed to chmod {fpath}: {exc}", file=sys.stderr)
+                    sys.exit(1)
+
+if not quiet or changed > 0 or dry_run:
+    verb = "would harden" if dry_run else "hardened"
+    print(f"host:harden-bins: {verb} {changed}/{checked} compiled binary(ies) under {root}")
+PY

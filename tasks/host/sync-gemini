@@ -40,11 +40,8 @@ main_src_skills = main_root / "unix" / "home" / ".agents" / "skills"
 
 mise_dir = repo_root / "unix" / "home" / ".config" / "mise"
 mise_cfg_path = mise_dir / "config.toml"
-mise_macos_path = mise_dir / "config.macos.toml"
 parsed = tomllib.loads(mise_cfg_path.read_text(encoding="utf-8"))
-parsed_macos = tomllib.loads(mise_macos_path.read_text(encoding="utf-8")) if mise_macos_path.is_file() else {}
 dotfiles_tbl = parsed.get("dotfiles", {})
-macos_dotfiles_tbl = parsed_macos.get("dotfiles", {})
 groups_tbl = parsed.get("dotfile_groups", {})
 
 managed_rels: list[str] = []
@@ -90,8 +87,12 @@ def _skill_registered(sk: str) -> bool:
     entries = grp.get("entries")
     if isinstance(entries, dict):
         spec = entries.get(key)
-        return isinstance(spec, dict) and spec.get("mode") == "symlink"
-    return grp.get("root") == ".agents/skills" and grp.get("target") == "~/.agents/skills"
+        return (
+            isinstance(spec, dict)
+            and spec.get("enabled") is not False
+            and spec.get("mode") == "symlink"
+        )
+    return _group_covers_symlink_each("agents-skills", ".agents/skills", "~/.agents/skills", sk)
 
 missing_dotfiles: list[str] = []
 for rel in managed_rels:
@@ -107,15 +108,11 @@ for rel in managed_rels:
 
 for key in (
     "~/.gemini/config/hooks.json/dotfiles-v2",
-    "~/.gemini/config/mcp_config.json/mcp-jdx",
     "~/.gemini/antigravity-cli/settings.json/orchestrator-neon",
     "~/.gemini/config/skills",
-    "~/.codex/config.toml/mcp-jdx",
 ):
     if key not in dotfiles_tbl:
         missing_dotfiles.append(key)
-if "~/.claude.json/mcp-jdx" not in dotfiles_tbl and "~/.claude.json/mcp-jdx" not in macos_dotfiles_tbl:
-    missing_dotfiles.append("~/.claude.json/mcp-jdx (config.toml or config.macos.toml)")
 
 for sk in skill_names:
     if not _skill_registered(sk):

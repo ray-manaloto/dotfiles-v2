@@ -1,7 +1,7 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # Loaded automatically on macOS via miserc.toml (auto_env = true).
-# Host-only settings (`programs.json`, `agy-hc`, `codex-hc`, `HERMES_TUI_DIR`) are
-# deselected/unset on the Tart VM by config.vm.toml + 90-mise.zsh.
+# Host-only settings (`programs.json`, `HERMES_TUI_DIR`) are deselected/unset on the Tart VM
+# by config.vm.toml + 90-mise.zsh.
 
 [env]
 HERMES_TUI_DIR = "{{ env.HOME }}/.local/share/hermes-cli.noindex/tui"
@@ -15,9 +15,6 @@ path = [
   "$HOMEBREW_PREFIX/opt/make/libexec/gnubin",
 ]
 
-[bootstrap.packages]
-"brew-cask:herdr-app" = { os = "macos/arm64", adopt = true, appdir = "/Applications" }
-
 [dotfile_groups.macos-host]
 root = "."
 target = "~"
@@ -26,11 +23,6 @@ exclude = ["*"]
 
 [dotfile_groups.macos-host.entries]
 "~/.config/herdr-app/programs.json" = { source = ".config/herdr-app/programs.json", mode = "symlink", main_checkout = true }
-"~/.local/bin/agy-hc" = { source = ".local/bin/agy-hc", mode = "symlink", main_checkout = true }
-"~/.local/bin/codex-hc" = { source = ".local/bin/codex-hc", mode = "symlink", main_checkout = true }
-
-[dotfiles]
-"~/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true, permissions = "0600" }
 
 [shell_alias]
 df-pc = "mise -C ~ run env:enter pc"

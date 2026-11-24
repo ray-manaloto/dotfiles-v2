@@ -1,0 +1,82 @@
+schema_version: 1
+id: custom.mise_protect
+name: Mise Toolchain & Local Security Guardrails
+version: 1.0.0
+description: Protects mise installs, core binaries, fnox age keys, ssh keys, and prevents broad process kills.
+
+keywords:
+  - .local/share/mise/installs
+  - /opt/mise/installs
+  - MISE_DATA_DIR
+  - .local/bin/
+  - /usr/local/bin/
+  - .config/fnox/
+  - .ssh/
+  - .env
+  - pkill
+  - killall
+  - pgrep
+
+safe_patterns:
+  - name: mise-cli-readonly-and-managed
+    pattern: ^\s*(?:MISE_[A-Z0-9_]+=[A-Za-z0-9_./:-]+\s+)*mise\s+(?:-C\s+[A-Za-z0-9_./~-]+\s+)?(?:install|upgrade|prune|ls|which|bin-paths|doctor|lock|tasks|run|skills)(?:\s+[A-Za-z0-9_./:=,@~+-]+)*\s*$
+    description: Allow managed mise CLI workflows without triggering path-protection rules.
+  - name: process-list-only
+    pattern: ^\s*(?:ps|pgrep)\s+(?:-[A-Za-z]+\s+)+(?:'[A-Za-z0-9_.:/*?+^ -]+'|[A-Za-z0-9_.:/*?+^-]+)(?:\s+[A-Za-z0-9_.:/*?+^-]+)*\s*$
+    description: Allow read-only process inspection when flags precede the pattern.
+
+destructive_patterns:
+  - name: mise-installs-clobber
+    pattern: (?i)(?:^|[;&|(\s])(?:(?:ln|cp|mv|install|tee|chmod|chown|tar|unzip|rsync|dd|rm|rmdir|touch|truncate|shred)\b|(?:curl(?:\s+[^\s|;&\n]+)*\s+(?:-[A-Za-z]*o|--output)|wget(?:\s+[^\s|;&\n]+)*\s+(?:-[A-Za-z]*O|--output-document)|(?:sed|awk)\b[^\n|;&]*\s+-i))[^|;&\n]*(?:\.local/share/mise/installs|/opt/mise/installs|\$MISE_DATA_DIR/installs|\$\{MISE_DATA_DIR[^}]*\}/installs)|>>?\s*['"]?[^\s;&|)'"]*(?:\.local/share/mise/installs|/opt/mise/installs|\$MISE_DATA_DIR/installs|\$\{MISE_DATA_DIR[^}]*\}/installs)
+    severity: critical
+    description: Blocking direct mutation or symlink clobbering inside mise installs/.
+    explanation: >-
+      Modifying, symlinking, overwriting, or changing permissions inside
+      ~/.local/share/mise/installs or /opt/mise/installs bypasses mise version
+      locks and checksums. Use `mise install`, `mise upgrade`, or
+      `mise run host:harden-bins` instead.
+  - name: core-bin-clobber
+    pattern: (?i)(?:^|[;&|(\s])(?:(?:ln|cp|mv|install|tee|rm|chmod|chown|tar|unzip|rsync|dd|touch|truncate|shred)\b|(?:curl(?:\s+[^\s|;&\n]+)*\s+(?:-[A-Za-z]*o|--output)|wget(?:\s+[^\s|;&\n]+)*\s+(?:-[A-Za-z]*O|--output-document)|(?:sed|awk)\b[^\n|;&]*\s+-i))[^|;&\n]*(?:\.local/bin/(?:mise|fnox|dcg)|/usr/local/bin/(?:mise|fnox|dcg))(?:\s|$|[;&|)'"])|>>?\s*['"]?[^\s;&|)'"]*(?:\.local/bin/(?:mise|fnox|dcg)|/usr/local/bin/(?:mise|fnox|dcg))(?:\s|$|[;&|)'"])
+    severity: critical
+    description: Blocking ad-hoc mutation of managed mise, fnox, or dcg binaries.
+    explanation: >-
+      Core toolchain binaries under ~/.local/bin and /usr/local/bin must only
+      be installed or upgraded via digest-pinned packslip/Dockerfile/mise flows.
+  - name: fnox-age-key-access
+    pattern: (?i)(?:^|[;&|(\s])(?:cat|head|tail|less|more|sed|awk|cp|mv|ln|rm|chmod|tee|tar|unzip|rsync|dd|touch|truncate|shred)\b[^|;&\n]*\.config/fnox/(?:age\.txt|age-key[^\s;|&)'"]*)\b|>>?\s*['"]?[^\s;&|)'"]*\.config/fnox/(?:age\.txt|age-key[^\s;|&)'"]*)\b
+    severity: critical
+    description: Blocking direct reads or overwrites of the fnox age private key file.
+    explanation: >-
+      ~/.config/fnox/age.txt stores private decryption material. Inspect secret
+      metadata via `mise run secret:doctor` or `fnox check` instead of reading or
+      overwriting key files.
+  - name: ssh-private-key-access
+    pattern: (?i)(?:^|[;&|(\s])(?:cat|head|tail|less|more|sed|awk|cp|mv|ln|rm|chmod|tee|tar|unzip|rsync|dd|touch|truncate|shred)\b[^|;&\n]*\.ssh/(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^\s/'"]*_key)(?:\s|$|[;&|)'"])|>>?\s*['"]?[^\s;&|)'"]*\.ssh/(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^\s/'"]*_key)(?:\s|$|[;&|)'"])
+    severity: critical
+    description: Blocking direct access or clobbering of private SSH keys.
+    explanation: >-
+      Private SSH keys must never be printed into agent transcripts or overwritten
+      from an agent shell. Inspect only `.pub` files if verification is needed.
+  - name: dotenv-secret-access
+    pattern: (?i)(?:^|[;&|(\s])(?:cat|head|tail|less|more|sed|awk|cp|mv|ln|rm|chmod|tee|tar|unzip|rsync|dd|touch|truncate|shred)\b[^|;&\n]*(?:^|[/\s'"])\.env(?:\.local|\.production)?(?:\s|$|[;&|)'"])|>>?\s*['"]?[^\s;&|)'"]*(?:^|/)?\.env(?:\.local|\.production)?(?:\s|$|[;&|)'"])
+    severity: high
+    description: Blocking direct dumps or overwrites of .env secret files.
+    explanation: >-
+      Reading or overwriting .env files exposes or corrupts live credentials.
+      Inspect .env.example or use `fnox check` / `mise run secret:doctor`.
+  - name: broad-process-kill
+    pattern: (?i)(?:^|[;&|(\s])(?:pkill|killall)\b(?:[^|;&\n]*\s+-[A-Za-z]*[f9u]|[^|;&\n]*\b(?:claude|codex|agy|antigravity|opencode|hermes|zcode|zsh|bash|sshd|tailscaled|docker)\b)
+    severity: high
+    description: Blocking broad pkill/killall commands that can terminate active agent tabs or daemons.
+    explanation: >-
+      Broad pkill or killall calls (`-f`, `-9`, `-u`, or matching shell/harness
+      names) terminate unrelated agent sessions and background supervisors.
+      Kill only a verified specific PID or use `hc kill` / `pitchfork stop`.
+  - name: pgrep-flags-after-pattern
+    pattern: (?i)(?:^|[;&|(\s])pgrep\s+(?:'[^']+'|"[^"]+"|[A-Za-z0-9_.:/*?+-]+)\s+-[A-Za-z]+
+    severity: high
+    description: Blocking BSD pgrep invocation with flags placed after the pattern.
+    explanation: >-
+      On macOS BSD pgrep, flags placed after the pattern (e.g. `pgrep foo -a`)
+      fail or are misinterpreted as patterns. Place flags before the pattern
+      (e.g. `pgrep -fl foo`).

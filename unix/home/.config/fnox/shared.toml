@@ -1,0 +1,135 @@
+#:schema https://fnox.jdx.dev/schema.json
+# Shared vault configuration imported by config.toml (macOS Keychain-backed age)
+# and config.headless.toml (Linux containers & Tart VM using FNOX_AGE_KEY / FNOX_AGE_KEY_FILE / ~/.config/fnox/age.txt).
+# Unprofiled `fnox proxy run` keeps default resolution for gateway/model keys (used by kb/mapper.py)
+# while keeping TAILSCALE_API_KEY isolated in [profiles.infra.secrets] for `mise [secrets.fnox]`.
+
+[daemon]
+enabled = true
+
+[audit]
+enabled = true
+
+[providers.doppler_dotfiles_dev_personal]
+type = "doppler"
+project = "dotfiles"
+config = "dev_personal"
+token = { secret = "DOPPLER_TOKEN" }
+
+[secrets]
+DOPPLER_TOKEN = { provider = "age", value = "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBvenQvY0o3bGFPTVJkS2xqYmczYXVtZGpYbUNmNHNudVl1Tk1waVJ0bTM0CndHL29BWWpza3Y0S2MzYmFRWFlYYk9tbHVJVTlXSjFMTWIyK0c3UW1EbTAKLT4gV2guXC1ncmVhc2UgfVZ0WGIgfgpscTJNSEFSUVdBbFU4ZDN3MlVlYS90OHZadHBPdjc4Ci0tLSBsT2JNZUw3TUM5Nm02L3VtUjZyMm8vSHJVQklYWGRrcjZzdzlRak44OTJRCppGClEbYWrtucIUZUnMN7za4O2J0ESzPbktwzADDK2g1ezltbrRde+6xEBCuYVoctmaSW9jnVgCPaUyoahVJbD4glH0+0x9wcbHGMGwy7yXiZPJrgqH07IRV/ZAEX0=", env = false }
+CONTEXT7_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "CONTEXT7_API_KEY", env = false, if_missing = "warn" }
+EXA_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "EXA_API_KEY", env = false, if_missing = "warn" }
+APIFY_TOKEN = { provider = "doppler_dotfiles_dev_personal", value = "APIFY_TOKEN", env = false, if_missing = "warn" }
+OPENROUTER_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "OPENROUTER_API_KEY", env = "exec", if_missing = "warn" }
+APINEX_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "APINEX_API_KEY", env = false, if_missing = "warn" }
+EXPERIENTIAL_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "EXPERIENTIAL_API_KEY", env = false, if_missing = "warn" }
+RESPAN_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "RESPAN_API_KEY", env = false, if_missing = "warn" }
+
+# Research keys, injected only through proxy rules below or [profiles.research].
+FIRECRAWL_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "FIRECRAWL_API_KEY", env = false, if_missing = "warn" }
+SERPER_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "SERPER_API_KEY", env = false, if_missing = "warn" }
+SERP_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "SERP_API_KEY", env = false, if_missing = "warn" }
+SCRAPECREATORS_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "SCRAPECREATORS_API_KEY", env = false, if_missing = "warn" }
+OPENCODE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "OPENCODE_API_KEY", env = false, if_missing = "warn" }
+
+# Model keys, injected through proxy rules below or [profiles.opencode-paid].
+NVIDIA_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "NVIDIA_API_KEY", env = false, if_missing = "warn" }
+GEMINI_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "GEMINI_API_KEY", env = false, if_missing = "warn" }
+ZAI_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "ZAI_API_KEY", env = false, if_missing = "warn" }
+KILO_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "KILO_API_KEY", env = false, if_missing = "warn" }
+OPENAI_COMPATIBLE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "KILO_API_KEY", env = false, if_missing = "warn" }
+GROQ_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "GROQ_API_KEY", env = false, if_missing = "warn" }
+AIHUBMIX_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "AIHUBMIX_API_KEY", env = false, if_missing = "warn" }
+CLOUDFLARE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "CLOUDFLARE_API_KEY", env = false, if_missing = "warn" }
+CF_ACCOUNT_ID = { provider = "doppler_dotfiles_dev_personal", value = "CLOUDFLARE_ACCOUNT_ID", env = "exec", if_missing = "warn" }
+CLOUDFLARE_ACCOUNT_ID = { provider = "doppler_dotfiles_dev_personal", value = "CLOUDFLARE_ACCOUNT_ID", env = "exec", if_missing = "warn" }
+
+# Explicit env = "exec" secrets for LaunchAgent / host tasks.
+AGENTSVIEW_RECALL_PROXY_KEY = { provider = "doppler_dotfiles_dev_personal", value = "AGENTSVIEW_RECALL_PROXY_KEY", env = "exec", if_missing = "warn" }
+PC_HOST = { provider = "doppler_dotfiles_dev_personal", value = "PC_HOST", env = "exec", if_missing = "warn" }
+PC_LAN_HOST = { provider = "doppler_dotfiles_dev_personal", value = "PC_LAN_HOST", env = "exec", if_missing = "warn" }
+
+# Shared DOPPLER_TOKEN auth profile inherited by scoped profiles when invoked with `--no-defaults`.
+[profiles.doppler-auth.secrets]
+DOPPLER_TOKEN = { provider = "age", value = "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBvenQvY0o3bGFPTVJkS2xqYmczYXVtZGpYbUNmNHNudVl1Tk1waVJ0bTM0CndHL29BWWpza3Y0S2MzYmFRWFlYYk9tbHVJVTlXSjFMTWIyK0c3UW1EbTAKLT4gV2guXC1ncmVhc2UgfVZ0WGIgfgpscTJNSEFSUVdBbFU4ZDN3MlVlYS90OHZadHBPdjc4Ci0tLSBsT2JNZUw3TUM5Nm02L3VtUjZyMm8vSHJVQklYWGRrcjZzdzlRak44OTJRCppGClEbYWrtucIUZUnMN7za4O2J0ESzPbktwzADDK2g1ezltbrRde+6xEBCuYVoctmaSW9jnVgCPaUyoahVJbD4glH0+0x9wcbHGMGwy7yXiZPJrgqH07IRV/ZAEX0=", env = false }
+
+# Strictly isolated infra secrets for root mise.toml `[secrets.fnox] profile = "infra"`.
+[profiles.infra]
+inherits = ["doppler-auth"]
+
+[profiles.infra.secrets]
+TAILSCALE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "TAILSCALE_API_KEY", env = "exec", if_missing = "warn" }
+
+# Strict MCP credential profile (use with `-c ~/.config/fnox/mcp.toml -P mcp --no-defaults proxy run`).
+[profiles.mcp]
+inherits = ["doppler-auth"]
+
+[profiles.mcp.secrets]
+CONTEXT7_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "CONTEXT7_API_KEY", env = false, if_missing = "warn" }
+EXA_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "EXA_API_KEY", env = false, if_missing = "warn" }
+APIFY_TOKEN = { provider = "doppler_dotfiles_dev_personal", value = "APIFY_TOKEN", env = false, if_missing = "warn" }
+FIRECRAWL_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "FIRECRAWL_API_KEY", env = false, if_missing = "warn" }
+
+# Strict research credential profile (use with `-c ~/.config/fnox/research.toml -P research --no-defaults proxy run`).
+[profiles.research]
+inherits = ["doppler-auth"]
+
+[profiles.research.secrets]
+CONTEXT7_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "CONTEXT7_API_KEY", env = false, if_missing = "warn" }
+EXA_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "EXA_API_KEY", env = false, if_missing = "warn" }
+APIFY_TOKEN = { provider = "doppler_dotfiles_dev_personal", value = "APIFY_TOKEN", env = false, if_missing = "warn" }
+FIRECRAWL_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "FIRECRAWL_API_KEY", env = false, if_missing = "warn" }
+SERPER_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "SERPER_API_KEY", env = false, if_missing = "warn" }
+SERP_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "SERP_API_KEY", env = false, if_missing = "warn" }
+SCRAPECREATORS_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "SCRAPECREATORS_API_KEY", env = false, if_missing = "warn" }
+
+# Paid OpenCode model keys (use with `opencode-paid` -> `-c ~/.config/fnox/opencode-paid.toml -P opencode-paid --no-defaults proxy run`).
+[profiles.opencode-paid]
+inherits = ["doppler-auth"]
+
+[profiles.opencode-paid.secrets]
+OPENROUTER_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "OPENROUTER_API_KEY", env = false, if_missing = "warn" }
+APINEX_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "APINEX_API_KEY", env = false, if_missing = "warn" }
+EXPERIENTIAL_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "EXPERIENTIAL_API_KEY", env = false, if_missing = "warn" }
+RESPAN_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "RESPAN_API_KEY", env = false, if_missing = "warn" }
+OPENCODE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "OPENCODE_API_KEY", env = false, if_missing = "warn" }
+NVIDIA_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "NVIDIA_API_KEY", env = false, if_missing = "warn" }
+GEMINI_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "GEMINI_API_KEY", env = false, if_missing = "warn" }
+ZAI_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "ZAI_API_KEY", env = false, if_missing = "warn" }
+KILO_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "KILO_API_KEY", env = false, if_missing = "warn" }
+OPENAI_COMPATIBLE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "KILO_API_KEY", env = false, if_missing = "warn" }
+GROQ_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "GROQ_API_KEY", env = false, if_missing = "warn" }
+AIHUBMIX_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "AIHUBMIX_API_KEY", env = false, if_missing = "warn" }
+CLOUDFLARE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "CLOUDFLARE_API_KEY", env = false, if_missing = "warn" }
+
+[proxy]
+egress = "permissive"
+rules = [
+  { secret = "CONTEXT7_API_KEY", domain = "mcp.context7.com", header = "authorization", placeholder = "fnox-placeholder-context7-mcp" },
+  { secret = "EXA_API_KEY", domain = "mcp.exa.ai", header = "authorization", placeholder = "fnox-placeholder-exa-mcp" },
+  { secret = "OPENROUTER_API_KEY", domain = "openrouter.ai", header = "authorization" },
+  { secret = "APINEX_API_KEY", domain = "api.apinex.bond", header = "authorization" },
+  { secret = "EXPERIENTIAL_API_KEY", domain = "api.experientiallabs.ai", header = "authorization" },
+  { secret = "RESPAN_API_KEY", domain = "gateway.respan.ai", header = "authorization" },
+  { secret = "CONTEXT7_API_KEY", domain = "context7.com", header = "authorization", placeholder = "fnox-placeholder-context7-mcp" },
+  { secret = "EXA_API_KEY", domain = "api.exa.ai", header = "x-api-key", placeholder = "fnox-placeholder-exa-mcp" },
+  { secret = "EXA_API_KEY", domain = "api.exa.ai", header = "authorization", placeholder = "fnox-placeholder-exa-mcp" },
+  { secret = "FIRECRAWL_API_KEY", domain = "api.firecrawl.dev", header = "authorization", placeholder = "fnox-placeholder-firecrawl-mcp" },
+  { secret = "FIRECRAWL_API_KEY", domain = "mcp.firecrawl.dev", header = "authorization", placeholder = "fnox-placeholder-firecrawl-mcp" },
+  { secret = "APIFY_TOKEN", domain = "api.apify.com", header = "authorization", placeholder = "fnox-placeholder-apify-token" },
+  { secret = "SERPER_API_KEY", domain = "google.serper.dev", header = "x-api-key" },
+  { secret = "SERP_API_KEY", domain = "serpapi.com", query = "api_key" },
+  { secret = "SCRAPECREATORS_API_KEY", domain = "api.scrapecreators.com", header = "x-api-key" },
+  { secret = "OPENCODE_API_KEY", domain = "opencode.ai", header = "authorization" },
+  { secret = "NVIDIA_API_KEY", domain = "integrate.api.nvidia.com", header = "authorization" },
+  { secret = "GEMINI_API_KEY", domain = "generativelanguage.googleapis.com", header = "x-goog-api-key" },
+  { secret = "GEMINI_API_KEY", domain = "generativelanguage.googleapis.com", header = "authorization" },
+  { secret = "GEMINI_API_KEY", domain = "generativelanguage.googleapis.com", query = "key" },
+  { secret = "ZAI_API_KEY", domain = "api.z.ai", header = "authorization" },
+  { secret = "KILO_API_KEY", domain = "api.kilo.ai", header = "authorization" },
+  { secret = "OPENAI_COMPATIBLE_API_KEY", domain = "api.kilo.ai", header = "authorization" },
+  { secret = "GROQ_API_KEY", domain = "api.groq.com", header = "authorization" },
+  { secret = "AIHUBMIX_API_KEY", domain = "aihubmix.com", header = "authorization" },
+  { secret = "CLOUDFLARE_API_KEY", domain = "api.cloudflare.com", header = "authorization" },
+]

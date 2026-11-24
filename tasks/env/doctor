@@ -118,8 +118,8 @@ check_container() {
 	fi
 
 	mise_ver="$("${dcmd[@]}" exec "${name}" mise --version | awk '{print $1}')"
-	if ! version_ge "${mise_ver}" "2026.11.13"; then
-		fail_row "${label}" "mise=${mise_ver} (< 2026.11.13)"
+	if ! version_ge "${mise_ver}" "2026.11.14"; then
+		fail_row "${label}" "mise=${mise_ver} (< 2026.11.14)"
 		return
 	fi
 
@@ -183,13 +183,18 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+LEGACY_MCPS = {
+    "mcp-jdx", "mise", "hk", "pitchfork", "usage-mise",
+    "firecrawl", "exa", "exa-web", "context7", "apify",
+    "agentsview", "codebase-memory-mcp", "graphify", "clion",
+}
 claude_cfg = Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR") else Path("/home/dev/.claude.json")
 c = json.loads(claude_cfg.read_text(encoding="utf-8"))
-for srv in ("mise", "hk", "pitchfork", "usage-mise"):
-    assert srv in c.get("mcpServers", {}), f"Missing claude mcpServers.{srv} in {claude_cfg}"
+claude_bad = sorted(LEGACY_MCPS & set((c.get("mcpServers") or {}).keys()))
+assert not claude_bad, f"Unexpected legacy global Claude mcpServers in {claude_cfg}: {claude_bad}"
 cx = tomllib.loads(Path("/home/dev/.codex/config.toml").read_text(encoding="utf-8"))
-for srv in ("mise", "hk", "pitchfork", "usage-mise"):
-    assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
+codex_bad = sorted(LEGACY_MCPS & set((cx.get("mcp_servers") or {}).keys()))
+assert not codex_bad, f"Unexpected legacy global Codex mcp_servers: {codex_bad}"
 dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "dot", "status", "--json"], text=True))
 healthy = {"applied", "tracked", "absent", "not_on_this_machine", "ok", "synced", "match"}
 entries = ((dot_data.get("files") or []) + (dot_data.get("edits") or [])) if isinstance(dot_data, dict) else (dot_data or [])
@@ -200,7 +205,6 @@ for entry in entries:
 if isinstance(dot_data, dict):
     assert not (dot_data.get("orphaned") or []), f"orphaned dotfiles: {dot_data.get('orphaned')}"
 PY
-claude mcp get mise </dev/null >/dev/null
 for _sk in agy-session-ops aube communique flint fnox herdr-roll hk-configure hk-debug mise-bootstrap-ops pitchfork post-task-learn pwf-status usage vercel-board; do
 	test -f "/home/dev/.agents/skills/${_sk}/SKILL.md"
 	test -f "/home/dev/.claude/skills/${_sk}/SKILL.md"
@@ -312,7 +316,7 @@ test "${sm}" = "Darwin arm64"
 test ! -e /opt/homebrew/bin/mise
 ! /opt/homebrew/bin/brew list --versions mise >/dev/null 2>&1
 mv="$(/usr/local/bin/mise --version | awk '{print $1}')"
-test "$(printf '%s\n%s\n' "2026.11.13" "${mv}" | sort -V | head -n 1)" = "2026.11.13"
+test "$(printf '%s\n%s\n' "2026.11.14" "${mv}" | sort -V | head -n 1)" = "2026.11.14"
 test -L "${HOME}/.config/mise"
 link="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.config/mise")"
 want="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/mise")"
@@ -363,13 +367,18 @@ import tomllib
 from pathlib import Path
 
 assert os.path.realpath(os.path.expanduser("~/.gemini/config/skills")) == os.path.realpath(os.path.expanduser("~/.agents/skills")), "~/.gemini/config/skills must resolve to ~/.agents/skills"
+LEGACY_MCPS = {
+    "mcp-jdx", "mise", "hk", "pitchfork", "usage-mise",
+    "firecrawl", "exa", "exa-web", "context7", "apify",
+    "agentsview", "codebase-memory-mcp", "graphify", "clion",
+}
 claude_cfg = Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR") else Path.home() / ".claude.json"
 c = json.loads(claude_cfg.read_text(encoding="utf-8"))
-for srv in ("mise", "hk", "pitchfork", "usage-mise"):
-    assert srv in c.get("mcpServers", {}), f"Missing claude mcpServers.{srv} in {claude_cfg}"
+claude_bad = sorted(LEGACY_MCPS & set((c.get("mcpServers") or {}).keys()))
+assert not claude_bad, f"Unexpected legacy global Claude mcpServers in {claude_cfg}: {claude_bad}"
 cx = tomllib.loads(Path(os.path.expanduser("~/.codex/config.toml")).read_text(encoding="utf-8"))
-for srv in ("mise", "hk", "pitchfork", "usage-mise"):
-    assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
+codex_bad = sorted(LEGACY_MCPS & set((cx.get("mcp_servers") or {}).keys()))
+assert not codex_bad, f"Unexpected legacy global Codex mcp_servers: {codex_bad}"
 dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "-E", "vm", "dot", "status", "--json"], text=True))
 healthy = {"applied", "tracked", "absent", "not_on_this_machine", "ok", "synced", "match"}
 entries = ((dot_data.get("files") or []) + (dot_data.get("edits") or [])) if isinstance(dot_data, dict) else (dot_data or [])

@@ -6,7 +6,7 @@ hosts, Linux containers, and macOS VMs.
 - **Agent communication:** For `agy <-> agy`, send full structured payloads via
   native `send_message`, discover live peer tabs dynamically by matching
   `--conversation <uuid>` in `hc ls --json` / `hc get <id> --json` (never
-  hardcode stale tab IDs across `agy-hc` restarts), and send a 1-line
+  hardcode stale tab IDs across `agy` restarts), and send a 1-line
   `hc send <tab-id> "Wake doorbell: ..."` (`<= 220` chars) only when
   `status.state` is `"idle"` or `"done"` (omit `--if idle` when `"done"`). Never
   send payloads via `hc send`, and never touch `ANTIGRAVITY_CSRF_TOKEN`.
@@ -28,6 +28,13 @@ hosts, Linux containers, and macOS VMs.
   shells where tokens or credentials are loaded.
 - **Tooling scope and ecosystem:** Keep developer tools user-global under
   `~/.config/mise/config.toml` unless a tool is strictly project-specific.
+  Keep global MCP count at `0` across harnesses (`claude`, `codex`, `agy`,
+  `opencode`, `zcode`) using CLI+Skill workflows (`ctx7`, `apify`, `firecrawl`,
+  `webclaw`, `agentsview`, `exa-search`, `agent-browser`,
+  `mise`/`hk`/`pitchfork`/`usage`), leaving `openwiki mcp` repo-local to
+  `knowledge-base-v2`. Preserve `NODE_EXTRA_CA_CERTS` under `fnox proxy run`
+  for Node 26 CLI TLS, and on Env 2-4 guests use
+  `env -u ALL_PROXY -u all_proxy HTTPS_PROXY=http://127.0.0.1:1055 NODE_USE_ENV_PROXY=1`.
   Prefer `mise`, `hk`, `fnox`, `aube`, and `jdx` ecosystem tools, native compiled
   `hk` builtins (`Rust`, `Go`, `Haskell`, `Pkl`), and `mise fmt` for mise
   configs.
@@ -78,9 +85,12 @@ toolchain.
 
 Open any agent the owner may watch as a tab in the current `herdr-app` space
 instead of a background popup:
-`herdr-app do tab.new --space <id> --name <name> --folder <dir> --argv '["codex-hc", "<task>"]'`.
-Always start Codex as `codex-hc` (so `fnox` proxy, `--disable daemon_auto_start`,
-and `HC_*` environment variables apply). Pass an initial prompt when opening a
+`herdr-app do tab.new --space <id> --name <name> --folder <dir> --argv '["codex", "--no-daemon", "<task>"]'`.
+Always pass `--no-daemon` for watched Herdr Codex tabs, never mutate
+`~/.local/share/mise/installs` or `/opt/mise/installs` directly (`host:harden-bins`
+and `dcg` `custom.mise_protect` enforce binary immutability), and use scoped
+`fnox -c ~/.config/fnox/<profile>.toml -P <profile> --no-defaults proxy run` (or
+`opencode-paid`) instead of whole-harness wrappers. Pass an initial prompt when opening a
 Claude tab (`--task` or final `--argv` element), verify delivery with
 `hc read <t>`, close temporary tabs when finished, and always refer to terminals
 as `tab-name (id)`.

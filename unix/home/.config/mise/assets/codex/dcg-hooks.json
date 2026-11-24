@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh -c 'DCG=\"${HOME}/.local/share/mise/shims/dcg\"; [ -x \"$DCG\" ] || DCG=\"/opt/mise/shims/dcg\"; [ -x \"$DCG\" ] || DCG=\"$(command -v dcg 2>/dev/null || true)\"; [ -x \"$DCG\" ] || { echo \"{}\"; exit 0; }; exec \"$DCG\" --agent codex'",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

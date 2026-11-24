@@ -78,6 +78,20 @@
       }
     ]
   },
+  "dcg-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -B ./hooks/agy-dcg-guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
   "post-task-learn": {
     "SessionStart": [
       {

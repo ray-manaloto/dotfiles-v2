@@ -142,7 +142,7 @@ class EngineTests(unittest.TestCase):
         }
         cmd = clean_relaunch_command(
             "/tmp/work dir",
-            ["codex-hc", "resume", "01a1-uuid"],
+            ["codex", "--no-daemon", "resume", "01a1-uuid"],
             terminal_address="t3fs",
             extra_env={"HERMES_TUI_DIR": "/opt/tui"},
             base_env=base_env,
@@ -151,7 +151,8 @@ class EngineTests(unittest.TestCase):
         self.assertIn("HC_TERMINAL_ID=t3fs", cmd)
         self.assertIn("HERMES_TUI_DIR=/opt/tui", cmd)
         self.assertIn(
-            "/bin/zsh -lc 'exec \"$@\"' /bin/zsh codex-hc resume 01a1-uuid", cmd
+            "/bin/zsh -lc 'exec \"$@\"' /bin/zsh codex --no-daemon resume 01a1-uuid",
+            cmd,
         )
         self.assertNotIn("CLAUDE_CODE_SESSION_ID", cmd)
         self.assertNotIn("CODEX_THREAD_ID", cmd)
@@ -1247,7 +1248,7 @@ class EngineTests(unittest.TestCase):
         ):
             addr = engine._launch_fresh_tab(
                 target,
-                ["codex-hc", "resume", "019-abc"],
+                ["codex", "--no-daemon", "resume", "019-abc"],
                 "/tmp/wt",
             )
         self.assertEqual(addr, "t_new")
@@ -1277,7 +1278,7 @@ class EngineTests(unittest.TestCase):
         ):
             addr2 = engine._launch_fresh_tab(
                 target,
-                ["codex-hc", "resume", "019-abc"],
+                ["codex", "--no-daemon", "resume", "019-abc"],
                 "/tmp/wt",
             )
         self.assertEqual(addr2, "t_2")
@@ -1355,13 +1356,13 @@ class EngineTests(unittest.TestCase):
                 f1 = pool.submit(
                     engine._launch_fresh_tab,
                     remote_target,
-                    ["codex-hc", "resume", "019-rem"],
+                    ["codex", "--no-daemon", "resume", "019-rem"],
                     str(Path.home()),
                 )
                 f2 = pool.submit(
                     engine._launch_fresh_tab,
                     remote_target,
-                    ["codex-hc", "resume", "019-rem"],
+                    ["codex", "--no-daemon", "resume", "019-rem"],
                     str(Path.home()),
                 )
                 out_addrs = sorted([f1.result(), f2.result()])

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#MISE description="Adopt or install Herdr.app desktop cask in /Applications on macOS hosts (skipped on VM, containers, CI, and offline runs)"
+set -euo pipefail
+
+if [[ -n ${CI:-} || ${container:-} == "docker" || "$(uname -s)" != "Darwin" || -r "${HOME}/.config/dotfiles-v2/vm-env.sh" || ${MISE_ENV:-} == *vm* ]]; then
+	exit 0
+fi
+
+if [[ ${MISE_OFFLINE:-0} == "1" || ${MISE_OFFLINE:-false} == "true" ]]; then
+	exit 0
+fi
+
+brew_bin="$(command -v brew 2>/dev/null || true)"
+if [[ -z ${brew_bin} && -x /opt/homebrew/bin/brew ]]; then
+	brew_bin="/opt/homebrew/bin/brew"
+fi
+if [[ -z ${brew_bin} ]]; then
+	exit 0
+fi
+
+if [[ ! -d /Applications/Herdr.app ]] || ! "${brew_bin}" list --cask herdr-app >/dev/null 2>&1; then
+	HOMEBREW_NO_AUTO_UPDATE=1 "${brew_bin}" install --cask --adopt --appdir=/Applications herdr-app </dev/null
+fi

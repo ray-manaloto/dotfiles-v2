@@ -48,7 +48,7 @@ category = "mise-bootstrap"
 why_tracked = "Canonical mise dotfiles, history-watch, and self-healing dotfile patterns."
 last_reviewed = "2026-11-24"
 kb_indexed = true
-kb_workspace = "jdx-dotfiles-post"
+kb_workspace = "docs-jdx-dotfiles-post"
 
 [[references]]
 repo = "jdx/mise"
@@ -102,13 +102,13 @@ category = "jdx-ecosystem"
 why_tracked = "#USAGE task linting and shell completions."
 last_reviewed = "2026-11-24"
 kb_indexed = true
-kb_workspace = "usage-usage"
+kb_workspace = "repos-usage-usage"
 
 [[references]]
 repo = "jdx/packslip"
 url = "https://github.com/jdx/packslip"
 category = "jdx-ecosystem"
-why_tracked = "Pinned provenance-verified standalone binary installs (mise on macOS VM and pc)."
+why_tracked = "Pinned provenance-verified standalone binary installs (mise on macOS VM)."
 last_reviewed = "2026-11-24"
 kb_indexed = true
 kb_workspace = "packslip-packslip"
@@ -117,10 +117,9 @@ kb_workspace = "packslip-packslip"
 repo = "aubepkg/aube"
 url = "https://github.com/aubepkg/aube"
 category = "jdx-ecosystem"
-why_tracked = "Deterministic npm package manager and trustPolicy lock directories under locks/."
+why_tracked = "Deterministic npm package manager and trustPolicy lock directories under unix/home/.config/mise/locks/."
 last_reviewed = "2026-11-24"
-kb_indexed = true
-kb_workspace = "aube"
+kb_indexed = false
 
 [[references]]
 repo = "jdx/renovate-config"
@@ -137,7 +136,7 @@ category = "mise-bootstrap"
 why_tracked = "Omarchy contributor patterns, mise conf.d, and Claude skills/settings."
 last_reviewed = "2026-11-24"
 kb_indexed = true
-kb_workspace = "lukehsiao-dotfiles"
+kb_workspace = "dotfiles-lukehsiao-dotfiles"
 
 [[references]]
 repo = "xdanger/dotfiles"
@@ -146,7 +145,7 @@ category = "mise-bootstrap"
 why_tracked = "macOS launchd mise PATH helper, Codex personal marketplace, and gitconfig baseline."
 last_reviewed = "2026-11-24"
 kb_indexed = true
-kb_workspace = "xdanger-dotfiles"
+kb_workspace = "dotfiles-xdanger-dotfiles"
 
 [[references]]
 repo = "omacom/omarchy"
@@ -155,7 +154,7 @@ category = "containers-ci"
 why_tracked = "Remote Linux host (pc) OS base and /etc/mise/conf.d conflict patterns."
 last_reviewed = "2026-11-24"
 kb_indexed = true
-kb_workspace = "omarchy"
+kb_workspace = "omarchy-omarchy-v4-5-0"
 
 [[references]]
 repo = "roalcantara/dots"
@@ -338,5 +337,13 @@ repo = "shunk031/dotfiles"
 url = "https://github.com/shunk031/dotfiles"
 category = "mise-bootstrap"
 why_tracked = "Automated dotfiles bootstrap and CI verification."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "Dicklesworthstone/destructive_command_guard"
+url = "https://github.com/Dicklesworthstone/destructive_command_guard"
+category = "ai-harnesses"
+why_tracked = "PreToolUse destructive command guard (dcg) + custom pack enforcement across Claude, Codex, and AGY."
 last_reviewed = "2026-11-24"
 kb_indexed = false

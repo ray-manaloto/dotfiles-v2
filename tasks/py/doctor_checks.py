@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -36,14 +38,24 @@ FORBIDDEN_PROJECT_RUNTIME_DEPS = frozenset(
     }
 )
 
-ALLOWED_DOTFILES_MERGE_RELATIVE = frozenset(
-    {"../../.claude.mcp-jdx.json", "../../.codex/mcp-jdx.toml"}
-)
-EXPECTED_PROGRAMS_HC = {
-    "antigravity": "agy-hc",
-    "codex": "codex-hc",
-    "opencode": "opencode-hc",
+ALLOWED_DOTFILES_MERGE_RELATIVE: frozenset[str] = frozenset()
+EXPECTED_PROGRAMS: dict[str, list[str]] = {
+    "antigravity": ["agy"],
+    "codex": ["codex", "--no-daemon"],
+    "opencode": ["opencode", "--standalone"],
 }
+COMPILED_BINARY_MAGICS = (
+    b"\x7fELF",
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+)
+BINARY_HARDEN_SKIP_DIRS = frozenset(
+    {"site-packages", "node_modules", ".venv", ".git", "__pycache__"}
+)
 
 
 def _git_tracked(repo_root: Path, *patterns: str) -> list[Path]:
@@ -1129,6 +1141,23 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
             ):
                 errors.append(f"stale-local-bin: {hcand} shadows managed hermes")
 
+    # 6b. Dangling symlinks or zero-byte completion files in ~/.cache/zsh/completions
+    zsh_completions = home / ".cache" / "zsh" / "completions"
+    if zsh_completions.is_dir():
+        for entry in sorted(zsh_completions.iterdir()):
+            if entry.is_symlink() and not entry.exists():
+                errors.append(
+                    f"stale-zsh-completion: dead symlink {entry} (run `mise run host:prune --apply`)"
+                )
+            elif entry.is_file() and not entry.is_symlink():
+                try:
+                    if entry.stat().st_size == 0:
+                        errors.append(
+                            f"stale-zsh-completion: zero-byte file {entry} (run `mise run host:prune --apply`)"
+                        )
+                except OSError:
+                    pass
+
     # 7. Unmanaged ~/.config/opencode/opencode.jsonc
     oc_jsonc = home / ".config" / "opencode" / "opencode.jsonc"
     if oc_jsonc.exists() or oc_jsonc.is_symlink():
@@ -1207,70 +1236,8 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
 
     return (
         errors,
-        "host hygiene, shims, wrappers, plugins, daemons, vb, local bins, and skills parity verified",
+        "host hygiene, shims, wrappers, plugins, daemons, vb, local bins, zsh completions, and skills parity verified",
     )
-
-
-def check_cli_wrappers_smoke() -> tuple[list[str], str]:
-    """Smoke-test active CLI wrappers for opencode, codex, and agy without proxy warnings."""
-    home = Path.home()
-    if (
-        os.environ.get("CI")
-        or os.environ.get("container") == "docker"  # noqa: SIM112
-        or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
-    ):
-        return [], "CI/container/VM: skipped live cli-wrappers-smoke"
-    env = dict(os.environ)
-    env.pop("__MISE_ACTIVE_WRAPPERS", None)
-    wrappers_bin = (
-        Path(env.get("MISE_DATA_DIR", str(home / ".local" / "share" / "mise")))
-        / "command-wrappers"
-        / "bin"
-    )
-    if wrappers_bin.is_dir():
-        env["PATH"] = f"{wrappers_bin}:{env.get('PATH', os.defpath)}"
-
-    smoke_cmds: list[list[str]] = [
-        ["opencode", "update", "--help"],
-        ["opencode", "upgrade", "--help"],
-        ["opencode", "mcp", "--help"],
-        ["opencode", "service", "--help"],
-        ["opencode", "run", "--help"],
-        ["codex", "exec", "--help"],
-        ["agy", "--help"],
-    ]
-    errors: list[str] = []
-    for cmd in smoke_cmds:
-        if not shutil.which(cmd[0], path=env.get("PATH")):
-            errors.append(f"cli-wrappers-smoke: `{cmd[0]}` not found on PATH")
-            continue
-        try:
-            proc = subprocess.run(
-                cmd,
-                env=env,
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=15,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            errors.append(f"cli-wrappers-smoke: `{' '.join(cmd)}` failed: {exc}")
-            continue
-        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        if proc.returncode != 0:
-            errors.append(
-                f"cli-wrappers-smoke: `{' '.join(cmd)}` exited {proc.returncode}: {proc.stderr.strip()}"
-            )
-        if "Unrecognized flag" in combined:
-            errors.append(
-                f"cli-wrappers-smoke: `{' '.join(cmd)}` rejected flag: {combined.strip()}"
-            )
-        if "WARN fnox::commands::proxy" in (proc.stderr or ""):
-            errors.append(
-                f"cli-wrappers-smoke: `{' '.join(cmd)}` leaked `WARN fnox::commands::proxy` on stderr"
-            )
-    return errors, "CLI wrappers smoke-tested cleanly across opencode, codex, and agy"
 
 
 def check_jouet_rules(repo_root: Path) -> list[str]:
@@ -1592,36 +1559,8 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
                         errors.append(
                             f"config-hygiene: {rel}: hyphenated npm tool `{key_str}` ({ver}) must set `prerelease = true`"
                         )
-        wrappers = cfg_data.get("wrappers")
-        if isinstance(wrappers, dict):
-            oc = wrappers.get("opencode")
-            if isinstance(oc, dict):
-                oc_args = [str(a) for a in oc.get("args") or []]
-                if "--standalone" in oc_args:
-                    errors.append(
-                        f"config-hygiene: {rel} [wrappers.opencode].args must not hardcode `--standalone`"
-                    )
-            for wname, wspec in wrappers.items():
-                if not isinstance(wspec, dict):
-                    continue
-                cmd = str(wspec.get("command") or "")
-                args = [str(a) for a in wspec.get("args") or []]
-                uses_fnox_proxy = (
-                    cmd == "fnox" and "proxy" in args and "run" in args
-                ) or "fnox proxy run" in cmd
-                if uses_fnox_proxy:
-                    env_tbl = wspec.get("env")
-                    rust_log = (
-                        str(env_tbl.get("RUST_LOG") or "")
-                        if isinstance(env_tbl, dict)
-                        else ""
-                    )
-                    if "fnox::commands::proxy=error" not in rust_log:
-                        errors.append(
-                            f"config-hygiene: {rel} [wrappers.{wname}] invokes `fnox proxy run` without `fnox::commands::proxy=error` in RUST_LOG"
-                        )
 
-        # 6. No raw ../ or ../../ [dotfiles] traversals
+        # 4 & 6. No raw ../ or ../../ [dotfiles] traversals + bidirectional source parity
         dotfiles = cfg_data.get("dotfiles")
         if isinstance(dotfiles, dict):
             for target_key, dspec in dotfiles.items():
@@ -1641,7 +1580,9 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
                         f"config-hygiene: {rel} [dotfiles].{target_key!r} has raw parent traversal `..` in source={src!r}"
                     )
 
-    # 5. programs.json uses *-hc
+    errors.extend(_check_dotfiles_parity(repo_root, mise_dir))
+
+    # 5. programs.json uses declarative binary flags
     programs_path = (
         repo_root / "unix" / "home" / ".config" / "herdr-app" / "programs.json"
     )
@@ -1655,18 +1596,183 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
         if not isinstance(programs, dict):
             errors.append("config-hygiene: programs.json missing `programs` object")
         else:
-            for pname, expected_bin in EXPECTED_PROGRAMS_HC.items():
+            for pname, expected_argv in EXPECTED_PROGRAMS.items():
                 entry = programs.get(pname)
                 run_argv = entry.get("run") if isinstance(entry, dict) else None
                 if not isinstance(run_argv, list) or not run_argv:
                     errors.append(
                         f"config-hygiene: programs.json `{pname}` missing `run` argv"
                     )
-                elif str(run_argv[0]) != expected_bin:
+                elif [str(x) for x in run_argv] != expected_argv:
                     errors.append(
-                        f"config-hygiene: programs.json `{pname}` must invoke `{expected_bin}` (got {run_argv[0]!r})"
+                        f"config-hygiene: programs.json `{pname}` must invoke {expected_argv!r} (got {run_argv!r})"
                     )
     return errors
+
+
+def _strip_merge_target(target_key: str) -> str:
+    """Resolve `~/.path/to/file.json/subkey` -> `.path/to/file.json`."""
+    rel = target_key[2:] if target_key.startswith("~/") else target_key
+    parts = Path(rel).parts
+    for idx, part in enumerate(parts):
+        if "." in part and idx < len(parts) - 1 and idx > 0:
+            return Path(*parts[: idx + 1]).as_posix()
+    return rel
+
+
+def _is_group_excluded(rel_in_group: str, excludes: list[str]) -> bool:
+    name = Path(rel_in_group).name
+    for pat in excludes:
+        if fnmatch.fnmatch(rel_in_group, pat) or fnmatch.fnmatch(name, pat):
+            return True
+    return False
+
+
+def _check_dotfiles_parity(repo_root: Path, mise_dir: Path) -> list[str]:
+    """Verify [dotfiles] and [dotfile_groups] stay bidirectionally aligned with unix/home/."""
+    home_root = repo_root / "unix" / "home"
+    if not home_root.is_dir():
+        return []
+    errors: list[str] = []
+    declared_targets: set[str] = set()
+    referenced_tilde_sources: list[tuple[str, str]] = []
+    groups: list[tuple[str, str, list[str], dict[str, Any]]] = []
+    has_real_dotfiles_tree = (home_root / ".zshenv").is_file()
+
+    for cfg_file in sorted(mise_dir.glob("config*.toml")):
+        cfg_data = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
+        rel_cfg = cfg_file.relative_to(repo_root).as_posix()
+        dotfiles = cfg_data.get("dotfiles")
+        if isinstance(dotfiles, dict):
+            for target_key, dspec in dotfiles.items():
+                if not isinstance(target_key, str):
+                    continue
+                declared_targets.add(target_key)
+                if not isinstance(dspec, dict) or "block" in dspec or "line" in dspec:
+                    continue
+                src = dspec.get("source")
+                if isinstance(src, str) and src:
+                    if src.startswith("~/"):
+                        referenced_tilde_sources.append((rel_cfg, src))
+                    elif (
+                        has_real_dotfiles_tree
+                        and ".." not in Path(src).parts
+                        and not (mise_dir / src).exists()
+                    ):
+                        errors.append(
+                            f"config-hygiene: {rel_cfg} [dotfiles].{target_key!r} missing source {src!r}"
+                        )
+                elif dspec.get("merge") is True:
+                    if has_real_dotfiles_tree:
+                        base_rel = _strip_merge_target(target_key)
+                        if not (home_root / base_rel).exists():
+                            errors.append(
+                                f"config-hygiene: {rel_cfg} [dotfiles].{target_key!r} missing base file unix/home/{base_rel}"
+                            )
+                elif (
+                    has_real_dotfiles_tree
+                    and target_key.startswith("~/")
+                    and not (home_root / target_key[2:]).exists()
+                ):
+                    errors.append(
+                        f"config-hygiene: {rel_cfg} [dotfiles].{target_key!r} missing unix/home/{target_key[2:]}"
+                    )
+
+        dot_groups = cfg_data.get("dotfile_groups")
+        if isinstance(dot_groups, dict):
+            for gname, gdata in dot_groups.items():
+                if not isinstance(gdata, dict):
+                    continue
+                g_root = str(gdata.get("root") or ".")
+                g_target = str(gdata.get("target") or "~")
+                g_excl = [str(x) for x in gdata.get("exclude") or []]
+                g_entries = gdata.get("entries")
+                entries_dict = g_entries if isinstance(g_entries, dict) else {}
+                base_dir = home_root if g_root == "." else home_root / g_root
+                if has_real_dotfiles_tree and not base_dir.exists():
+                    errors.append(
+                        f"config-hygiene: {rel_cfg} [dotfile_groups.{gname}] missing root {g_root!r}"
+                    )
+                for e_key, e_spec in entries_dict.items():
+                    declared_targets.add(str(e_key))
+                    if isinstance(e_spec, dict) and isinstance(
+                        e_src := e_spec.get("source"), str
+                    ):
+                        if e_src.startswith("~/"):
+                            referenced_tilde_sources.append((rel_cfg, e_src))
+                        elif has_real_dotfiles_tree and not (base_dir / e_src).exists():
+                            errors.append(
+                                f"config-hygiene: {rel_cfg} [dotfile_groups.{gname}.entries].{e_key!r} missing source {e_src!r}"
+                            )
+                groups.append((g_root, g_target, g_excl, entries_dict))
+
+    if not has_real_dotfiles_tree:
+        return errors
+
+    for rel_cfg, tsrc in referenced_tilde_sources:
+        if tsrc not in declared_targets and not _is_covered_by_groups(tsrc, groups):
+            errors.append(
+                f"config-hygiene: {rel_cfg} references undeclared tilde source {tsrc!r}"
+            )
+
+    skip_prefixes = (".config/mise/",)
+    skip_names = {".DS_Store", "ruff.toml"}
+    for path in sorted(home_root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(home_root).as_posix()
+        if any(rel.startswith(p) for p in skip_prefixes):
+            continue
+        if (
+            path.name in skip_names
+            or "__pycache__" in path.parts
+            or path.suffix == ".pyc"
+        ):
+            continue
+        if rel.startswith(".agents/skills/"):
+            skill_parts = Path(rel).parts
+            if len(skill_parts) >= 3:
+                target_skill = f"~/.agents/skills/{skill_parts[2]}"
+                if target_skill not in declared_targets and not _is_covered_by_groups(
+                    target_skill, groups
+                ):
+                    errors.append(
+                        f"config-hygiene: unregistered skill directory unix/home/.agents/skills/{skill_parts[2]}"
+                    )
+            continue
+        target_tilde = f"~/{rel}"
+        if target_tilde in declared_targets or _is_covered_by_groups(
+            target_tilde, groups
+        ):
+            continue
+        # Merge-only targets like hooks.json are declared as `~/...json/<key>`
+        if any(dt.startswith(f"{target_tilde}/") for dt in declared_targets):
+            continue
+        errors.append(
+            f"config-hygiene: unregistered dotfile unix/home/{rel} (missing in config*.toml [dotfiles]/[dotfile_groups])"
+        )
+    return errors
+
+
+def _is_covered_by_groups(
+    target_tilde: str,
+    groups: list[tuple[str, str, list[str], dict[str, Any]]],
+) -> bool:
+    for g_root, g_target, g_excl, entries_dict in groups:
+        if target_tilde == g_target or target_tilde in entries_dict:
+            return True
+        prefix = f"{g_target.rstrip('/')}/"
+        if target_tilde.startswith(prefix):
+            rel_in_group = target_tilde[len(prefix) :]
+            if "*" not in g_excl and not _is_group_excluded(rel_in_group, g_excl):
+                return True
+        elif g_root == "." and g_target == "~":
+            rel_in_group = (
+                target_tilde[2:] if target_tilde.startswith("~/") else target_tilde
+            )
+            if "*" not in g_excl and not _is_group_excluded(rel_in_group, g_excl):
+                return True
+    return False
 
 
 def evaluate_mise_audit_payload(data: Any) -> tuple[list[str], list[str]]:
@@ -1847,67 +1953,165 @@ def check_codex_hook_trust(
     return [], "codex-hook-trust: all plugin hook trust hashes match live hooks/list"
 
 
-def check_codex_daemon_health() -> tuple[list[str], str]:
-    """Verify running Codex app-server/daemon processes do not hold deleted fnox-proxy-ca PEM files."""
-    home = Path.home()
-    if (
-        os.environ.get("CI")
-        or sys.platform != "darwin"
-        or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
-    ):
-        return [], "Non-macOS/CI/VM: skipped codex-daemon-health"
-    try:
-        args_out = subprocess.check_output(
-            ["/bin/ps", "-ax", "-o", "pid=,args="],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
-        return [f"codex-daemon-health: ps failed: {exc}"], ""
-    target_pids: list[str] = []
-    for line in args_out.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) != 2:
-            continue
-        pid_part, cmdline = parts
-        exe_token = cmdline.split(None, 1)[0]
-        exe_name = Path(exe_token).name
-        if exe_name == "codex" and ("app-server" in cmdline or "daemon" in cmdline):
-            target_pids.append(pid_part)
-    if not target_pids:
-        return [], "codex-daemon-health: no running Codex app-server/daemon process"
-    try:
-        out = subprocess.check_output(
-            ["/bin/ps", "eww", "-p", ",".join(target_pids), "-o", "pid=,command="],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):  # fmt: skip
-        return [], "codex-daemon-health: target Codex process exited during inspection"
+def check_mise_binary_integrity(repo_root: Path) -> tuple[list[str], str]:
+    """Verify host:harden-bins, dcg guardrails/hooks, and 0555 binary immutability inside mise installs/."""
     errors: list[str] = []
-    ca_vars = (
-        "SSL_CERT_FILE",
-        "NODE_EXTRA_CA_CERTS",
-        "REQUESTS_CA_BUNDLE",
-        "CURL_CA_BUNDLE",
+    harden_task = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "host"
+        / "harden-bins"
     )
-    for line in out.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) != 2:
-            continue
-        pid_part, _ = parts
-        for var in ca_vars:
-            for match in re.finditer(rf"\b{var}=([^\s]+)", line):
-                ca_path = match.group(1)
-                if "fnox-proxy-ca-" in ca_path and not Path(ca_path).is_file():
+    if not harden_task.is_file() or not os.access(harden_task, os.X_OK):
+        errors.append(
+            f"mise-binary-integrity: missing executable {harden_task.relative_to(repo_root)}"
+        )
+
+    dcg_cfg = repo_root / "unix" / "home" / ".config" / "dcg" / "config.toml"
+    if not dcg_cfg.is_file():
+        errors.append(
+            "mise-binary-integrity: missing unix/home/.config/dcg/config.toml"
+        )
+    else:
+        try:
+            dcg_data = tomllib.loads(dcg_cfg.read_text(encoding="utf-8"))
+            custom_paths = (
+                (dcg_data.get("packs") or {}).get("custom_paths")
+                if isinstance(dcg_data.get("packs"), dict)
+                else None
+            )
+            if not isinstance(custom_paths, list) or not any(
+                "packs/*.yaml" in str(p) for p in custom_paths
+            ):
+                errors.append(
+                    "mise-binary-integrity: dcg config.toml missing packs.custom_paths for ~/.config/dcg/packs/*.yaml"
+                )
+        except tomllib.TOMLDecodeError as exc:
+            errors.append(f"mise-binary-integrity: invalid dcg config.toml: {exc}")
+
+    dcg_pack = (
+        repo_root / "unix" / "home" / ".config" / "dcg" / "packs" / "mise-protect.yaml"
+    )
+    if not dcg_pack.is_file():
+        errors.append(
+            "mise-binary-integrity: missing unix/home/.config/dcg/packs/mise-protect.yaml"
+        )
+    else:
+        pack_txt = dcg_pack.read_text(encoding="utf-8")
+        if "custom.mise_protect" not in pack_txt:
+            errors.append(
+                "mise-binary-integrity: mise-protect.yaml missing id custom.mise_protect"
+            )
+        if shutil.which("dcg"):
+            try:
+                vp = subprocess.run(
+                    ["dcg", "pack", "validate", str(dcg_pack)],
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=15,
+                    check=False,
+                )
+                if vp.returncode != 0:
                     errors.append(
-                        f"codex-daemon-health: PID {pid_part} pins deleted {var}={ca_path}; restart daemon via codex-wrapper"
+                        f"mise-binary-integrity: dcg pack validate failed: {vp.stderr.strip() or vp.stdout.strip()}"
                     )
+            except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+                errors.append(f"mise-binary-integrity: dcg pack validate error: {exc}")
+
+    agy_hook = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".gemini"
+        / "config"
+        / "hooks"
+        / "agy-dcg-guard.py"
+    )
+    if not agy_hook.is_file() or not os.access(agy_hook, os.X_OK):
+        errors.append(
+            f"mise-binary-integrity: missing executable {agy_hook.relative_to(repo_root)}"
+        )
+
+    hooks_json = repo_root / "unix" / "home" / ".gemini" / "config" / "hooks.json"
+    if not hooks_json.is_file() or "agy-dcg-guard.py" not in hooks_json.read_text(
+        encoding="utf-8"
+    ):
+        errors.append(
+            "mise-binary-integrity: hooks.json missing dcg-guard entry referencing agy-dcg-guard.py"
+        )
+
+    for rel_asset in (
+        "unix/home/.config/mise/assets/claude/dcg-hooks.json",
+        "unix/home/.config/mise/assets/codex/dcg-hooks.json",
+    ):
+        ap = repo_root / rel_asset
+        if not ap.is_file():
+            errors.append(f"mise-binary-integrity: missing {rel_asset}")
+        else:
+            try:
+                adata = json.loads(ap.read_text(encoding="utf-8"))
+                if not isinstance((adata.get("hooks") or {}).get("PreToolUse"), list):
+                    errors.append(
+                        f"mise-binary-integrity: {rel_asset} missing PreToolUse hook list"
+                    )
+            except (OSError, json.JSONDecodeError) as exc:
+                errors.append(
+                    f"mise-binary-integrity: invalid JSON in {rel_asset}: {exc}"
+                )
+
+    if not os.environ.get("CI"):
+        home = Path.home()
+        data_dir = Path(
+            os.environ.get("MISE_DATA_DIR", str(home / ".local" / "share" / "mise"))
+        )
+        installs_dir = data_dir / "installs"
+        if installs_dir.is_dir():
+            writable_bins: list[str] = []
+            for cur_dir, dirnames, filenames in os.walk(
+                installs_dir, followlinks=False
+            ):
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if d not in BINARY_HARDEN_SKIP_DIRS
+                    and not os.path.islink(os.path.join(cur_dir, d))
+                ]
+                for fname in filenames:
+                    fpath = os.path.join(cur_dir, fname)
+                    try:
+                        st = os.lstat(fpath)
+                    except OSError:
+                        continue
+                    if not stat.S_ISREG(st.st_mode) or (st.st_mode & 0o111) == 0:
+                        continue
+                    if (st.st_mode & 0o222) == 0:
+                        continue
+                    try:
+                        with open(fpath, "rb") as fh:
+                            hdr = fh.read(4)
+                    except OSError:
+                        continue
+                    if hdr in COMPILED_BINARY_MAGICS:
+                        writable_bins.append(fpath)
+            if writable_bins:
+                preview = ", ".join(writable_bins[:5])
+                extra = (
+                    f" (+{len(writable_bins) - 5} more)"
+                    if len(writable_bins) > 5
+                    else ""
+                )
+                errors.append(
+                    f"mise-binary-integrity: {len(writable_bins)} compiled binary(ies) writable in {installs_dir}: {preview}{extra} (run `mise run host:harden-bins`)"
+                )
+
     return (
         errors,
-        "codex-daemon-health: no running Codex daemon holds deleted fnox-proxy-ca files",
+        "mise-binary-integrity: harden-bins, dcg guardrails/hooks, and 0555 binary immutability verified",
     )
 
 
@@ -1965,12 +2169,7 @@ def check_agy_rc_health(
         data = json.loads(proc.stdout.strip().splitlines()[-1])
     except json.JSONDecodeError as exc:
         return [f"agy-rc-health: invalid JSON ({exc})"], ""
-    if (
-        not plist.is_file()
-        and not strict_host
-        and data.get("rc_running") is not True
-        and data.get("poisoned_ssl") is not True
-    ):
+    if not plist.is_file() and not strict_host and data.get("rc_running") is not True:
         return (
             [],
             "pre-activation: com.google.antigravity-cli-daemon LaunchAgent not yet installed (tasks/host/agy-rc-guard ready)",
@@ -2098,7 +2297,6 @@ def main(argv: list[str] | None = None) -> int:
     p_host.add_argument("--strict-host", action="store_true")
     sub.add_parser("mise-doctor-clean")
     sub.add_parser("host-hygiene")
-    sub.add_parser("cli-wrappers-smoke")
     sub.add_parser("jouet-rules")
     sub.add_parser("usage-lint")
     sub.add_parser("pitchfork-config")
@@ -2112,7 +2310,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("herdr-app-bundle")
     p_trust = sub.add_parser("codex-hook-trust")
     p_trust.add_argument("--strict-host", action="store_true")
-    sub.add_parser("codex-daemon-health")
+    sub.add_parser("mise-binary-integrity")
     p_rc = sub.add_parser("agy-rc-health")
     p_rc.add_argument("--strict-host", action="store_true")
     sub.add_parser("skills-6harness-parity")
@@ -2142,9 +2340,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "host-hygiene":
         errs, msg = check_host_hygiene(repo_root)
         return _report("host-hygiene", errs, msg)
-    if args.cmd == "cli-wrappers-smoke":
-        errs, msg = check_cli_wrappers_smoke()
-        return _report("cli-wrappers-smoke", errs, msg)
     if args.cmd == "jouet-rules":
         return _report(
             "jouet-rules", check_jouet_rules(repo_root), "all jouet rules passed"
@@ -2214,9 +2409,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "codex-hook-trust":
         errs, msg = check_codex_hook_trust(repo_root, strict_host=args.strict_host)
         return _report("codex-hook-trust", errs, msg)
-    if args.cmd == "codex-daemon-health":
-        errs, msg = check_codex_daemon_health()
-        return _report("codex-daemon-health", errs, msg)
+    if args.cmd == "mise-binary-integrity":
+        errs, msg = check_mise_binary_integrity(repo_root)
+        return _report("mise-binary-integrity", errs, msg)
     if args.cmd == "agy-rc-health":
         errs, msg = check_agy_rc_health(repo_root, strict_host=args.strict_host)
         return _report("agy-rc-health", errs, msg)

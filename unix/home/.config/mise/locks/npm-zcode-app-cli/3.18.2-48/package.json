@@ -1,7 +1,0 @@
-{
-  "name": "mise-npm-install",
-  "private": true,
-  "dependencies": {
-    "zcode-app-cli": "3.18.2-48"
-  }
-}

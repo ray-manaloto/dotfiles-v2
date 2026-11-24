@@ -90,7 +90,7 @@ def _fake_runner_factory(
                     0,
                     json.dumps(
                         {
-                            "version": "2026.11.13",
+                            "version": "2026.11.14",
                             "activated": True,
                             "build_info": {"target": "aarch64-apple-darwin"},
                             "config_files": [f"{prefix_home}/.config/mise/config.toml"],

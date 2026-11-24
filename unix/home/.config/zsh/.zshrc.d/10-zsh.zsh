@@ -7,10 +7,23 @@ HISTSIZE=50000
 SAVEHIST=10000
 setopt HIST_IGNORE_DUPS HIST_IGNORE_SPACE SHARE_HISTORY
 
+# Activate mise before refreshing zsh completions so `whence -p` checks real installed
+# binary mtimes rather than symlinked shims.
+_mise_bin="$(whence -p mise 2>/dev/null || true)"
+if [[ -z $_mise_bin && -x "$HOME/.local/bin/mise" ]]; then
+	_mise_bin="$HOME/.local/bin/mise"
+elif [[ -z $_mise_bin && -x /usr/local/bin/mise ]]; then
+	_mise_bin="/usr/local/bin/mise"
+fi
+if [[ -n $_mise_bin && -x $_mise_bin ]]; then
+	eval "$("$_mise_bin" activate zsh)"
+fi
+unset _mise_bin
+
 _df_refresh_zsh_comp() {
 	local tool="$1" out="$ZSH_CACHE_DIR/completions/_$1" bin
 	shift
-	bin="$(command -v "$tool" 2>/dev/null || true)"
+	bin="$(whence -p "$tool" 2>/dev/null || true)"
 	[[ -n $bin ]] || return 0
 	if [[ ! -s $out || $bin -nt $out ]]; then
 		local tmp
@@ -28,11 +41,6 @@ _df_refresh_zsh_comp hk hk completion zsh
 _df_refresh_zsh_comp pitchfork pitchfork completion zsh
 _df_refresh_zsh_comp fnox fnox completion zsh
 unset -f _df_refresh_zsh_comp
-
-if [[ $OSTYPE == darwin* && ! -r "$HOME/.config/dotfiles-v2/vm-env.sh" ]]; then
-	[[ -d "$HOME/.local/share/hermes-cli.noindex/bin" ]] && path=("$HOME/.local/share/hermes-cli.noindex/bin" $path)
-	[[ -d /Applications/Orca.app/Contents/Resources/bin ]] && path=(/Applications/Orca.app/Contents/Resources/bin $path)
-fi
 
 if [[ $OSTYPE == darwin* && -d /opt/homebrew/share/zsh/site-functions ]]; then
 	fpath=(/opt/homebrew/share/zsh/site-functions $fpath)

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #MISE description="Provision, bootstrap, and verify dotfiles-v2-macos Tart VM via packslip, mise bootstrap, and non-root LaunchAgent Tailscale SSH"
+#MISE secrets=["TAILSCALE_API_KEY"]
 #USAGE flag "--ref <ref>" help="Git branch or ref to check out in VM (default: current branch)"
 set -euo pipefail
 
 VM_NAME="dotfiles-v2-macos"
 TS_HOSTNAME="dotfiles-v2-vm"
 BASE_IMAGE="ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fbac071c663bf249007b9b387e16b7d576144588acb1d93f9"
-MISE_VER="2026.11.13"
+MISE_VER="2026.11.14"
 PACKSLIP_VER="v1.11.5"
 PACKSLIP_SHA256_MACOS_ARM64="9654417414246dba0a7c394b0cf98dae95979df43f169c27bbce5976e8604aa5"
 PACKSLIP_MISE_PIN="ps1_nlhmwtfeufglxv5myvwvronk7a"
@@ -30,7 +31,11 @@ resolve_ref() {
 }
 
 mint_tailscale_authkey() {
-	local desc="$1" payload curl_cmd resp key
+	local desc="$1" payload resp key
+	if [[ -z ${TAILSCALE_API_KEY:-} ]]; then
+		echo "TAILSCALE_API_KEY is unset; run via 'mise run vm:up' so [secrets.fnox] profile=infra injects it" >&2
+		return 1
+	fi
 	payload="$(jq -cn --arg desc "${desc}" '{
 		capabilities: {
 			devices: {
@@ -45,13 +50,11 @@ mint_tailscale_authkey() {
 		expirySeconds: 300,
 		description: $desc
 	}')"
-	# shellcheck disable=SC2016
-	curl_cmd='curl -fsS -m 15 -X POST -H "Authorization: Bearer ${TAILSCALE_API_KEY}" -H "Content-Type: application/json" -d @- https://api.tailscale.com/api/v2/tailnet/-/keys'
-	if [[ -n ${TAILSCALE_API_KEY:-} && -n ${HTTPS_PROXY:-} ]]; then
-		resp="$(printf '%s' "${payload}" | /bin/bash -c "${curl_cmd}")"
-	else
-		resp="$(printf '%s' "${payload}" | fnox --non-interactive --config "${HOME}/.config/fnox/config.toml" proxy run -- /bin/bash -c "${curl_cmd}")"
-	fi
+	resp="$(printf '%s' "${payload}" | curl -fsS -m 15 -X POST \
+		-K <(printf 'header = "Authorization: Bearer %s"\n' "${TAILSCALE_API_KEY}") \
+		-H "Content-Type: application/json" \
+		-d @- \
+		https://api.tailscale.com/api/v2/tailnet/-/keys)"
 	key="$(printf '%s' "${resp}" | jq -er '.key')"
 	if [[ -z ${key} ]]; then
 		echo "failed to mint Tailscale auth key for ${desc}" >&2
@@ -120,7 +123,7 @@ if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
 	fi
 fi
 
-# Remove any pre-installed Homebrew mise and install pinned mise v2026.11.13 via packslip v1.11.5.
+# Remove any pre-installed Homebrew mise and install pinned mise v2026.11.14 via packslip v1.11.5.
 tart exec -i "${VM_NAME}" env \
 	MISE_VER="${MISE_VER}" \
 	PACKSLIP_VER="${PACKSLIP_VER}" \
