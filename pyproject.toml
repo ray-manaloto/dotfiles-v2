@@ -20,9 +20,9 @@ dev = [
   { include-group = "test" },
 ]
 lint = [
-  "datamodel-code-generator[ruff]==0.100.0",
-  "ruff>=0.17.0",
-  "ty>=0.0.1a0",
+  "datamodel-code-generator[ruff]==0.101.0",
+  "ruff==0.17.6",
+  "ty==0.0.109",
 ]
 test = [
   "dirty-equals==0.11.0",
@@ -32,7 +32,7 @@ test = [
 ]
 
 [tool.datamodel-codegen]
-preset = "standard-py315-20261120"
+preset = "standard-py315-20261123"
 input-file-type = "jsonschema"
 output-model-type = "pydantic_v2.BaseModel"
 target-python-version = "3.15"
@@ -98,4 +98,4 @@ root = ["unix/home/.config/mise/lib", "."]
 [tool.uv]
 package = false
 exclude-newer = "7 days"
-exclude-newer-package = { filelock = false, pydantic = false, pydantic-core = false, datamodel-code-generator = false, cyclopts = false }
+exclude-newer-package = { filelock = false, pydantic = false, pydantic-core = false, datamodel-code-generator = false, cyclopts = false, ruff = false, ty = false }

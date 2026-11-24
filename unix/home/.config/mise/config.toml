@@ -2,26 +2,28 @@
 #:tombi schema.strict = false
 # ref: https://mise.jdx.dev/configuration.html
 
-min_version = "2026.11.12"
+min_version = "2026.11.13"
+
+[tool_config]
+locked = true
 
 [tools]
-"aqua:FiloSottile/age" = "1.3.2"
 "aqua:docker/buildx" = { version = "0.39.1", bin = "docker-buildx", os = [
   "macos",
 ], postinstall = { when = "always", run = '''d="$HOME/.local/share/docker/cli-plugins" f="$HOME/.docker/config.json"; mkdir -p "$d" "$HOME/.docker"; ln -sfn "$MISE_TOOL_INSTALL_PATH/docker-cli-plugin-docker-buildx" "$d/docker-buildx"; [ -s "$f" ] || echo '{}' > "$f"; if command -v jq >/dev/null 2>&1; then jq -e --arg d "$d" '.cliPluginsExtraDirs[0] == $d' "$f" >/dev/null || { jq --arg d "$d" '.cliPluginsExtraDirs = [$d] + ((.cliPluginsExtraDirs // []) - [$d])' "$f" > "$f.new" && mv "$f.new" "$f"; }; fi''' } }
-"aqua:jdx/jactionlint" = "2.6.0"
 "aqua:owenlamont/ryl" = "0.30.0"
-"aqua:oxc-project/oxc/oxfmt" = "0.79.0"
-"aqua:zizmorcore/zizmor" = "1.33.0"
-aube = { version = "2.10.1", workflow = [
+# Keep aqua backend explicitly; canonical short name `oxfmt` switches to `npm:oxfmt`.
+"aqua:oxc-project/oxc/oxfmt" = "0.80.0"
+age = "1.3.2"
+aube = { version = "2.11.0", workflow = [
   "release-plz.yml@refs/heads/main",
   "release.yml@refs/heads/main",
 ] }
 bat = "0.26.1"
 betterleaks = "1.10.1"
 cmake = "4.5.1"
-communique = { version = "1.8.0", workflow = "release.yml@refs/heads/main" }
-delta = "0.21.2"
+communique = { version = "1.9.0", workflow = "release.yml@refs/heads/main" }
+delta = "0.22.0"
 docker-cli = { version = "29.10.0", os = ["macos"] }
 docker-compose = { version = "5.8.0", os = ["macos"] }
 doppler = "3.77.1"
@@ -29,44 +31,47 @@ editorconfig-checker = "4.0.2"
 fd = "10.5.2"
 fnox = { version = "1.50.0", workflow = "release.yml" }
 fzf = "0.75.0"
+"github:0xMassi/webclaw" = "0.7.4"
 "github:agent-sh/agnix" = "0.61.0"
-"github:kenn-io/agentsview" = "0.47.0"
+"github:kenn-io/agentsview" = "0.48.0"
 "github:microsoft/vcpkg-tool" = { version = "2026-10-29", additional_asset_patterns = [
   "vcpkg-standalone-bundle.tar.gz",
 ], rename_exe = "vcpkg", platforms = { macos-arm64 = { asset_pattern = "vcpkg-macos" }, linux-x64 = { asset_pattern = "vcpkg-glibc" }, linux-arm64 = { asset_pattern = "vcpkg-glibc-arm64" } } }
 github-cli = "2.105.0"
 hadolint = "2.15.1"
-hk = { version = "2.13.0", workflow = "release.yml" }
-jouet = { version = "0.0.5", workflow = "release.yml@refs/heads/main" }
+hk = { version = "2.14.0", workflow = "release.yml" }
+jactionlint = "2.6.0"
+jouet = { version = "0.0.6", workflow = "release.yml@refs/heads/main" }
 jq = "1.8.2"
 lychee = "0.24.2"
 ninja = "1.13.2"
 node = "26.13.1"
-"npm:@vercel/board" = "0.55.0"
+"npm:@vercel/board" = "0.56.1"
 "npm:ctx7" = "0.12.2"
 "npm:firecrawl-cli" = "1.30.0"
 "npm:openwiki" = { version = "0.9.0", allow_builds = ["better-sqlite3"] }
 "npm:skills" = "1.9.0"
-"npm:zcode-app-cli" = "3.18.2-48"
+"npm:zcode-app-cli" = { version = "3.18.2-48", prerelease = true }
 "packslip:grafana/flint" = "0.22.15"
 pitchfork = { version = "2.36.0", workflow = "release.yml@refs/heads/main" }
 pkl = "0.33.1"
-pnpm = { version = "12.21.0", os = ["macos"] }
+pnpm = { version = "12.23.0", os = ["macos"] }
 python = "3.15.2"
-ripgrep = "15.2.0"
+ripgrep = "16.0.0"
 ruff = "0.17.6"
 rumdl = "0.3.5"
-sccache = "0.19.0"
+sccache = "0.20.0"
 shellcheck = "0.11.0"
 shfmt = "3.14.1"
 starship = "1.27.0"
 tailscale = { version = "1.104.7", os = ["linux"] }
 tart = { version = "2.42.0", os = ["macos"] }
 tombi = "1.11.3"
-ty = "0.0.108"
+ty = "0.0.109"
 typos = "1.52.2"
-usage = { version = "7.4.0", workflow = "publish-cli.yml" }
+usage = { version = "7.4.1", workflow = "publish-cli.yml" }
 uv = "0.13.9"
+zizmor = "1.33.1"
 zoxide = "0.10.0"
 
 [vars]
@@ -238,7 +243,7 @@ depends = [
 description = "No stale GH_TOKEN or GITHUB_TOKEN overrides the gh login"
 os = "macos"
 run = '[ -f "$HOME/.config/dotfiles-v2/vm-env.sh" ] || [ "${container:-}" = "docker" ] || [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] || gh api user --silent'
-hint = "A bad env token beats the keyring with no fallback. Unset it or restart this process; pass tokens only through fnox exec."
+hint = "A bad env token beats the keyring with no fallback. Unset it or restart this process; pass tokens only through fnox proxy run."
 timeout = "15s"
 
 [doctor.checks.gh-keyring]
@@ -323,13 +328,15 @@ disable_tools = [
 dotfiles.root = "{{ config_source | canonicalize | dirname }}/../.."
 download_cache = true
 download_cache_max_size = "10GiB"
+enable_backends = ["core", "aqua", "github", "npm", "packslip"]
 exec_auto_install = false
 experimental = true
 github.credential_command = "gh auth token"
 lockfile = true
-lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
+lockfile_platforms = ["linux-arm64", "linux-x64", "macos-arm64"]
 paranoid = ["config"]
 pin = true
+prune.forget_unused_after = "30d"
 task.history = true
 trusted_config_paths = [
   "~/.config/mise",

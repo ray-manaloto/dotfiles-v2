@@ -118,8 +118,8 @@ check_container() {
 	fi
 
 	mise_ver="$("${dcmd[@]}" exec "${name}" mise --version | awk '{print $1}')"
-	if ! version_ge "${mise_ver}" "2026.11.12"; then
-		fail_row "${label}" "mise=${mise_ver} (< 2026.11.12)"
+	if ! version_ge "${mise_ver}" "2026.11.13"; then
+		fail_row "${label}" "mise=${mise_ver} (< 2026.11.13)"
 		return
 	fi
 
@@ -177,6 +177,7 @@ test "$(readlink -f /home/dev/.gemini/config/skills)" = "/home/dev/.agents/skill
 python3 - <<'PY'
 import json
 import os
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -187,9 +188,17 @@ for srv in ("mise", "hk", "pitchfork", "usage-mise"):
 cx = tomllib.loads(Path("/home/dev/.codex/config.toml").read_text(encoding="utf-8"))
 for srv in ("mise", "hk", "pitchfork", "usage-mise"):
     assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
+dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "dot", "status", "--json"], text=True))
+healthy = {"applied", "tracked", "absent", "not_on_this_machine", "ok", "synced", "match"}
+for entry in (dot_data.get("files") if isinstance(dot_data, dict) else dot_data) or []:
+    if isinstance(entry, dict):
+        st = str(entry.get("state") or entry.get("status") or "")
+        assert not st or st in healthy, f"unhealthy dot status: {entry}"
+if isinstance(dot_data, dict):
+    assert not (dot_data.get("orphaned") or []), f"orphaned dotfiles: {dot_data.get('orphaned')}"
 PY
 claude mcp get mise </dev/null >/dev/null
-for _sk in aube communique flint fnox hk-configure hk-debug pitchfork usage vercel-board; do
+for _sk in agy-session-ops aube communique flint fnox herdr-roll hk-configure hk-debug mise-bootstrap-ops pitchfork post-task-learn pwf-status usage vercel-board; do
 	test -f "/home/dev/.agents/skills/${_sk}/SKILL.md"
 	test -f "/home/dev/.claude/skills/${_sk}/SKILL.md"
 	test -f "/home/dev/.gemini/config/skills/${_sk}/SKILL.md"
@@ -298,7 +307,7 @@ test "${sm}" = "Darwin arm64"
 test ! -e /opt/homebrew/bin/mise
 ! /opt/homebrew/bin/brew list --versions mise >/dev/null 2>&1
 mv="$(/usr/local/bin/mise --version | awk '{print $1}')"
-test "$(printf '%s\n%s\n' "2026.11.12" "${mv}" | sort -V | head -n 1)" = "2026.11.12"
+test "$(printf '%s\n%s\n' "2026.11.13" "${mv}" | sort -V | head -n 1)" = "2026.11.13"
 test -L "${HOME}/.config/mise"
 link="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.config/mise")"
 want="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/mise")"
@@ -339,6 +348,7 @@ test -L "${HOME}/.gemini/config/skills"
 python3 - <<'PY'
 import json
 import os
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -350,8 +360,16 @@ for srv in ("mise", "hk", "pitchfork", "usage-mise"):
 cx = tomllib.loads(Path(os.path.expanduser("~/.codex/config.toml")).read_text(encoding="utf-8"))
 for srv in ("mise", "hk", "pitchfork", "usage-mise"):
     assert srv in cx.get("mcp_servers", {}), f"Missing codex mcp_servers.{srv}"
+dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "dot", "status", "--json"], text=True))
+healthy = {"applied", "tracked", "absent", "not_on_this_machine", "ok", "synced", "match"}
+for entry in (dot_data.get("files") if isinstance(dot_data, dict) else dot_data) or []:
+    if isinstance(entry, dict):
+        st = str(entry.get("state") or entry.get("status") or "")
+        assert not st or st in healthy, f"unhealthy dot status: {entry}"
+if isinstance(dot_data, dict):
+    assert not (dot_data.get("orphaned") or []), f"orphaned dotfiles: {dot_data.get('orphaned')}"
 PY
-for _sk in aube communique flint fnox hk-configure hk-debug pitchfork usage vercel-board; do
+for _sk in agy-session-ops aube communique flint fnox herdr-roll hk-configure hk-debug mise-bootstrap-ops pitchfork post-task-learn pwf-status usage vercel-board; do
   test -f "${HOME}/.agents/skills/${_sk}/SKILL.md"
   test -f "${HOME}/.claude/skills/${_sk}/SKILL.md"
   test -f "${HOME}/.gemini/config/skills/${_sk}/SKILL.md"
@@ -417,7 +435,7 @@ all)
 	check_vm
 	;;
 *)
-	echo "unknown target '${target}' (expected pc, mac, or all)" >&2
+	echo "unknown target '${target}' (expected pc, mac, vm, or all)" >&2
 	exit 1
 	;;
 esac

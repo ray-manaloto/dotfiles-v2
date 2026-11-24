@@ -36,12 +36,12 @@ description: >-
   linking, and source profile env scripts at line 1 of `~/.bashrc` above
   Ubuntu's interactive guard for non-login Tailscale SSH parity.
 
-## 3. Binary Verification (`packslip v1.11.4` `#346` Workaround)
+## 3. Binary Verification (`packslip v1.11.5` & Digest-Pinned Docker)
 
-- Until `jdx/packslip` `v1.11.5` (PR `#337`, fixing `#346`'s 8 MiB `/releases`
-  response cap) ships, copy digest-pinned `ghcr.io/jdx/mise` in Docker and run
-  `packslip verify --pin <pin> --artifact <tarball> --json` on macOS, asserting
-  `project`, `version`, and `checked_artifacts` before installing.
+- With `jdx/packslip` `v1.11.5` (PR `#347`, fixing `#346`'s 8 MiB `/releases`
+  response cap), copy digest-pinned `ghcr.io/jdx/mise` (`2026.11.13`) in Docker
+  and run `packslip install github.com/jdx/mise --version ... --pin <pin> --system --bin-dir /usr/local/bin --force`
+  on macOS.
 
 ## 4. Non-Root macOS LaunchAgents
 

@@ -6,9 +6,9 @@ set -euo pipefail
 VM_NAME="dotfiles-v2-macos"
 TS_HOSTNAME="dotfiles-v2-vm"
 BASE_IMAGE="ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fbac071c663bf249007b9b387e16b7d576144588acb1d93f9"
-MISE_VER="2026.11.12"
-PACKSLIP_VER="1.11.4"
-PACKSLIP_SHA256_MACOS_ARM64="2b21dc68d54c23a56123f9f9d7402a8b9cfb1e6950c5d4966730ec5cee20146b"
+MISE_VER="2026.11.13"
+PACKSLIP_VER="1.11.5"
+PACKSLIP_SHA256_MACOS_ARM64="9654417414246dba0a7c394b0cf98dae95979df43f169c27bbce5976e8604aa5"
 PACKSLIP_MISE_PIN="ps1_nlhmwtfeufglxv5myvwvronk7a"
 REPO_URL="https://github.com/ray-manaloto/dotfiles-v2.git"
 SLUG_REPO="ray-manaloto/dotfiles-v2"
@@ -120,7 +120,7 @@ if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
 	fi
 fi
 
-# Remove any pre-installed Homebrew mise and install pinned mise v2026.11.12 via packslip v1.11.4.
+# Remove any pre-installed Homebrew mise and install pinned mise v2026.11.13 via packslip v1.11.5.
 tart exec -i "${VM_NAME}" env \
 	MISE_VER="${MISE_VER}" \
 	PACKSLIP_VER="${PACKSLIP_VER}" \
@@ -144,23 +144,13 @@ if [[ "${have}" != "${MISE_VER}" ]]; then
   curl -fsSLo "${tmp_dir}/packslip" "https://github.com/jdx/packslip/releases/download/v${PACKSLIP_VER}/packslip-v${PACKSLIP_VER}-darwin-arm64"
   printf '%s  %s/packslip\n' "${PACKSLIP_SHA}" "${tmp_dir}" | shasum -a 256 -c -
   chmod 0755 "${tmp_dir}/packslip"
-  # Work around jdx/packslip#346 in v1.11.4 (fixed on main by #347, awaiting v1.11.5):
-  # verify the Sigstore bundle + macOS arm64 tarball offline against the signer pin.
-  tarball="mise-v${MISE_VER}-macos-arm64.tar.gz"
-  curl -fsSLo "${tmp_dir}/packslip.sigstore.json" "https://github.com/jdx/mise/releases/download/v${MISE_VER}/packslip.sigstore.json"
-  curl -fsSLo "${tmp_dir}/${tarball}" "https://github.com/jdx/mise/releases/download/v${MISE_VER}/${tarball}"
-  verify_json="$("${tmp_dir}/packslip" verify "${tmp_dir}/packslip.sigstore.json" --pin "${PACKSLIP_PIN}" --artifact "${tmp_dir}/${tarball}" --json)"
-  VERIFY_JSON="${verify_json}" WANT_VER="${MISE_VER}" WANT_TARBALL="${tarball}" /usr/bin/python3 - <<'PY'
-import json, os
-data = json.loads(os.environ["VERIFY_JSON"])
-assert data.get("project") == "github.com/jdx/mise", f"unexpected project: {data.get('project')}"
-assert data.get("version") == os.environ["WANT_VER"], f"unexpected version: {data.get('version')}"
-assert os.environ["WANT_TARBALL"] in data.get("checked_artifacts", []), f"artifact not verified: {data.get('checked_artifacts')}"
-PY
-  tar -xzf "${tmp_dir}/${tarball}" -C "${tmp_dir}"
   sudo install -d -m 0755 /usr/local/bin
-  sudo rm -f /usr/local/bin/mise
-  sudo install -m 0755 "${tmp_dir}/mise/bin/mise" /usr/local/bin/mise
+  sudo "${tmp_dir}/packslip" install github.com/jdx/mise \
+    --version "${MISE_VER}" \
+    --pin "${PACKSLIP_PIN}" \
+    --system \
+    --bin-dir /usr/local/bin \
+    --force
 fi
 GUEST
 

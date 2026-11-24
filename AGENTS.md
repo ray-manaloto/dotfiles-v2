@@ -16,15 +16,14 @@ and C++26 workstation setup.
   `dotfiles-v2-macos` `arm64`). Always run containers with `-e container=docker`
   and never `--privileged`. Never touch `cs-guest`.
 - **Option A `mise bootstrap` architecture:**
-  - `docker/ubuntu/Dockerfile` copies `mise 2026.11.12` from digest-pinned
-    multi-arch `ghcr.io/jdx/mise:2026.11.12@sha256:991e2a550518ec5cae6f25adbc862ec0253ff714ee6e5e6bf328058a7324a041`
+  - `docker/ubuntu/Dockerfile` copies `mise 2026.11.13` from digest-pinned
+    multi-arch `ghcr.io/jdx/mise:2026.11.13@sha256:06a4e5b507ac24d0279d6d2fc1f0849cb54fd0c1eb305a93db028398364b45f9`
     (official `mise` Docker cookbook pattern), then runs a 2-phase
     `mise bootstrap` with BuildKit `apt` / `downloads-cas` (`download_cache = true`,
     `10GiB`) caches and optional `acu-trial` `ubuntu-cache` (`DOTFILES_APT_CACHE`,
-    auto-probed on `pc:3142` via `/healthz`). `tasks/vm/up` installs `mise 2026.11.12`
-    on macOS via pinned `packslip v1.11.4` (`packslip verify --pin ps1_nlhmwtfeufglxv5myvwvronk7a`
-    checking project, version, and artifact until `jdx/packslip` `v1.11.5` fixes
-    `#346` for `packslip install`).
+    auto-probed on `pc:3142` via `/healthz`). `tasks/vm/up` installs `mise 2026.11.13`
+    on macOS via pinned `packslip v1.11.5` (`packslip install --pin ps1_nlhmwtfeufglxv5myvwvronk7a`,
+    retiring the `v1.11.4` `#346` workaround fixed by `PR #347`).
   - Phase 1a (`root`) runs `container-prune-ubuntu` (removes stock `ubuntu`
     1000:1000) then `container,linux` (creates `dev` 1000:1000, installs pinned
     `apt` packages, creates directories and `/etc/profile.d/*` files). Phase 1b
@@ -103,7 +102,7 @@ and C++26 workstation setup.
   repo configs (`MISE_TRUSTED_CONFIG_PATHS`). Use `conf.d/<topic>/mise.toml`
   folder fragments (not single-file `conf.d/*.toml`) for additive
   `[task_config].includes`. Use only pinned standalone `mise` (`/usr/local/bin/mise`
-  on VM/containers via digest-pinned `ghcr.io/jdx/mise` or `packslip verify`,
+  on VM/containers via digest-pinned `ghcr.io/jdx/mise` or `packslip install`,
   `~/.local/bin/mise` on host) instead of Homebrew `mise`; uninstall any
   base-image Homebrew `mise` formula (`brew uninstall --force mise`) so
   `/opt/homebrew/bin/mise` stays absent.
