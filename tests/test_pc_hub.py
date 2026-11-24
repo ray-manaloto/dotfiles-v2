@@ -153,10 +153,10 @@ def test_render_env_systemd_and_launchd_plists() -> None:
         "dev.mise.qmd-hub.service",
     }
     assert "BOARD_PORT=4100" in units["dev.mise.vercel-board.service"]
-    assert (
-        "Environment=PATH=/home/dev/.local/share/mise/shims:"
-        in units["dev.mise.vercel-board.service"]
-    )
+    for unit_name, unit_text in units.items():
+        assert "Environment=PATH=/home/dev/.local/share/mise/shims:" in unit_text, (
+            unit_name
+        )
     assert (
         "--port 8082 --base-path /agentsview --public-url https://hub-node.tailnet.ts.net/agentsview --require-auth"
         in units["dev.mise.agentsview-hub.service"]
@@ -434,3 +434,32 @@ def test_hub_tasks_dry_run_and_container_refusal() -> None:
     )
     assert refused.returncode == 1
     assert "0 MB in dev containers" in refused.stderr
+
+
+def test_hub_up_script_invariants() -> None:
+    up_text = (HUB_TASKS_DIR / "up").read_text(encoding="utf-8")
+
+    # All three macOS -> pc tar streams must disable AppleDouble metadata and clean stale ._*.
+    assert up_text.count("COPYFILE_DISABLE=1 tar ") == 3
+    assert "rm -f '${stack_dir}'/._* '${stack_dir}'/searxng/._*" in up_text
+    assert "rm -f '${remote_home}/.config/systemd/user'/._dev.mise.*.service" in up_text
+
+    # ssh-keygen writes ${key_priv}.pub, so migrate legacy .key.pub and rename after keygen.
+    assert 'if [[ ! -s ${key_pub} && -s "${key_priv}.pub" ]]; then' in up_text
+    assert 'mv -f "${key_priv}.pub" "${key_pub}"' in up_text
+    assert 'rm -f "${key_priv}" "${key_priv}.pub" "${key_pub}"' in up_text
+
+    # pc host lacks ~/.config/mise/config.toml so agentsview and vb are symlinked into ~/.local/bin via mise where.
+    assert (
+        'mise -C "${REMOTE_HOME}" where "github:kenn-io/agentsview@0.48.0"' in up_text
+    )
+    assert (
+        'ln -sfn "${av_dir}/agentsview" "${REMOTE_HOME}/.local/bin/agentsview"'
+        in up_text
+    )
+    assert 'mise -C "${REMOTE_HOME}" where "npm:@vercel/board@0.56.1"' in up_text
+    assert 'ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"' in up_text
+    assert (
+        'if [[ -x "$HOME/.local/bin/agentsview" ]]; then printf "%s/.local/bin/agentsview" "$HOME";'
+        in up_text
+    )

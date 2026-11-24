@@ -59,7 +59,7 @@ state_dir="${remote_home}/.local/state/pc-hub"
 stack_dir="${state_dir}/stack"
 
 ssh -o BatchMode=yes "${host}" "mkdir -p '${stack_dir}/searxng' '${state_dir}/beszel_data' '${state_dir}/beszel_agent_data' '${remote_home}/.config/board' '${remote_home}/.config/agentsview' '${remote_home}/.local/bin' '${remote_home}/.agentsview' && chmod 0700 '${state_dir}' '${remote_home}/.config/board' '${remote_home}/.config/agentsview'"
-tar -C "${repo_root}/docker/pc-hub" -cf - compose.yaml Caddyfile searxng/settings.yml | ssh -o BatchMode=yes "${host}" "tar -C '${stack_dir}' -xf -"
+COPYFILE_DISABLE=1 tar -C "${repo_root}/docker/pc-hub" -cf - compose.yaml Caddyfile searxng/settings.yml | ssh -o BatchMode=yes "${host}" "tar -C '${stack_dir}' -xf - && rm -f '${stack_dir}'/._* '${stack_dir}'/searxng/._*"
 
 # Mint/preserve runtime tokens and Beszel ed25519 keypair on pc (never leaves pc except explicit client sync).
 ssh -o BatchMode=yes "${host}" env STATE_DIR="${state_dir}" REMOTE_HOME="${remote_home}" /bin/bash -euo pipefail <<'REMOTE_SECRETS'
@@ -82,9 +82,14 @@ ensure_hex_secret "SEARXNG_SECRET" 32
 
 key_priv="${STATE_DIR}/beszel-agent.key"
 key_pub="${STATE_DIR}/beszel-agent.pub"
+if [[ ! -s ${key_pub} && -s "${key_priv}.pub" ]]; then
+	mv -f "${key_priv}.pub" "${key_pub}"
+	chmod 0644 "${key_pub}"
+fi
 if [[ ! -s ${key_priv} || ! -s ${key_pub} ]]; then
-	rm -f "${key_priv}" "${key_pub}"
+	rm -f "${key_priv}" "${key_priv}.pub" "${key_pub}"
 	ssh-keygen -t ed25519 -N "" -C "beszel-pc-hub" -f "${key_priv}" >/dev/null
+	mv -f "${key_priv}.pub" "${key_pub}"
 	chmod 0600 "${key_priv}"
 	chmod 0644 "${key_pub}"
 fi
@@ -137,11 +142,27 @@ if [[ ! -x ${qmd_bin} ]] || ! "${qmd_bin}" --version 2>/dev/null | grep -Fq "2.9
 fi
 ln -sfn "${qmd_bin}" "${REMOTE_HOME}/.local/bin/qmd"
 
-if ! command -v agentsview >/dev/null 2>&1 && [[ ! -x "${REMOTE_HOME}/.local/share/mise/shims/agentsview" ]]; then
+if [[ ! -x "${REMOTE_HOME}/.local/bin/agentsview" ]]; then
 	MISE_YES=1 mise -C "${REMOTE_HOME}" install "github:kenn-io/agentsview@0.48.0" >/dev/null
+	av_dir="$(mise -C "${REMOTE_HOME}" where "github:kenn-io/agentsview@0.48.0")"
+	if [[ ! -x "${av_dir}/agentsview" ]]; then
+		echo "hub:up: missing agentsview binary in ${av_dir}" >&2
+		exit 1
+	fi
+	ln -sfn "${av_dir}/agentsview" "${REMOTE_HOME}/.local/bin/agentsview"
 fi
-if ! command -v vb >/dev/null 2>&1 && [[ ! -x "${REMOTE_HOME}/.local/share/mise/shims/vb" ]]; then
+if [[ ! -x "${REMOTE_HOME}/.local/bin/vb" ]]; then
 	MISE_YES=1 mise -C "${REMOTE_HOME}" install "npm:@vercel/board@0.56.1" >/dev/null
+	vb_dir="$(mise -C "${REMOTE_HOME}" where "npm:@vercel/board@0.56.1")"
+	vb_bin="${vb_dir}/node_modules/.bin/vb"
+	if [[ ! -x ${vb_bin} ]]; then
+		vb_bin="${vb_dir}/bin/vb"
+	fi
+	if [[ ! -x ${vb_bin} ]]; then
+		echo "hub:up: missing vb binary in ${vb_dir}" >&2
+		exit 1
+	fi
+	ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"
 fi
 
 av_tok="$(tr -d '\r\n' <"${REMOTE_HOME}/.config/agentsview/server-token")"
@@ -174,13 +195,13 @@ ssh -o BatchMode=yes "${host}" "docker compose -f '${stack_dir}/compose.yaml' --
 
 if [[ ${skip_systemd} != "true" ]]; then
 	node_bin="$(ssh -o BatchMode=yes "${host}" 'command -v node || command -v /usr/bin/node')"
-	av_bin="$(ssh -o BatchMode=yes "${host}" 'command -v agentsview || printf "%s/.local/share/mise/shims/agentsview" "$HOME"')"
+	av_bin="$(ssh -o BatchMode=yes "${host}" 'if [[ -x "$HOME/.local/bin/agentsview" ]]; then printf "%s/.local/bin/agentsview" "$HOME"; else command -v agentsview || printf "%s/.local/share/mise/shims/agentsview" "$HOME"; fi')"
 	qmd_bin="${remote_home}/.local/bin/qmd"
 	board_mjs="${remote_home}/.config/mise/assets/board/server.mjs"
 	if ! ssh -o BatchMode=yes "${host}" "test -f '${board_mjs}'"; then
 		board_mjs="${state_dir}/board/server.mjs"
 		ssh -o BatchMode=yes "${host}" "mkdir -p '${state_dir}/board'"
-		tar -C "${repo_root}/unix/home/.config/mise/assets/board" -cf - server.mjs | ssh -o BatchMode=yes "${host}" "tar -C '${state_dir}/board' -xf -"
+		COPYFILE_DISABLE=1 tar -C "${repo_root}/unix/home/.config/mise/assets/board" -cf - server.mjs | ssh -o BatchMode=yes "${host}" "tar -C '${state_dir}/board' -xf -"
 	fi
 	units_dir_tmp="$(mktemp -d)"
 	trap 'rm -rf "${units_dir_tmp}"' EXIT
@@ -194,7 +215,7 @@ if [[ ${skip_systemd} != "true" ]]; then
 		--board-server-mjs "${board_mjs}" \
 		--out-dir "${units_dir_tmp}"
 	ssh -o BatchMode=yes "${host}" "mkdir -p '${remote_home}/.config/systemd/user'"
-	tar -C "${units_dir_tmp}" -cf - . | ssh -o BatchMode=yes "${host}" "tar -C '${remote_home}/.config/systemd/user' -xf -"
+	COPYFILE_DISABLE=1 tar -C "${units_dir_tmp}" -cf - . | ssh -o BatchMode=yes "${host}" "tar -C '${remote_home}/.config/systemd/user' -xf - && rm -f '${remote_home}/.config/systemd/user'/._dev.mise.*.service"
 	ssh -o BatchMode=yes "${host}" 'systemctl --user daemon-reload && systemctl --user enable --now dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service && systemctl --user restart dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service'
 fi
 
