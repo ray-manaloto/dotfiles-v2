@@ -1,0 +1,765 @@
+{
+  "arch": "arm64",
+  "container": null,
+  "errors": [],
+  "harnesses": {
+    "agy": {
+      "installed": false,
+      "mcps": [],
+      "mise_skill_links": [
+        "aube",
+        "communique",
+        "flint",
+        "fnox",
+        "hk-configure",
+        "hk-debug",
+        "pitchfork",
+        "usage"
+      ],
+      "name": "agy",
+      "plugins": [],
+      "skills": [
+        "agy-session-ops",
+        "aube",
+        "communique",
+        "flint",
+        "fnox",
+        "herdr-roll",
+        "hk-configure",
+        "hk-debug",
+        "mise-bootstrap-ops",
+        "pitchfork",
+        "post-task-learn",
+        "pwf-status",
+        "usage",
+        "vercel-board"
+      ],
+      "version": null
+    },
+    "claude": {
+      "installed": true,
+      "mcps": [],
+      "mise_skill_links": [],
+      "name": "claude",
+      "plugins": [],
+      "skills": [],
+      "version": "2.1.330 (Claude Code)"
+    },
+    "codex": {
+      "installed": true,
+      "mcps": [
+        {
+          "auth_status": "unsupported",
+          "command": "/bin/sh",
+          "disabled_reason": null,
+          "enabled": true,
+          "env_vars": [],
+          "name": "hk",
+          "transport_type": "stdio",
+          "url": null
+        },
+        {
+          "auth_status": "unsupported",
+          "command": "/bin/sh",
+          "disabled_reason": null,
+          "enabled": true,
+          "env_vars": [],
+          "name": "mise",
+          "transport_type": "stdio",
+          "url": null
+        },
+        {
+          "auth_status": "unsupported",
+          "command": "/bin/sh",
+          "disabled_reason": null,
+          "enabled": true,
+          "env_vars": [],
+          "name": "pitchfork",
+          "transport_type": "stdio",
+          "url": null
+        },
+        {
+          "auth_status": "unsupported",
+          "command": "/bin/sh",
+          "disabled_reason": null,
+          "enabled": true,
+          "env_vars": [],
+          "name": "usage-mise",
+          "transport_type": "stdio",
+          "url": null
+        }
+      ],
+      "mise_skill_links": [],
+      "name": "codex",
+      "plugins": [],
+      "skills": [],
+      "version": "codex-cli 0.166.0"
+    },
+    "opencode": {
+      "installed": true,
+      "mcps": [],
+      "mise_skill_links": [],
+      "name": "opencode",
+      "plugins": [],
+      "skills": [],
+      "version": "opencode v2.3.2"
+    },
+    "zcode": {
+      "installed": true,
+      "mcps": [],
+      "mise_skill_links": [],
+      "name": "zcode",
+      "plugins": [],
+      "skills": [],
+      "version": "zcode-app-cli 3.18.2-48 | zcode-runtime 0.17.1"
+    }
+  },
+  "mise": {
+    "activated": false,
+    "build_target": "aarch64-apple-darwin",
+    "config_files": [
+      "~/.config/mise/config.vm.toml",
+      "~/.config/mise/config.macos.toml",
+      "~/.config/mise/config.toml"
+    ],
+    "errors": [],
+    "installed": true,
+    "skills": [
+      {
+        "name": "aube",
+        "path": "~/.local/share/mise/installs/aube/2.11.0/.mise-packslip/repo/skills/aube",
+        "tool": "aube",
+        "version": "2.11.0"
+      },
+      {
+        "name": "communique",
+        "path": "~/.local/share/mise/installs/communique/1.9.0/.mise-packslip/repo/skills/communique",
+        "tool": "communique",
+        "version": "1.9.0"
+      },
+      {
+        "name": "flint",
+        "path": "~/.local/share/mise/installs/packslip-grafana-flint/0.22.15/.mise-packslip/repo/skills/flint",
+        "tool": "packslip:grafana/flint",
+        "version": "0.22.15"
+      },
+      {
+        "name": "fnox",
+        "path": "~/.local/share/mise/installs/fnox/1.50.0/.mise-packslip/repo/skills/fnox",
+        "tool": "fnox",
+        "version": "1.50.0"
+      },
+      {
+        "name": "hk-configure",
+        "path": "~/.local/share/mise/installs/hk/2.14.0/skills/hk-configure",
+        "tool": "hk",
+        "version": "2.14.0"
+      },
+      {
+        "name": "hk-debug",
+        "path": "~/.local/share/mise/installs/hk/2.14.0/skills/hk-debug",
+        "tool": "hk",
+        "version": "2.14.0"
+      },
+      {
+        "name": "pitchfork",
+        "path": "~/.local/share/mise/installs/pitchfork/2.36.0/.mise-packslip/repo/skills/pitchfork",
+        "tool": "pitchfork",
+        "version": "2.36.0"
+      },
+      {
+        "name": "usage",
+        "path": "~/.local/share/mise/installs/usage/7.4.1/.mise-packslip/repo/skills/usage",
+        "tool": "usage",
+        "version": "7.4.1"
+      }
+    ],
+    "tools": [
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/age/1.3.2",
+        "installed": true,
+        "name": "age",
+        "requested_version": "1.3.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.3.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/aqua-docker-buildx/0.39.1",
+        "installed": true,
+        "name": "aqua:docker/buildx",
+        "requested_version": "0.39.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.39.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/aqua-owenlamont-ryl/0.30.0",
+        "installed": true,
+        "name": "aqua:owenlamont/ryl",
+        "requested_version": "0.30.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.30.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/aube/2.11.0",
+        "installed": true,
+        "name": "aube",
+        "requested_version": "2.11.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "2.11.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/bat/0.26.1",
+        "installed": true,
+        "name": "bat",
+        "requested_version": "0.26.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.26.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/betterleaks/1.10.1",
+        "installed": true,
+        "name": "betterleaks",
+        "requested_version": "1.10.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.10.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/cmake/4.5.1",
+        "installed": true,
+        "name": "cmake",
+        "requested_version": "4.5.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "4.5.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/communique/1.9.0",
+        "installed": true,
+        "name": "communique",
+        "requested_version": "1.9.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.9.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/delta/0.22.0",
+        "installed": true,
+        "name": "delta",
+        "requested_version": "0.22.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.22.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/docker-cli/29.10.0",
+        "installed": true,
+        "name": "docker-cli",
+        "requested_version": "29.10.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "29.10.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/docker-compose/5.8.0",
+        "installed": true,
+        "name": "docker-compose",
+        "requested_version": "5.8.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "5.8.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/doppler/3.77.1",
+        "installed": true,
+        "name": "doppler",
+        "requested_version": "3.77.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "3.77.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/editorconfig-checker/4.0.2",
+        "installed": true,
+        "name": "editorconfig-checker",
+        "requested_version": "4.0.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "4.0.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/fd/10.5.2",
+        "installed": true,
+        "name": "fd",
+        "requested_version": "10.5.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "10.5.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/fnox/1.50.0",
+        "installed": true,
+        "name": "fnox",
+        "requested_version": "1.50.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.50.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/fzf/0.75.0",
+        "installed": true,
+        "name": "fzf",
+        "requested_version": "0.75.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.75.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/github-cli/2.105.0",
+        "installed": true,
+        "name": "github-cli",
+        "requested_version": "2.105.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "2.105.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/github-0x-massi-webclaw/0.7.4",
+        "installed": true,
+        "name": "github:0xMassi/webclaw",
+        "requested_version": "0.7.4",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.7.4"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/github-agent-sh-agnix/0.61.0",
+        "installed": true,
+        "name": "github:agent-sh/agnix",
+        "requested_version": "0.61.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.61.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/github-kenn-io-agentsview/0.48.0",
+        "installed": true,
+        "name": "github:kenn-io/agentsview",
+        "requested_version": "0.48.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.48.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/github-microsoft-vcpkg-tool/2026-10-29",
+        "installed": true,
+        "name": "github:microsoft/vcpkg-tool",
+        "requested_version": "2026-10-29",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "2026-10-29"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/hadolint/2.15.1",
+        "installed": true,
+        "name": "hadolint",
+        "requested_version": "2.15.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "2.15.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/hk/2.14.0",
+        "installed": true,
+        "name": "hk",
+        "requested_version": "2.14.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "2.14.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/jactionlint/2.6.0",
+        "installed": true,
+        "name": "jactionlint",
+        "requested_version": "2.6.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "2.6.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/jouet/0.0.6",
+        "installed": true,
+        "name": "jouet",
+        "requested_version": "0.0.6",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.0.6"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/jq/1.8.2",
+        "installed": true,
+        "name": "jq",
+        "requested_version": "1.8.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.8.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/lychee/0.24.2",
+        "installed": true,
+        "name": "lychee",
+        "requested_version": "0.24.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.24.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/ninja/1.13.2",
+        "installed": true,
+        "name": "ninja",
+        "requested_version": "1.13.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.13.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/node/26.13.1",
+        "installed": true,
+        "name": "node",
+        "requested_version": "26.13.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "26.13.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/npm-vercel-board/0.56.1~aube~a5fce373e540dcc5",
+        "installed": true,
+        "name": "npm:@vercel/board",
+        "requested_version": "0.56.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.56.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/npm-ctx7/0.12.2~aube~404d96ecdf440816",
+        "installed": true,
+        "name": "npm:ctx7",
+        "requested_version": "0.12.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.12.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/npm-firecrawl-cli/1.30.0~aube~1ef2e21015f48ee9",
+        "installed": true,
+        "name": "npm:firecrawl-cli",
+        "requested_version": "1.30.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.30.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/npm-openwiki/0.9.0~aube~c30ad477de54eab6",
+        "installed": true,
+        "name": "npm:openwiki",
+        "requested_version": "0.9.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.9.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/npm-skills/1.9.0~aube~3669519ae01d9b99",
+        "installed": true,
+        "name": "npm:skills",
+        "requested_version": "1.9.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.9.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/npm-zcode-app-cli/3.18.2-48~aube~d1e53ce0b41dc23e",
+        "installed": true,
+        "name": "npm:zcode-app-cli",
+        "requested_version": "3.18.2-48",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "3.18.2-48"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/oxfmt/0.80.0~aube~30191971466da224",
+        "installed": true,
+        "name": "oxfmt",
+        "requested_version": "0.80.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.80.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/packslip-grafana-flint/0.22.15",
+        "installed": true,
+        "name": "packslip:grafana/flint",
+        "requested_version": "0.22.15",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.22.15"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/pitchfork/2.36.0",
+        "installed": true,
+        "name": "pitchfork",
+        "requested_version": "2.36.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "2.36.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/pkl/0.33.1",
+        "installed": true,
+        "name": "pkl",
+        "requested_version": "0.33.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.33.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/pnpm/12.23.0",
+        "installed": true,
+        "name": "pnpm",
+        "requested_version": "12.23.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "12.23.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/python/3.15.2",
+        "installed": true,
+        "name": "python",
+        "requested_version": "3.15.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "3.15.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/ripgrep/16.0.0",
+        "installed": true,
+        "name": "ripgrep",
+        "requested_version": "16.0.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "16.0.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/ruff/0.17.6",
+        "installed": true,
+        "name": "ruff",
+        "requested_version": "0.17.6",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.17.6"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/rumdl/0.3.5",
+        "installed": true,
+        "name": "rumdl",
+        "requested_version": "0.3.5",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.3.5"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/sccache/0.20.0",
+        "installed": true,
+        "name": "sccache",
+        "requested_version": "0.20.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.20.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/shellcheck/0.11.0",
+        "installed": true,
+        "name": "shellcheck",
+        "requested_version": "0.11.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.11.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/shfmt/3.14.1",
+        "installed": true,
+        "name": "shfmt",
+        "requested_version": "3.14.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "3.14.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/starship/1.27.0",
+        "installed": true,
+        "name": "starship",
+        "requested_version": "1.27.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.27.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/syft/1.57.2",
+        "installed": true,
+        "name": "syft",
+        "requested_version": "1.57.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.57.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/tart/2.42.0",
+        "installed": true,
+        "name": "tart",
+        "requested_version": "2.42.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "2.42.0"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/tombi/1.11.3",
+        "installed": true,
+        "name": "tombi",
+        "requested_version": "1.11.3",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.11.3"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/ty/0.0.109",
+        "installed": true,
+        "name": "ty",
+        "requested_version": "0.0.109",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.0.109"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/typos/1.52.2",
+        "installed": true,
+        "name": "typos",
+        "requested_version": "1.52.2",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.52.2"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/usage/7.4.1",
+        "installed": true,
+        "name": "usage",
+        "requested_version": "7.4.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "7.4.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/uv/0.13.9",
+        "installed": true,
+        "name": "uv",
+        "requested_version": "0.13.9",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.13.9"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/zizmor/1.33.1",
+        "installed": true,
+        "name": "zizmor",
+        "requested_version": "1.33.1",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "1.33.1"
+      },
+      {
+        "active": true,
+        "install_path": "~/.local/share/mise/installs/zoxide/0.10.0",
+        "installed": true,
+        "name": "zoxide",
+        "requested_version": "0.10.0",
+        "source_path": "~/.config/mise/config.toml",
+        "source_type": "mise.toml",
+        "version": "0.10.0"
+      }
+    ],
+    "version": "2026.11.13 macos-arm64 (2026-11-23)",
+    "warnings": []
+  },
+  "os": "macos",
+  "reachable": true,
+  "returns": [
+    {
+      "code": "RET_OK",
+      "detail": null,
+      "message": "collected vm inventory"
+    }
+  ],
+  "schema_version": 1,
+  "target": "vm",
+  "timestamp": "20261124T002157.792007000-0600",
+  "timestamp_unix_ns": 1795501317792007000
+}
