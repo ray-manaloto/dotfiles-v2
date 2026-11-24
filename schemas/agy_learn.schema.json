@@ -507,6 +507,27 @@
           "minimum": 0,
           "default": null
         },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnProposal"
+          },
+          "default": []
+        },
+        "migrated_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "applied_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
         "timestamp": {
           "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
         },

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#MISE description="Mark approved or already-shipped agy-learn proposals as applied/shipped and refresh proposal Markdown"
+#USAGE flag "--proposal-id <id>" var=#true help="Proposal ID(s) to apply"
+#USAGE flag "--all-approved" help="Transition all approved proposals to applied/shipped"
+#USAGE flag "--detect-shipped" help="Detect already-shipped pending/approved proposals in --repo"
+#USAGE flag "--status <status>" help="Target status: applied (default) or shipped"
+#USAGE flag "--shipped-commit <sha>" help="Optional commit SHA when shipped"
+#USAGE flag "--notes <notes>" help="Optional status notes"
+#USAGE flag "--repo <repo>" help="Repository root for already-shipped detection and Markdown refresh"
+#USAGE flag "--proposal-md <path>" help="Optional learning_proposal.md path to re-render after apply"
+#USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} == /* ]]; then
+			common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		else
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		fi
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+
+args=(apply)
+if [[ -n ${usage_proposal_id:-} ]]; then
+	# shellcheck disable=SC2086
+	for pid in ${usage_proposal_id}; do
+		args+=(--proposal-id "${pid}")
+	done
+fi
+[[ ${usage_all_approved:-false} == "true" ]] && args+=(--all-approved)
+[[ ${usage_detect_shipped:-false} == "true" ]] && args+=(--detect-shipped)
+[[ -n ${usage_status:-} ]] && args+=(--status "${usage_status}")
+[[ -n ${usage_shipped_commit:-} ]] && args+=(--shipped-commit "${usage_shipped_commit}")
+[[ -n ${usage_notes:-} ]] && args+=(--notes "${usage_notes}")
+[[ -n ${usage_repo:-} ]] && args+=(--repo "${usage_repo}")
+[[ -n ${usage_proposal_md:-} ]] && args+=(--proposal-md "${usage_proposal_md}")
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+exec uv run --project "${repo_root}" --offline --locked --no-dev --quiet python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

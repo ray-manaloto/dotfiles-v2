@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import functools
 import json
 import os
@@ -13,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -102,9 +105,16 @@ COMPLETION_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 BLOCKER_OR_QUESTION_RE = re.compile(
-    r"\b(?:blocked|failed|failing|still\s+fails|cannot|unable\s+to|error|waiting\s+on)\b",
+    r"(?:\b(?:blocked|failed|failing|still\s+fails|cannot|unable\s+to|waiting\s+on|unresolved\s+errors?)\b|\b[1-9][0-9]*\s+errors?\b)",
     re.IGNORECASE,
 )
+NONZERO_VERIFY_EXIT_RE = re.compile(
+    r"(?:\bCommand\s+exited\s+with\s+code\s+[1-9][0-9]*\b|\bexit\s+code[:\s]+[1-9][0-9]*\b)",
+    re.IGNORECASE,
+)
+ZERO_EXIT_RE = re.compile(r"\bCommand\s+exited\s+with\s+code\s+0\b")
+SHELL_WRAPPERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh"})
+MAX_SHELL_UNWRAP_DEPTH = 4
 LEARN_FAST_EXIT_PREFIX = "post-task /learn: no reusable customization updates needed."
 PROOF_METRIC_RE = re.compile(
     r"\b(?:\d+/\d+\s+(?:passed|pass|passing|checks?|tests?|ok|green|succeeded)|exit(?:\s+code)?\s+0|0\s+(?:failed|errors?|warnings?|diagnostics?)|old_pid|new_pid|pid\s+\d+|result[=:]\s*\"?ok)\b",
@@ -203,7 +213,31 @@ def _strip_fenced_code(text: str) -> str:
     return "\n".join(kept)
 
 
-def _split_shell_segments(command: str) -> list[list[str]]:
+def _unwrap_shell_command(segment: list[str]) -> str | None:
+    stripped = _strip_env_prefix(segment)
+    if not stripped:
+        return None
+    if Path(stripped[0]).name not in SHELL_WRAPPERS:
+        return None
+    i = 1
+    while i < len(stripped):
+        tok = stripped[i]
+        if tok == "--":
+            break
+        if tok in {"-o", "+o"} and i + 1 < len(stripped):
+            i += 2
+            continue
+        if tok.startswith("-") and not tok.startswith("--") and "c" in tok[1:]:
+            if i + 1 < len(stripped):
+                return stripped[i + 1]
+            return None
+        if not tok.startswith("-"):
+            break
+        i += 1
+    return None
+
+
+def _split_shell_segments(command: str, *, _depth: int = 0) -> list[list[str]]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&()\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
@@ -212,17 +246,30 @@ def _split_shell_segments(command: str) -> list[list[str]]:
     except ValueError:
         return []
 
-    segments: list[list[str]] = []
+    raw_segments: list[list[str]] = []
     cur: list[str] = []
     for tok in tokens:
         if tok in SEPARATORS:
             if cur:
-                segments.append(cur)
+                raw_segments.append(cur)
                 cur = []
         else:
             cur.append(tok)
     if cur:
-        segments.append(cur)
+        raw_segments.append(cur)
+
+    if _depth >= MAX_SHELL_UNWRAP_DEPTH:
+        return raw_segments
+
+    segments: list[list[str]] = []
+    for seg in raw_segments:
+        inner_cmd = _unwrap_shell_command(seg)
+        if inner_cmd is not None:
+            inner_segs = _split_shell_segments(inner_cmd, _depth=_depth + 1)
+            if inner_segs:
+                segments.extend(inner_segs)
+                continue
+        segments.append(seg)
     return segments
 
 
@@ -237,17 +284,37 @@ def _strip_env_prefix(segment: list[str]) -> list[str]:
             idx += 1
             while idx < len(segment) and segment[idx].startswith("-"):
                 flag = segment[idx]
+                if flag == "--":
+                    idx += 1
+                    break
+                if flag in {"-S", "--split-string"} and idx + 1 < len(segment):
+                    try:
+                        expanded = shlex.split(segment[idx + 1])
+                    except ValueError:
+                        expanded = []
+                    segment = [*segment[: idx + 2], *expanded, *segment[idx + 2 :]]
+                    idx += 2
+                    continue
+                if flag.startswith("--split-string="):
+                    try:
+                        expanded = shlex.split(flag.split("=", 1)[1])
+                    except ValueError:
+                        expanded = []
+                    segment = [*segment[: idx + 1], *expanded, *segment[idx + 1 :]]
+                    idx += 1
+                    continue
                 if flag in {
                     "-u",
                     "--unset",
                     "-C",
                     "--chdir",
-                    "-S",
-                    "--split-string",
                 } and idx + 1 < len(segment):
                     idx += 2
                     continue
                 idx += 1
+            continue
+        if Path(tok).name == "exec":
+            idx += 1
             continue
         break
     return segment[idx:]
@@ -300,12 +367,20 @@ def _resolve_target_commit(repo_root: Path, ref: str) -> tuple[str, str] | None:
 
 
 def _changed_files(
-    repo_root: Path, target_sha: str, *, base_ref: str | None = None
+    repo_root: Path,
+    target_sha: str,
+    *,
+    base_ref: str | None = None,
+    exclude_upstream: bool = False,
 ) -> list[str] | None:
     bases = (
         [base_ref]
         if base_ref
-        else ["@{u}", "origin/HEAD", "origin/main", "origin/master"]
+        else (
+            ["origin/HEAD", "origin/main", "origin/master"]
+            if exclude_upstream
+            else ["@{u}", "origin/HEAD", "origin/main", "origin/master"]
+        )
     )
     diff_op = ".." if base_ref is not None else "..."
     for candidate_base in bases:
@@ -384,12 +459,33 @@ def _parse_timestamp_ns(ts: Any) -> int | None:
     ) * 1_000_000_000 + delta.microseconds * 1_000
 
 
-def _load_receipts(common_dir: Path) -> dict[str, dict[str, Any]]:
+@contextmanager
+def _receipt_lock(
+    common_dir: Path, *, shared: bool = False
+) -> Generator[None, None, None]:
+    lock_path = common_dir / f".{RECEIPT_FILENAME}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+    with lock_path.open("a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), mode)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _load_receipts(
+    common_dir: Path, *, locked: bool = True
+) -> dict[str, dict[str, Any]]:
     path = _receipt_path(common_dir)
     if not path.is_file():
         return {}
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        if locked:
+            with _receipt_lock(common_dir, shared=True):
+                raw = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(raw, dict):
@@ -434,6 +530,8 @@ def _write_receipts(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp_name, path)
     except Exception:
         Path(tmp_name).unlink(missing_ok=True)
@@ -510,16 +608,17 @@ def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
     commit_sha, tree_sha = target
 
     rec_ts, rec_ns = _now_ns_pair()
-    receipts = _load_receipts(common_dir)
-    # Stage 1 always clears any stale Stage 2 verification so verification must run AFTER review.
-    receipts[commit_sha] = {
-        "commit_sha": commit_sha,
-        "tree_sha": tree_sha,
-        "recorded_at": rec_ts,
-        "recorded_at_unix_ns": rec_ns,
-        "summary": summary.strip(),
-    }
-    path = _write_receipts(common_dir, commit_sha, receipts)
+    with _receipt_lock(common_dir):
+        receipts = _load_receipts(common_dir, locked=False)
+        # Stage 1 always clears any stale Stage 2 verification so verification must run AFTER review.
+        receipts[commit_sha] = {
+            "commit_sha": commit_sha,
+            "tree_sha": tree_sha,
+            "recorded_at": rec_ts,
+            "recorded_at_unix_ns": rec_ns,
+            "summary": summary.strip(),
+        }
+        path = _write_receipts(common_dir, commit_sha, receipts)
     return {
         "repo_root": str(repo_root),
         "receipt_file": str(path),
@@ -622,36 +721,37 @@ def _verify_receipt(
         msg = f"Verification modified tracked files in {repo_root}; working tree must stay clean after --run."
         raise RuntimeError(msg)
 
-    receipts = _load_receipts(common_dir)
-    cur_entry = receipts.get(commit_sha)
-    if (
-        not cur_entry
-        or cur_entry.get("tree_sha") != tree_sha
-        or str(cur_entry.get("recorded_at", "")) != initial_recorded_at
-    ):
-        msg = (
-            f"Stage 1 review receipt for {commit_sha[:7]} changed while verification ran; "
-            "re-run --verify against the updated review receipt."
-        )
-        raise RuntimeError(msg)
-    entry = dict(cur_entry)
-    ver_ts, ver_ns = _now_ns_pair()
-    recorded_at = str(entry.get("recorded_at", ""))
-    rec_ns = entry.get("recorded_at_unix_ns")
-    if not (isinstance(rec_ns, int) and not isinstance(rec_ns, bool)):
-        rec_ns = _parse_timestamp_ns(recorded_at)
-    if isinstance(rec_ns, int) and ver_ns < rec_ns:
-        ver_ns = rec_ns
-        ver_ts = _format_ns_timestamp(ver_ns)
-    entry["verification"] = {
-        "verified_at": ver_ts,
-        "verified_at_unix_ns": ver_ns,
-        "proof": clean_proof,
-        "commands": cmd_results,
-        "evidence": clean_evidence,
-    }
-    receipts[commit_sha] = entry
-    path = _write_receipts(common_dir, commit_sha, receipts)
+    with _receipt_lock(common_dir):
+        receipts = _load_receipts(common_dir, locked=False)
+        cur_entry = receipts.get(commit_sha)
+        if (
+            not cur_entry
+            or cur_entry.get("tree_sha") != tree_sha
+            or str(cur_entry.get("recorded_at", "")) != initial_recorded_at
+        ):
+            msg = (
+                f"Stage 1 review receipt for {commit_sha[:7]} changed while verification ran; "
+                "re-run --verify against the updated review receipt."
+            )
+            raise RuntimeError(msg)
+        entry = dict(cur_entry)
+        ver_ts, ver_ns = _now_ns_pair()
+        recorded_at = str(entry.get("recorded_at", ""))
+        rec_ns = entry.get("recorded_at_unix_ns")
+        if not (isinstance(rec_ns, int) and not isinstance(rec_ns, bool)):
+            rec_ns = _parse_timestamp_ns(recorded_at)
+        if isinstance(rec_ns, int) and ver_ns < rec_ns:
+            ver_ns = rec_ns
+            ver_ts = _format_ns_timestamp(ver_ns)
+        entry["verification"] = {
+            "verified_at": ver_ts,
+            "verified_at_unix_ns": ver_ns,
+            "proof": clean_proof,
+            "commands": cmd_results,
+            "evidence": clean_evidence,
+        }
+        receipts[commit_sha] = entry
+        path = _write_receipts(common_dir, commit_sha, receipts)
     return {
         "repo_root": str(repo_root),
         "receipt_file": str(path),
@@ -747,7 +847,15 @@ def _parse_git_segment(
         idx = 0
         while idx < len(rest):
             tok = rest[idx]
-            if tok == "--ff-only":
+            if tok in {
+                "--ff-only",
+                "--no-ff",
+                "--ff",
+                "--squash",
+                "--no-commit",
+                "--commit",
+                "--no-edit",
+            }:
                 idx += 1
                 continue
             if tok in {
@@ -766,13 +874,14 @@ def _parse_git_segment(
                 continue
             merge_refs.append(tok)
             idx += 1
-        if has_ff_only and merge_refs:
+        if merge_refs:
             rc_b, branch = _git_output(
                 repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD"
             )
             if rc_b == 0 and branch in {"main", "master"}:
+                mode_tag = "--ff-only " if has_ff_only else ""
                 return (
-                    f"git merge --ff-only {merge_refs[0]}",
+                    f"git merge {mode_tag}{merge_refs[0]}",
                     repo_dir,
                     [merge_refs[0]],
                     "HEAD",
@@ -796,8 +905,13 @@ def _parse_mise_or_pr_segment(
     exe = Path(tokens[0]).name
     if exe == "repotools" and len(tokens) >= 2 and tokens[1] == "pr-create":
         return "repotools pr-create", cwd, ["HEAD"], None, False
-    if exe == "gh" and len(tokens) >= 3 and tokens[1] == "pr" and tokens[2] == "create":
-        return "gh pr create", cwd, ["HEAD"], None, False
+    if exe == "gh" and len(tokens) >= 3 and tokens[1] == "pr":
+        if "--help" in tokens or "-h" in tokens:
+            return None
+        if tokens[2] == "create":
+            return "gh pr create", cwd, ["HEAD"], None, False
+        if tokens[2] == "merge":
+            return "gh pr merge", cwd, ["HEAD"], None, False
     if exe == "mise":
         repo_dir = cwd
         i = 1
@@ -882,7 +996,13 @@ def _check_command(command: str, initial_cwd: Path | None = None) -> dict[str, A
                 continue
             target_sha, target_tree_sha = target
 
-            changed = _changed_files(repo_root, target_sha, base_ref=base_override)
+            changed = _changed_files(
+                repo_root,
+                target_sha,
+                base_ref=base_override,
+                exclude_upstream=op_label
+                in {"gh pr create", "gh pr merge", "repotools pr-create"},
+            )
             if changed is not None:
                 if not changed:
                     continue
@@ -1096,6 +1216,59 @@ def _load_full_records(
     return out
 
 
+def _tool_call_verified_exit_zero(
+    entries: list[tuple[int, dict[str, Any]]],
+    entry_idx: int,
+    planner_obj: dict[str, Any],
+    tc_idx: int,
+    tc_obj: dict[str, Any],
+    full_records: dict[int, dict[str, Any]],
+) -> bool:
+    """Ensure a `run_command` verification call did not exit non-zero or fail."""
+    if tc_obj.get("status") == "ERROR" or bool(tc_obj.get("error")):
+        return False
+
+    results: list[dict[str, Any]] = []
+    for k in range(entry_idx + 1, len(entries)):
+        line_idx, raw_rec = entries[k]
+        rec = full_records.get(line_idx, raw_rec)
+        rtype = rec.get("type")
+        if rtype in {"PLANNER_RESPONSE", "USER_INPUT"}:
+            break
+        if rtype in {"GENERIC", "ERROR_MESSAGE", "TOOL_RESULT", "FUNCTION_RESPONSE"}:
+            results.append(rec)
+
+    if not results:
+        return True
+
+    matched: dict[str, Any] | None = None
+    planner_step = planner_obj.get("step_index")
+    if isinstance(planner_step, int) and not isinstance(planner_step, bool):
+        want_step = planner_step + 1 + tc_idx
+        matched = next(
+            (r for r in results if r.get("step_index") == want_step),
+            None,
+        )
+    if matched is None and 0 <= tc_idx < len(results):
+        matched = results[tc_idx]
+    if matched is None:
+        return True
+
+    if (
+        matched.get("type") == "ERROR_MESSAGE"
+        or matched.get("status") == "ERROR"
+        or bool(matched.get("error"))
+    ):
+        return False
+    content = matched.get("content")
+    if isinstance(content, str):
+        if NONZERO_VERIFY_EXIT_RE.search(content):
+            return False
+        if "Command exited with code" in content and not ZERO_EXIT_RE.search(content):
+            return False
+    return True
+
+
 def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if os.environ.get("AGY_DISABLE_CODE_REVIEW_GUARD") == "1":
         return {}
@@ -1166,7 +1339,7 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     touched_repos: set[Path] = set()
     committed_non_doc_repos: set[Path] = set()
 
-    for line_idx, raw_obj in entries:
+    for entry_idx, (line_idx, raw_obj) in enumerate(entries):
         obj = full_records.get(line_idx, raw_obj)
         if obj.get("type") != "PLANNER_RESPONSE":
             continue
@@ -1197,7 +1370,7 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 cmd = _unquote_truncated(args.get("CommandLine"))
                 if not cmd.strip():
                     continue
-                cwd_str = _unquote_truncated(args.get("Cwd")) or ""
+                cwd_str = _unquote_truncated(args.get("Cwd") or args.get("cwd")) or ""
                 cmd_cwd = (
                     _resolve_target_path(cwd_str, base_cwd)
                     if cwd_str.strip()
@@ -1220,7 +1393,9 @@ def _run_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
                         resolved = _resolve_repo_dirs(parsed[1])
                         if resolved is not None:
                             committed_non_doc_repos.add(resolved[0])
-                if _is_verification_command(cmd):
+                if _is_verification_command(cmd) and _tool_call_verified_exit_zero(
+                    entries, entry_idx, obj, tc_idx, tc, full_records
+                ):
                     last_verify_pos = pos
 
     if last_edit_pos is None and not committed_non_doc_repos:
@@ -1502,6 +1677,19 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     assert parsed_push is not None and parsed_push[0] == "git push"
     parsed_mise = _parse_mise_or_pr_segment(["mise", "run", "ship"], Path.cwd())
     assert parsed_mise is not None and parsed_mise[0] == "mise run ship"
+    parsed_gh_merge = _parse_mise_or_pr_segment(["gh", "pr", "merge", "5"], Path.cwd())
+    assert parsed_gh_merge is not None and parsed_gh_merge[0] == "gh pr merge"
+    unwrapped_zsh = _split_shell_segments(
+        "env -u __MISE_DIFF PATH=/usr/bin:/bin zsh -lic 'git push origin main'"
+    )
+    assert unwrapped_zsh == [["git", "push", "origin", "main"]], unwrapped_zsh
+    unwrapped_bash = _split_shell_segments(
+        "bash -c 'git merge --no-ff wt/foo && gh pr merge 7'"
+    )
+    assert unwrapped_bash == [
+        ["git", "merge", "--no-ff", "wt/foo"],
+        ["gh", "pr", "merge", "7"],
+    ], unwrapped_bash
     checks.append("command_parsers_ok")
 
     assert not _is_non_doc_repo_edit("README.md", None, Path.cwd())
@@ -1514,6 +1702,10 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     assert _has_observed_proof_cues("27/27 passed with pytest exit code 0")
     assert not _has_observed_proof_cues("Done on 11/23 cleanly")
     assert _looks_like_completion_claim("Done! Fixed app.py.")
+    assert _looks_like_completion_claim(
+        "Done! Fixed the error in ledger.py with 0 errors."
+    )
+    assert not _looks_like_completion_claim("Done, but 2 errors remain in ledger.py.")
     assert not _looks_like_completion_claim(
         "I implemented the draft, but pytest failed and I am blocked."
     )

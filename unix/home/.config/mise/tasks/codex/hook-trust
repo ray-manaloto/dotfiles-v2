@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#MISE description="Inspect or repair Codex plugin hook trust and stale [hooks.state.*] entries via native hooks/list RPC"
+#USAGE flag "--check" help="Read-only inspection of Codex plugin hook trust (default)"
+#USAGE flag "--repair" help="Upsert missing/modified trusted_hash + trusted_content_hash and prune orphaned entries"
+#USAGE flag "--json" help="Emit CodexTrustResponse JSON"
+#USAGE flag "--cwd <path>" help="Working directory passed to Codex hooks/list"
+#USAGE flag "--codex-home <path>" help="Override CODEX_HOME"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} == /* ]]; then
+			common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		else
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		fi
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+
+args=(hook-trust)
+[[ ${usage_check:-true} == "true" ]] && args+=(--check)
+[[ ${usage_repair:-false} == "true" ]] && args+=(--repair)
+[[ ${usage_json:-false} == "true" ]] && args+=(--json)
+[[ -n ${usage_cwd:-} ]] && args+=(--cwd "${usage_cwd}")
+[[ -n ${usage_codex_home:-} ]] && args+=(--codex-home "${usage_codex_home}")
+
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from codex_trust.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+exec uv run --project "${repo_root}" --offline --locked --no-dev --quiet python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from codex_trust.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

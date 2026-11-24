@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint-and-test:
+    name: Lint, Gates, and Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up mise
+        uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78  # v5.3.0
+        with:
+          install: false
+
+      - name: Install locked global tools and project Python environment
+        run: |
+          mise trust --all
+          MISE_YES=1 MISE_LOCKED=1 mise -C unix/home/.config/mise install --locked
+          MISE_YES=1 mise deps uv
+
+      - name: Verify mise lockfile and backend parity
+        run: |
+          MISE_OFFLINE=1 MISE_CONFIG_DIR="${PWD}/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global
+          mise backends switch --dry-run
+
+      - name: Run hk check suite
+        run: hk check --all
+
+      - name: Run mise doctor project checks
+        env:
+          CI: 'true'
+        run: mise doctor project
+
+      - name: Run pytest suite
+        run: mise run py:test
+
+  bootstrap-convergence:
+    name: Bootstrap Convergence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up mise
+        uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78  # v5.3.0
+        with:
+          install: false
+
+      - name: Run idempotent 2x mise bootstrap and verify zero missing dotfiles
+        run: |
+          mise trust --all
+          repo_url="https://github.com/ray-manaloto/dotfiles-v2.git"
+          MISE_YES=1 MISE_LOCKED=1 mise -E linux bootstrap \
+            --from "${repo_url}" \
+            --from-dir "${PWD}" \
+            --config-dir unix/home/.config/mise \
+            --only dotfiles,tools,task \
+            --force-dotfiles --yes
+          MISE_YES=1 MISE_LOCKED=1 mise -E linux bootstrap \
+            --from "${repo_url}" \
+            --from-dir "${PWD}" \
+            --config-dir unix/home/.config/mise \
+            --only dotfiles,tools,task \
+            --force-dotfiles --yes
+          mise dot status --missing

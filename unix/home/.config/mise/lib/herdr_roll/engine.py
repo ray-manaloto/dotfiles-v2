@@ -66,6 +66,7 @@ from herdr_roll.models import (
     SelfPlanResponse,
     SessionOutcome,
     SnapshotSummary,
+    SpaceSnapshot,
     TerminalSnapshot,
     Timing,
     make_session_outcome,
@@ -387,6 +388,22 @@ def _resolve_folder(target: TargetTuple) -> str:
     return str(Path.home())
 
 
+def _resolve_live_space_id(
+    spaces: list[dict[str, Any]], target_space: SpaceSnapshot
+) -> str | None:
+    """Resolve target space ID from live `herdr-app ls` by exact ID first, then name."""
+    for sp in spaces:
+        sid = str(sp.get("id") or "")
+        if sid and sid == target_space.id:
+            return sid
+    if target_space.name:
+        for sp in spaces:
+            sid = str(sp.get("id") or "")
+            if sid and str(sp.get("name") or "") == target_space.name:
+                return sid
+    return None
+
+
 def _launch_fresh_tab(
     target: TargetTuple,
     argv: list[str],
@@ -394,29 +411,53 @@ def _launch_fresh_tab(
     *,
     extra_env: dict[str, str] | None = None,
 ) -> str:
-    """Spawn a new tab in the same space; return the new terminal address (old tab untouched until verified)."""
-    space, tab, _ = target
+    """Spawn a new tab in the target space (recreating the space via `space.new` if closed)."""
+    space, tab, term = target
     launch_argv = (
         ["/usr/bin/env", *(f"{k}={v}" for k, v in sorted(extra_env.items())), *argv]
         if extra_env
         else argv
     )
-    resp = herdr_app_do(
-        "tab.new",
-        "--space",
-        space.id,
-        "--name",
-        tab.name,
-        "--folder",
-        cwd,
-        "--focus",
-        "false",
-        "--argv",
-        orjson.dumps(launch_argv).decode("utf-8"),
-    )
+    argv_json = orjson.dumps(launch_argv).decode("utf-8")
+    target_space_id = _resolve_live_space_id(herdr_app_ls(), space)
+    if target_space_id is not None:
+        resp = herdr_app_do(
+            "tab.new",
+            "--space",
+            target_space_id,
+            "--name",
+            tab.name,
+            "--folder",
+            cwd,
+            "--focus",
+            "false",
+            "--argv",
+            argv_json,
+        )
+        action_label = "tab.new"
+    else:
+        space_args = [
+            "--name",
+            space.name,
+            "--folder",
+            cwd,
+            "--tab",
+            tab.name,
+            "--focus",
+            "false",
+            "--argv",
+            argv_json,
+        ]
+        if "/" in term.address:
+            machine = term.address.split("/", 1)[0].strip()
+            if machine:
+                space_args.extend(["--machine", machine])
+        resp = herdr_app_do("space.new", *space_args)
+        action_label = "space.new"
     if not resp or not resp.get("terminal"):
         raise SkipStep(
-            "failed-open", f"herdr-app do tab.new failed for {space.name} / {tab.name}"
+            "failed-open",
+            f"herdr-app do {action_label} failed for {space.name} / {tab.name}",
         )
     return str(resp["terminal"])
 

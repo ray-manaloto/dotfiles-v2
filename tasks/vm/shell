@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+#MISE description="Open an interactive shell (or run a command) inside dotfiles-v2-macos Tart VM"
+#USAGE flag "-p --project <project>" default="dotfiles-v2" help="Project workspace: dotfiles-v2, kb-v2, or cpp-core"
+#USAGE arg "[cmd]" help="Optional command to execute inside the VM"
+set -euo pipefail
+
+VM_NAME="dotfiles-v2-macos"
+project="${usage_project:-dotfiles-v2}"
+cmd="${usage_cmd:-}"
+
+if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+	echo "tasks/vm/shell requires macOS with tart on PATH" >&2
+	exit 1
+fi
+
+if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
+	echo "VM ${VM_NAME} is not running; run 'mise run vm:up' first" >&2
+	exit 1
+fi
+
+# shellcheck disable=SC2016
+case "${project}" in
+dotfiles-v2)
+	proj_expr='"$HOME/dev/dotfiles-v2"'
+	;;
+kb-v2 | knowledge-base-v2)
+	proj_expr='$(for d in "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2" "$HOME/dev/dotfiles-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+	;;
+cpp-core)
+	proj_expr='$(for d in "$HOME/dev/cpp-core" "$HOME/dev/dotfiles-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+	;;
+*)
+	echo "unknown project '${project}' (expected dotfiles-v2, kb-v2, or cpp-core)" >&2
+	exit 1
+	;;
+esac
+
+tty_flags=(-i)
+if [[ -z ${cmd} && -t 0 && -t 1 ]]; then
+	tty_flags=(-it)
+fi
+
+# shellcheck disable=SC2016
+if [[ -n ${cmd} ]]; then
+	script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; cd %s && %s' "${proj_expr}" "${cmd}")"
+else
+	script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; cd %s && exec zsh -il' "${proj_expr}")"
+fi
+
+exec tart exec "${tty_flags[@]}" "${VM_NAME}" /bin/zsh -il -c "${script}"

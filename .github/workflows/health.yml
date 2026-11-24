@@ -1,0 +1,54 @@
+name: Scheduled Health Audit
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  weekly-audit:
+    name: Weekly Security and Link Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up mise
+        uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78  # v5.3.0
+        with:
+          install: false
+
+      - name: Install locked tools
+        run: |
+          mise trust --all
+          MISE_YES=1 MISE_LOCKED=1 mise -C unix/home/.config/mise install --locked
+
+      - name: Run online mise audit check
+        run: |
+          audit_file="$(mktemp)"
+          audit_err="$(mktemp)"
+          audit_rc=0
+          if ! mise -C unix/home/.config/mise audit --json >"${audit_file}" 2>"${audit_err}"; then
+            audit_rc=$?
+          fi
+          python3 -I -B tasks/py/doctor_checks.py mise-audit-fixable \
+            --json-file "${audit_file}" --rc "${audit_rc}" --err-file "${audit_err}"
+          rm -f "${audit_file}" "${audit_err}"
+
+      - name: Run online markdown link check
+        run: lychee --no-progress '**/*.md' '**/*.markdown'

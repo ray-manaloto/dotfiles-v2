@@ -1,0 +1,29 @@
+# Reference policy and per-MCP `fnox` wrapping template for ~/.codex/config.toml.
+# Managed via `mise run codex:mcp-wrap [--check | --apply]` so Codex can drop `-c` overrides
+# on bare `codex` (enabling `app-server-daemon`) while `codex-hc` preserves per-tab `HC_*` isolation.
+
+[shell_environment_policy]
+inherit = "all"
+include_only = [
+  "PATH",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LOGNAME",
+  "USER",
+  "HC_*",
+  "CLAUDE_CODE_BRIEF",
+  "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+  "CLAUDE_CODE_FORK_SUBAGENT",
+  "CLAUDE_CODE_NEW_INIT",
+  "CLAUDE_CODE_NO_FLICKER",
+  "ENABLE_CLAUDEAI_MCP_SERVERS",
+  "ENABLE_TOOL_SEARCH",
+  "NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S",
+  "OTEL_LOG_RAW_API_BODIES",
+]

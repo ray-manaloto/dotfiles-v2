@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+#MISE description="Audit or configure Codex [shell_environment_policy] and per-MCP fnox proxy wrapping"
+#USAGE flag "--check" help="Read-only check of ~/.codex/config.toml (default)"
+#USAGE flag "--apply" help="Update [shell_environment_policy] and wrap Doppler-keyed stdio MCP servers in fnox proxy run"
+#USAGE flag "--bridge-http" help="With --apply, wrap remote HTTP MCPs matching fnox [proxy.rules] via mcp-remote under fnox proxy run"
+#USAGE flag "--config <path>" help="Override Codex config.toml path (default ~/.codex/config.toml)"
+#USAGE flag "--fnox-config <path>" help="Override fnox config.toml path (default ~/.config/fnox/config.toml)"
+set -euo pipefail
+
+apply="${usage_apply:-false}"
+bridge_http="${usage_bridge_http:-false}"
+codex_cfg="${usage_config:-${HOME}/.codex/config.toml}"
+fnox_cfg="${usage_fnox_config:-${HOME}/.config/fnox/config.toml}"
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]]; then
+	venv_py="$(command -v python3)"
+fi
+
+"${venv_py}" -I -B - "${codex_cfg}" "${fnox_cfg}" "${apply}" "${bridge_http}" <<'PY'
+import os
+import re
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+from typing import Any
+
+codex_path = Path(os.path.expanduser(sys.argv[1]))
+fnox_path = Path(os.path.expanduser(sys.argv[2]))
+apply = sys.argv[3] == "true"
+bridge_http = sys.argv[4] == "true"
+
+if not codex_path.is_file():
+    print(f"codex:mcp-wrap: skipped (no {codex_path})")
+    raise SystemExit(0)
+
+raw_text = codex_path.read_text(encoding="utf-8")
+data = tomllib.loads(raw_text)
+
+fnox_rules: list[dict[str, Any]] = []
+fnox_secrets: set[str] = set()
+if fnox_path.is_file():
+    fdata = tomllib.loads(fnox_path.read_text(encoding="utf-8"))
+    fnox_rules = [r for r in (fdata.get("proxy") or {}).get("rules") or [] if isinstance(r, dict)]
+    fnox_secrets = set((fdata.get("secrets") or {}).keys())
+
+rule_domains: dict[str, dict[str, Any]] = {
+    str(r["domain"]).lower(): r for r in fnox_rules if r.get("domain")
+}
+rule_secrets: dict[str, dict[str, Any]] = {
+    str(r["secret"]): r for r in fnox_rules if r.get("secret")
+}
+
+findings: list[str] = []
+
+policy = data.get("shell_environment_policy")
+if not isinstance(policy, dict):
+    findings.append("missing [shell_environment_policy] (needs inherit = \"all\" and HC_* preservation)")
+else:
+    inherit = policy.get("inherit")
+    inc = [str(x) for x in policy.get("include_only") or []]
+    if inherit == "core" and "HC_*" not in inc:
+        findings.append("[shell_environment_policy].inherit is 'core' without 'HC_*' in include_only")
+    elif inc and "HC_*" not in inc:
+        findings.append("[shell_environment_policy].include_only omits 'HC_*'")
+
+mcp_servers = data.get("mcp_servers")
+if not isinstance(mcp_servers, dict):
+    mcp_servers = {}
+
+fnox_bin = str(Path.home() / ".local" / "share" / "mise" / "shims" / "fnox")
+if not Path(fnox_bin).is_file():
+    fnox_bin = "fnox"
+
+to_wrap_stdio: list[tuple[str, str, list[str]]] = []
+http_to_bridge: list[tuple[str, str, str, dict[str, Any] | None]] = []
+
+for name, spec in mcp_servers.items():
+    if not isinstance(spec, dict) or spec.get("enabled") is False:
+        continue
+    cmd = spec.get("command")
+    args = [str(a) for a in spec.get("args") or []]
+    url = str(spec.get("url") or "")
+    bearer = str(spec.get("bearer_token_env_var") or "")
+    joined = " ".join([str(cmd or ""), *args])
+
+    if cmd:
+        is_fnox_wrapped = Path(str(cmd)).name == "fnox" or "fnox" in args[:2]
+        needs_fnox = any(dom in joined.lower() for dom in rule_domains)
+        if not needs_fnox:
+            env_tbl = spec.get("env") if isinstance(spec.get("env"), dict) else {}
+            env_vars = [str(x) for x in spec.get("env_vars") or []]
+            if any(k in fnox_secrets for k in (*env_tbl.keys(), *env_vars)):
+                needs_fnox = True
+        if needs_fnox and not is_fnox_wrapped:
+            findings.append(f"mcp_servers.{name} uses Doppler-backed domain/secret without fnox proxy run")
+            to_wrap_stdio.append((name, str(cmd), args))
+    elif url:
+        matched_rule = next((r for dom, r in rule_domains.items() if dom in url.lower()), None)
+        if matched_rule or (bearer and (bearer in fnox_secrets or bearer in rule_secrets)):
+            findings.append(
+                f"mcp_servers.{name} remote HTTP endpoint relies on Doppler secret "
+                f"({bearer or matched_rule.get('secret')}); wrap via mcp-remote + fnox or run codex-hc"
+            )
+            http_to_bridge.append((name, url, bearer, matched_rule))
+
+if not apply:
+    if findings:
+        for f in findings:
+            print(f"WARN  codex:mcp-wrap: {f}")
+        raise SystemExit(1)
+    print("OK  codex:mcp-wrap: [shell_environment_policy] and Doppler-backed MCPs clean")
+    raise SystemExit(0)
+
+# Mutate raw TOML selectively, preserving unrelated comments/sections.
+updated = raw_text
+desired_policy_block = """[shell_environment_policy]
+inherit = "all"
+include_only = [
+  "PATH",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LOGNAME",
+  "USER",
+  "HC_*",
+  "CLAUDE_CODE_BRIEF",
+  "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+  "CLAUDE_CODE_FORK_SUBAGENT",
+  "CLAUDE_CODE_NEW_INIT",
+  "CLAUDE_CODE_NO_FLICKER",
+  "ENABLE_CLAUDEAI_MCP_SERVERS",
+  "ENABLE_TOOL_SEARCH",
+  "NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S",
+  "OTEL_LOG_RAW_API_BODIES",
+]"""
+
+def _replace_section_kv(text: str, section: str, key: str, value_toml: str) -> str:
+    sec_re = re.compile(rf"(?ms)^(\[{re.escape(section)}\]\n)(.*?)(?=^\[|\Z)")
+    m = sec_re.search(text)
+    if not m:
+        return text + f"\n[{section}]\n{key} = {value_toml}\n"
+    head, body = m.group(1), m.group(2)
+    kv_re = re.compile(rf"(?m)^{re.escape(key)}\s*=.*?(?=\n[A-Za-z0-9_.\"-]+\s*=|\n\s*\[|\Z)", re.DOTALL)
+    if kv_re.search(body):
+        new_body = kv_re.sub(f"{key} = {value_toml}", body, count=1)
+    else:
+        new_body = f"{key} = {value_toml}\n" + body
+    return text[:m.start()] + head + new_body + text[m.end():]
+
+def _toml_str(val: str) -> str:
+    escaped = val.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+def _toml_list(vals: list[str]) -> str:
+    return "[" + ", ".join(_toml_str(v) for v in vals) + "]"
+
+# Preserve [shell_environment_policy.set] subtable while fixing inherit + include_only
+if isinstance(policy, dict):
+    updated = _replace_section_kv(updated, "shell_environment_policy", "inherit", '"all"')
+    existing_inc = [str(x) for x in policy.get("include_only") or []]
+    default_inc = [
+        "PATH", "SHELL", "TMPDIR", "TEMP", "TMP", "HOME", "LANG", "LC_ALL",
+        "LC_CTYPE", "LOGNAME", "USER", "HC_*", "CLAUDE_CODE_BRIEF",
+        "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "CLAUDE_CODE_FORK_SUBAGENT",
+        "CLAUDE_CODE_NEW_INIT", "CLAUDE_CODE_NO_FLICKER",
+        "ENABLE_CLAUDEAI_MCP_SERVERS", "ENABLE_TOOL_SEARCH",
+        "NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S", "OTEL_LOG_RAW_API_BODIES",
+    ]
+    merged_inc = list(dict.fromkeys([*(existing_inc or default_inc), "HC_*"]))
+    updated = _replace_section_kv(updated, "shell_environment_policy", "include_only", _toml_list(merged_inc))
+else:
+    updated = updated.rstrip() + "\n\n" + desired_policy_block + "\n"
+
+for name, cmd, args in to_wrap_stdio:
+    sec = f"mcp_servers.{name}"
+    new_args = [
+        "--non-interactive",
+        "--config",
+        str(fnox_path),
+        "proxy",
+        "run",
+        "--",
+        cmd,
+        *args,
+    ]
+    updated = _replace_section_kv(updated, sec, "command", _toml_str(fnox_bin))
+    updated = _replace_section_kv(updated, sec, "args", _toml_list(new_args))
+
+if bridge_http:
+    for name, url, bearer, rule in http_to_bridge:
+        sec = f"mcp_servers.{name}"
+        placeholder = (rule or {}).get("placeholder") or (
+            rule_secrets.get(bearer, {}).get("placeholder") if bearer else None
+        )
+        if not placeholder:
+            continue
+        new_args = [
+            "--non-interactive",
+            "--config",
+            str(fnox_path),
+            "proxy",
+            "run",
+            "--",
+            "npx",
+            "-y",
+            "mcp-remote",
+            url,
+            "--header",
+            f"Authorization: Bearer {placeholder}",
+        ]
+        # Remove url & bearer_token_env_var cleanly inside that section
+        sec_re = re.compile(rf"(?ms)^(\[{re.escape(sec)}\]\n)(.*?)(?=^\[|\Z)")
+        m = sec_re.search(updated)
+        if m:
+            body = re.sub(r"(?m)^(?:url|bearer_token_env_var)\s*=.*\n?", "", m.group(2))
+            updated = updated[:m.start()] + m.group(1) + body + updated[m.end():]
+        updated = _replace_section_kv(updated, sec, "command", _toml_str(fnox_bin))
+        updated = _replace_section_kv(updated, sec, "args", _toml_list(new_args))
+
+# Validate TOML parses before atomic replace (mode 0600)
+tomllib.loads(updated)
+fd, tmp_name = tempfile.mkstemp(prefix=".config.toml.", dir=codex_path.parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(updated)
+    os.replace(tmp_name, codex_path)
+except Exception:
+    Path(tmp_name).unlink(missing_ok=True)
+    raise
+print(f"OK  codex:mcp-wrap: updated {codex_path}")
+PY

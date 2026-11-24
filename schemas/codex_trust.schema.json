@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/codex_trust.schema.json",
+  "title": "CodexTrustModels",
+  "description": "Schema-first models, enums, hook findings, surface diffs, and typed responses for codex_trust.",
+  "$defs": {
+    "CodexTrustCommand": {
+      "type": "string",
+      "description": "Supported codex_trust CLI commands.",
+      "enum": ["hook-trust", "plugin-update"]
+    },
+    "CodexHookStatus": {
+      "type": "string",
+      "description": "Observed Codex plugin hook trust and state classification.",
+      "enum": ["trusted", "modified", "untrusted", "managed", "unmigrated", "orphaned", "error"]
+    },
+    "HookSurfaceChangeKind": {
+      "type": "string",
+      "description": "Classification of a file delta inside the plugin hook surface.",
+      "enum": ["added", "removed", "modified"]
+    },
+    "CodexTrustErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for codex_trust operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_UNSUPPORTED_CODEX_VERSION",
+        "ERR_RPC_FAILED",
+        "ERR_PIN_REQUIRED",
+        "ERR_GIT_FAILED",
+        "ERR_HOOK_SURFACE_CHANGED",
+        "ERR_UNTRUSTED_OR_MODIFIED",
+        "ERR_UNMIGRATED_STATE",
+        "ERR_ORPHANED_STATE",
+        "ERR_LEGACY_BASELINE_DRIFT",
+        "ERR_IO_FAILURE"
+      ]
+    },
+    "CodexTrustReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for codex_trust operations.",
+      "enum": [
+        "RET_OK",
+        "RET_REPAIRED",
+        "RET_UPDATED",
+        "RET_DRY_RUN",
+        "RET_CONFIRMATION_REQUIRED",
+        "RET_NO_CHANGES",
+        "RET_FAILED"
+      ]
+    },
+    "CodexTrustErrorEntry": {
+      "type": "object",
+      "description": "Typed codex_trust error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/CodexTrustErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "CodexTrustReturnEntry": {
+      "type": "object",
+      "description": "Typed codex_trust return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/CodexTrustReturnCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "CodexHookFinding": {
+      "type": "object",
+      "description": "Diagnostic finding for a single plugin hook or config.toml [hooks.state.*] entry.",
+      "additionalProperties": false,
+      "required": ["key", "status", "issue"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_name": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "plugin_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "source_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/CodexHookStatus"
+        },
+        "issue": {
+          "type": "string",
+          "minLength": 1
+        },
+        "current_hash": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "expected_bundle_hash": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "trusted_hash": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "trusted_content_hash": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "CodexHookSurfaceFile": {
+      "type": "object",
+      "description": "One changed file within a staged plugin's hook surface.",
+      "additionalProperties": false,
+      "required": ["path", "change"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "change": {
+          "$ref": "#/$defs/HookSurfaceChangeKind"
+        }
+      }
+    },
+    "CodexTrustResponse": {
+      "type": "object",
+      "description": "Typed response envelope emitted by `codex:hook-trust` and `codex:plugin-update`.",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "rc",
+        "codex_home",
+        "cwd",
+        "applied",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/CodexTrustCommand"
+        },
+        "rc": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "codex_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "codex_home": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plugin_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "old_ref": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "new_ref": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "old_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "new_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "bundle_hash": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "hook_surface_unchanged": {
+          "type": ["boolean", "null"],
+          "default": null
+        },
+        "hook_surface_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CodexHookSurfaceFile"
+          },
+          "default": []
+        },
+        "hook_surface_diff": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CodexHookFinding"
+          },
+          "default": []
+        },
+        "orphaned_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "unmigrated_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "repaired_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "pruned_orphans": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "legacy_baselines_pruned": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "preserved_cache_versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "pwf_synced": {
+          "type": "boolean",
+          "default": false
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CodexTrustErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CodexTrustReturnEntry"
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

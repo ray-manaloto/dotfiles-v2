@@ -1,7 +1,17 @@
 #!/bin/sh
-# Codex for herdr tabs and `hc run`, which start programs without a shell, so PATH has no mise wrappers dir. This
-# runs the [wrappers.codex] shim by path, which starts Codex under `fnox --config <global file> proxy run` with the
-# daemon off and the HC_* variables passed to the commands Codex runs: every setting and its reason is in that
-# wrapper's comment in ~/.config/mise/config.toml. Kept as a name so tab argv, roll and the docs stay short.
+# Codex for herdr tabs and `hc run`, which start programs without a shell, so PATH may omit mise dirs.
+# Sets `CODEX_HERDR=1` and delegates to `codex-wrapper` so interactive/exec Herdr tabs keep
+# `--disable daemon_auto_start` (per-tab `HC_*` isolation for openai/codex#53547 / herdr-core#335)
+# while reading `shell_environment_policy` from `~/.codex/config.toml` (zero `-c` overrides), and
+# `app-server` / `remote-control` / utility invocations still run clean without ephemeral proxy vars.
 # Usage: herdr-app do tab.new ... --argv '["codex-hc", "task"]'
-exec "$HOME/.local/share/mise/command-wrappers/bin/codex" "$@"
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+if [ -x "${HOME}/.local/bin/codex-wrapper" ]; then
+	wrapper="${HOME}/.local/bin/codex-wrapper"
+elif [ -x "${script_dir}/codex-wrapper" ]; then
+	wrapper="${script_dir}/codex-wrapper"
+else
+	echo "codex-hc: missing codex-wrapper in ~/.local/bin or ${script_dir}" >&2
+	exit 127
+fi
+exec env CODEX_HERDR=1 "${wrapper}" "$@"

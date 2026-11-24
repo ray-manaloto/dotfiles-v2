@@ -228,6 +228,41 @@ def _worktree_slug_cleared_in_reviews(
     return False
 
 
+def _infer_review_metadata(
+    plan_key: str,
+    transcript_path: Path,
+    payload: dict[str, Any] | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    conv_id: str | None = None
+    if isinstance(payload, dict):
+        raw_conv = payload.get("conversationId") or payload.get("conversation_id")
+        if isinstance(raw_conv, str) and raw_conv.strip():
+            conv_id = raw_conv.strip()
+    if conv_id is None:
+        parts = transcript_path.parts
+        if ".system_generated" in parts:
+            idx = parts.index(".system_generated")
+            if idx >= 1 and parts[idx - 1]:
+                conv_id = parts[idx - 1]
+
+    plan_path = Path(os.path.expanduser(plan_key))
+    repo_root: str | None = None
+    cur = plan_path.parent
+    while cur != cur.parent:
+        if (cur / ".git").exists():
+            repo_root = str(cur)
+            break
+        cur = cur.parent
+
+    worktree_slug: str | None = None
+    if plan_path.parent.parent.name == ".planning" and plan_path.parent.name:
+        worktree_slug = plan_path.parent.name
+    elif repo_root is not None and (Path(repo_root) / ".git").is_file():
+        worktree_slug = Path(repo_root).name
+
+    return repo_root, worktree_slug, conv_id
+
+
 def _append_shared_review(
     *,
     plan_key: str,
@@ -238,16 +273,22 @@ def _append_shared_review(
     notes: str,
     transcript_path: Path,
     line_count: int,
+    payload: dict[str, Any] | None = None,
 ) -> None:
     reviews_path = _shared_reviews_path()
     lock_path = reviews_path.with_suffix(".jsonl.lock")
     ts, ns = _now_ns_pair()
-    rev_id = "rev-" + hashlib.sha256(f"{plan_key}:{digest}:{ns}".encode()).hexdigest()[:12]
+    rev_id = (
+        "rev-" + hashlib.sha256(f"{plan_key}:{digest}:{ns}".encode()).hexdigest()[:12]
+    )
+    inferred_repo, inferred_slug, inferred_conv = _infer_review_metadata(
+        plan_key, transcript_path, payload
+    )
     record = {
         "review_id": rev_id,
         "plan_key": plan_key,
         "plan_id": label,
-        "worktree_slug": None,
+        "worktree_slug": inferred_slug,
         "plan_sha256": digest,
         "error_count": max(0, int(error_count)),
         "outcome": outcome,
@@ -259,8 +300,8 @@ def _append_shared_review(
             "transcript_path": str(transcript_path),
             "plan_path": plan_key,
         },
-        "repo_root": None,
-        "conversation_id": None,
+        "repo_root": inferred_repo,
+        "conversation_id": inferred_conv,
         "notes": notes,
         "timestamp": ts,
         "timestamp_unix_ns": ns,
@@ -277,8 +318,10 @@ def _append_shared_review(
                     os.fsync(handle.fileno())
             finally:
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        return
+    except OSError as exc:
+        sys.stderr.write(
+            f"post-task-learn: failed appending review to {reviews_path}: {exc}\n"
+        )
 
 
 def _append_owing_review(
@@ -289,6 +332,7 @@ def _append_owing_review(
     error_count: int,
     transcript_path: Path,
     line_count: int,
+    payload: dict[str, Any] | None = None,
 ) -> None:
     _append_shared_review(
         plan_key=plan_key,
@@ -299,6 +343,7 @@ def _append_owing_review(
         notes="Auto-marked owing_learn after Stop-hook retry exhaustion.",
         transcript_path=transcript_path,
         line_count=line_count,
+        payload=payload,
     )
 
 
@@ -493,7 +538,9 @@ def _load_full_records(
     needed_indices = set(expected_types)
     max_idx = max(needed_indices)
     try:
-        with full_path.open("r", encoding="utf-8", errors="replace", newline="\n") as handle:
+        with full_path.open(
+            "r", encoding="utf-8", errors="replace", newline="\n"
+        ) as handle:
             for idx, raw in enumerate(handle):
                 if idx > max_idx:
                     break
@@ -867,6 +914,49 @@ def _strip_spans(command: str, spans: list[tuple[int, int]]) -> str:
     return "".join(parts)
 
 
+def _tool_call_succeeded_in_slice(
+    turn_entries: list[tuple[int, dict[str, Any]]],
+    entry_idx: int,
+    planner_obj: dict[str, Any],
+    tc_idx: int,
+    tc_obj: dict[str, Any],
+    full_records: dict[int, dict[str, Any]],
+) -> bool:
+    if tc_obj.get("status") == "ERROR" or bool(tc_obj.get("error")):
+        return False
+    results: list[dict[str, Any]] = []
+    for k in range(entry_idx + 1, len(turn_entries)):
+        abs_idx, raw_rec = turn_entries[k]
+        rec = full_records.get(abs_idx, raw_rec)
+        rtype = rec.get("type")
+        if rtype in {"PLANNER_RESPONSE", "USER_INPUT"}:
+            break
+        if rtype in {"GENERIC", "ERROR_MESSAGE", "TOOL_RESULT", "FUNCTION_RESPONSE"}:
+            results.append(rec)
+    if not results:
+        return True
+    matched: dict[str, Any] | None = None
+    p_step = planner_obj.get("step_index")
+    if isinstance(p_step, int) and not isinstance(p_step, bool):
+        want_step = p_step + 1 + tc_idx
+        matched = next((r for r in results if r.get("step_index") == want_step), None)
+    if matched is None and 0 <= tc_idx < len(results):
+        matched = results[tc_idx]
+    if matched is None:
+        return True
+    if (
+        matched.get("type") == "ERROR_MESSAGE"
+        or matched.get("status") == "ERROR"
+        or bool(matched.get("error"))
+    ):
+        return False
+    content = matched.get("content")
+    return not (
+        isinstance(content, str)
+        and (NONZERO_EXIT_RE.search(content) or TOOL_DENY_RE.search(content))
+    )
+
+
 def _analyze_slice(
     lines: list[str],
     last_user_input: str,
@@ -986,8 +1076,6 @@ def _analyze_slice(
                         touched_plans.append(target_path)
             elif name == "read_file":
                 target = _tool_target_str(args)
-                if "post-task-learn/SKILL.md" in target:
-                    last_learn_pos = pos
                 p = _path_from_arg(args, base_dir)
                 if (
                     p is not None and p.name == "learning_proposal.md"
@@ -998,7 +1086,9 @@ def _analyze_slice(
             elif name == "run_command" and isinstance(args, dict):
                 cmd = _unquote_truncated(args.get("CommandLine"))
                 if cmd:
-                    if LEARN_CMD_RE.search(cmd):
+                    if LEARN_CMD_RE.search(cmd) and _tool_call_succeeded_in_slice(
+                        turn_entries, idx, entry, tc_idx, tc, full_records
+                    ):
                         last_learn_pos = pos
                     wt_slugs, wt_spans = _extract_worktree_rm_slugs(cmd)
                     for slug in wt_slugs:
@@ -1075,9 +1165,9 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     try:
-        lines = transcript_path.read_text(
-            encoding="utf-8", errors="replace"
-        ).split("\n")
+        lines = transcript_path.read_text(encoding="utf-8", errors="replace").split(
+            "\n"
+        )
     except OSError:
         return {}
 
@@ -1113,6 +1203,46 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 transcript_path=transcript_path,
                 line_offset=last_line,
             )
+            pending_key_str = str(pending_proposal.get("plan_key") or "")
+            if pending_key_str.startswith("worktree:"):
+                pending_slugs = [
+                    s.strip()
+                    for s in pending_key_str.split(":", 1)[1].split(",")
+                    if s.strip()
+                ]
+                review_details = _read_shared_review_details()
+                unreviewed_slugs = (
+                    []
+                    if wrote_proposal
+                    else [
+                        s
+                        for s in pending_slugs
+                        if not _worktree_slug_cleared_in_reviews(
+                            s, review_details, learned_plans, owing_learn
+                        )
+                    ]
+                )
+                if not unreviewed_slugs or int(pending_proposal["retries"]) >= 1:
+                    _write_state(
+                        state_path, len(lines), learned_plans, None, owing_learn
+                    )
+                    return {}
+                updated_wt = {
+                    **pending_proposal,
+                    "retries": int(pending_proposal["retries"]) + 1,
+                }
+                _write_state(
+                    state_path, len(lines), learned_plans, updated_wt, owing_learn
+                )
+                slug_list = ", ".join(unreviewed_slugs)
+                return {
+                    "decision": "continue",
+                    "reason": (
+                        f"Post-task /learn worktree gate: worktree PWF task '{slug_list}' has no recorded review in reviews.jsonl. "
+                        + BASE_TRIGGER_SUFFIX
+                    ),
+                }
+
             pending_plans = pending_proposal.get("pending_plans") or [
                 {
                     "plan_key": pending_proposal["plan_key"],
@@ -1140,6 +1270,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                             notes="Cleared owing_learn after learning_proposal.md update.",
                             transcript_path=transcript_path,
                             line_count=len(lines),
+                            payload=payload,
                         )
                 _write_state(state_path, len(lines), learned_plans, None, owing_learn)
                 return {}
@@ -1158,6 +1289,13 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 _write_state(state_path, len(lines), learned_plans, None, owing_learn)
                 return {}
 
+            # 0-error plans prompt once and fast-exit cleanly WITHOUT pre-marking learned_plans
+            if int(pending_proposal["error_count"]) == 0 and all(
+                int(item.get("error_count", 0)) == 0 for item in remaining_plans
+            ):
+                _write_state(state_path, len(lines), learned_plans, None, owing_learn)
+                return {}
+
             if int(pending_proposal["retries"]) >= 1:
                 for item in remaining_plans:
                     owing_learn[item["plan_key"]] = item["digest"]
@@ -1168,6 +1306,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                         error_count=int(item["error_count"]),
                         transcript_path=transcript_path,
                         line_count=len(lines),
+                        payload=payload,
                     )
                 _write_state(state_path, len(lines), learned_plans, None, owing_learn)
                 return {}
@@ -1254,11 +1393,11 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
             line_offset=last_line,
         )
         explicit_learn = bool(user_text and _is_explicit_user_learn(user_text))
+        still_unlearned: list[tuple[Path, str, str, int]] = []
         for plan_path, plan_key, digest, err_count in completed_unlearned:
             if (
                 wrote_proposal
                 or explicit_learn
-                or err_count == 0
                 or _shared_review_cleared(shared_reviews, plan_key, digest)
             ):
                 learned_plans[plan_key] = digest
@@ -1279,9 +1418,29 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                         notes="Cleared owing_learn after learning_proposal.md update.",
                         transcript_path=transcript_path,
                         line_count=len(lines),
+                        payload=payload,
                     )
-        _write_state(state_path, len(lines), learned_plans, None, owing_learn)
-        return {}
+            else:
+                still_unlearned.append((plan_path, plan_key, digest, err_count))
+        completed_unlearned = still_unlearned
+
+        unreviewed_closed: list[str] = []
+        if closed_worktree_slugs:
+            review_details = _read_shared_review_details()
+            unreviewed_closed = [
+                slug
+                for slug in closed_worktree_slugs
+                if not (
+                    wrote_proposal
+                    or explicit_learn
+                    or _worktree_slug_cleared_in_reviews(
+                        slug, review_details, learned_plans, owing_learn
+                    )
+                )
+            ]
+        if not completed_unlearned and not unreviewed_closed:
+            _write_state(state_path, len(lines), learned_plans, None, owing_learn)
+            return {}
 
     if is_zero_error_learn_apply_docs_only and all(
         err == 0 for _, _, _, err in completed_unlearned
@@ -1295,11 +1454,8 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if completed_unlearned:
         ordered = sorted(completed_unlearned, key=lambda item: (item[3] == 0, item[1]))
         error_plans = [item for item in ordered if item[3] > 0]
-        clean_plans = [item for item in ordered if item[3] == 0]
         if error_plans:
-            for _, clean_key, clean_digest, _ in clean_plans:
-                learned_plans[clean_key] = clean_digest
-                owing_learn.pop(clean_key, None)
+            # Do NOT pre-mark 0-error plans before /learn runs; enforce error plans first.
             err_labels = ", ".join(_plan_label(p) for p, _, _, _ in error_plans)
             total_errors = sum(err for _, _, _, err in error_plans)
             first_path, first_key, first_digest, _ = error_plans[0]
@@ -1314,7 +1470,9 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
             ]
             next_pending = {
                 "plan_key": first_key,
-                "label": err_labels if len(error_plans) > 1 else _plan_label(first_path),
+                "label": err_labels
+                if len(error_plans) > 1
+                else _plan_label(first_path),
                 "digest": first_digest,
                 "error_count": total_errors,
                 "baseline_proposal_sha": cur_proposal_sha,
@@ -1335,19 +1493,31 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
             return {"decision": "continue", "reason": reason}
 
         labels = ", ".join(_plan_label(p) for p, _, _, _ in ordered)
-
-        for _, plan_key, digest, _ in ordered:
-            learned_plans[plan_key] = digest
-            owing_learn.pop(plan_key, None)
-        _write_state(state_path, len(lines), learned_plans, None, owing_learn)
+        first_path, first_key, first_digest, _ = ordered[0]
+        clean_pending = {
+            "plan_key": first_key,
+            "label": labels if len(ordered) > 1 else _plan_label(first_path),
+            "digest": first_digest,
+            "error_count": 0,
+            "baseline_proposal_sha": cur_proposal_sha,
+            "retries": 0,
+            "pending_plans": [
+                {
+                    "plan_key": pk,
+                    "label": _plan_label(p),
+                    "digest": dig,
+                    "error_count": 0,
+                }
+                for p, pk, dig, _ in ordered
+            ],
+        }
+        _write_state(state_path, len(lines), learned_plans, clean_pending, owing_learn)
         reason = (
             f"Automated post-task /learn check: planning-with-files task completed ({labels}). "
             + BASE_TRIGGER_SUFFIX
             + " Review the completed `task_plan.md` (`Errors Encountered`, `Decisions Made`), `findings.md`, and `progress.md` alongside user messages."
         )
         return {"decision": "continue", "reason": reason}
-
-    _write_state(state_path, len(lines), learned_plans, None, owing_learn)
 
     if closed_worktree_slugs:
         review_details = _read_shared_review_details()
@@ -1360,11 +1530,22 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         ]
         if unreviewed_slugs:
             slug_list = ", ".join(unreviewed_slugs)
+            wt_pending = {
+                "plan_key": f"worktree:{slug_list}",
+                "label": slug_list,
+                "digest": "",
+                "error_count": 0,
+                "baseline_proposal_sha": cur_proposal_sha,
+                "retries": 0,
+            }
+            _write_state(state_path, len(lines), learned_plans, wt_pending, owing_learn)
             reason = (
                 f"Automated post-task /learn check: worktree PWF task '{slug_list}' finished. "
                 + BASE_TRIGGER_SUFFIX
             )
             return {"decision": "continue", "reason": reason}
+
+    _write_state(state_path, len(lines), learned_plans, None, owing_learn)
 
     if ship_closeout:
         reason = (
@@ -1426,15 +1607,63 @@ def _find_agy_learn_runner(
 
 def _stdlib_heal_summary() -> dict[str, Any]:
     state_dir = _shared_state_dir()
-    reviews = _read_shared_reviews(state_dir / "reviews.jsonl")
+    reviews_path = state_dir / "reviews.jsonl"
+    reviews: dict[str, tuple[str, str, int]] = {}
+    parse_errors = 0
+    hook_drift_keys: list[str] = []
+    if reviews_path.is_file():
+        try:
+            for raw in reviews_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                if not raw.strip():
+                    continue
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    parse_errors += 1
+                    continue
+                if not isinstance(rec, dict) or not isinstance(
+                    rec.get("plan_key"), str
+                ):
+                    parse_errors += 1
+                    continue
+                raw_k = rec["plan_key"]
+                ts_ns = rec.get("timestamp_unix_ns")
+                ns_val = (
+                    ts_ns
+                    if isinstance(ts_ns, int) and not isinstance(ts_ns, bool)
+                    else 0
+                )
+                norm_k = (
+                    str(Path(os.path.expanduser(raw_k)).resolve(strict=False))
+                    if ("/" in raw_k or "\\" in raw_k or raw_k.endswith("task_plan.md"))
+                    else raw_k
+                )
+                prev = reviews.get(norm_k)
+                if prev is None or ns_val >= prev[2]:
+                    reviews[norm_k] = (
+                        str(rec.get("plan_sha256") or ""),
+                        str(rec.get("outcome") or ""),
+                        ns_val,
+                    )
+        except OSError:
+            parse_errors += 1
+
+    for rk in sorted(reviews):
+        if "/" not in rk and "\\" not in rk and not rk.endswith("task_plan.md"):
+            hook_drift_keys.append(rk)
+
     owing = [
         k for k, (_, outcome, _) in sorted(reviews.items()) if outcome == "owing_learn"
     ]
     proposals_path = state_dir / "proposals.jsonl"
     active_count = 0
     escalated_ids: list[str] = []
+    declined_expired_ids: list[str] = []
+    now_ns = time.time_ns()
     if proposals_path.is_file():
-        latest_props: dict[str, dict[str, Any]] = {}
+        latest_props: dict[str, tuple[int, dict[str, Any]]] = {}
         try:
             for raw in proposals_path.read_text(
                 encoding="utf-8", errors="replace"
@@ -1444,13 +1673,34 @@ def _stdlib_heal_summary() -> dict[str, Any]:
                 try:
                     obj = json.loads(raw)
                 except json.JSONDecodeError:
+                    parse_errors += 1
                     continue
                 if isinstance(obj, dict) and isinstance(obj.get("proposal_id"), str):
-                    latest_props[obj["proposal_id"]] = obj
+                    pid = obj["proposal_id"]
+                    ts_ns = obj.get("timestamp_unix_ns")
+                    ns_val = (
+                        ts_ns
+                        if isinstance(ts_ns, int) and not isinstance(ts_ns, bool)
+                        else 0
+                    )
+                    prev = latest_props.get(pid)
+                    if prev is None or ns_val >= prev[0]:
+                        latest_props[pid] = (ns_val, obj)
+                else:
+                    parse_errors += 1
         except OSError:
-            pass
-        for pid, prop in sorted(latest_props.items()):
-            if prop.get("status") in ("pending", "approved"):
+            parse_errors += 1
+        for pid, (_, prop) in sorted(latest_props.items()):
+            status = prop.get("status")
+            if status == "declined":
+                until = prop.get("declined_until_unix_ns")
+                if (
+                    isinstance(until, int)
+                    and not isinstance(until, bool)
+                    and now_ns >= until
+                ):
+                    declined_expired_ids.append(pid)
+            elif status in ("pending", "approved"):
                 active_count += 1
                 try:
                     occ = int(prop.get("occurrences") or 1)
@@ -1463,13 +1713,28 @@ def _stdlib_heal_summary() -> dict[str, Any]:
                     or (orig_tier in ("skill", "rule") and rec_tier != orig_tier)
                 ):
                     escalated_ids.append(pid)
+    findings = [{"kind": "hook_drift", "subject": k} for k in hook_drift_keys] + [
+        {"kind": "declined_expired", "subject": pid} for pid in declined_expired_ids
+    ]
+    errors = (
+        [
+            {
+                "code": "ERR_PARSE_FAILURE",
+                "message": f"{parse_errors} corrupt JSONL line(s)",
+            }
+        ]
+        if parse_errors
+        else []
+    )
     return {
-        "healthy": len(owing) == 0,
+        "healthy": len(owing) == 0 and parse_errors == 0,
         "owing_plans": owing,
         "active_proposals_count": active_count,
         "auto_escalated_ids": escalated_ids,
         "already_applied_ids": [],
         "proposal_md_within_budget": True,
+        "findings": findings,
+        "errors": errors,
     }
 
 
@@ -1506,7 +1771,10 @@ def _run_session_start(payload: dict[str, Any]) -> dict[str, Any]:
                 parsed = json.loads(proc.stdout.strip().splitlines()[-1])
                 if isinstance(parsed, dict):
                     report = parsed
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+            sys.stderr.write(
+                f"post-task-learn: session-start heal runner failed ({exc}); using stdlib fallback\n"
+            )
             report = None
 
     if report is None:
@@ -1522,12 +1790,34 @@ def _run_session_start(payload: dict[str, Any]) -> dict[str, Any]:
     escalated = report.get("auto_escalated_ids") or []
     applied = report.get("already_applied_ids") or []
     within_budget = report.get("proposal_md_within_budget", True)
+    findings = report.get("findings") or []
+    hook_drift = [
+        f for f in findings if isinstance(f, dict) and f.get("kind") == "hook_drift"
+    ]
+    declined_expired = [
+        f
+        for f in findings
+        if isinstance(f, dict) and f.get("kind") == "declined_expired"
+    ]
+    other_errors = [
+        e
+        for e in (report.get("errors") or [])
+        if isinstance(e, dict) and e.get("code") != "ERR_OWING_LEARN"
+    ]
 
     parts: list[str] = []
     if owing:
-        parts.append(f"owing_learn={len(owing)} ({', '.join(str(x) for x in owing[:3])})")
+        parts.append(
+            f"owing_learn={len(owing)} ({', '.join(str(x) for x in owing[:3])})"
+        )
+    if hook_drift:
+        parts.append(f"hook_drift={len(hook_drift)}")
+    if other_errors:
+        parts.append(f"errors={len(other_errors)}")
     if escalated:
         parts.append(f"auto_escalate={len(escalated)}")
+    if declined_expired:
+        parts.append(f"declined_expired={len(declined_expired)}")
     if active_count:
         parts.append(f"active_proposals={active_count}")
     if applied:
@@ -1581,7 +1871,12 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     checks: list[str] = []
     saved_env = {
         k: os.environ.pop(k, None)
-        for k in ("PLAN_ID", "PWF_PLAN_ROOT", "AGY_DISABLE_AUTO_LEARN", "XDG_STATE_HOME")
+        for k in (
+            "PLAN_ID",
+            "PWF_PLAN_ROOT",
+            "AGY_DISABLE_AUTO_LEARN",
+            "XDG_STATE_HOME",
+        )
     }
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1763,6 +2058,7 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 "cwd": str(ws3),
             }
             assert _run_hook(p3).get("decision") == "continue"
+            # 0-error plans are NOT pre-marked before /learn runs; turn 2 still prompts until recorded
             _write_jsonl(
                 t3,
                 [
@@ -1773,6 +2069,33 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     {
                         "type": "USER_INPUT",
                         "content": "<USER_REQUEST>Next</USER_REQUEST>",
+                    },
+                ],
+            )
+            assert _run_hook(p3).get("decision") == "continue"
+            # Once recorded in reviews.jsonl, digest dedupes cleanly
+            rev3 = Path(os.environ["XDG_STATE_HOME"]) / "agy-learn" / "reviews.jsonl"
+            rev3.parent.mkdir(parents=True, exist_ok=True)
+            rev3.write_text(
+                json.dumps(
+                    {
+                        "plan_key": str(plan_file.resolve()),
+                        "plan_sha256": hashlib.sha256(
+                            plan_file.read_bytes()
+                        ).hexdigest(),
+                        "outcome": "no_new_proposals",
+                        "timestamp_unix_ns": 100,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            _write_jsonl(
+                t3,
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Next2</USER_REQUEST>",
                     },
                 ],
             )
@@ -2274,26 +2597,60 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 "artifactDirectoryPath": str(art12b),
                 "cwd": str(ws12b),
             }
-            assert _run_hook(p12b) == {}, "case 12b skill-read turn should return {}"
+            # Reading SKILL.md alone MUST trigger the hard gate immediately on turn 1
+            res12b_turn1 = _run_hook(p12b)
+            assert res12b_turn1.get("decision") == "continue" and (
+                "1 logged error(s)" in res12b_turn1.get("reason", "")
+            ), f"case 12b skill-read must trigger hard gate immediately: {res12b_turn1}"
             state12b = json.loads(
                 (art12b / ".post-task-learn-state.json").read_text(encoding="utf-8")
             )
             assert str(plan12b.resolve()) not in state12b["learned_plans"], (
                 f"case 12b skill-read must not persist error plan digest: {state12b}"
             )
+            # Failing CLI learn:record-review with Command exited with code 1 must NOT bypass
+            t12c = root / "t12c.jsonl"
+            art12c = root / "art12c"
+            art12c.mkdir()
             _write_jsonl(
-                t12b,
+                t12c,
                 [
                     {
                         "type": "USER_INPUT",
-                        "content": "<USER_REQUEST>Next</USER_REQUEST>",
-                    }
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    },
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "step_index": 1,
+                        "tool_calls": [
+                            {
+                                "name": "run_command",
+                                "args": {
+                                    "CommandLine": "mise run learn:record-review --plan-key foo --plan-sha256 bar --outcome no_new_proposals"
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "type": "GENERIC",
+                        "step_index": 2,
+                        "status": "DONE",
+                        "content": "Command exited with code 1.",
+                    },
                 ],
             )
-            res12b_next = _run_hook(p12b)
-            assert res12b_next.get("decision") == "continue" and (
-                "1 logged error(s)" in res12b_next.get("reason", "")
-            ), f"case 12b next turn should trigger hard gate: {res12b_next}"
+            res12c = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t12c),
+                    "artifactDirectoryPath": str(art12c),
+                    "cwd": str(ws12b),
+                }
+            )
+            assert res12c.get("decision") == "continue", (
+                f"case 12c failed learn CLI must not satisfy already_learned: {res12c}"
+            )
             checks.append("already_learned_persists_completed_plan_digest")
 
             # 13. mise.local.toml PLAN_ID pin overrides stale inherited os.environ["PLAN_ID"]
@@ -2557,7 +2914,10 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             _write_jsonl(
                 t17,
                 [
-                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Work</USER_REQUEST>"},
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Work</USER_REQUEST>",
+                    },
                     {
                         "type": "PLANNER_RESPONSE",
                         "tool_calls": [],
@@ -2568,7 +2928,10 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             _write_jsonl(
                 t17_full,
                 [
-                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Work</USER_REQUEST>"},
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Work</USER_REQUEST>",
+                    },
                     {
                         "type": "PLANNER_RESPONSE",
                         "tool_calls": [
@@ -2622,7 +2985,10 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             _write_jsonl(
                 t19,
                 [
-                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"},
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    },
                     {
                         "type": "PLANNER_RESPONSE",
                         "tool_calls": [
@@ -2641,9 +3007,11 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     "cwd": str(ws19),
                 }
             )
-            assert res19.get("decision") == "continue" and "1 logged error(s)" in res19.get(
-                "reason", ""
-            ), f"case 19 failed: {res19}"
+            assert res19.get(
+                "decision"
+            ) == "continue" and "1 logged error(s)" in res19.get("reason", ""), (
+                f"case 19 failed: {res19}"
+            )
             state19 = json.loads(
                 (art19 / ".post-task-learn-state.json").read_text(encoding="utf-8")
             )
@@ -2669,13 +3037,21 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 "### Later Notes\n| Key | Val |\n|---|---|\n| Foo | Bar |\n",
                 encoding="utf-8",
             )
-            assert _count_plan_errors((p20 / "task_plan.md").read_text(encoding="utf-8")) == 0
+            assert (
+                _count_plan_errors((p20 / "task_plan.md").read_text(encoding="utf-8"))
+                == 0
+            )
             t20 = root / "t20.jsonl"
             art20 = root / "art20"
             art20.mkdir()
             _write_jsonl(
                 t20,
-                [{"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"}],
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    }
+                ],
             )
             res20 = _run_hook(
                 {
@@ -2707,7 +3083,12 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             art21.mkdir()
             _write_jsonl(
                 t21,
-                [{"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"}],
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    }
+                ],
             )
             p21_payload = {
                 "terminationReason": "NO_TOOL_CALL",
@@ -2760,7 +3141,12 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             art23.mkdir()
             _write_jsonl(
                 t23,
-                [{"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"}],
+                [
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    }
+                ],
             )
             p23_payload = {
                 "terminationReason": "NO_TOOL_CALL",
@@ -2773,13 +3159,18 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             _write_jsonl(
                 t23,
                 [
-                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"},
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Done</USER_REQUEST>",
+                    },
                     {
                         "type": "PLANNER_RESPONSE",
                         "tool_calls": [
                             {
                                 "name": "run_command",
-                                "args": {"CommandLine": "mise run learn:propose --tier skill"},
+                                "args": {
+                                    "CommandLine": "mise run learn:propose --tier skill"
+                                },
                             }
                         ],
                     },
@@ -2792,19 +3183,47 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             checks.append("learn_cmd_without_review_does_not_bypass_hard_gate")
 
             # 24. WORKTREE_RM_RE handles --force before/after slug and same-turn learn:record-review -> worktree:rm does not double-trigger
-            assert _extract_worktree_rm_slug("mise run worktree:rm --force feat-a") == "feat-a"
-            assert _extract_worktree_rm_slug("mise -C /tmp/r run worktree:rm -f feat_b --force") == "feat_b"
+            assert (
+                _extract_worktree_rm_slug("mise run worktree:rm --force feat-a")
+                == "feat-a"
+            )
+            assert (
+                _extract_worktree_rm_slug(
+                    "mise -C /tmp/r run worktree:rm -f feat_b --force"
+                )
+                == "feat_b"
+            )
+            with _shared_reviews_path().open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "review_id": "rev-test24",
+                            "plan_key": "/tmp/x/task_plan.md",
+                            "plan_sha256": "abc",
+                            "worktree_slug": "feat-a",
+                            "outcome": "no_new_proposals",
+                            "timestamp_unix_ns": time.time_ns(),
+                        }
+                    )
+                    + "\n"
+                )
             t24 = root / "t24.jsonl"
             art24 = root / "art24"
             art24.mkdir()
             _write_jsonl(
                 t24,
                 [
-                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Finish wt</USER_REQUEST>"},
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Finish wt</USER_REQUEST>",
+                    },
                     {
                         "type": "PLANNER_RESPONSE",
                         "tool_calls": [
-                            {"name": "edit_file", "args": {"Path": str(ws1 / "src.py")}},
+                            {
+                                "name": "edit_file",
+                                "args": {"Path": str(ws1 / "src.py")},
+                            },
                             {
                                 "name": "run_command",
                                 "args": {
@@ -2813,7 +3232,9 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                             },
                             {
                                 "name": "run_command",
-                                "args": {"CommandLine": "mise run worktree:rm --force feat-a"},
+                                "args": {
+                                    "CommandLine": "mise run worktree:rm --force feat-a"
+                                },
                             },
                         ],
                     },
@@ -2828,7 +3249,9 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     "cwd": str(ws1),
                 }
             )
-            assert res24 == {}, f"case 24 same-turn learn -> worktree:rm must not double-trigger: {res24}"
+            assert res24 == {}, (
+                f"case 24 same-turn learn -> worktree:rm must not double-trigger: {res24}"
+            )
             checks.append("same_turn_learn_then_worktree_rm_no_double_trigger")
 
             # 25. Cross-turn worktree:rm is suppressed when shared reviews.jsonl cleared the slug, and still fires when unreviewed
@@ -2838,13 +3261,18 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             _write_jsonl(
                 t25a,
                 [
-                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Remove worktree</USER_REQUEST>"},
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Remove worktree</USER_REQUEST>",
+                    },
                     {
                         "type": "PLANNER_RESPONSE",
                         "tool_calls": [
                             {
                                 "name": "run_command",
-                                "args": {"CommandLine": "mise run worktree:rm --force rev21"},
+                                "args": {
+                                    "CommandLine": "mise run worktree:rm --force rev21"
+                                },
                             }
                         ],
                     },
@@ -2859,7 +3287,9 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     "cwd": str(ws1),
                 }
             )
-            assert res25a == {}, f"case 25a cleared shared review must suppress worktree:rm trigger: {res25a}"
+            assert res25a == {}, (
+                f"case 25a cleared shared review must suppress worktree:rm trigger: {res25a}"
+            )
 
             t25b = root / "t25b.jsonl"
             art25b = root / "art25b"
@@ -2867,13 +3297,18 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             _write_jsonl(
                 t25b,
                 [
-                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Remove unreviewed</USER_REQUEST>"},
+                    {
+                        "type": "USER_INPUT",
+                        "content": "<USER_REQUEST>Remove unreviewed</USER_REQUEST>",
+                    },
                     {
                         "type": "PLANNER_RESPONSE",
                         "tool_calls": [
                             {
                                 "name": "run_command",
-                                "args": {"CommandLine": "mise run worktree:rm --force unreviewed-slug"},
+                                "args": {
+                                    "CommandLine": "mise run worktree:rm --force unreviewed-slug"
+                                },
                             }
                         ],
                     },
@@ -2888,7 +3323,9 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     "cwd": str(ws1),
                 }
             )
-            assert res25b.get("decision") == "continue" and "unreviewed-slug" in res25b.get("reason", ""), (
+            assert res25b.get(
+                "decision"
+            ) == "continue" and "unreviewed-slug" in res25b.get("reason", ""), (
                 f"case 25b unreviewed worktree:rm must trigger: {res25b}"
             )
             checks.append("cross_turn_worktree_rm_respects_shared_reviews")
@@ -2943,13 +3380,36 @@ def main() -> int:
         raw_payload = json.loads(raw_text) if raw_text.strip() else {}
     except (json.JSONDecodeError, OSError, ValueError):
         raw_payload = None
-    if args.session_start:
-        result = _run_session_start(raw_payload if isinstance(raw_payload, dict) else {})
+    try:
+        if args.session_start:
+            result = _run_session_start(
+                raw_payload if isinstance(raw_payload, dict) else {}
+            )
+            sys.stdout.write(json.dumps(result) + "\n")
+            return 0
+        result = _run_hook(raw_payload) if isinstance(raw_payload, dict) else {}
         sys.stdout.write(json.dumps(result) + "\n")
         return 0
-    result = _run_hook(raw_payload) if isinstance(raw_payload, dict) else {}
-    sys.stdout.write(json.dumps(result) + "\n")
-    return 0
+    except Exception as exc:
+        sys.stderr.write(f"post-task-learn: unexpected error: {exc}\n")
+        if args.session_start:
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "injectSteps": [
+                            {
+                                "systemMessage": {
+                                    "systemMessage": f"[agy-learn] SessionStart hook error: {exc}"
+                                }
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+        else:
+            sys.stdout.write("{}\n")
+        return 0
 
 
 if __name__ == "__main__":

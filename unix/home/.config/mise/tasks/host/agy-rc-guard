@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#MISE description="Verify and heal macOS headless `agy remote-control` LaunchAgent (handles #1269 and #1401)"
+#USAGE flag "--check" help="Run read-only diagnostics without modifying daemon state (default)"
+#USAGE flag "--repair" help="Start or heal com.google.antigravity-cli-daemon and repair missing OAuth token file"
+#USAGE flag "--name <hostname>" help="Optional Remote Control instance name when starting the daemon"
+#USAGE flag "--json" help="Emit JSON status summary"
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+	if [[ ${usage_json:-false} == "true" ]]; then
+		printf '{"status":"skipped","reason":"non-darwin"}\n'
+	else
+		echo "agy:rc-guard: skipped on $(uname -s)"
+	fi
+	exit 0
+fi
+
+# Never allow ephemeral fnox proxy env into LaunchAgent checks/restarts, and NEVER run
+# `agy remote-control serve --help` (google-antigravity/antigravity-cli#1742 spawns a duplicate daemon).
+unset \
+	HTTP_PROXY HTTPS_PROXY ALL_PROXY \
+	http_proxy https_proxy all_proxy \
+	SSL_CERT_FILE NODE_EXTRA_CA_CERTS REQUESTS_CA_BUNDLE \
+	CURL_CA_BUNDLE GIT_SSL_CAINFO CARGO_HTTP_CAINFO \
+	DENO_CERT RUST_LOG
+
+label="com.google.antigravity-cli-daemon"
+uid="$(id -u)"
+plist="${HOME}/Library/LaunchAgents/${label}.plist"
+token_file="${HOME}/.gemini/antigravity-cli/antigravity-oauth-token"
+daemon_log="${HOME}/Library/Logs/antigravity-cli-daemon.log"
+
+agy_bin="${HOME}/.local/bin/agy"
+if [[ ! -x ${agy_bin} ]]; then
+	agy_bin="$(command -v agy 2>/dev/null || true)"
+fi
+if [[ -z ${agy_bin} || ! -x ${agy_bin} ]]; then
+	echo "agy:rc-guard: agy binary not found" >&2
+	exit 1
+fi
+
+repair="${usage_repair:-false}"
+emit_json="${usage_json:-false}"
+rc_name="${usage_name:-}"
+
+read_state() {
+	python3 - "${plist}" "${token_file}" "${daemon_log}" "${label}" "${uid}" "${agy_bin}" <<'PY'
+import json
+import os
+import plistlib
+import subprocess
+import sys
+from pathlib import Path
+
+plist = Path(sys.argv[1])
+token_file = Path(sys.argv[2])
+daemon_log = Path(sys.argv[3])
+label = sys.argv[4]
+uid = sys.argv[5]
+agy_bin = sys.argv[6]
+
+issues = []
+plist_exists = plist.is_file()
+poisoned_ssl = False
+if plist_exists:
+    try:
+        pdata = plistlib.loads(plist.read_bytes())
+        env_map = pdata.get("EnvironmentVariables") or {}
+        if isinstance(env_map, dict):
+            for key in ("SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
+                val = str(env_map.get(key) or "")
+                if "fnox-proxy-ca-" in val or ("127.0.0.1:" in val and key.endswith("PROXY")):
+                    poisoned_ssl = True
+                    issues.append(f"plist contains ephemeral proxy var {key}")
+    except Exception as exc:
+        issues.append(f"unreadable plist: {exc}")
+else:
+    issues.append(f"missing LaunchAgent plist {plist}")
+
+lc = subprocess.run(
+    ["launchctl", "print", f"gui/{uid}/{label}"],
+    capture_output=True,
+    text=True,
+    stdin=subprocess.DEVNULL,
+    timeout=5,
+)
+launchctl_loaded = lc.returncode == 0
+launchctl_running = launchctl_loaded and ("state = running" in lc.stdout)
+if plist_exists and not launchctl_running:
+    issues.append(f"launchctl gui/{uid}/{label} not running")
+
+rc = subprocess.run(
+    [agy_bin, "remote-control", "status"],
+    capture_output=True,
+    text=True,
+    stdin=subprocess.DEVNULL,
+    timeout=10,
+)
+status_out = (rc.stdout or "") + "\n" + (rc.stderr or "")
+rc_running = "Daemon status: running" in status_out
+if not rc_running:
+    issues.append("agy remote-control status reports not running")
+
+token_ok = token_file.is_file() and token_file.stat().st_size > 0
+if not token_ok:
+    issues.append(f"missing or empty OAuth token file {token_file} (#1401)")
+
+auth_error_in_log = False
+if daemon_log.is_file():
+    try:
+        with daemon_log.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 32768))
+            tail = fh.read().decode("utf-8", errors="replace")
+        for line in tail.splitlines()[-80:]:
+            if "You are not logged into Antigravity" in line or "error getting token source" in line:
+                auth_error_in_log = True
+                break
+        if auth_error_in_log:
+            issues.append("antigravity-cli-daemon.log shows recent OAuth failure (#1401)")
+    except OSError:
+        pass
+
+print(json.dumps({
+    "plist_exists": plist_exists,
+    "poisoned_ssl": poisoned_ssl,
+    "launchctl_loaded": launchctl_loaded,
+    "launchctl_running": launchctl_running,
+    "rc_running": rc_running,
+    "token_ok": token_ok,
+    "auth_error_in_log": auth_error_in_log,
+    "issues": issues,
+}))
+PY
+}
+
+state_json="$(read_state)"
+
+if [[ ${repair} == "true" ]]; then
+	needs_reseed="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (not d["token_ok"] or d["auth_error_in_log"]) else "0")' "${state_json}")"
+	needs_start="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if not d["plist_exists"] else "0")' "${state_json}")"
+	needs_kickstart="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (d["plist_exists"] and (not d["launchctl_running"] or not d["rc_running"] or d["poisoned_ssl"])) else "0")' "${state_json}")"
+
+	# #1401: interactive OAuth refresh can delete antigravity-oauth-token. Clean stop + re-seed via non-daemon status probe, then start/kickstart.
+	if [[ ${needs_reseed} -eq 1 && ${needs_start} -eq 0 ]]; then
+		"${agy_bin}" remote-control stop </dev/null >/dev/null 2>&1 || true
+		needs_start=1
+	fi
+
+	if [[ ${needs_reseed} -eq 1 ]]; then
+		# Trigger Keychain -> antigravity-oauth-token refresh cleanly in an isolated temp cwd with no output spam.
+		tmp_cwd="$(mktemp -d)"
+		(cd "${tmp_cwd}" && AGY_CLI_DISABLE_AUTO_UPDATE=true "${agy_bin}" --print "/status" --output-format json --print-timeout 8s --log-file /dev/null </dev/null >/dev/null 2>&1 || true)
+		rm -rf "${tmp_cwd}"
+	fi
+
+	if [[ ${needs_start} -eq 1 ]]; then
+		start_cmd=("${agy_bin}" remote-control start)
+		if [[ -n ${rc_name} ]]; then
+			start_cmd+=(--name "${rc_name}")
+		fi
+		"${start_cmd[@]}" </dev/null >/dev/null
+	elif [[ ${needs_kickstart} -eq 1 ]]; then
+		# #1269: kickstart stuck or stale LaunchAgent cleanly
+		launchctl kickstart -k "gui/${uid}/${label}" >/dev/null
+	fi
+
+	sleep 1
+	state_json="$(read_state)"
+fi
+
+issue_cnt="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["issues"]))' "${state_json}")"
+if [[ ${emit_json} == "true" ]]; then
+	printf '%s\n' "${state_json}"
+elif [[ ${issue_cnt} -eq 0 ]]; then
+	echo "OK  agy:rc-guard: ${label} running with valid OAuth token and clean env"
+else
+	python3 -c 'import json,sys; [print("WARN  agy:rc-guard:", x) for x in json.loads(sys.argv[1])["issues"]]' "${state_json}"
+fi
+
+[[ ${issue_cnt} -eq 0 ]]

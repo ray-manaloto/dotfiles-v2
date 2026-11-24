@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#MISE description="Open an interactive shell (or run a command) inside pc or mac container"
+#USAGE flag "--target <target>" default="pc" help="Target container: pc or mac"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
+#USAGE flag "-p --project <project>" default="dotfiles-v2" help="Project workspace: dotfiles-v2, kb-v2, or cpp-core"
+#USAGE arg "[cmd]" help="Optional command to execute inside the container"
+set -euo pipefail
+
+target="${usage_target:-pc}"
+host="${usage_host:-pc}"
+project="${usage_project:-dotfiles-v2}"
+cmd="${usage_cmd:-}"
+name="dotfiles-v2"
+
+case "${target}" in
+pc)
+	dcmd=(env "DOCKER_HOST=ssh://${host}" docker)
+	;;
+mac)
+	if [[ "$(uname -s)" != "Darwin" ]]; then
+		echo "mac Docker Desktop target must run on macOS" >&2
+		exit 1
+	fi
+	dcmd=(env -u DOCKER_HOST docker --context desktop-linux)
+	;;
+*)
+	echo "unknown target '${target}' (expected pc or mac)" >&2
+	exit 1
+	;;
+esac
+
+# shellcheck disable=SC2016
+case "${project}" in
+dotfiles-v2)
+	proj_expr='/workspace'
+	;;
+kb-v2 | knowledge-base-v2)
+	proj_expr='$(for d in /workspace-kb "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2" /workspace; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+	;;
+cpp-core)
+	proj_expr='$(for d in /workspace-cpp "$HOME/dev/cpp-core" /workspace; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+	;;
+*)
+	echo "unknown project '${project}' (expected dotfiles-v2, kb-v2, or cpp-core)" >&2
+	exit 1
+	;;
+esac
+
+tty_flags=(-i)
+if [[ -z ${cmd} && -t 0 && -t 1 ]]; then
+	tty_flags=(-it)
+fi
+
+if [[ -n ${cmd} ]]; then
+	script="$(printf 'cd %s && %s' "${proj_expr}" "${cmd}")"
+else
+	script="$(printf 'cd %s && exec bash -il' "${proj_expr}")"
+fi
+
+exec "${dcmd[@]}" exec "${tty_flags[@]}" "${name}" /bin/bash -il -c "${script}"

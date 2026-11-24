@@ -296,11 +296,44 @@ from pathlib import Path
 
 json.loads(Path("unix/home/.claude.mcp-jdx.json").read_text(encoding="utf-8"))
 tomllib.loads(Path("unix/home/.codex/mcp-jdx.toml").read_text(encoding="utf-8"))
-cfg = tomllib.loads(Path("unix/home/.config/mise/config.toml").read_text(encoding="utf-8"))
+mise_dir = Path("unix/home/.config/mise")
+cfg = tomllib.loads((mise_dir / "config.toml").read_text(encoding="utf-8"))
 tools = set(cfg.get("tools", {}))
 for tool in ("aube", "communique", "fnox", "hk", "npm:@vercel/board", "packslip:grafana/flint", "pitchfork", "usage"):
     assert tool in tools, f"Missing {tool} in unix/home/.config/mise/config.toml [tools]"
-dotfiles = cfg.get("dotfiles", {})
+
+all_dotfiles: dict[str, object] = {}
+all_groups: list[dict[str, object]] = []
+for cfg_path in sorted(mise_dir.glob("config*.toml")):
+    cdata = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    df = cdata.get("dotfiles")
+    if isinstance(df, dict):
+        all_dotfiles.update(df)
+    dg = cdata.get("dotfile_groups")
+    if isinstance(dg, dict):
+        for grp in dg.values():
+            if isinstance(grp, dict):
+                all_groups.append(grp)
+
+skills_task_txt = (mise_dir / "tasks" / "bootstrap" / "skills").read_text(encoding="utf-8")
+
+def has_target(target_key: str) -> bool:
+    if target_key in all_dotfiles:
+        return True
+    if target_key.startswith("~/.agents/skills/"):
+        name = target_key.rsplit("/", 1)[-1]
+        for grp in all_groups:
+            if name in (grp.get("items") or []) and "~/.agents/skills" in str(grp.get("dest_dir") or ""):
+                return True
+    if target_key.startswith("~/.claude/skills/"):
+        name = target_key.rsplit("/", 1)[-1]
+        for grp in all_groups:
+            if name in (grp.get("items") or []) and "~/.claude/skills" in str(grp.get("dest_dir") or ""):
+                return True
+        if '"../../.agents/skills/' in skills_task_txt and (mise_dir.parent.parent.parent / ".agents" / "skills" / name / "SKILL.md").is_file():
+            return True
+    return False
+
 for key in (
     "~/.agents/skills/vercel-board",
     "~/.claude/skills/vercel-board",
@@ -308,7 +341,7 @@ for key in (
     "~/.claude.json/mcp-jdx",
     "~/.codex/config.toml/mcp-jdx",
 ):
-    assert key in dotfiles, f"Missing {key} in unix/home/.config/mise/config.toml [dotfiles]"
+    assert has_target(key), f"Missing {key} across unix/home/.config/mise/config*.toml [dotfiles]/[dotfile_groups] and bootstrap:skills"
 deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
 PY
@@ -332,3 +365,29 @@ description = "Self-healing agy-learn ledger and schemas pass read-only health c
 depends = "py-deps-fresh"
 run = "mise run learn:heal --check --repo ."
 hint = "Inspect '$XDG_STATE_HOME/agy-learn/' via 'mise run learn:heal --check' and resolve any owing_learn or proposal bloat."
+
+[doctor.checks.herdr-app-bundle]
+description = "macOS Herdr.app lives exclusively under /Applications/Herdr.app without duplicate ~/Applications/Herdr.app"
+run = "python3 -I -B tasks/py/doctor_checks.py herdr-app-bundle"
+hint = "Install Herdr.app cleanly at /Applications/Herdr.app and remove any duplicate ~/Applications/Herdr.app."
+
+[doctor.checks.codex-hook-trust]
+description = "Codex plugin hook-trust registry matches live hooks/list RPC hashes"
+depends = "py-deps-fresh"
+run = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
+hint = "Inspect trust drift with `mise run codex:hook-trust --check --json` and repair cleanly with `--repair`."
+
+[doctor.checks.codex-daemon-health]
+description = "Running Codex app-server-daemon processes do not pin deleted fnox-proxy-ca-*.pem paths"
+run = "python3 -I -B tasks/py/doctor_checks.py codex-daemon-health"
+hint = "Restart any stale Codex daemon spawned via wrapper-stripped or missing SSL_CERT_FILE."
+
+[doctor.checks.agy-rc-health]
+description = "Antigravity CLI Remote Control guard and LaunchAgent health pass on macOS hosts"
+run = "python3 -I -B tasks/py/doctor_checks.py agy-rc-health"
+hint = "Inspect or heal Remote Control via `mise run host:agy-rc-guard`."
+
+[doctor.checks.skills-6harness-parity]
+description = "Canonical ~/.agents/skills parity across Codex, OpenCode, AGY, Claude, ZCode, and Hermes"
+run = "python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"
+hint = "Run `mise run bootstrap:skills` and keep canonical skills under unix/home/.agents/skills/."

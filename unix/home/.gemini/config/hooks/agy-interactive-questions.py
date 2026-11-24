@@ -39,6 +39,14 @@ LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:\d+\.|[-*])\s+")
 DECISION_HEADING_RE = re.compile(
     r"(?im)^(?:#{1,6}\s+|\*\*\s*)(?:next\s+step\s+options|key\s+decisions|decisions\s*&\s*trade-offs|options\s*\(with\s*trade-offs\))"
 )
+LEARN_EXEMPT_RE = re.compile(
+    r"(?:/learn\b|learning_proposal\.md|agy-learn|post-task-learn|record-review|learn:apply|proposals?)",
+    re.IGNORECASE,
+)
+PLAN_ID_LINE_RE = re.compile(r'^\s*PLAN_ID\s*=\s*"([^"\r\n]+)"')
+PLAN_STATUS_RE = re.compile(
+    r"\*\*Status:\*\*[ \t]+(pending|in_progress|complete)(?![A-Za-z0-9_])|\[(pending|in_progress|complete)\]"
+)
 
 BLOCK_REASON = (
     "Rule enforcement (interactive-questions.md): Your last response presented "
@@ -200,7 +208,9 @@ def _load_full_records(
     needed_indices = set(expected_types)
     max_idx = max(needed_indices)
     try:
-        with full_path.open("r", encoding="utf-8", errors="replace", newline="\n") as handle:
+        with full_path.open(
+            "r", encoding="utf-8", errors="replace", newline="\n"
+        ) as handle:
             for idx, raw in enumerate(handle):
                 if idx > max_idx:
                     break
@@ -280,6 +290,134 @@ def _resolve_state_path(payload: dict[str, Any]) -> Path | None:
     return None
 
 
+def _shared_reviews_path() -> Path:
+    xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = (
+        Path(os.path.expanduser(xdg_state))
+        if xdg_state
+        else Path.home() / ".local" / "state"
+    )
+    return base / "agy-learn" / "reviews.jsonl"
+
+
+def _resolve_active_complete_plan(payload: dict[str, Any]) -> tuple[Path, str] | None:
+    cwd_raw = payload.get("cwd")
+    base = (
+        Path(os.path.expanduser(cwd_raw.strip()))
+        if isinstance(cwd_raw, str) and cwd_raw.strip()
+        else None
+    )
+    if base is None:
+        wp = payload.get("workspacePaths")
+        if isinstance(wp, list) and wp and isinstance(wp[0], str) and wp[0].strip():
+            base = Path(os.path.expanduser(wp[0].strip()))
+    if base is None or not base.is_dir():
+        return None
+    repo = base.resolve(strict=False)
+    while repo != repo.parent and not (repo / ".git").exists():
+        repo = repo.parent
+    if not (repo / ".git").exists():
+        return None
+    plan_id = os.environ.get("PLAN_ID", "").strip()
+    local_toml = repo / "mise.local.toml"
+    if local_toml.is_file():
+        try:
+            for line in local_toml.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                m = PLAN_ID_LINE_RE.match(line)
+                if m:
+                    plan_id = m.group(1).strip()
+                    break
+        except OSError:
+            pass
+    if not plan_id:
+        return None
+    plan_file = repo / ".planning" / plan_id / "task_plan.md"
+    if not plan_file.is_file():
+        return None
+    try:
+        text = plan_file.read_text(encoding="utf-8", errors="replace")
+        digest = hashlib.sha256(plan_file.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    statuses = [m.group(1) or m.group(2) for m in PLAN_STATUS_RE.finditer(text)]
+    if statuses and all(st == "complete" for st in statuses):
+        return plan_file.resolve(strict=False), digest
+    return None
+
+
+def _check_learn_boundary_before_ask(
+    payload: dict[str, Any], questions: list[Any]
+) -> str | None:
+    """Enforce interactive-questions.md #6: complete /learn review on finished plans before ask_question."""
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        blob = " ".join(
+            [
+                str(q.get("question") or ""),
+                *[str(o) for o in (q.get("options") or [])],
+            ]
+        )
+        if LEARN_EXEMPT_RE.search(blob):
+            return None
+
+    active = _resolve_active_complete_plan(payload)
+    if active is None:
+        return None
+    plan_path, digest = active
+    plan_key = str(plan_path)
+    reviews_path = _shared_reviews_path()
+    latest_outcome: str | None = None
+    latest_sha: str | None = None
+    latest_ns = -1
+    if reviews_path.is_file():
+        try:
+            for raw in reviews_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                if not raw.strip():
+                    continue
+                try:
+                    rec = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                rk = rec.get("plan_key")
+                if not isinstance(rk, str) or not rk:
+                    continue
+                try:
+                    rk_norm = str(Path(os.path.expanduser(rk)).resolve(strict=False))
+                except OSError:
+                    rk_norm = rk
+                if rk_norm != plan_key:
+                    continue
+                ns = rec.get("timestamp_unix_ns", 0)
+                ns_val = ns if isinstance(ns, int) and not isinstance(ns, bool) else 0
+                if ns_val >= latest_ns:
+                    latest_ns = ns_val
+                    latest_sha = rec.get("plan_sha256")
+                    latest_outcome = rec.get("outcome")
+        except OSError:
+            pass
+    if latest_outcome == "owing_learn" and latest_sha == digest:
+        return (
+            f"Completed plan '{plan_path.parent.name}' is marked `owing_learn`; "
+            "run a bounded `/learn` review (`learn:record-review` or `learn:propose`) before calling `ask_question`."
+        )
+    if not (
+        latest_sha == digest
+        and latest_outcome in ("proposed", "no_new_proposals", "applied")
+    ):
+        return (
+            f"Completed plan '{plan_path.parent.name}' has no `/learn` review in reviews.jsonl; "
+            "run one bounded `/learn` pass before calling `ask_question` (interactive-questions.md #6)."
+        )
+    return None
+
+
 def _run_pre_tool_use_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if os.environ.get("AGY_DISABLE_INTERACTIVE_QUESTION_GUARD") == "1":
         return _allow()
@@ -298,6 +436,10 @@ def _run_pre_tool_use_hook(payload: dict[str, Any]) -> dict[str, Any]:
     questions = args.get("questions")
     if not isinstance(questions, list) or not questions:
         return _allow()
+
+    learn_violation = _check_learn_boundary_before_ask(payload, questions)
+    if learn_violation is not None:
+        return _deny(f"Rule enforcement (interactive-questions.md): {learn_violation}")
 
     violations: list[str] = []
     normalized_qs: list[dict[str, Any]] = []
@@ -856,6 +998,88 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         res13b = _run_hook(base_payload())
         assert res13b.get("decision") == "continue", f"case 13b failed: {res13b}"
         checks.append("transcript_full_hydration_tool_calls_and_content")
+
+        # 14. Interactive ask_question /learn boundary enforces review on completed plans
+        repo14 = root / "repo14"
+        (repo14 / ".git").mkdir(parents=True)
+        plan14_dir = repo14 / ".planning" / "plan14"
+        plan14_dir.mkdir(parents=True)
+        plan14 = plan14_dir / "task_plan.md"
+        plan14.write_text(
+            "# Plan 14\n\n### Phase 1: Do\n**Status:** complete\n", encoding="utf-8"
+        )
+        (repo14 / "mise.local.toml").write_text(
+            '[env]\nPLAN_ID = "plan14"\n', encoding="utf-8"
+        )
+        xdg14 = root / "xdg14"
+        saved_xdg = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = str(xdg14)
+        try:
+            q_follow = {
+                "cwd": str(repo14),
+                "toolCall": {
+                    "name": "ask_question",
+                    "args": {
+                        "questions": [
+                            {
+                                "question": "Next step?",
+                                "is_multi_select": False,
+                                "options": [
+                                    "Deploy (Recommended) — Pros: fast | Cons: risk",
+                                    "Wait — Pros: safe | Cons: slow",
+                                ],
+                            }
+                        ]
+                    },
+                },
+            }
+            assert _run_pre_tool_use_hook(q_follow).get("decision") == "deny", (
+                "case 14a completed unreviewed plan must block follow-up ask_question"
+            )
+            q_learn = {
+                "cwd": str(repo14),
+                "toolCall": {
+                    "name": "ask_question",
+                    "args": {
+                        "questions": [
+                            {
+                                "question": "Approve /learn proposals?",
+                                "is_multi_select": False,
+                                "options": [
+                                    "Approve (Recommended) — Pros: clean | Cons: none",
+                                    "Decline — Pros: skip | Cons: deferred",
+                                ],
+                            }
+                        ]
+                    },
+                },
+            }
+            assert _run_pre_tool_use_hook(q_learn) == _allow(), (
+                "case 14b /learn-topic ask_question should be exempt"
+            )
+            rev14 = xdg14 / "agy-learn" / "reviews.jsonl"
+            rev14.parent.mkdir(parents=True)
+            rev14.write_text(
+                json.dumps(
+                    {
+                        "plan_key": str(plan14.resolve()),
+                        "plan_sha256": hashlib.sha256(plan14.read_bytes()).hexdigest(),
+                        "outcome": "no_new_proposals",
+                        "timestamp_unix_ns": 100,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            assert _run_pre_tool_use_hook(q_follow) == _allow(), (
+                "case 14c reviewed completed plan allows ask_question"
+            )
+        finally:
+            if saved_xdg is None:
+                os.environ.pop("XDG_STATE_HOME", None)
+            else:
+                os.environ["XDG_STATE_HOME"] = saved_xdg
+        checks.append("pre_tool_use_learn_boundary_enforced")
 
     if hooks_json_path is not None:
         _check_hooks_json(hooks_json_path)

@@ -1110,3 +1110,164 @@ def test_record_review_task_script_enforces_canonical_key_and_anti_rubber_stamp(
     ok_json = orjson.loads(ok_proc.stdout)
     assert ok_json["rc"] == 0
     assert ok_json["review"]["plan_key"] == str(plan_file.resolve())
+
+
+def test_propose_preserves_approved_status_stricter_tier_and_migrate_list_apply(
+    tmp_path: Path,
+) -> None:
+    from agy_learn.ledger import (
+        list_proposals,
+        mark_proposal,
+        migrate_reviews,
+    )
+
+    state_dir = tmp_path / "state"
+    repo_dir = tmp_path / "repo"
+    plan_file = repo_dir / ".planning" / "2026-11-24-slice" / "task_plan.md"
+    plan_file.parent.mkdir(parents=True)
+    plan_file.write_text(
+        "# Slice\n\n### Phase 1: Do\n**Status:** complete\n", encoding="utf-8"
+    )
+
+    # 1. Record proposal, approve it with explicit notes, then recur -> preserves APPROVED, notes, and stricter tier
+    p1 = propose_item(
+        dedup_key="recur-tier-check",
+        title="Enforce hk check",
+        summary="Run deterministic hk gate",
+        target_path="hk.pkl",
+        tier=EnforcementTier.SKILL,
+        retention_class=RetentionClass.SAFETY_INVARIANT,
+        provenance=ProvenanceRef(transcript_step="t1.jsonl#L1"),
+        state_dir=state_dir,
+    )
+    assert p1.rc == 0
+    assert p1.proposal is not None
+    pid = p1.proposal.proposal_id
+    marked = mark_proposal(
+        proposal_id=pid,
+        status=ProposalStatus.APPROVED,
+        notes="Owner approved for hk.pkl",
+        state_dir=state_dir,
+    )
+    assert marked.rc == 0
+
+    recurred = propose_item(
+        dedup_key="recur-tier-check",
+        title="Enforce hk check",
+        summary="Run deterministic hk gate",
+        target_path="hk.pkl",
+        tier=EnforcementTier.RULE,
+        retention_class=RetentionClass.SAFETY_INVARIANT,
+        provenance=ProvenanceRef(transcript_step="t2.jsonl#L5"),
+        state_dir=state_dir,
+    )
+    assert recurred.rc == 0
+    assert recurred.proposal is not None
+    assert recurred.proposal.status is ProposalStatus.APPROVED
+    assert recurred.proposal.notes == "Owner approved for hk.pkl"
+    assert recurred.proposal.recommended_tier is EnforcementTier.HK_PKL
+
+    # 2. Check logging JSONL captures INFO events even in --json mode (WARNING console)
+    rc_list = agy_learn_cli_main(
+        ["list", "--actionable-only", "--state-dir", str(state_dir)]
+    )
+    assert rc_list == 0
+    listed = list_proposals(actionable_only=True, state_dir=state_dir)
+    assert [p.proposal_id for p in listed.proposals] == [pid]
+
+    # 3. Apply approved proposals via CLI (also tests JSONL INFO sink decoupled from console WARNING) and refresh proposal markdown
+    out_md = tmp_path / "learning_proposal.md"
+    rc_apply = agy_learn_cli_main(
+        [
+            "apply",
+            "--all-approved",
+            "--proposal-md",
+            str(out_md),
+            "--repo",
+            str(repo_dir),
+            "--state-dir",
+            str(state_dir),
+        ]
+    )
+    assert rc_apply == 0
+    assert list_proposals(actionable_only=True, state_dir=state_dir).proposals == []
+    assert out_md.is_file()
+    log_file = state_dir / "agy-learn.log.jsonl"
+    assert log_file.is_file()
+    assert "learn_proposals_applied" in log_file.read_text(encoding="utf-8")
+
+    # 4. migrate_reviews dry-run + --apply compacts superseded bare-slug rows cleanly
+    reviews_path = state_dir / "reviews.jsonl"
+    canon_key = str(plan_file.resolve())
+    with reviews_path.open("w", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "review_id": "rev-bare-superseded",
+                    "plan_key": "2026-11-24-slice",
+                    "plan_sha256": "abc123",
+                    "error_count": 0,
+                    "outcome": "no_new_proposals",
+                    "survivor_count": 0,
+                    "proposal_ids": [],
+                    "provenance": {"transcript_step": "t1.jsonl#L2"},
+                    "timestamp": "20261124T010000.000000001+0000",
+                    "timestamp_unix_ns": 100,
+                }
+            )
+            + "\n"
+        )
+        handle.write(
+            json.dumps(
+                {
+                    "review_id": "rev-canon",
+                    "plan_key": canon_key,
+                    "plan_id": "2026-11-24-slice",
+                    "plan_sha256": "abc123",
+                    "error_count": 0,
+                    "outcome": "no_new_proposals",
+                    "survivor_count": 0,
+                    "proposal_ids": [],
+                    "provenance": {
+                        "transcript_step": "t1.jsonl#L3",
+                        "plan_path": canon_key,
+                    },
+                    "timestamp": "20261124T010001.000000001+0000",
+                    "timestamp_unix_ns": 200,
+                }
+            )
+            + "\n"
+        )
+    dry = migrate_reviews(apply=False, state_dir=state_dir)
+    assert dry.rc == 0
+    assert dry.migrated_ids == ["rev-bare-superseded"]
+    assert len(reviews_path.read_text(encoding="utf-8").splitlines()) == 2
+
+    compacted = migrate_reviews(apply=True, state_dir=state_dir)
+    assert compacted.rc == 0
+    assert compacted.migrated_ids == ["rev-bare-superseded"]
+    kept_lines = reviews_path.read_text(encoding="utf-8").splitlines()
+    assert len(kept_lines) == 1
+    assert "rev-canon" in kept_lines[0]
+
+    # 5. Portable learn hook & agy-pwf-sync pass /usr/bin/python3 --self-check
+    py39 = Path("/usr/bin/python3")
+    if py39.is_file():
+        for script in (
+            HOOKS_DIR / "agy-pwf-sync.py",
+            REPO_ROOT
+            / "unix"
+            / "home"
+            / ".config"
+            / "mise"
+            / "assets"
+            / "hooks"
+            / "portable-learn-hook.py",
+        ):
+            proc = subprocess.run(
+                [str(py39), "-I", "-B", str(script), "--self-check"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert json.loads(proc.stdout)["status"] == "ok"

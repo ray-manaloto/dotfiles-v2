@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -16,6 +17,8 @@ from typing import Any
 
 WAKE_DOORBELL_RE = re.compile(r"^wake\s+doorbell\s*:", re.IGNORECASE)
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+SHELL_WRAPPERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh"})
+MAX_SHELL_UNWRAP_DEPTH = 4
 MAX_DOORBELL_LEN = 220
 PUNCT_SEP_CHARS = frozenset(";|&()\n")
 SEPARATORS = frozenset(
@@ -31,30 +34,7 @@ def _deny(reason: str) -> dict[str, Any]:
     return {"decision": "deny", "reason": reason}
 
 
-def _split_shell_segments(command: str) -> list[list[str]]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&()\n")
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return []
-
-    segments: list[list[str]] = []
-    cur: list[str] = []
-    for tok in tokens:
-        if tok in SEPARATORS or (tok and all(ch in PUNCT_SEP_CHARS for ch in tok)):
-            if cur:
-                segments.append(cur)
-                cur = []
-        else:
-            cur.append(tok)
-    if cur:
-        segments.append(cur)
-    return segments
-
-
-def _parse_hc_send_segment(segment: list[str]) -> tuple[str, str | None, str] | None:
+def _strip_wrapper_prefix(segment: list[str]) -> list[str]:
     idx = 0
     while idx < len(segment):
         tok = segment[idx]
@@ -94,13 +74,81 @@ def _parse_hc_send_segment(segment: list[str]) -> tuple[str, str | None, str] | 
                     continue
                 idx += 1
             continue
+        if Path(tok).name == "exec":
+            idx += 1
+            continue
         break
-    if idx + 1 >= len(segment):
+    return segment[idx:]
+
+
+def _unwrap_shell_command(segment: list[str]) -> str | None:
+    stripped = _strip_wrapper_prefix(segment)
+    if not stripped:
         return None
-    if Path(segment[idx]).name != "hc" or segment[idx + 1] != "send":
+    if Path(stripped[0]).name not in SHELL_WRAPPERS:
+        return None
+    i = 1
+    while i < len(stripped):
+        tok = stripped[i]
+        if tok == "--":
+            break
+        if tok in {"-o", "+o"} and i + 1 < len(stripped):
+            i += 2
+            continue
+        if tok.startswith("-") and not tok.startswith("--") and "c" in tok[1:]:
+            if i + 1 < len(stripped):
+                return stripped[i + 1]
+            return None
+        if not tok.startswith("-"):
+            break
+        i += 1
+    return None
+
+
+def _split_shell_segments(command: str, *, _depth: int = 0) -> list[list[str]]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+
+    raw_segments: list[list[str]] = []
+    cur: list[str] = []
+    for tok in tokens:
+        if tok in SEPARATORS or (tok and all(ch in PUNCT_SEP_CHARS for ch in tok)):
+            if cur:
+                raw_segments.append(cur)
+                cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        raw_segments.append(cur)
+
+    if _depth >= MAX_SHELL_UNWRAP_DEPTH:
+        return raw_segments
+
+    segments: list[list[str]] = []
+    for seg in raw_segments:
+        inner_cmd = _unwrap_shell_command(seg)
+        if inner_cmd is not None:
+            inner_segs = _split_shell_segments(inner_cmd, _depth=_depth + 1)
+            if inner_segs:
+                segments.extend(inner_segs)
+                continue
+        segments.append(seg)
+    return segments
+
+
+def _parse_hc_send_segment(segment: list[str]) -> tuple[str, str | None, str] | None:
+    segment = _strip_wrapper_prefix(segment)
+    if len(segment) < 2:
+        return None
+    if Path(segment[0]).name != "hc" or segment[1] != "send":
         return None
 
-    args = segment[idx + 2 :]
+    args = segment[2:]
     if_flag: str | None = None
     positionals: list[str] = []
     i = 0
@@ -136,24 +184,43 @@ def _parse_hc_send_segment(segment: list[str]) -> tuple[str, str | None, str] | 
     return target, if_flag, text
 
 
+def _resolve_hc_bin() -> str | None:
+    found = shutil.which("hc")
+    if found and os.access(found, os.X_OK):
+        return found
+    for candidate in (
+        Path.home() / ".local" / "bin" / "hc",
+        Path("/usr/local/bin/hc"),
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def _inspect_terminal(target: str) -> dict[str, Any] | None:
+    hc_bin = _resolve_hc_bin()
+    if hc_bin is None:
+        return {"_hc_error": "hc binary not found in PATH or ~/.local/bin/hc"}
     try:
         proc = subprocess.run(
-            ["hc", "get", target, "--json"],
+            [hc_bin, "get", target, "--json"],
             capture_output=True,
             text=True,
             timeout=3,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"_hc_error": f"hc get failed or timed out: {exc}"}
     if proc.returncode != 0:
-        return None
+        err_msg = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+        return {"_hc_error": f"hc get {target} exited {proc.returncode}: {err_msg}"}
     try:
         data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
+    except json.JSONDecodeError as exc:
+        return {"_hc_error": f"hc get {target} returned invalid JSON: {exc}"}
+    if not isinstance(data, dict):
+        return {"_hc_error": f"hc get {target} returned non-object payload"}
+    return data
 
 
 def _argv_has_agy(argv: Any) -> bool:
@@ -188,7 +255,16 @@ def _check_command(
             continue
         target, if_flag, text = parsed
         info = inspector(target)
-        if info is None or not _is_agy_terminal(info):
+        if info is None:
+            return _deny(
+                f"agy-hc-send-guard: fail-closed because 'hc get {target} --json' returned no metadata."
+            )
+        if "_hc_error" in info:
+            return _deny(
+                f"agy-hc-send-guard: fail-closed on 'hc get {target} --json' error/timeout "
+                f"({info['_hc_error']}); verify target tab before running 'hc send'."
+            )
+        if not _is_agy_terminal(info):
             continue
 
         status = info.get("status")
@@ -414,6 +490,49 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     res10f = call_cmd('env -S "hc send agy-idle \\"Full payload\\""')
     assert res10f.get("decision") == "deny", f"case 10f env -S failed: {res10f}"
     checks.append("subshell_newline_and_env_hc_send_caught")
+
+    # 11. Shell-wrapped -c/-lc/-lic commands unwrap and catch hc send violations
+    for wrap in (
+        "zsh -lic 'hc send agy-idle \"Full payload\"'",
+        "bash -c 'hc send agy-working \"Wake doorbell: ping\"'",
+        "sh -lc 'echo ok && hc send agy-done --if idle \"Wake doorbell: ping\"'",
+    ):
+        res11 = call_cmd(wrap)
+        assert res11.get("decision") == "deny", (
+            f"case 11 shell-wrap failed ({wrap}): {res11}"
+        )
+    assert (
+        call_cmd(
+            "zsh -lic 'hc send agy-idle \"Wake doorbell: check incoming native send_message.\"'"
+        )
+        == _allow()
+    )
+    checks.append("shell_wrapper_unwrapping_hc_send")
+
+    # 12. Fail closed when hc get errors/times out or returns None
+    res12a = _run_hook(
+        {
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": 'hc send unknown-tab "hi"'},
+            }
+        },
+        inspector=fake_inspect,
+    )
+    assert res12a.get("decision") == "deny", (
+        f"case 12a None inspector must deny: {res12a}"
+    )
+    res12b = _run_hook(
+        {
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": 'hc send t1 "hi"'},
+            }
+        },
+        inspector=lambda _t: {"_hc_error": "timed out after 3s"},
+    )
+    assert res12b.get("decision") == "deny", f"case 12b _hc_error must deny: {res12b}"
+    checks.append("fail_closed_on_hc_get_error")
 
     if hooks_json_path is not None:
         _check_hooks_json(hooks_json_path)

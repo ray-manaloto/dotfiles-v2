@@ -248,7 +248,12 @@ def main() -> int:
 
     manifest_path, payload = _scan()
     if not args.no_write:
-        _write_manifest(manifest_path, payload)
+        try:
+            _write_manifest(manifest_path, payload)
+        except OSError as exc:
+            sys.stderr.write(
+                f"agy-skill-cutoff: failed to write {manifest_path}: {exc}\n"
+            )
 
     if args.hook:
         non_pwf = [
@@ -265,7 +270,7 @@ def main() -> int:
         )
         msg = (
             f"[agy-skill-cutoff] Truncated AGY skills (>{AGY_SKILL_BODY_CAP_BYTES:,} B body): "
-            f"{summary}. See ~/.local/share/agy-skill-cutoff/manifest.json and skill-cutoff-agy.md."
+            f"{summary}. See {manifest_path} and skill-cutoff-agy.md."
         )
         sys.stdout.write(
             json.dumps({"injectSteps": [{"systemMessage": {"systemMessage": msg}}]})

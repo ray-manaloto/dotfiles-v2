@@ -845,6 +845,27 @@ def propose_item(
             rec_tier, escalated = recommend_tier_for_occurrences(
                 tier, target_path, new_occurrences
             )
+            preserved_status = ProposalStatus.PENDING
+            preserved_declined_until: int | None = None
+            preserved_shipped_commit: str | None = None
+            preserved_notes = notes
+            if matched is not None:
+                if matched.status in {
+                    ProposalStatus.APPROVED,
+                    ProposalStatus.APPLIED,
+                    ProposalStatus.SHIPPED,
+                }:
+                    preserved_status = matched.status
+                    if matched.status in {
+                        ProposalStatus.APPLIED,
+                        ProposalStatus.SHIPPED,
+                    }:
+                        preserved_shipped_commit = matched.shipped_commit
+                if notes is None:
+                    preserved_notes = matched.notes
+                if TIER_RANK[matched.recommended_tier] < TIER_RANK[rec_tier]:
+                    rec_tier = matched.recommended_tier
+                escalated = TIER_RANK[rec_tier] < TIER_RANK[tier]
             if escalated:
                 returns.append(
                     LearnReturnEntry(
@@ -866,13 +887,13 @@ def propose_item(
                     tier=tier,
                     recommended_tier=rec_tier,
                     retention_class=retention_class,
-                    status=ProposalStatus.PENDING,
+                    status=preserved_status,
                     occurrences=new_occurrences,
                     provenance=provenance,
                     proposed_diff=proposed_diff,
-                    declined_until_unix_ns=None,
-                    shipped_commit=None,
-                    notes=notes,
+                    declined_until_unix_ns=preserved_declined_until,
+                    shipped_commit=preserved_shipped_commit,
+                    notes=preserved_notes,
                     timestamp=ts,
                     timestamp_unix_ns=ns,
                 )
@@ -1056,4 +1077,424 @@ def mark_proposal(
                 message=f"Marked {proposal_id} as {status.value}",
             )
         ],
+    )
+
+
+def _canonical_matches_bare_review(
+    bare_rec: LearnReviewRecord, canon_rec: LearnReviewRecord
+) -> bool:
+    bare = bare_rec.plan_key.strip()
+    if not bare:
+        return False
+    canon_dir = Path(canon_rec.plan_key).parent.name
+    slug_match = (
+        canon_dir == bare
+        or canon_dir.endswith(f"-{bare}")
+        or canon_rec.worktree_slug == bare
+        or canon_rec.plan_id == bare
+    )
+    if not slug_match:
+        return False
+    return (
+        canon_rec.plan_sha256 == bare_rec.plan_sha256
+        or canon_rec.timestamp_unix_ns >= bare_rec.timestamp_unix_ns
+    )
+
+
+def _resolve_bare_review_key(rec: LearnReviewRecord) -> str | None:
+    if rec.provenance.plan_path and not is_bare_plan_key(rec.provenance.plan_path):
+        resolved, err = canonicalize_plan_key(
+            rec.plan_key,
+            plan_path=rec.provenance.plan_path,
+            repo_root=rec.repo_root,
+            plan_id=rec.plan_id,
+            worktree_slug=rec.worktree_slug,
+        )
+        if err is None and resolved is not None and not is_bare_plan_key(resolved):
+            return resolved
+    if rec.repo_root:
+        repo = Path(os.path.expanduser(rec.repo_root))
+        for cand_slug in (rec.plan_id, rec.plan_key, rec.worktree_slug):
+            if not cand_slug or not cand_slug.strip():
+                continue
+            cand = repo / ".planning" / cand_slug.strip() / "task_plan.md"
+            if cand.is_file():
+                return str(cand.resolve(strict=False))
+    return None
+
+
+def migrate_reviews(
+    *,
+    apply: bool = False,
+    state_dir: Path | None = None,
+) -> LearnResponse:
+    """Compact superseded bare-slug rows in `reviews.jsonl` (dry-run unless `apply=True`)."""
+    resolved = resolve_state_dir(state_dir)
+    reviews_path = resolved / "reviews.jsonl"
+    lock_path = reviews_path.with_suffix(f"{reviews_path.suffix}.lock")
+    migrated_ids: list[str] = []
+    kept_rows: list[LearnReviewRecord] = []
+    try:
+        if apply:
+            resolved.mkdir(parents=True, exist_ok=True)
+            with FileLock(str(lock_path), timeout=LOCK_TIMEOUT_S):
+                raw_bytes = reviews_path.read_bytes() if reviews_path.is_file() else b""
+                ts, ns = now_ns_pair()
+                rows, read_errs = _parse_jsonl_bytes(
+                    reviews_path, raw_bytes, LearnReviewRecord
+                )
+                if read_errs:
+                    return LearnResponse(
+                        command="migrate",
+                        rc=1,
+                        timestamp=ts,
+                        timestamp_unix_ns=ns,
+                        errors=read_errs,
+                        returns=[],
+                    )
+                canonical_rows = [r for r in rows if not is_bare_plan_key(r.plan_key)]
+                canon_sigs = {
+                    (r.plan_key, r.plan_sha256, r.outcome) for r in canonical_rows
+                }
+                for rec in rows:
+                    if not is_bare_plan_key(rec.plan_key):
+                        kept_rows.append(rec)
+                        continue
+                    resolved_key = _resolve_bare_review_key(rec)
+                    if resolved_key is not None:
+                        migrated_ids.append(rec.review_id)
+                        sig = (resolved_key, rec.plan_sha256, rec.outcome)
+                        if sig not in canon_sigs:
+                            canon_sigs.add(sig)
+                            kept_rows.append(
+                                rec.model_copy(update={"plan_key": resolved_key})
+                            )
+                        continue
+                    if any(
+                        _canonical_matches_bare_review(rec, c) for c in canonical_rows
+                    ):
+                        migrated_ids.append(rec.review_id)
+                        continue
+                    kept_rows.append(rec)
+                if migrated_ids:
+                    payload = b"".join(
+                        orjson.dumps(row.model_dump(mode="json")) + b"\n"
+                        for row in kept_rows
+                    ).decode("utf-8")
+                    write_text_atomic(reviews_path, payload)
+        else:
+            ts, ns = now_ns_pair()
+            rows, read_errs = _read_jsonl_models(reviews_path, LearnReviewRecord)
+            if read_errs:
+                return LearnResponse(
+                    command="migrate",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=read_errs,
+                    returns=[],
+                )
+            canonical_rows = [r for r in rows if not is_bare_plan_key(r.plan_key)]
+            for rec in rows:
+                if not is_bare_plan_key(rec.plan_key):
+                    continue
+                if _resolve_bare_review_key(rec) is not None or any(
+                    _canonical_matches_bare_review(rec, c) for c in canonical_rows
+                ):
+                    migrated_ids.append(rec.review_id)
+    except Timeout as exc:
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="migrate",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_LOCK_CONFLICT,
+                    message=f"Timed out acquiring lock for {reviews_path}: {exc}",
+                )
+            ],
+            returns=[],
+        )
+    except OSError as exc:
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="migrate",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_IO_FAILURE,
+                    message=f"Failed accessing {reviews_path}: {exc}",
+                )
+            ],
+            returns=[],
+        )
+
+    if apply:
+        ret_code = (
+            LearnReturnCode.RET_APPLIED if migrated_ids else LearnReturnCode.RET_OK
+        )
+        msg = (
+            f"Compacted/migrated {len(migrated_ids)} bare-slug review row(s)."
+            if migrated_ids
+            else "No bare-slug review rows required migration."
+        )
+    else:
+        ret_code = (
+            LearnReturnCode.RET_SKIPPED if migrated_ids else LearnReturnCode.RET_OK
+        )
+        msg = (
+            f"Dry-run: {len(migrated_ids)} bare-slug review row(s) eligible for migration (--apply)."
+            if migrated_ids
+            else "Dry-run: no bare-slug review rows require migration."
+        )
+    if apply and migrated_ids:
+        _LOG.info(
+            "learn_reviews_migrated", count=len(migrated_ids), migrated_ids=migrated_ids
+        )
+    return LearnResponse(
+        command="migrate",
+        rc=0,
+        migrated_ids=migrated_ids,
+        timestamp=ts,
+        timestamp_unix_ns=ns,
+        errors=[],
+        returns=[LearnReturnEntry(code=ret_code, message=msg)],
+    )
+
+
+def list_proposals(
+    *,
+    statuses: list[ProposalStatus] | None = None,
+    tiers: list[EnforcementTier] | None = None,
+    actionable_only: bool = False,
+    state_dir: Path | None = None,
+) -> LearnResponse:
+    """List latest proposals from `proposals.jsonl`, filtered cleanly."""
+    ts, ns = now_ns_pair()
+    rows, read_errs = read_proposals(state_dir)
+    if read_errs:
+        return LearnResponse(
+            command="list",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=read_errs,
+            returns=[],
+        )
+    latest = list(latest_proposals_map(rows).values())
+    allowed_statuses: set[ProposalStatus] | None = None
+    if statuses:
+        allowed_statuses = set(statuses)
+    elif actionable_only:
+        allowed_statuses = {ProposalStatus.PENDING, ProposalStatus.APPROVED}
+    allowed_tiers = set(tiers) if tiers else None
+
+    filtered = [
+        prop
+        for prop in latest
+        if (allowed_statuses is None or prop.status in allowed_statuses)
+        and (allowed_tiers is None or prop.recommended_tier in allowed_tiers)
+    ]
+    filtered.sort(
+        key=lambda p: (
+            TIER_RANK[p.recommended_tier],
+            -p.occurrences,
+            -p.timestamp_unix_ns,
+        )
+    )
+    return LearnResponse(
+        command="list",
+        rc=0,
+        proposals=filtered,
+        timestamp=ts,
+        timestamp_unix_ns=ns,
+        errors=[],
+        returns=[
+            LearnReturnEntry(
+                code=LearnReturnCode.RET_OK,
+                message=f"Listed {len(filtered)} proposal(s).",
+            )
+        ],
+    )
+
+
+def apply_proposals(
+    *,
+    proposal_ids: list[str] | None = None,
+    all_approved: bool = False,
+    detect_shipped: bool = False,
+    status: ProposalStatus = ProposalStatus.APPLIED,
+    shipped_commit: str | None = None,
+    notes: str | None = None,
+    repo_root: Path | None = None,
+    proposal_md: Path | None = None,
+    state_dir: Path | None = None,
+) -> LearnResponse:
+    """Transition specified/approved/detected-shipped proposals to `applied` or `shipped`."""
+    if status not in {ProposalStatus.APPLIED, ProposalStatus.SHIPPED}:
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="apply",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_INVALID_INPUT,
+                    message=f"apply target status must be applied or shipped, got {status.value!r}.",
+                )
+            ],
+            returns=[],
+        )
+
+    from agy_learn.heal import (
+        _recent_git_log,
+        is_proposal_already_applied,
+        render_active_proposal_md,
+    )
+
+    resolved = resolve_state_dir(state_dir)
+    proposals_path = resolved / "proposals.jsonl"
+    lock_path = proposals_path.with_suffix(f"{proposals_path.suffix}.lock")
+    applied_ids: list[str] = []
+    last_updated: LearnProposal | None = None
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(lock_path), timeout=LOCK_TIMEOUT_S):
+            raw_bytes = proposals_path.read_bytes() if proposals_path.is_file() else b""
+            ts, ns = now_ns_pair()
+            rows, read_errs = _parse_jsonl_bytes(
+                proposals_path, raw_bytes, LearnProposal
+            )
+            if read_errs:
+                return LearnResponse(
+                    command="apply",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=read_errs,
+                    returns=[],
+                )
+            by_id = latest_proposals_map(rows)
+            requested = [pid.strip() for pid in (proposal_ids or []) if pid.strip()]
+            missing = [pid for pid in requested if pid not in by_id]
+            if missing:
+                return LearnResponse(
+                    command="apply",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=[
+                        LearnErrorEntry(
+                            code=LearnErrorCode.ERR_PROPOSAL_NOT_FOUND,
+                            message=f"Unknown proposal_id(s): {', '.join(missing)}",
+                        )
+                    ],
+                    returns=[],
+                )
+
+            targets: dict[str, str | None] = {pid: notes for pid in requested}
+            if all_approved:
+                for pid, prop in by_id.items():
+                    if prop.status is ProposalStatus.APPROVED and pid not in targets:
+                        targets[pid] = notes
+            if detect_shipped and repo_root is not None:
+                git_log_cache = _recent_git_log(repo_root)
+                for pid, prop in by_id.items():
+                    if pid in targets:
+                        continue
+                    if prop.status not in {
+                        ProposalStatus.PENDING,
+                        ProposalStatus.APPROVED,
+                    }:
+                        continue
+                    reason = is_proposal_already_applied(
+                        prop, repo_root, git_log_cache=git_log_cache
+                    )
+                    if reason:
+                        targets[pid] = (
+                            notes or f"Auto-detected already shipped: {reason}"
+                        )
+
+            for idx, (pid, item_notes) in enumerate(targets.items()):
+                existing = by_id[pid]
+                updated = existing.model_copy(
+                    update={
+                        "status": status,
+                        "declined_until_unix_ns": None,
+                        "shipped_commit": shipped_commit or existing.shipped_commit,
+                        "notes": item_notes
+                        if item_notes is not None
+                        else existing.notes,
+                        "timestamp": ts,
+                        "timestamp_unix_ns": ns + idx,
+                    }
+                )
+                _append_locked_bytes(
+                    proposals_path,
+                    orjson.dumps(updated.model_dump(mode="json")) + b"\n",
+                )
+                applied_ids.append(pid)
+                last_updated = updated
+    except Timeout as exc:
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="apply",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_LOCK_CONFLICT,
+                    message=f"Timed out acquiring lock for {proposals_path}: {exc}",
+                )
+            ],
+            returns=[],
+        )
+    except OSError as exc:
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="apply",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_IO_FAILURE,
+                    message=f"Failed accessing {proposals_path}: {exc}",
+                )
+            ],
+            returns=[],
+        )
+
+    if proposal_md is not None and applied_ids:
+        render_active_proposal_md(
+            out_path=proposal_md,
+            state_dir=state_dir,
+            repo_root=repo_root,
+        )
+
+    ret_code = (
+        LearnReturnCode.RET_APPLIED if applied_ids else LearnReturnCode.RET_SKIPPED
+    )
+    msg = (
+        f"Marked {len(applied_ids)} proposal(s) as {status.value}."
+        if applied_ids
+        else "No matching proposals to apply."
+    )
+    if applied_ids:
+        _LOG.info("learn_proposals_applied", applied_ids=applied_ids, status=status)
+    return LearnResponse(
+        command="apply",
+        rc=0,
+        proposal=last_updated,
+        applied_ids=applied_ids,
+        timestamp=ts,
+        timestamp_unix_ns=ns,
+        errors=[],
+        returns=[LearnReturnEntry(code=ret_code, message=msg)],
     )

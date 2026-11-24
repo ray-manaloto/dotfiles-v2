@@ -1,0 +1,6 @@
+extend = "../../../../../pyproject.toml"
+cache-dir = "~/.cache/ruff"
+target-version = "py39"
+
+[lint]
+per-file-ignores = { "*" = ["SIM105", "UP017"] }

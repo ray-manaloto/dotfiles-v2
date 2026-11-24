@@ -47,6 +47,25 @@ run_outdated_check() {
 run_outdated_check "mise-outdated-repo" -C "${repo_root}" outdated -b --json
 run_outdated_check "mise-outdated-global" -C "${HOME}" outdated -b --json --global
 
+# mise backends switch --dry-run (non-registry backend parity)
+switch_out="$(mktemp)"
+switch_err="$(mktemp)"
+switch_rc=0
+if ! mise -C "${repo_root}" backends switch --dry-run >"${switch_out}" 2>"${switch_err}"; then
+	switch_rc=$?
+fi
+if [[ ${verbose} == "true" && -s ${switch_out} ]]; then
+	cat "${switch_out}"
+fi
+if [[ ${switch_rc} -ne 0 ]]; then
+	printf 'FAIL  mise-backends-switch-dry-run (rc=%d)\n' "${switch_rc}" >&2
+	[[ -s ${switch_err} ]] && cat "${switch_err}" >&2
+	fail_count=$((fail_count + 1))
+else
+	printf 'PASS  mise-backends-switch-dry-run\n'
+fi
+rm -f "${switch_out}" "${switch_err}"
+
 # mise -C ~ audit --json: fail ONLY on fixable advisories; log unpatched CVEs as advisory.
 audit_file="$(mktemp)"
 audit_err="$(mktemp)"

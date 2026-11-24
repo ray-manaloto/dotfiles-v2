@@ -1211,6 +1211,73 @@ class EngineTests(unittest.TestCase):
                 [],
             )
 
+    def test_launch_fresh_tab_creates_missing_space_via_space_new_and_reuses_live_space(
+        self,
+    ) -> None:
+        space = SpaceSnapshot(
+            id="sp_closed",
+            name="dotfiles-wt",
+            folder="/tmp/wt",
+            tabs=[
+                TabSnapshot(
+                    id="tb_1",
+                    name="worker",
+                    terminals=[
+                        TerminalSnapshot(
+                            address="t1",
+                            kind=HarnessKind.CODEX,
+                            session_id="019-abc",
+                            cwd="/tmp/wt",
+                        )
+                    ],
+                )
+            ],
+        )
+        target = (space, space.tabs[0], space.tabs[0].terminals[0])
+
+        # 1. Closed space absent from live `herdr-app ls` invokes `space.new`
+        with (
+            mock.patch("herdr_roll.engine.herdr_app_ls", return_value=[]),
+            mock.patch(
+                "herdr_roll.engine.herdr_app_do",
+                return_value={"space": "sp_new", "tab": "tb_new", "terminal": "t_new"},
+            ) as do_mock,
+        ):
+            addr = engine._launch_fresh_tab(
+                target,
+                ["codex-hc", "resume", "019-abc"],
+                "/tmp/wt",
+            )
+        self.assertEqual(addr, "t_new")
+        do_mock.assert_called_once()
+        args = do_mock.call_args[0]
+        self.assertEqual(args[0], "space.new")
+        self.assertEqual(args[args.index("--name") + 1], "dotfiles-wt")
+        self.assertEqual(args[args.index("--tab") + 1], "worker")
+
+        # 2. Live space matched by name resolves current ID and invokes `tab.new`
+        with (
+            mock.patch(
+                "herdr_roll.engine.herdr_app_ls",
+                return_value=[
+                    {"id": "sp_recreated", "name": "dotfiles-wt", "tabs": []}
+                ],
+            ),
+            mock.patch(
+                "herdr_roll.engine.herdr_app_do",
+                return_value={"tab": "tb_2", "terminal": "t_2"},
+            ) as do_live_mock,
+        ):
+            addr2 = engine._launch_fresh_tab(
+                target,
+                ["codex-hc", "resume", "019-abc"],
+                "/tmp/wt",
+            )
+        self.assertEqual(addr2, "t_2")
+        args2 = do_live_mock.call_args[0]
+        self.assertEqual(args2[0], "tab.new")
+        self.assertEqual(args2[args2.index("--space") + 1], "sp_recreated")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,3 +17,11 @@ description = "Mac Tart dotfiles-v2-macos VM passes live doctor"
 os = "macos"
 run = "mise -C ../.. run env:doctor --target vm"
 timeout = "30s"
+
+[doctor.checks.interactive-zsh-smoke]
+description = "Interactive zsh login/interactive startup succeeds cleanly without errors"
+os = "macos"
+run = '''
+env -u __MISE_DIFF -u __MISE_SHIM -u __MISE_SESSION -u __MISE_ORIG_PATH PATH=/usr/bin:/bin:/usr/sbin:/sbin zsh -ic 'command -v mise >/dev/null 2>&1 && mise --version >/dev/null'
+'''
+timeout = "30s"

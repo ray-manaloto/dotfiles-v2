@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#MISE description="List agy-learn proposals from proposals.jsonl cleanly as JSON"
+#USAGE flag "--status <status>" var=#true help="Filter by status (pending, approved, applied, declined, shipped, superseded)"
+#USAGE flag "--tier <tier>" var=#true help="Filter by recommended_tier (hk_pkl, mise_doctor, agy_hook, skill, rule)"
+#USAGE flag "--actionable-only" help="Only show pending or approved proposals"
+#USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} == /* ]]; then
+			common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		else
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		fi
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+
+args=(list)
+if [[ -n ${usage_status:-} ]]; then
+	# shellcheck disable=SC2086
+	for val in ${usage_status}; do
+		args+=(--status "${val}")
+	done
+fi
+if [[ -n ${usage_tier:-} ]]; then
+	# shellcheck disable=SC2086
+	for val in ${usage_tier}; do
+		args+=(--tier "${val}")
+	done
+fi
+[[ ${usage_actionable_only:-false} == "true" ]] && args+=(--actionable-only)
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+
+if [[ ! -x ${venv_py} ]]; then
+	echo "agy-learn list: missing .venv/bin/python; run 'mise deps uv' (refusing to mutate disk in read-only list)" >&2
+	exit 1
+fi
+exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

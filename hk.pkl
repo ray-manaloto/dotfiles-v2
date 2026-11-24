@@ -11,6 +11,7 @@ local const lockfileExcludes =
     ".mise/locks/**",
     "unix/home/.config/mise/locks/**",
     "unix/home/.config/mise/mise.lock",
+    "unix/home/.config/mise/mise.*.lock",
     "mise.lock",
     "uv.lock",
   )
@@ -34,6 +35,7 @@ local const picked =
   helpers.pick(new Listing {
     "agnix"
     "betterleaks"
+    "jactionlint"
     "hadolint"
     "hk"
     "hygiene"
@@ -46,6 +48,7 @@ local const picked =
   })
 
 local const betterleaksStep = picked["betterleaks"] as Step
+local const githubActionsGroup = helpers.lintSteps()["github-actions"] as Group
 local const hygieneGroup = picked["hygiene"] as Group
 local const miseGroup = picked["mise"] as Group
 local const oxfmtStep = picked["oxfmt"] as Step
@@ -55,6 +58,17 @@ local const typosStep = picked["typos"] as Step
 local const fastSteps: Mapping<String, Step | Group> = (picked) {
   ["betterleaks"] = (betterleaksStep) {
     exclude = (betterleaksStep.exclude ?? List()) + lockfileExcludes
+  }
+  ["zizmor"] = (githubActionsGroup.steps["zizmor"] as Step) {
+    depends = List()
+  }
+  ["editorconfig-checker"] = (Builtins.editorconfig_checker) {
+    exclude = lockfileExcludes
+  }
+  ["lychee"] = (Builtins.lychee) {
+    glob = List("**/*.md", "**/*.markdown")
+    exclude = lockfileExcludes
+    check = "lychee --no-progress --offline {{ files }}"
   }
   ["hygiene"] = (hygieneGroup) {
     steps {
@@ -100,18 +114,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     }
   }
   ["ruff"] = Builtins.ruff
-  ["ruff-format"] = (Builtins.ruff_format) {
-    // Hook files invoked by `/usr/bin/python3` keep pre-PEP-758 `except (...)` syntax for macOS system Python.
-    exclude =
-      List(
-        "unix/home/.gemini/config/hooks/agy-code-review-guard.py",
-        "unix/home/.gemini/config/hooks/agy-hc-send-guard.py",
-        "unix/home/.gemini/config/hooks/agy-interactive-questions.py",
-        "unix/home/.gemini/config/hooks/agy-pwf-guard.py",
-        "unix/home/.gemini/config/hooks/agy-skill-cutoff.py",
-        "unix/home/.gemini/config/hooks/post-task-learn.py",
-      )
-  }
+  ["ruff-format"] = Builtins.ruff_format
   ["ryl"] = (Builtins.ryl) {
     exclude = (Builtins.ryl.exclude ?? List()) + lockfileExcludes
   }
@@ -172,6 +175,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
       List(
         "unix/home/.config/mise/config*.toml",
         "unix/home/.config/mise/mise.lock",
+        "unix/home/.config/mise/mise.*.lock",
         "unix/home/.config/mise/locks/**",
       )
     check =
@@ -206,8 +210,6 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
         "docker/ubuntu/Dockerfile",
         "tasks/vm/up",
         "tasks/env/doctor",
-        "AGENTS.md",
-        "unix/home/.agents/skills/mise-bootstrap-ops/SKILL.md",
       )
     check = "python3 -I -B tasks/py/doctor_checks.py mise-version-parity"
   }
@@ -274,6 +276,11 @@ hooks {
       }
       ["uv-lock-check"] = fastSteps["uv-lock-check"]
       ["py-deps"] = fastSteps["py-deps"]
+      ["ruff"] = fastSteps["ruff"]
+      ["ty"] = fastSteps["ty"]
+      ["agnix"] = fastSteps["agnix"]
+      ["mise-lock-integrity"] = fastSteps["mise-lock-integrity"]
+      ["config-hygiene"] = fastSteps["config-hygiene"]
       ["codegen-check"] = fastSteps["codegen-check"]
       ["schema-first-ast"] = fastSteps["schema-first-ast"]
       ["schema-contract-check"] = fastSteps["schema-contract-check"]

@@ -341,6 +341,9 @@ class LearnResponse(BaseModel):
     heal: HealReport | None = None
     rendered_path: StrictStr | None = None
     rendered_bytes: Annotated[StrictInt | None, Field(ge=0)] = None
+    proposals: Annotated[list[LearnProposal], Field(validate_default=True)] = []
+    migrated_ids: list[StrictStr] = []
+    applied_ids: list[StrictStr] = []
     timestamp: Annotated[
         StrictStr,
         Field(

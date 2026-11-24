@@ -861,9 +861,9 @@ def test_post_task_learn_single_trigger_and_worktree_rm(monkeypatch) -> None:
                 "cwd": str(ws),
             }
         )
-        assert res1 == {}, res1
+        assert res1.get("decision") == "continue", res1
 
-        # 2. Cross-turn worktree:rm --force clears when shared reviews.jsonl has valid review
+        # 2. Cross-turn & same-turn worktree:rm --force clears when shared reviews.jsonl has valid review
         reviews = Path(root / "xdg-state" / "agy-learn" / "reviews.jsonl")
         reviews.parent.mkdir(parents=True, exist_ok=True)
         reviews.write_text(
@@ -886,6 +886,18 @@ def test_post_task_learn_single_trigger_and_worktree_rm(monkeypatch) -> None:
             + "\n",
             encoding="utf-8",
         )
+        art_cleared = root / "art_cleared"
+        art_cleared.mkdir()
+        res1_cleared = hook_mod._run_hook(
+            {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(tr),
+                "artifactDirectoryPath": str(art_cleared),
+                "cwd": str(ws),
+            }
+        )
+        assert res1_cleared == {}, res1_cleared
         tr2 = root / "t2.jsonl"
         art2 = root / "art2"
         art2.mkdir()
@@ -1409,3 +1421,87 @@ def test_vm_up_normalizes_usr_local_bin_ownership_for_packslip() -> None:
         "sudo chmod 0755 /usr/local /usr/local/bin",
     ):
         assert vm_up.index(snippet) < install_idx
+
+
+def test_doctor_checks_registry_aliases_and_container_lock_and_daemon_health(
+    monkeypatch,
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        mise_dir = root / "unix" / "home" / ".config" / "mise"
+        mise_dir.mkdir(parents=True)
+        (mise_dir / "locks" / "extra").mkdir(parents=True)
+        (mise_dir / "config.toml").write_text(
+            '[tools]\noxfmt = "0.80.0"\nbat = { version = "0.26.1" }\n'
+            '[settings]\nlockfile_platforms = ["macos-arm64"]\n',
+            encoding="utf-8",
+        )
+        # Missing oxfmt (canonical npm short name) should set npm_lock_unresolved and skip false unreferenced dir errors
+        (mise_dir / "mise.lock").write_text(
+            '[[tools.bat]]\nversion = "0.26.1"\nplatforms = { macos-arm64 = { checksum = "sha256:00" } }\n',
+            encoding="utf-8",
+        )
+        (mise_dir / "mise.lock").chmod(0o644)
+        (mise_dir / "config.container.toml").write_text(
+            '[tools]\ntailscale = "1.104.7"\n', encoding="utf-8"
+        )
+        (mise_dir / "mise.container.lock").write_text(
+            '[[tools.tailscale]]\nversion = "1.104.7"\n', encoding="utf-8"
+        )
+        (mise_dir / "mise.container.lock").chmod(0o644)
+
+        monkeypatch.setattr(
+            doc_mod,
+            "_load_mise_registry_map",
+            lambda: {
+                "npm:oxfmt": [("oxfmt", ["npm:oxfmt"]), ("oxfmt-alias", ["npm:oxfmt"])],
+                "aqua:sharkdp/bat": [("bat", ["aqua:sharkdp/bat"])],
+            },
+        )
+        errs = doc_mod.check_mise_lock_integrity(root)
+        assert any("mise.lock missing entry for [tools].'oxfmt'" in e for e in errs)
+        assert not any("Unreferenced npm lock directory" in e for e in errs)
+        assert not any("mise.container.lock" in e for e in errs)
+
+        # Bracketed option short-name in config.hygiene strips [...] before ":" check
+        (mise_dir / "config.toml").write_text(
+            '[tools]\n"bat[exe=a:b]" = "0.26.1"\n', encoding="utf-8"
+        )
+        prog_dir = root / "unix" / "home" / ".config" / "herdr-app"
+        prog_dir.mkdir(parents=True)
+        (prog_dir / "programs.json").write_text(
+            json.dumps(
+                {
+                    "programs": {
+                        "antigravity": {"run": ["agy-hc"]},
+                        "codex": {"run": ["codex-hc"]},
+                        "opencode": {"run": ["opencode-hc"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        hygiene_errs = doc_mod.check_config_hygiene(root)
+        assert hygiene_errs == []
+
+    # codex-daemon-health ignores unrelated daemons holding PATH=...codex.system... and catches actual codex app-server
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
+    deleted_pem = Path("/tmp/definitely-missing-fnox-proxy-ca-test-999.pem")
+
+    def fake_check_output(cmd, **_kwargs):
+        if "-o" in cmd and "pid=,args=" in cmd:
+            return (
+                " 111 /Users/u/.cache/opencode-pty daemon --runtime /tmp/pty\n"
+                " 222 /Users/u/.local/bin/codex app-server --listen stdio://\n"
+            )
+        return (
+            f" 222 /Users/u/.local/bin/codex app-server SSL_CERT_FILE={deleted_pem}\n"
+        )
+
+    monkeypatch.setattr(doc_mod.subprocess, "check_output", fake_check_output)
+    d_errs, _ = doc_mod.check_codex_daemon_health()
+    assert len(d_errs) == 1
+    assert "PID 222" in d_errs[0]
+    assert "PID 111" not in d_errs[0]

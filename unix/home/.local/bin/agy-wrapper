@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Subcommand-aware Antigravity CLI (`agy`) launcher.
+# - Bypasses `fnox proxy run` and strips ephemeral proxy/CA env for management/info commands
+#   (`remote-control`, `update`, `changelog`, `install`, `models`, `help`, `--version`, `--help`)
+#   so LaunchAgent management and metadata checks never inherit short-lived `fnox-proxy-ca-*.pem`.
+# - Forwards interactive / agent invocations through `fnox proxy run` matching [wrappers.agy].
+set -euo pipefail
+
+strip_ephemeral_proxy_env() {
+	unset \
+		HTTP_PROXY HTTPS_PROXY ALL_PROXY \
+		http_proxy https_proxy all_proxy \
+		SSL_CERT_FILE NODE_EXTRA_CA_CERTS REQUESTS_CA_BUNDLE \
+		CURL_CA_BUNDLE GIT_SSL_CAINFO CARGO_HTTP_CAINFO \
+		DENO_CERT RUST_LOG
+}
+
+resolve_real_agy() {
+	local self_path self_real candidate cand_real dir IFS
+	self_path="$0"
+	self_real="$(cd "$(dirname "${self_path}")" 2>/dev/null && pwd -P)/$(basename "${self_path}")"
+	candidate="${HOME}/.local/bin/agy"
+	if [[ -x ${candidate} ]]; then
+		cand_real="$(cd "$(dirname "${candidate}")" 2>/dev/null && pwd -P)/$(basename "${candidate}")"
+		if [[ ${cand_real} != "${self_real}" ]]; then
+			printf '%s\n' "${candidate}"
+			return 0
+		fi
+	fi
+
+	IFS=':'
+	for dir in ${PATH:-}; do
+		[[ -n ${dir} ]] || continue
+		case "${dir}" in
+		*/command-wrappers/bin) continue ;;
+		esac
+		candidate="${dir}/agy"
+		[[ -x ${candidate} ]] || continue
+		cand_real="$(cd "$(dirname "${candidate}")" 2>/dev/null && pwd -P)/$(basename "${candidate}")"
+		case "$(basename "${cand_real}")" in
+		agy-wrapper | agy-hc) continue ;;
+		esac
+		if [[ ${cand_real} != "${self_real}" ]]; then
+			printf '%s\n' "${candidate}"
+			return 0
+		fi
+	done
+
+	echo "agy-wrapper: unable to locate real agy binary" >&2
+	return 127
+}
+
+resolve_fnox_bin() {
+	local candidate
+	if candidate="$(command -v fnox 2>/dev/null)" && [[ -x ${candidate} ]]; then
+		printf '%s\n' "${candidate}"
+		return 0
+	fi
+	for candidate in \
+		"${HOME}/.local/share/mise/shims/fnox" \
+		"/opt/mise/shims/fnox" \
+		"/usr/local/bin/fnox"; do
+		if [[ -x ${candidate} ]]; then
+			printf '%s\n' "${candidate}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+subcommand=""
+has_meta_flag=0
+expect_val=0
+end_opts=0
+
+for arg in "$@"; do
+	if [[ ${expect_val} -eq 1 ]]; then
+		expect_val=0
+		continue
+	fi
+	if [[ ${end_opts} -eq 1 ]]; then
+		[[ -z ${subcommand} ]] && subcommand="${arg}"
+		continue
+	fi
+	case "${arg}" in
+	--)
+		end_opts=1
+		;;
+	-h | --help | -V | --version)
+		has_meta_flag=1
+		;;
+	--add-dir | --agent | -r | --conversation | --resume | --effort | --input-format | --json-schema | --log-file | --mode | --model | --output-format | -p | --print | --print-timeout | --project | --prompt | -i | --prompt-interactive | --remote-agent | --settings | --sandbox)
+		expect_val=1
+		;;
+	-*)
+		;;
+	*)
+		if [[ -z ${subcommand} ]]; then
+			subcommand="${arg}"
+		fi
+		;;
+	esac
+done
+
+real_agy="$(resolve_real_agy)"
+
+is_bypass=0
+if [[ ${has_meta_flag} -eq 1 ]]; then
+	is_bypass=1
+else
+	case "${subcommand}" in
+	remote-control | update | changelog | install | models | help)
+		is_bypass=1
+		;;
+	esac
+fi
+
+strip_ephemeral_proxy_env
+
+if [[ ${is_bypass} -eq 1 ]]; then
+	exec "${real_agy}" "$@"
+fi
+
+fnox_cfg="${FNOX_CONFIG:-${HOME}/.config/fnox/config.toml}"
+if fnox_bin="$(resolve_fnox_bin)" && [[ -r ${fnox_cfg} ]]; then
+	export RUST_LOG="fnox::commands::proxy=error"
+	exec "${fnox_bin}" --non-interactive --config "${fnox_cfg}" proxy run -- \
+		env -u RUST_LOG "${real_agy}" "$@"
+fi
+
+exec "${real_agy}" "$@"

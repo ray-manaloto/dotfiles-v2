@@ -41,6 +41,11 @@ DOCS_BYPASS_SUFFIXES = frozenset({".md", ".mdx", ".markdown", ".rst", ".adoc", "
 WORKTREE_RM_RE = re.compile(
     r"\bmise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+worktree:rm\b([^\n;&|]*)"
 )
+GIT_WORKTREE_RM_RE = re.compile(
+    r"\bgit\s+(?:(?:-C\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+)\s+)*worktree\s+remove\b([^\n;&|]*)"
+)
+SHELL_WRAPPERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh"})
+MAX_SHELL_UNWRAP_DEPTH = 4
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 BLOCKQUOTE_RE = re.compile(r"^ ? ? ?>")
 MALFORMED_PHASE_RE = re.compile(r"^ ? ? ?### Phase([0-9:]|-[0-9])")
@@ -493,24 +498,97 @@ def _resolve_active_plan(repo_root: Path) -> Path | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _extract_worktree_rm_slug(command: str) -> str | None:
-    match = WORKTREE_RM_RE.search(command)
-    if not match:
-        return None
-    tail = match.group(1).strip()
-    if not tail:
-        return None
+def _expand_shell_wrapped_commands(command: str, *, _depth: int = 0) -> list[str]:
+    """Return *command* plus any inner scripts unwrapped from `sh/bash/zsh -c/-lc/-lic`."""
+    out = [command]
+    if _depth >= MAX_SHELL_UNWRAP_DEPTH:
+        return out
     try:
-        tokens = shlex.split(tail)
+        tokens = shlex.split(command, posix=True)
     except ValueError:
-        tokens = tail.split()
-    for token in tokens:
-        if token.startswith("-"):
-            continue
-        if _valid_slug(token):
-            return token
-        return None
-    return None
+        return out
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if Path(tok).name in SHELL_WRAPPERS:
+            j = i + 1
+            while j < len(tokens):
+                opt = tokens[j]
+                if opt == "--":
+                    break
+                if opt in {"-o", "+o"} and j + 1 < len(tokens):
+                    j += 2
+                    continue
+                if opt.startswith("-") and not opt.startswith("--") and "c" in opt[1:]:
+                    if j + 1 < len(tokens):
+                        out.extend(
+                            _expand_shell_wrapped_commands(
+                                tokens[j + 1], _depth=_depth + 1
+                            )
+                        )
+                    break
+                if not opt.startswith("-"):
+                    break
+                j += 1
+        i += 1
+    return out
+
+
+def _extract_worktree_targets(
+    command: str, base_dir: Path | None
+) -> list[tuple[str, list[Path]]]:
+    """Extract all `(label_slug, extra_wt_dirs)` from `worktree:rm` and `git worktree remove` calls."""
+    targets: list[tuple[str, list[Path]]] = []
+    seen: set[tuple[str, str]] = set()
+    for expanded in _expand_shell_wrapped_commands(command):
+        for match in WORKTREE_RM_RE.finditer(expanded):
+            tail = match.group(1).strip()
+            if not tail:
+                continue
+            try:
+                tokens = shlex.split(tail)
+            except ValueError:
+                tokens = tail.split()
+            for token in tokens:
+                if token.startswith("-"):
+                    continue
+                if _valid_slug(token):
+                    key = (token, "")
+                    if key not in seen:
+                        seen.add(key)
+                        targets.append((token, []))
+                break
+
+        for match in GIT_WORKTREE_RM_RE.finditer(expanded):
+            tail = match.group(1).strip()
+            if not tail:
+                continue
+            try:
+                tokens = shlex.split(tail)
+            except ValueError:
+                tokens = tail.split()
+            for token in tokens:
+                if token.startswith("-"):
+                    continue
+                cand_path = Path(os.path.expanduser(token))
+                resolved_dirs: list[Path] = []
+                if cand_path.is_absolute():
+                    resolved_dirs.append(cand_path)
+                elif base_dir is not None:
+                    resolved_dirs.append((base_dir / cand_path).resolve(strict=False))
+                slug = cand_path.name
+                if slug:
+                    key = (slug, str(resolved_dirs[0]) if resolved_dirs else "")
+                    if key not in seen:
+                        seen.add(key)
+                        targets.append((slug, resolved_dirs))
+                break
+    return targets
+
+
+def _extract_worktree_rm_slug(command: str) -> str | None:
+    targets = _extract_worktree_targets(command, None)
+    return targets[0][0] if targets else None
 
 
 def _git_common_parent(repo_root: Path) -> Path | None:
@@ -555,6 +633,10 @@ def _plans_for_worktree_dir(wt_dir: Path, slug: str) -> list[Path]:
         for candidate in sorted(planning_dir.glob(f"*-{slug}/task_plan.md")):
             if candidate.parent.name != ".archive":
                 found.append(candidate)
+        if (wt_dir / ".git").is_file():
+            for candidate in sorted(planning_dir.glob("*/task_plan.md")):
+                if candidate.parent.name != ".archive":
+                    found.append(candidate)
     return [p for p in found if p.is_file()]
 
 
@@ -597,6 +679,9 @@ def _candidate_worktree_plans(base_dir: Path | None, slug: str) -> list[Path]:
 
 
 def _shared_reviews_path() -> Path:
+    override = os.environ.get("AGY_LEARN_STATE_DIR", "").strip()
+    if override:
+        return Path(os.path.expanduser(override)) / "reviews.jsonl"
     xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
     base = (
         Path(os.path.expanduser(xdg_state))
@@ -665,7 +750,11 @@ def _is_bare_plan_key(raw_key: str) -> bool:
     stripped = raw_key.strip()
     if not stripped:
         return False
-    return "/" not in stripped and "\\" not in stripped and not stripped.endswith("task_plan.md")
+    return (
+        "/" not in stripped
+        and "\\" not in stripped
+        and not stripped.endswith("task_plan.md")
+    )
 
 
 def _normalize_review_plan_key(raw_key: str, repo_root_raw: Any = None) -> str:
@@ -737,7 +826,9 @@ def _read_shared_review_details(
     return latest
 
 
-def _read_shared_reviews(reviews_path: Path | None = None) -> dict[str, tuple[str, str, int]]:
+def _read_shared_reviews(
+    reviews_path: Path | None = None,
+) -> dict[str, tuple[str, str, int]]:
     details = _read_shared_review_details(reviews_path)
     return {
         key: (str(rec["plan_sha256"]), str(rec["outcome"]), int(rec["_ns"]))
@@ -768,14 +859,10 @@ def _lookup_shared_review_for_plan(
 def _check_worktree_rm(
     payload: dict[str, Any], base_dir: Path | None, command: str
 ) -> dict[str, Any]:
-    slug = _extract_worktree_rm_slug(command)
-    if not slug:
-        return _allow()
-    plans = _candidate_worktree_plans(base_dir, slug)
-    if not plans:
+    targets = _extract_worktree_targets(command, base_dir)
+    if not targets:
         return _allow()
 
-    learned_plans: dict[str, Any] = {}
     pending_keys: set[str] = set()
     owing_plans: dict[str, Any] = {}
     artifact_raw = payload.get("artifactDirectoryPath")
@@ -788,9 +875,6 @@ def _check_worktree_rm(
             except (OSError, ValueError, json.JSONDecodeError):
                 raw_state = {}
             if isinstance(raw_state, dict):
-                lp = raw_state.get("learned_plans")
-                if isinstance(lp, dict):
-                    learned_plans = lp
                 op = raw_state.get("owing_learn")
                 if isinstance(op, dict):
                     owing_plans = op
@@ -809,58 +893,68 @@ def _check_worktree_rm(
     shared_details = _read_shared_review_details()
     valid_outcomes = ("proposed", "no_new_proposals", "applied")
 
-    for plan_path in plans:
-        try:
-            plan_key = str(plan_path.resolve())
-            plan_bytes = plan_path.read_bytes()
-            digest = hashlib.sha256(plan_bytes).hexdigest()
-        except OSError:
+    for slug, extra_wt_dirs in targets:
+        plans = _candidate_worktree_plans(base_dir, slug)
+        seen_keys = {str(p.resolve(strict=False)) for p in plans}
+        for wt_dir in extra_wt_dirs:
+            for extra_plan in _plans_for_worktree_dir(wt_dir, slug):
+                ekey = str(extra_plan.resolve(strict=False))
+                if ekey not in seen_keys:
+                    seen_keys.add(ekey)
+                    plans.append(extra_plan)
+        if not plans:
             continue
-        logged_error_rows = _count_plan_errors(
-            plan_bytes.decode("utf-8", errors="replace")
-        )
-        shared_rec = _lookup_shared_review_for_plan(
-            shared_details, plan_path, plan_key, digest
-        )
-        if (
-            shared_rec is not None
-            and shared_rec.get("plan_sha256") == digest
-            and shared_rec.get("outcome") == "owing_learn"
-        ):
-            return _deny(
-                f"PWF/learn guard: completed plan '{slug}' is marked `owing_learn` "
-                "(retry-exhausted `/learn` review). Run `/learn` and record a review "
-                "before removing its worktree."
+
+        for plan_path in plans:
+            try:
+                plan_key = str(plan_path.resolve())
+                plan_bytes = plan_path.read_bytes()
+                digest = hashlib.sha256(plan_bytes).hexdigest()
+            except OSError:
+                continue
+            logged_error_rows = _count_plan_errors(
+                plan_bytes.decode("utf-8", errors="replace")
             )
-        shared_outcome_ok = (
-            shared_rec is not None
-            and shared_rec.get("plan_sha256") == digest
-            and shared_rec.get("outcome") in valid_outcomes
-        )
-        if shared_outcome_ok and shared_rec is not None:
-            recorded_error_count = int(shared_rec.get("_error_count", 0))
-            if logged_error_rows > recorded_error_count:
+            shared_rec = _lookup_shared_review_for_plan(
+                shared_details, plan_path, plan_key, digest
+            )
+            if (
+                shared_rec is not None
+                and shared_rec.get("plan_sha256") == digest
+                and shared_rec.get("outcome") == "owing_learn"
+            ):
                 return _deny(
-                    f"PWF/learn guard: completed plan '{slug}' logged {logged_error_rows} error row(s) "
-                    f"under `## Errors Encountered`, exceeding recorded review error_count={recorded_error_count}. "
-                    "Re-run `/learn` and record a matching review (`--error-count`, substantive `--notes`, "
-                    "and `--plan-error-ref` or proposals) before removing its worktree."
+                    f"PWF/learn guard: completed plan '{slug}' is marked `owing_learn` "
+                    "(retry-exhausted `/learn` review). Run `/learn` and record a review "
+                    "before removing its worktree."
                 )
-        shared_ok = shared_outcome_ok
-        if not shared_ok and (
-            owing_plans.get(plan_key) == digest or plan_key in pending_keys
-        ):
-            return _deny(
-                f"PWF/learn guard: run `/learn` on completed plan '{slug}' "
-                "(and update `learning_proposal.md` or record a review) before removing its worktree."
+            shared_outcome_ok = (
+                shared_rec is not None
+                and shared_rec.get("plan_sha256") == digest
+                and shared_rec.get("outcome") in valid_outcomes
             )
-        local_ok = learned_plans.get(plan_key) == digest
-        if not (local_ok or shared_ok):
-            return _deny(
-                f"PWF/learn guard: run `/learn` on completed plan '{slug}' "
-                "(and update `learning_proposal.md` if `Errors Encountered` is "
-                "non-empty) before removing its worktree."
-            )
+            if shared_outcome_ok and shared_rec is not None:
+                recorded_error_count = int(shared_rec.get("_error_count", 0))
+                if logged_error_rows > recorded_error_count:
+                    return _deny(
+                        f"PWF/learn guard: completed plan '{slug}' logged {logged_error_rows} error row(s) "
+                        f"under `## Errors Encountered`, exceeding recorded review error_count={recorded_error_count}. "
+                        "Re-run `/learn` and record a matching review (`--error-count`, substantive `--notes`, "
+                        "and `--plan-error-ref` or proposals) before removing its worktree."
+                    )
+            if not shared_outcome_ok and (
+                owing_plans.get(plan_key) == digest or plan_key in pending_keys
+            ):
+                return _deny(
+                    f"PWF/learn guard: run `/learn` on completed plan '{slug}' "
+                    "(and record a review in reviews.jsonl) before removing its worktree."
+                )
+            # Validate strictly against shared reviews.jsonl; local learned_plans cache alone never bypasses.
+            if not shared_outcome_ok:
+                return _deny(
+                    f"PWF/learn guard: run `/learn` on completed plan '{slug}' "
+                    "and record a validated review in reviews.jsonl before removing its worktree."
+                )
     return _allow()
 
 
@@ -994,11 +1088,18 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     checks: list[str] = []
     saved_env = {
         k: os.environ.pop(k, None)
-        for k in ("PLAN_ID", "PWF_PLAN_ROOT", "AGY_DISABLE_PWF_GUARD", "XDG_STATE_HOME")
+        for k in (
+            "PLAN_ID",
+            "PWF_PLAN_ROOT",
+            "AGY_DISABLE_PWF_GUARD",
+            "XDG_STATE_HOME",
+            "AGY_LEARN_STATE_DIR",
+        )
     }
     try:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            os.environ["XDG_STATE_HOME"] = str(root / "xdg-state")
 
             # 1. Non-PWF repo allowed
             non_pwf = root / "plain-repo"
@@ -1207,17 +1308,62 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             assert res.get("decision") == "deny", (
                 f"unlearned worktree:rm should deny: {res}"
             )
+            demo_digest = hashlib.sha256(wt_plan.read_bytes()).hexdigest()
             (art_dir / ".post-task-learn-state.json").write_text(
                 json.dumps(
                     {
                         "last_line": 1,
-                        "learned_plans": {
-                            str(wt_plan.resolve()): hashlib.sha256(
-                                wt_plan.read_bytes()
-                            ).hexdigest()
-                        },
+                        "learned_plans": {str(wt_plan.resolve()): demo_digest},
                     }
                 ),
+                encoding="utf-8",
+            )
+            # Local .post-task-learn-state.json alone without shared reviews.jsonl must still deny.
+            assert (
+                _run_hook(
+                    {
+                        "cwd": str(pwf_repo),
+                        "artifactDirectoryPath": str(art_dir),
+                        "toolCall": {
+                            "name": "run_command",
+                            "args": {
+                                "CommandLine": "mise run worktree:rm demo --force"
+                            },
+                        },
+                    }
+                ).get("decision")
+                == "deny"
+            )
+            # Multi-target chained command or shell wrapper with an unreviewed worktree also denies.
+            assert (
+                _run_hook(
+                    {
+                        "cwd": str(pwf_repo),
+                        "artifactDirectoryPath": str(art_dir),
+                        "toolCall": {
+                            "name": "run_command",
+                            "args": {
+                                "CommandLine": "zsh -lc 'git worktree remove ../pwf-repo-demo'"
+                            },
+                        },
+                    }
+                ).get("decision")
+                == "deny"
+            )
+            reviews_path = _shared_reviews_path()
+            reviews_path.parent.mkdir(parents=True, exist_ok=True)
+            reviews_path.write_text(
+                json.dumps(
+                    {
+                        "review_id": "rev-selfcheck-demo",
+                        "plan_key": str(wt_plan.resolve()),
+                        "plan_sha256": demo_digest,
+                        "outcome": "no_new_proposals",
+                        "error_count": 0,
+                        "timestamp_unix_ns": 1000,
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
             assert (
@@ -1301,19 +1447,32 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             assert res12a.get("decision") == "deny", (
                 f"unlearned dated worktree:rm should deny: {res12a}"
             )
+            dated_digest = hashlib.sha256(wt_dated_plan.read_bytes()).hexdigest()
             (art_dir / ".post-task-learn-state.json").write_text(
                 json.dumps(
                     {
                         "last_line": 1,
-                        "learned_plans": {
-                            str(wt_dated_plan.resolve()): hashlib.sha256(
-                                wt_dated_plan.read_bytes()
-                            ).hexdigest()
-                        },
+                        "learned_plans": {str(wt_dated_plan.resolve()): dated_digest},
                     }
                 ),
                 encoding="utf-8",
             )
+            dated_rev = _shared_reviews_path()
+            dated_rev.parent.mkdir(parents=True, exist_ok=True)
+            with dated_rev.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "review_id": "rev-selfcheck-dated",
+                            "plan_key": str(wt_dated_plan.resolve()),
+                            "plan_sha256": dated_digest,
+                            "outcome": "no_new_proposals",
+                            "error_count": 0,
+                            "timestamp_unix_ns": 1000,
+                        }
+                    )
+                    + "\n"
+                )
             assert (
                 _run_hook(
                     {
@@ -1349,17 +1508,44 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             assert res12b.get("decision") == "deny", (
                 f"unlearned -wt worktree:rm should deny: {res12b}"
             )
+            kb_sha = hashlib.sha256(wt_kb_plan.read_bytes()).hexdigest()
             (art_dir / ".post-task-learn-state.json").write_text(
                 json.dumps(
                     {
                         "last_line": 1,
-                        "learned_plans": {
-                            str(wt_kb_plan.resolve()): hashlib.sha256(
-                                wt_kb_plan.read_bytes()
-                            ).hexdigest()
-                        },
+                        "learned_plans": {str(wt_kb_plan.resolve()): kb_sha},
                     }
                 ),
+                encoding="utf-8",
+            )
+            # Local state alone must NOT bypass reviews.jsonl!
+            res12_local_only = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "artifactDirectoryPath": str(art_dir),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm kb-dated"},
+                    },
+                }
+            )
+            assert res12_local_only.get("decision") == "deny", (
+                f"local learned_plans without reviews.jsonl must deny: {res12_local_only}"
+            )
+            xdg_state12 = root / "xdg-state-12"
+            os.environ["XDG_STATE_HOME"] = str(xdg_state12)
+            rev12 = xdg_state12 / "agy-learn" / "reviews.jsonl"
+            rev12.parent.mkdir(parents=True, exist_ok=True)
+            rev12.write_text(
+                json.dumps(
+                    {
+                        "plan_key": str(wt_kb_plan.resolve()),
+                        "plan_sha256": kb_sha,
+                        "outcome": "no_new_proposals",
+                        "timestamp_unix_ns": 100,
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
             assert (
@@ -1374,6 +1560,32 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     }
                 )
                 == _allow()
+            )
+            wt_unrev = root / "pwf-repo-wt-unrev"
+            wt_unrev_plan_dir = wt_unrev / ".planning" / "unrev"
+            wt_unrev_plan_dir.mkdir(parents=True)
+            (wt_unrev / ".git").write_text(
+                f"gitdir: {pwf_repo / '.git' / 'worktrees' / 'unrev'}\n",
+                encoding="utf-8",
+            )
+            (wt_unrev_plan_dir / "task_plan.md").write_text(
+                "# Unrev\n\n### Phase 1: Do\n**Status:** complete\n",
+                encoding="utf-8",
+            )
+            # Multi-worktree:rm & git worktree remove & shell-wrapped check must evaluate EVERY target
+            res_multi = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {
+                            "CommandLine": "zsh -lic 'mise run worktree:rm kb-dated && git worktree remove ../pwf-repo-wt-unrev'"
+                        },
+                    },
+                }
+            )
+            assert res_multi.get("decision") == "deny", (
+                f"chained shell-wrapped git worktree remove must deny: {res_multi}"
             )
             checks.append("worktree_rm_date_prefixed_and_wt_layout_gate")
 
@@ -1598,7 +1810,9 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                         "owing_learn": {str(wt_cross_plan.resolve()): cross_sha},
                         "pending_proposal": {
                             "plan_key": "/nonexistent/other.md",
-                            "pending_plans": [{"plan_key": str(wt_cross_plan.resolve())}],
+                            "pending_plans": [
+                                {"plan_key": str(wt_cross_plan.resolve())}
+                            ],
                         },
                     }
                 ),
@@ -1614,7 +1828,9 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     },
                 }
             )
-            assert res16d == _allow(), f"case 16d shared_ok should override stale local state: {res16d}"
+            assert res16d == _allow(), (
+                f"case 16d shared_ok should override stale local state: {res16d}"
+            )
             checks.append("worktree_rm_cross_session_shared_reviews")
 
             # 17. ROADMAP.md and docs/** on main are not blocked by stale all-complete ENV PLAN_ID
@@ -1707,7 +1923,9 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                     },
                 }
             )
-            assert res18b == _allow(), f"case 18b matching error_count should allow: {res18b}"
+            assert res18b == _allow(), (
+                f"case 18b matching error_count should allow: {res18b}"
+            )
             checks.append("worktree_rm_errors_encountered_cross_check")
 
         if hooks_json_path is not None:

@@ -6,6 +6,7 @@ import getpass
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -1500,6 +1501,36 @@ def _write_bytes_atomic(path: Path, payload: bytes) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
+def _format_json_with_oxfmt(
+    raw_bytes: bytes,
+    *,
+    virtual_path: Path,
+    repo_root: Path,
+) -> bytes:
+    """Format JSON bytes via `oxfmt --stdin-filepath` when available so repo checks stay clean."""
+    oxfmt_bin = shutil.which("oxfmt")
+    if not oxfmt_bin:
+        shim = Path.home() / ".local" / "share" / "mise" / "shims" / "oxfmt"
+        if shim.is_file() and os.access(shim, os.X_OK):
+            oxfmt_bin = str(shim)
+    if not oxfmt_bin:
+        return raw_bytes
+    try:
+        proc = subprocess.run(
+            [oxfmt_bin, "--stdin-filepath", str(virtual_path)],
+            input=raw_bytes,
+            capture_output=True,
+            cwd=str(repo_root) if repo_root.is_dir() else None,
+            timeout=15,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            return proc.stdout if proc.stdout.endswith(b"\n") else proc.stdout + b"\n"
+    except OSError, subprocess.SubprocessError:
+        return raw_bytes
+    return raw_bytes
+
+
 def _append_jsonl_locked(path: Path, line: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(f"{path.suffix}.lock")
@@ -1634,12 +1665,18 @@ def collect_inventory(
         pending_writes: list[tuple[Path, bytes, str]] = []
         leak_detected = False
         for inv in inventories:
-            pretty_bytes = (
+            dest = target_out_dir / f"latest.{inv.target.value}.json"
+            raw_json_bytes = (
                 orjson.dumps(
                     inv.model_dump(mode="json"),
                     option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS,
                 )
                 + b"\n"
+            )
+            pretty_bytes = _format_json_with_oxfmt(
+                raw_json_bytes,
+                virtual_path=dest,
+                repo_root=resolved_repo,
             )
             leaks = validate_no_privacy_leaks(pretty_bytes.decode("utf-8"), ctx)
             if leaks:
@@ -1652,7 +1689,6 @@ def collect_inventory(
                 rc = 1
                 leak_detected = True
                 break
-            dest = target_out_dir / f"latest.{inv.target.value}.json"
             try:
                 rel_dest = dest.relative_to(resolved_repo).as_posix()
             except ValueError:

@@ -66,13 +66,38 @@ sync_mac() {
 	bootstrap_phase2 env -u DOCKER_HOST docker --context desktop-linux
 }
 
+_tmp_sync_dir=""
+
+run_all_sync() {
+	local log_pc log_mac pid_pc pid_mac rc_pc=0 rc_mac=0
+	_tmp_sync_dir="$(mktemp -d)"
+	trap 'rm -rf "${_tmp_sync_dir:-}"' EXIT
+	log_pc="${_tmp_sync_dir}/pc.log"
+	log_mac="${_tmp_sync_dir}/mac.log"
+
+	sync_pc >"${log_pc}" 2>&1 &
+	pid_pc=$!
+	sync_mac >"${log_mac}" 2>&1 &
+	pid_mac=$!
+
+	wait "${pid_pc}" || rc_pc=$?
+	wait "${pid_mac}" || rc_mac=$?
+
+	printf '=== container:sync [pc] (rc=%d) ===\n' "${rc_pc}"
+	cat "${log_pc}"
+	printf '=== container:sync [mac] (rc=%d) ===\n' "${rc_mac}"
+	cat "${log_mac}"
+
+	if [[ ${rc_pc} -ne 0 || ${rc_mac} -ne 0 ]]; then
+		echo "container:sync: failed (pc=${rc_pc}, mac=${rc_mac})" >&2
+		return 1
+	fi
+}
+
 case "${target}" in
 pc) sync_pc ;;
 mac) sync_mac ;;
-all)
-	sync_pc
-	sync_mac
-	;;
+all) run_all_sync ;;
 *)
 	echo "unknown target '${target}' (expected pc, mac, or all)" >&2
 	exit 1

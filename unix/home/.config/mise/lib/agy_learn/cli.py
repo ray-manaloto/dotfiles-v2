@@ -14,7 +14,10 @@ from pydantic import BaseModel, ValidationError
 
 from agy_learn.heal import render_active_proposal_md, run_heal_check
 from agy_learn.ledger import (
+    apply_proposals,
+    list_proposals,
     mark_proposal,
+    migrate_reviews,
     propose_item,
     record_review,
     resolve_state_dir,
@@ -52,6 +55,7 @@ def _configure_agy_learn_logging(
     configure_logging(
         jsonl_path=jsonl_path,
         level=level,
+        file_level=logging.INFO if jsonl_path is not None else None,
         logger_name="agy_learn",
     )
 
@@ -270,6 +274,101 @@ def _build_app() -> cyclopts.App:
             state_dir=state_dir,
             repo_root=repo,
             max_bytes=max_bytes,
+        )
+        _emit_json(resp)
+        return resp.rc
+
+    @app.command(name="migrate")
+    def migrate_cmd(
+        *,
+        apply: Annotated[
+            bool, cyclopts.Parameter(name="--apply", negative="--dry-run")
+        ] = False,
+        state_dir: Annotated[
+            Path | None, cyclopts.Parameter(name="--state-dir")
+        ] = None,
+        json_out: Annotated[
+            bool, cyclopts.Parameter(name="--json", negative="")
+        ] = True,
+    ) -> int:
+        """Compact superseded bare-slug rows in `reviews.jsonl`."""
+        _configure_agy_learn_logging(state_dir, json_mode=json_out, read_only=not apply)
+        resp = migrate_reviews(apply=apply, state_dir=state_dir)
+        _emit_json(resp)
+        return resp.rc
+
+    @app.command(name="list")
+    def list_cmd(
+        *,
+        status: Annotated[
+            list[ProposalStatus] | None, cyclopts.Parameter(name="--status")
+        ] = None,
+        tier: Annotated[
+            list[EnforcementTier] | None, cyclopts.Parameter(name="--tier")
+        ] = None,
+        actionable_only: Annotated[
+            bool, cyclopts.Parameter(name="--actionable-only", negative="")
+        ] = False,
+        state_dir: Annotated[
+            Path | None, cyclopts.Parameter(name="--state-dir")
+        ] = None,
+        json_out: Annotated[
+            bool, cyclopts.Parameter(name="--json", negative="")
+        ] = True,
+    ) -> int:
+        """List proposals from `proposals.jsonl` cleanly as JSON."""
+        _configure_agy_learn_logging(state_dir, json_mode=json_out, read_only=True)
+        resp = list_proposals(
+            statuses=status,
+            tiers=tier,
+            actionable_only=actionable_only,
+            state_dir=state_dir,
+        )
+        _emit_json(resp)
+        return resp.rc
+
+    @app.command(name="apply")
+    def apply_cmd(
+        *,
+        proposal_id: Annotated[
+            list[str] | None, cyclopts.Parameter(name="--proposal-id")
+        ] = None,
+        all_approved: Annotated[
+            bool, cyclopts.Parameter(name="--all-approved", negative="")
+        ] = False,
+        detect_shipped: Annotated[
+            bool, cyclopts.Parameter(name="--detect-shipped", negative="")
+        ] = False,
+        status: Annotated[
+            ProposalStatus, cyclopts.Parameter(name="--status")
+        ] = ProposalStatus.APPLIED,
+        shipped_commit: Annotated[
+            str | None, cyclopts.Parameter(name="--shipped-commit")
+        ] = None,
+        notes: Annotated[str | None, cyclopts.Parameter(name="--notes")] = None,
+        repo: Annotated[Path | None, cyclopts.Parameter(name="--repo")] = None,
+        proposal_md: Annotated[
+            Path | None, cyclopts.Parameter(name="--proposal-md")
+        ] = None,
+        state_dir: Annotated[
+            Path | None, cyclopts.Parameter(name="--state-dir")
+        ] = None,
+        json_out: Annotated[
+            bool, cyclopts.Parameter(name="--json", negative="")
+        ] = True,
+    ) -> int:
+        """Mark approved or detected-shipped proposals as `applied` or `shipped` and refresh proposal Markdown."""
+        _configure_agy_learn_logging(state_dir, json_mode=json_out)
+        resp = apply_proposals(
+            proposal_ids=proposal_id,
+            all_approved=all_approved,
+            detect_shipped=detect_shipped,
+            status=status,
+            shipped_commit=shipped_commit,
+            notes=notes,
+            repo_root=repo,
+            proposal_md=proposal_md,
+            state_dir=state_dir,
         )
         _emit_json(resp)
         return resp.rc

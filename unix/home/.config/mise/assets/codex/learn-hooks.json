@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh -c 'command -v python3 >/dev/null 2>&1 && PY=python3 || PY=/usr/bin/python3; exec \"$PY\" -I -B \"$HOME/.config/mise/assets/hooks/portable-learn-hook.py\" --harness codex --event session-start'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh -c 'command -v python3 >/dev/null 2>&1 && PY=python3 || PY=/usr/bin/python3; exec \"$PY\" -I -B \"$HOME/.config/mise/assets/hooks/portable-learn-hook.py\" --harness codex --event stop'",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

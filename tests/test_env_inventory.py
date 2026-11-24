@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -853,6 +854,19 @@ def test_env_inventory_cli_empty_target_json_logging_and_help_smoke(
     assert "--write-repo" in proc.stdout
     assert "--out-dir" in proc.stdout
     assert isinstance(InventoryReturnCode.RET_OK.value, str)
+
+    # _format_json_with_oxfmt produces oxfmt --check compliant JSON when oxfmt is installed
+    written_host = out_dir / "latest.host.json"
+    assert written_host.is_file()
+    if shutil.which("oxfmt"):
+        ox_proc = subprocess.run(
+            ["oxfmt", "--check", str(written_host)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert ox_proc.returncode == 0, ox_proc.stdout + ox_proc.stderr
 
 
 def test_parallel_container_up_and_env_doctor_and_buildx_flags() -> None:

@@ -515,3 +515,124 @@ def test_verification_timestamp_parsing_and_mixed_format_interop(
         }
     )
     assert guard._has_valid_verification_receipt(common_dir, "c1", "t1") is False
+
+
+def test_shell_wrapped_gates_past_tense_stop_and_nonzero_verification_rejection(
+    tmp_path: Path,
+) -> None:
+    guard = _load_guard()
+    root = tmp_path
+    origin = root / "origin.git"
+    repo = root / "repo"
+    guard._git_exec(root, "init", "--bare", str(origin))
+    guard._git_exec(root, "clone", str(origin), str(repo))
+    guard._git_exec(repo, "config", "user.email", "test@example.com")
+    guard._git_exec(repo, "config", "user.name", "Test User")
+    (repo / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    guard._git_exec(repo, "add", "app.py")
+    guard._git_exec(repo, "commit", "-m", "init")
+    guard._git_exec(repo, "branch", "-M", "main")
+    guard._git_exec(repo, "push", "-u", "origin", "main")
+    guard._git_exec(repo, "checkout", "-b", "feat/x")
+    (repo / "app.py").write_text("print('v2')\n", encoding="utf-8")
+    guard._git_exec(repo, "add", "app.py")
+    guard._git_exec(repo, "commit", "-m", "feat")
+    guard._git_exec(repo, "checkout", "main")
+
+    # Shell-wrapped non-ff git merge into main & unpushed git push & gh pr merge (even after pushing @{u}) are gated cleanly
+    res_merge = guard._run_hook(
+        {
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "CommandLine": "zsh -lic 'git merge --no-ff feat/x'",
+                    "Cwd": str(repo),
+                },
+            }
+        },
+        event="pre_tool_use",
+    )
+    assert res_merge.get("decision") == "deny", f"git merge must deny: {res_merge}"
+
+    (repo / "app.py").write_text("print('v3')\n", encoding="utf-8")
+    guard._git_exec(repo, "add", "app.py")
+    guard._git_exec(repo, "commit", "-m", "unpushed main commit")
+    res_push = guard._run_hook(
+        {
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "CommandLine": "sh -c 'git push origin main'",
+                    "Cwd": str(repo),
+                },
+            }
+        },
+        event="pre_tool_use",
+    )
+    assert res_push.get("decision") == "deny", f"git push must deny: {res_push}"
+
+    guard._git_exec(repo, "checkout", "feat/x")
+    guard._git_exec(repo, "push", "-u", "origin", "feat/x")
+    res_pr = guard._run_hook(
+        {
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "CommandLine": 'bash -c "gh pr merge 42 --merge"',
+                    "Cwd": str(repo),
+                },
+            }
+        },
+        event="pre_tool_use",
+    )
+    assert res_pr.get("decision") == "deny", f"gh pr merge must deny: {res_pr}"
+
+    # Stop gate: past-tense "fixed the error" + failing verification exit 1 must NOT bypass Stop
+    transcript = root / "t_hard.jsonl"
+    art_dir = root / "art_hard"
+    art_dir.mkdir()
+    _write_transcript(
+        transcript,
+        [
+            {"type": "USER_INPUT", "content": "Fix app.py"},
+            {
+                "type": "PLANNER_RESPONSE",
+                "step_index": 1,
+                "tool_calls": [{"name": "edit_file", "args": {"Path": "app.py"}}],
+                "content": "Updated app.py.",
+            },
+            {
+                "type": "PLANNER_RESPONSE",
+                "step_index": 2,
+                "tool_calls": [
+                    {
+                        "name": "run_command",
+                        "args": {"CommandLine": "pytest -q", "Cwd": str(repo)},
+                    }
+                ],
+                "content": "Running pytest.",
+            },
+            {
+                "type": "GENERIC",
+                "step_index": 3,
+                "content": "Command exited with code 1\n1 failed",
+            },
+            {
+                "type": "PLANNER_RESPONSE",
+                "step_index": 4,
+                "tool_calls": [],
+                "content": "Done! Fixed the error with 0 errors remaining.",
+            },
+        ],
+    )
+    stop_res = guard._run_hook(
+        {
+            "terminationReason": "NO_TOOL_CALL",
+            "fullyIdle": True,
+            "transcriptPath": str(transcript),
+            "artifactDirectoryPath": str(art_dir),
+            "cwd": str(repo),
+        },
+        event="stop",
+    )
+    assert stop_res.get("decision") == "continue"

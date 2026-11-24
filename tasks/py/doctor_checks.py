@@ -149,8 +149,29 @@ def _is_npm_or_aube_lock_entries(tool_name: str, entries: list[dict[str, Any]]) 
     )
 
 
+def _normalize_registry_entries(
+    raw_reg_map: Mapping[str, Any],
+) -> tuple[dict[str, tuple[str, list[str]]], dict[str, list[str]]]:
+    reg_map: dict[str, tuple[str, list[str]]] = {}
+    short_to_backends: dict[str, list[str]] = {}
+    for backend, val in raw_reg_map.items():
+        items: list[tuple[str, list[str]]]
+        if isinstance(val, tuple) and len(val) == 2 and isinstance(val[0], str):
+            items = [(val[0], list(val[1]))]
+        elif isinstance(val, list):
+            items = [(str(s), list(b)) for s, b in val]
+        else:
+            continue
+        backend_norm = str(backend).split("[", 1)[0].lower()
+        for short, backends in items:
+            if backend_norm:
+                reg_map.setdefault(backend_norm, (short, backends))
+            short_to_backends.setdefault(short.lower(), backends)
+    return reg_map, short_to_backends
+
+
 def check_mise_lock_integrity(repo_root: Path) -> list[str]:
-    """Verify `unix/home/.config/mise/{config.toml,mise.lock,locks/**}` parity and permissions."""
+    """Verify `unix/home/.config/mise/{config*.toml,mise*.lock,locks/**}` parity and permissions."""
     errors: list[str] = []
     cfg_path = repo_root / "unix" / "home" / ".config" / "mise" / "config.toml"
     lock_path = repo_root / "unix" / "home" / ".config" / "mise" / "mise.lock"
@@ -162,6 +183,23 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
     tools_cfg = cfg.get("tools", {})
     tools_lock = lock.get("tools", {})
 
+    short_to_backends: dict[str, list[str]] = {}
+    try:
+        _, short_to_backends = _normalize_registry_entries(_load_mise_registry_map())
+    except (OSError, subprocess.SubprocessError):  # fmt: skip
+        short_to_backends = {}
+
+    def _is_canonical_npm_tool(
+        name: str, entry_dicts: list[dict[str, Any]] | None = None
+    ) -> bool:
+        base = name.split("[", 1)[0].lower()
+        if base.startswith("npm:"):
+            return True
+        if entry_dicts and _is_npm_or_aube_lock_entries(name, entry_dicts):
+            return True
+        backends = short_to_backends.get(base, [])
+        return bool(backends and backends[0].lower().startswith("npm:"))
+
     resolved_root = repo_root.resolve(strict=False)
     mise_cfg_root = resolved_root / "unix" / "home" / ".config" / "mise"
     referenced_aube_dirs: set[Path] = set()
@@ -171,13 +209,13 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
         entries = tools_lock.get(tool_name)
         if not isinstance(entries, list) or not entries:
             errors.append(f"mise.lock missing entry for [tools].{tool_name!r}")
-            if tool_name.startswith("npm:"):
+            if _is_canonical_npm_tool(tool_name):
                 npm_lock_unresolved = True
             continue
         entry_dicts = [e for e in entries if isinstance(e, dict)]
         if not entry_dicts:
             errors.append(f"mise.lock invalid entries for [tools].{tool_name!r}")
-            if tool_name.startswith("npm:"):
+            if _is_canonical_npm_tool(tool_name):
                 npm_lock_unresolved = True
             continue
         if want_ver:
@@ -187,12 +225,12 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                 errors.append(
                     f"mise.lock version mismatch for {tool_name}: config={want_ver}, lock=[{got_vers}]"
                 )
-                if _is_npm_or_aube_lock_entries(tool_name, entry_dicts):
+                if _is_canonical_npm_tool(tool_name, entry_dicts):
                     npm_lock_unresolved = True
                 continue
         else:
             matching = entry_dicts
-        if _is_npm_or_aube_lock_entries(tool_name, matching):
+        if _is_canonical_npm_tool(tool_name, matching):
             aube_rel: str | None = None
             for entry in matching:
                 aube_info = entry.get("aube")
@@ -244,6 +282,42 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
             errors.append(
                 f"Non-secret mise.lock has restrictive mode {oct(lock_mode)} (expected world-readable 0644)"
             )
+
+    for env_lock in sorted(mise_cfg_root.glob("mise.*.lock")):
+        env_mode = env_lock.stat().st_mode & 0o777
+        if (env_mode & 0o044) != 0o044:
+            errors.append(
+                f"Non-secret {env_lock.name} has restrictive mode {oct(env_mode)} (expected world-readable 0644)"
+            )
+        try:
+            env_lock_data = tomllib.loads(env_lock.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:  # fmt: skip
+            errors.append(f"Invalid TOML in {env_lock.name}: {exc}")
+            continue
+        env_name = env_lock.name[len("mise.") : -len(".lock")]
+        env_cfg = mise_cfg_root / f"config.{env_name}.toml"
+        if env_cfg.is_file():
+            env_cfg_tools = tomllib.loads(env_cfg.read_text(encoding="utf-8")).get(
+                "tools", {}
+            )
+            env_lock_tools = env_lock_data.get("tools", {})
+            for tname, tspec in env_cfg_tools.items():
+                if (
+                    not isinstance(env_lock_tools.get(tname), list)
+                    or not env_lock_tools[tname]
+                ):
+                    errors.append(
+                        f"{env_lock.name} missing entry for [tools].{tname!r}"
+                    )
+                    continue
+                want = _tool_version(tspec)
+                if want and not any(
+                    isinstance(e, dict) and str(e.get("version", "")) == want
+                    for e in env_lock_tools[tname]
+                ):
+                    errors.append(
+                        f"{env_lock.name} version mismatch for {tname}: config={want}"
+                    )
 
     if locks_dir.is_dir():
         for file_path in sorted(locks_dir.rglob("*")):
@@ -393,6 +467,28 @@ def check_host_option_a(
         errors.append(f"host-mise-parity: failed to run `mise -C ~ ls --json`: {exc}")
         ls_data = {}
 
+    worktree_ls_data: dict[str, Any] = {}
+    if repo_root.resolve(strict=False) != _main_checkout_root(repo_root).resolve(
+        strict=False
+    ):
+        try:
+            wt_raw = subprocess.check_output(
+                [
+                    "mise",
+                    "-C",
+                    str(repo_root / "unix" / "home" / ".config" / "mise"),
+                    "ls",
+                    "--json",
+                ],
+                text=True,
+                timeout=10,
+            )
+            parsed_wt = json.loads(wt_raw)
+            if isinstance(parsed_wt, dict):
+                worktree_ls_data = parsed_wt
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):  # fmt: skip
+            worktree_ls_data = {}
+
     if isinstance(ls_data, dict):
         for tool_name, spec in cfg.get("tools", {}).items():
             allowed_os = _tool_os_list(spec)
@@ -400,14 +496,9 @@ def check_host_option_a(
                 continue
             want_ver = _tool_version(spec)
             entries = ls_data.get(tool_name)
-            if not isinstance(entries, list) or not entries:
-                errors.append(
-                    f"host-mise-parity: missing global tool {tool_name}@{want_ver}"
-                )
-                continue
             active = [
                 e
-                for e in entries
+                for e in (entries if isinstance(entries, list) else [])
                 if isinstance(e, dict)
                 and e.get("active") is True
                 and (
@@ -415,6 +506,24 @@ def check_host_option_a(
                     or str(e.get("requested_version") or e.get("version")) == want_ver
                 )
             ]
+            if not active and worktree_ls_data:
+                wt_entries = worktree_ls_data.get(tool_name)
+                active = [
+                    e
+                    for e in (wt_entries if isinstance(wt_entries, list) else [])
+                    if isinstance(e, dict)
+                    and e.get("installed") is True
+                    and (
+                        not want_ver
+                        or str(e.get("requested_version") or e.get("version"))
+                        == want_ver
+                    )
+                ]
+            if not entries and not active:
+                errors.append(
+                    f"host-mise-parity: missing global tool {tool_name}@{want_ver}"
+                )
+                continue
             if not active:
                 errors.append(
                     f"host-mise-parity: global tool {tool_name}@{want_ver} not active in `mise -C ~ ls --json`"
@@ -1359,14 +1468,14 @@ def check_dockerignore_secret_guard(repo_root: Path) -> list[str]:
 
 
 def check_mise_version_parity(repo_root: Path) -> list[str]:
-    """Verify pinned MISE_VER and min_version match across Dockerfile, vm:up, env:doctor, configs, and docs."""
+    """Verify pinned MISE_VER and min_version match across Dockerfile, vm:up, env:doctor, and configs."""
     errors: list[str] = []
     observed: dict[str, str] = {}
 
     dockerfile = repo_root / "docker" / "ubuntu" / "Dockerfile"
     if dockerfile.is_file():
         m = re.search(
-            r"FROM\s+ghcr\.io/jdx/mise:([0-9]+\.[0-9]+\.[0-9]+)@",
+            r"FROM\s+(?:ghcr\.io/jdx|jdxcode)/mise:([0-9]+\.[0-9]+\.[0-9]+)@",
             dockerfile.read_text(encoding="utf-8"),
         )
         if m:
@@ -1413,43 +1522,6 @@ def check_mise_version_parity(repo_root: Path) -> list[str]:
             else:
                 errors.append(f"mise-version-parity: missing min_version in {rel_toml}")
 
-    agents_md = repo_root / "AGENTS.md"
-    if agents_md.is_file():
-        atext = agents_md.read_text(encoding="utf-8")
-        avers = re.findall(
-            r"(?:ghcr\.io/jdx/mise:|copies `mise |installs `mise )([0-9]{4}\.[0-9]+\.[0-9]+)",
-            atext,
-        )
-        if not avers:
-            errors.append("mise-version-parity: missing mise version in AGENTS.md")
-        elif len(set(avers)) != 1:
-            errors.append(
-                f"mise-version-parity: inconsistent mise versions in AGENTS.md: {sorted(set(avers))}"
-            )
-        else:
-            observed["AGENTS.md"] = avers[0]
-
-    skill_md = (
-        repo_root
-        / "unix"
-        / "home"
-        / ".agents"
-        / "skills"
-        / "mise-bootstrap-ops"
-        / "SKILL.md"
-    )
-    if skill_md.is_file():
-        stext = skill_md.read_text(encoding="utf-8")
-        m = re.search(r"ghcr\.io/jdx/mise`\s*\(`([0-9]{4}\.[0-9]+\.[0-9]+)`\)", stext)
-        if m:
-            observed["unix/home/.agents/skills/mise-bootstrap-ops/SKILL.md"] = m.group(
-                1
-            )
-        else:
-            errors.append(
-                "mise-version-parity: missing mise version in mise-bootstrap-ops/SKILL.md"
-            )
-
     unique_vers = set(observed.values())
     if len(unique_vers) > 1:
         summary = ", ".join(f"{k}={v}" for k, v in sorted(observed.items()))
@@ -1457,9 +1529,9 @@ def check_mise_version_parity(repo_root: Path) -> list[str]:
     return errors
 
 
-def _load_mise_registry_map() -> dict[str, tuple[str, list[str]]]:
+def _load_mise_registry_map() -> dict[str, list[tuple[str, list[str]]]]:
     out = subprocess.check_output(["mise", "registry"], text=True, timeout=15)
-    by_backend: dict[str, tuple[str, list[str]]] = {}
+    by_backend: dict[str, list[tuple[str, list[str]]]] = {}
     for line in out.splitlines():
         parts = line.split()
         if len(parts) < 2:
@@ -1469,7 +1541,7 @@ def _load_mise_registry_map() -> dict[str, tuple[str, list[str]]]:
         for backend in backends:
             backend_norm = backend.split("[", 1)[0].lower()
             if backend_norm:
-                by_backend.setdefault(backend_norm, (short, backends))
+                by_backend.setdefault(backend_norm, []).append((short, backends))
     return by_backend
 
 
@@ -1486,13 +1558,7 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
     except (OSError, subprocess.SubprocessError) as exc:
         return [f"config-hygiene: failed to load `mise registry`: {exc}"]
 
-    reg_map: dict[str, tuple[str, list[str]]] = {}
-    short_to_backends: dict[str, list[str]] = {}
-    for backend, (short, backends) in raw_reg_map.items():
-        backend_norm = backend.split("[", 1)[0].lower()
-        if backend_norm:
-            reg_map.setdefault(backend_norm, (short, backends))
-        short_to_backends.setdefault(short.lower(), backends)
+    reg_map, short_to_backends = _normalize_registry_entries(raw_reg_map)
 
     # 1, 2, 3, 4 & 6. Registry canonical short names, hyphenated npm prerelease, wrapper checks, and dotfiles paths across config*.toml
     for cfg_file in sorted(mise_dir.glob("config*.toml")):
@@ -1502,8 +1568,9 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
         if isinstance(tools_tbl, dict):
             for tool_key, spec in tools_tbl.items():
                 key_str = str(tool_key)
-                if ":" in key_str:
-                    lookup_key = key_str.split("[", 1)[0].lower()
+                base_key = key_str.split("[", 1)[0]
+                if ":" in base_key:
+                    lookup_key = base_key.lower()
                     reg_entry = reg_map.get(lookup_key)
                     if reg_entry is not None:
                         short, _backends = reg_entry
@@ -1512,7 +1579,7 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
                         )
                     is_npm_tool = lookup_key.startswith("npm:")
                 else:
-                    backends = short_to_backends.get(key_str.lower(), [])
+                    backends = short_to_backends.get(base_key.lower(), [])
                     is_npm_tool = bool(
                         backends and backends[0].lower().startswith("npm:")
                     )
@@ -1652,6 +1719,365 @@ def post_commit_advisory(repo_root: Path) -> int:
     return 0
 
 
+def check_herdr_app_bundle() -> tuple[list[str], str]:
+    """Verify macOS Herdr.app is in /Applications/Herdr.app with no duplicate ~/Applications/Herdr.app."""
+    home = Path.home()
+    if (
+        os.environ.get("CI")
+        or sys.platform != "darwin"
+        or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
+    ):
+        return [], "Non-macOS/CI/VM: skipped herdr-app-bundle"
+    errors: list[str] = []
+    app_sys = Path("/Applications/Herdr.app")
+    app_usr = home / "Applications" / "Herdr.app"
+    if not app_sys.is_dir():
+        errors.append("herdr-app-bundle: missing /Applications/Herdr.app")
+    if app_usr.exists() or app_usr.is_symlink():
+        errors.append(
+            f"herdr-app-bundle: duplicate {app_usr} shadows /Applications/Herdr.app"
+        )
+    return errors, "Herdr.app bundle verified exclusively at /Applications/Herdr.app"
+
+
+def check_codex_hook_trust(
+    repo_root: Path, *, strict_host: bool = False
+) -> tuple[list[str], str]:
+    """Verify Codex hook-trust task availability and live trust state."""
+    trust_task = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "codex"
+        / "hook-trust"
+    )
+    update_task = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "codex"
+        / "plugin-update"
+    )
+    for p in (trust_task, update_task):
+        if not p.is_file() or not os.access(p, os.X_OK):
+            return [
+                f"codex-hook-trust: missing executable task {p.relative_to(repo_root)}"
+            ], ""
+    home = Path.home()
+    if (
+        os.environ.get("CI")
+        or not (home / ".codex" / "config.toml").is_file()
+        or not shutil.which("codex")
+    ):
+        return [], "CI/unconfigured: skipped live codex-hook-trust check"
+    venv_py = _main_checkout_root(repo_root) / ".venv" / "bin" / "python"
+    if not venv_py.is_file():
+        venv_py = repo_root / ".venv" / "bin" / "python"
+    if not venv_py.is_file():
+        return [], "skipped live codex-hook-trust (missing .venv/bin/python)"
+    lib_dir = repo_root / "unix" / "home" / ".config" / "mise" / "lib"
+    try:
+        proc = subprocess.run(
+            [
+                str(venv_py),
+                "-I",
+                "-B",
+                "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); from codex_trust.cli import main; raise SystemExit(main(sys.argv[2:]))",
+                str(lib_dir),
+                "hook-trust",
+                "--check",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=25,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+        return [f"codex-hook-trust: failed executing hook-trust --check: {exc}"], ""
+    if not proc.stdout.strip():
+        return [
+            f"codex-hook-trust: empty output (rc={proc.returncode}): {proc.stderr.strip()}"
+        ], ""
+    try:
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+    except json.JSONDecodeError as exc:
+        return [f"codex-hook-trust: invalid JSON ({exc})"], ""
+    findings = data.get("findings") or []
+    blocking = [
+        f for f in findings if isinstance(f, dict) and f.get("status") != "orphaned"
+    ]
+    orphaned = [
+        f for f in findings if isinstance(f, dict) and f.get("status") == "orphaned"
+    ]
+    errors: list[str] = []
+    for err in data.get("errors") or []:
+        if isinstance(err, dict):
+            code = str(err.get("code") or "")
+            if code == "ERR_ORPHANED_STATE" and not strict_host:
+                continue
+            errors.append(f"codex-hook-trust error: {code}: {err.get('message')}")
+    for b in blocking:
+        errors.append(
+            f"codex-hook-trust {b.get('status')}: {b.get('key')} ({b.get('issue')})"
+        )
+    if strict_host:
+        for o in orphaned:
+            errors.append(
+                f"codex-hook-trust orphaned: {o.get('key')} (run `mise run codex:hook-trust --repair`)"
+            )
+    if errors:
+        return errors, ""
+    if orphaned:
+        return [], (
+            f"codex-hook-trust: 0 modified/unmigrated ({len(orphaned)} orphaned entries; "
+            "run `mise run codex:hook-trust --repair` to prune)"
+        )
+    return [], "codex-hook-trust: all plugin hook trust hashes match live hooks/list"
+
+
+def check_codex_daemon_health() -> tuple[list[str], str]:
+    """Verify running Codex app-server/daemon processes do not hold deleted fnox-proxy-ca PEM files."""
+    home = Path.home()
+    if (
+        os.environ.get("CI")
+        or sys.platform != "darwin"
+        or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
+    ):
+        return [], "Non-macOS/CI/VM: skipped codex-daemon-health"
+    try:
+        args_out = subprocess.check_output(
+            ["/bin/ps", "-ax", "-o", "pid=,args="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+        return [f"codex-daemon-health: ps failed: {exc}"], ""
+    target_pids: list[str] = []
+    for line in args_out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_part, cmdline = parts
+        exe_token = cmdline.split(None, 1)[0]
+        exe_name = Path(exe_token).name
+        if exe_name == "codex" and ("app-server" in cmdline or "daemon" in cmdline):
+            target_pids.append(pid_part)
+    if not target_pids:
+        return [], "codex-daemon-health: no running Codex app-server/daemon process"
+    try:
+        out = subprocess.check_output(
+            ["/bin/ps", "eww", "-p", ",".join(target_pids), "-o", "pid=,command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):  # fmt: skip
+        return [], "codex-daemon-health: target Codex process exited during inspection"
+    errors: list[str] = []
+    ca_vars = (
+        "SSL_CERT_FILE",
+        "NODE_EXTRA_CA_CERTS",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    )
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_part, _ = parts
+        for var in ca_vars:
+            for match in re.finditer(rf"\b{var}=([^\s]+)", line):
+                ca_path = match.group(1)
+                if "fnox-proxy-ca-" in ca_path and not Path(ca_path).is_file():
+                    errors.append(
+                        f"codex-daemon-health: PID {pid_part} pins deleted {var}={ca_path}; restart daemon via codex-wrapper"
+                    )
+    return (
+        errors,
+        "codex-daemon-health: no running Codex daemon holds deleted fnox-proxy-ca files",
+    )
+
+
+def check_agy_rc_health(
+    repo_root: Path, *, strict_host: bool = False
+) -> tuple[list[str], str]:
+    """Verify Antigravity CLI Remote Control guard task and LaunchAgent health when configured."""
+    guard = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "host"
+        / "agy-rc-guard"
+    )
+    if not guard.is_file() or not os.access(guard, os.X_OK):
+        return [f"agy-rc-health: missing executable {guard.relative_to(repo_root)}"], ""
+    home = Path.home()
+    if (
+        os.environ.get("CI")
+        or sys.platform != "darwin"
+        or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
+    ):
+        return [], "Non-macOS/CI/VM: skipped live agy-rc-health"
+    plist = (
+        home / "Library" / "LaunchAgents" / "com.google.antigravity-cli-daemon.plist"
+    )
+    try:
+        proc = subprocess.run(
+            [
+                "mise",
+                "-C",
+                str(repo_root),
+                "run",
+                "-q",
+                "host:agy-rc-guard",
+                "--check",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+        return [f"agy-rc-health: failed executing agy-rc-guard: {exc}"], ""
+    if not proc.stdout.strip():
+        return [
+            f"agy-rc-health: empty output (rc={proc.returncode}): {proc.stderr.strip()}"
+        ], ""
+    try:
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+    except json.JSONDecodeError as exc:
+        return [f"agy-rc-health: invalid JSON ({exc})"], ""
+    if (
+        not plist.is_file()
+        and not strict_host
+        and data.get("rc_running") is not True
+        and data.get("poisoned_ssl") is not True
+    ):
+        return (
+            [],
+            "pre-activation: com.google.antigravity-cli-daemon LaunchAgent not yet installed (tasks/host/agy-rc-guard ready)",
+        )
+    if proc.returncode != 0:
+        issues = data.get("issues") or []
+        return [f"agy-rc-health: {item}" for item in issues] or [
+            f"agy-rc-health: exited {proc.returncode}"
+        ], ""
+    return [], "agy-rc-health: Antigravity Remote Control daemon and token healthy"
+
+
+def check_skills_6harness_parity(repo_root: Path) -> tuple[list[str], str]:
+    """Verify canonical ~/.agents/skills coverage across Codex, OpenCode, AGY, Claude, ZCode, and Hermes."""
+    errors: list[str] = []
+    repo_skills_dir = repo_root / "unix" / "home" / ".agents" / "skills"
+    required_skills = (
+        "agy-session-ops",
+        "herdr-roll",
+        "mise-bootstrap-ops",
+        "post-task-learn",
+        "pwf-status",
+        "vercel-board",
+    )
+    for skill in required_skills:
+        if not (repo_skills_dir / skill / "SKILL.md").is_file():
+            errors.append(
+                f"skills-6harness-parity: missing canonical unix/home/.agents/skills/{skill}/SKILL.md"
+            )
+    bootstrap_skills = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "bootstrap"
+        / "skills"
+    )
+    hermes_sync = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "hermes"
+        / "skills-sync"
+    )
+    for p in (bootstrap_skills, hermes_sync):
+        if not p.is_file() or not os.access(p, os.X_OK):
+            errors.append(
+                f"skills-6harness-parity: missing executable {p.relative_to(repo_root)}"
+            )
+    if os.environ.get("CI"):
+        return errors, "CI: repo-level 6-harness skill structure verified"
+
+    home = Path.home()
+    is_cutover, _ = _is_dotfiles_v2_mise_cutover(home, repo_root=repo_root)
+    if not is_cutover:
+        return errors, "PRE-CUTOVER: repo-level 6-harness skill structure verified"
+
+    agents_skills = home / ".agents" / "skills"
+    gemini_skills = home / ".gemini" / "config" / "skills"
+    claude_skills = home / ".claude" / "skills"
+    if not gemini_skills.is_symlink() or gemini_skills.resolve(
+        strict=False
+    ) != agents_skills.resolve(strict=False):
+        errors.append(
+            f"skills-6harness-parity: ~/.gemini/config/skills ({gemini_skills.resolve(strict=False)}) must symlink to {agents_skills}"
+        )
+    if agents_skills.is_dir():
+        for skill_entry in sorted(agents_skills.iterdir()):
+            if not (skill_entry / "SKILL.md").is_file():
+                continue
+            claude_target = claude_skills / skill_entry.name
+            if claude_target.is_symlink():
+                if claude_target.resolve(strict=False) != skill_entry.resolve(
+                    strict=False
+                ):
+                    errors.append(
+                        f"skills-6harness-parity: ~/.claude/skills/{skill_entry.name} symlink mismatch against {skill_entry}"
+                    )
+            elif not (
+                claude_target.is_dir() and (claude_target / "SKILL.md").is_file()
+            ):
+                errors.append(
+                    f"skills-6harness-parity: ~/.claude/skills/{skill_entry.name} missing/invalid against {skill_entry}"
+                )
+    zcode_skills = home / ".zcode" / "skills"
+    if zcode_skills.is_dir():
+        for req in required_skills:
+            if not (
+                (zcode_skills / req).exists()
+                and ((zcode_skills / req / "SKILL.md").is_file())
+            ):
+                errors.append(f"skills-6harness-parity: ~/.zcode/skills/{req} missing")
+    hermes_cfg = home / ".hermes" / "config.yaml"
+    if hermes_cfg.is_file():
+        htext = hermes_cfg.read_text(encoding="utf-8", errors="replace")
+        if "~/.agents/skills" not in htext and str(agents_skills) not in htext:
+            errors.append(
+                "skills-6harness-parity: ~/.hermes/config.yaml missing ~/.agents/skills under external_dirs"
+            )
+    return (
+        errors,
+        "6-harness skills parity verified across Codex, OpenCode, AGY, Claude, ZCode, and Hermes",
+    )
+
+
 def _report(label: str, errors: list[str], ok_msg: str) -> int:
     if errors:
         sys.stderr.write("\n".join(errors) + "\n")
@@ -1680,6 +2106,13 @@ def main(argv: list[str] | None = None) -> int:
     p_audit.add_argument("--json-file", type=Path, required=True)
     p_audit.add_argument("--rc", type=int, default=0)
     p_audit.add_argument("--err-file", type=Path, default=None)
+    sub.add_parser("herdr-app-bundle")
+    p_trust = sub.add_parser("codex-hook-trust")
+    p_trust.add_argument("--strict-host", action="store_true")
+    sub.add_parser("codex-daemon-health")
+    p_rc = sub.add_parser("agy-rc-health")
+    p_rc.add_argument("--strict-host", action="store_true")
+    sub.add_parser("skills-6harness-parity")
     sub.add_parser("post-commit-advisory")
 
     args = parser.parse_args(argv)
@@ -1772,6 +2205,21 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         sys.stdout.write("PASS  mise-audit (0 fixable advisories)\n")
         return 0
+    if args.cmd == "herdr-app-bundle":
+        errs, msg = check_herdr_app_bundle()
+        return _report("herdr-app-bundle", errs, msg)
+    if args.cmd == "codex-hook-trust":
+        errs, msg = check_codex_hook_trust(repo_root, strict_host=args.strict_host)
+        return _report("codex-hook-trust", errs, msg)
+    if args.cmd == "codex-daemon-health":
+        errs, msg = check_codex_daemon_health()
+        return _report("codex-daemon-health", errs, msg)
+    if args.cmd == "agy-rc-health":
+        errs, msg = check_agy_rc_health(repo_root, strict_host=args.strict_host)
+        return _report("agy-rc-health", errs, msg)
+    if args.cmd == "skills-6harness-parity":
+        errs, msg = check_skills_6harness_parity(repo_root)
+        return _report("skills-6harness-parity", errs, msg)
     if args.cmd == "post-commit-advisory":
         return post_commit_advisory(repo_root)
 

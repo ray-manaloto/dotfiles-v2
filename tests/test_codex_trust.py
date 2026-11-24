@@ -1,0 +1,389 @@
+"""Tests for schema-first `codex_trust` inspection, repair, hook-surface diffing, and additive plugin updates."""
+
+from __future__ import annotations
+
+import json
+import stat
+import tomllib
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from codex_trust import (
+    diff_hook_surface,
+    inspect_hook_trust,
+    plugin_content_hash,
+    repair_hook_trust,
+    update_plugin,
+)
+from codex_trust.rpc import parse_semver, semver_ge
+from dotfiles_py.generated import (
+    CodexHookStatus,
+    CodexTrustErrorCode,
+    CodexTrustReturnCode,
+)
+
+
+def _write_fake_plugin(
+    root: Path,
+    *,
+    version: str,
+    stop_cmd: str = "echo ok",
+    hook_note: str = "same",
+) -> Path:
+    (root / ".codex-plugin").mkdir(parents=True, exist_ok=True)
+    (root / "hooks").mkdir(parents=True, exist_ok=True)
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+    (root / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {"name": "planning-with-files", "version": version, "description": "PWF"}
+        ),
+        encoding="utf-8",
+    )
+    (root / "hooks" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": f"sh scripts/stop.sh {stop_cmd}",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "scripts" / "stop.sh").write_text(
+        f"#!/bin/sh\necho {hook_note}\n", encoding="utf-8"
+    )
+    (root / "README.md").write_text(f"Docs for {version}\n", encoding="utf-8")
+    return root
+
+
+class _FakeRpcClient:
+    def __init__(
+        self,
+        *,
+        version: str = "0.172.0",
+        hooks_rows: list[dict[str, Any]] | None = None,
+        hooks_rows_fn: Any = None,
+        config_path: Path | None = None,
+        fail_batch_write: bool = False,
+    ) -> None:
+        self.version = version
+        self._hooks_rows = hooks_rows or []
+        self._hooks_rows_fn = hooks_rows_fn
+        self.config_path = config_path
+        self.fail_batch_write = fail_batch_write
+        self.batch_calls: list[list[dict[str, Any]]] = []
+
+    def hooks_list(self, _cwd: Path) -> dict[str, Any]:
+        rows = self._hooks_rows_fn() if self._hooks_rows_fn else self._hooks_rows
+        return {"data": [{"hooks": rows}]}
+
+    def config_batch_write(
+        self,
+        edits: list[dict[str, Any]],
+        *,
+        file_path: Path | None = None,
+        reload_user_config: bool = True,
+    ) -> dict[str, Any]:
+        from codex_trust.rpc import CodexRpcError
+        from codex_trust.trust import _upsert_toml_trust_and_orphans
+
+        if self.fail_batch_write:
+            raise CodexRpcError("simulated batchWrite unavailable")
+        self.batch_calls.append(list(edits))
+        target = file_path or self.config_path
+        if target is not None:
+            upserts: dict[str, tuple[str, str | None]] = {}
+            mkt_update: tuple[str, str] | None = None
+            for edit in edits:
+                kp = str(edit.get("keyPath") or "")
+                val = str(edit.get("value") or "")
+                if kp.startswith("marketplaces.") and kp.endswith(".ref"):
+                    mkt = kp[len("marketplaces.") : -len(".ref")]
+                    mkt_update = (mkt, val)
+                elif kp.startswith("hooks.state."):
+                    rest = kp[len("hooks.state.") :]
+                    field = (
+                        ".trusted_content_hash"
+                        if rest.endswith(".trusted_content_hash")
+                        else ".trusted_hash"
+                    )
+                    qkey = rest[: -len(field)]
+                    key = json.loads(qkey) if qkey.startswith('"') else qkey
+                    prev_t, prev_c = upserts.get(key, ("", None))
+                    if field == ".trusted_hash":
+                        upserts[key] = (val, prev_c)
+                    else:
+                        upserts[key] = (prev_t, val)
+            _upsert_toml_trust_and_orphans(
+                target,
+                upserts=upserts,
+                prune_keys=set(),
+                marketplace_ref_update=mkt_update,
+            )
+        return {"ok": True, "filePath": str(target), "reload": reload_user_config}
+
+
+def test_semver_comparison_rejects_old_and_supports_prerelease() -> None:
+    assert parse_semver("0.171.0") == (0, 171, 0)
+    assert parse_semver("codex-cli 0.172.0-beta.2") == (0, 172, 0)
+    assert semver_ge("0.171.0") is True
+    assert semver_ge("0.172.0") is True
+    assert semver_ge("0.180.0") is True
+    assert semver_ge("0.170.9") is False
+
+
+def test_hook_surface_diff_ignores_plugin_version_and_catches_hook_change(
+    tmp_path: Path,
+) -> None:
+    old_root = _write_fake_plugin(tmp_path / "old", version="3.29.0")
+    new_same = _write_fake_plugin(tmp_path / "new_same", version="3.29.1")
+    new_diff = _write_fake_plugin(
+        tmp_path / "new_diff", version="3.30.0", hook_note="changed"
+    )
+
+    unchanged, changes, diff_text = diff_hook_surface(old_root, new_same)
+    assert unchanged is True
+    assert changes == []
+    assert diff_text == ""
+
+    changed, diff_files, diff_patch = diff_hook_surface(old_root, new_diff)
+    assert changed is False
+    assert any(f.path == "scripts/stop.sh" for f in diff_files)
+    assert "-echo same" in diff_patch
+    assert "+echo changed" in diff_patch
+
+
+def test_inspect_and_repair_hook_trust_fixes_modified_unmigrated_and_orphans(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / "codex"
+    cache_root = (
+        codex_home
+        / "plugins"
+        / "cache"
+        / "planning-with-files"
+        / "planning-with-files"
+        / "3.29.0"
+    )
+    _write_fake_plugin(cache_root, version="3.29.0")
+    cfg_path = codex_home / "config.toml"
+    key_active = "planning-with-files@planning-with-files:hooks/hooks.json:stop:0:0"
+    key_orphan = "last30days@last30days-skill:hooks/hooks.json:session_start:0:0"
+    cfg_path.write_text(
+        f'[hooks.state."{key_active}"]\n'
+        'trusted_hash = "sha256:stale"\n\n'
+        f'[hooks.state."{key_orphan}"]\n'
+        'trusted_hash = "sha256:dead"\n',
+        encoding="utf-8",
+    )
+    cfg_path.chmod(0o600)
+
+    bundle_hash = plugin_content_hash(cache_root)
+    client = _FakeRpcClient(
+        version="0.172.0",
+        config_path=cfg_path,
+        fail_batch_write=True,
+        hooks_rows=[
+            {
+                "source": "plugin",
+                "key": key_active,
+                "pluginId": "planning-with-files@planning-with-files",
+                "sourcePath": str(cache_root / "hooks" / "hooks.json"),
+                "eventName": "Stop",
+                "trustStatus": "modified",
+                "currentHash": "sha256:newhook123",
+            }
+        ],
+    )
+
+    resp_check = inspect_hook_trust(cwd=tmp_path, codex_home=codex_home, client=client)
+    assert resp_check.rc == 1
+    statuses = {f.key: f.status for f in resp_check.findings}
+    assert statuses[key_active] is CodexHookStatus.MODIFIED
+    assert statuses[key_orphan] is CodexHookStatus.ORPHANED
+
+    resp_repair = repair_hook_trust(cwd=tmp_path, codex_home=codex_home, client=client)
+    assert resp_repair.rc == 0
+    assert resp_repair.applied is True
+    assert key_active in resp_repair.repaired_keys
+    assert key_orphan in resp_repair.pruned_orphans
+    assert stat.S_IMODE(cfg_path.stat().st_mode) == 0o600
+
+    repaired_cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    state_tbl = repaired_cfg["hooks"]["state"]
+    assert key_orphan not in state_tbl
+    assert state_tbl[key_active]["trusted_hash"] == "sha256:newhook123"
+    assert state_tbl[key_active]["trusted_content_hash"] == bundle_hash
+
+    # Rejects < 0.171.0 Codex
+    old_client = _FakeRpcClient(version="0.170.5", config_path=cfg_path)
+    old_resp = inspect_hook_trust(
+        cwd=tmp_path, codex_home=codex_home, client=old_client
+    )
+    assert old_resp.rc == 1
+    assert old_resp.errors[0].code is CodexTrustErrorCode.ERR_UNSUPPORTED_CODEX_VERSION
+
+
+def test_update_plugin_additive_install_and_hook_diff_confirmation_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex"
+    plugin_cache = (
+        codex_home / "plugins" / "cache" / "planning-with-files" / "planning-with-files"
+    )
+    old_cache = _write_fake_plugin(plugin_cache / "3.29.0", version="3.29.0")
+    old_sha = "1" * 40
+    new_sha_same = "2" * 40
+    new_sha_diff = "3" * 40
+
+    cfg_path = codex_home / "config.toml"
+    cfg_path.write_text(
+        "[marketplaces.planning-with-files]\n"
+        'source_type = "git"\n'
+        'source = "https://github.com/OthmanAdi/planning-with-files.git"\n'
+        f'ref = "{old_sha}"\n\n'
+        '[plugins."planning-with-files@planning-with-files"]\n'
+        "enabled = true\n",
+        encoding="utf-8",
+    )
+    cfg_path.chmod(0o600)
+
+    monkeypatch.setattr(
+        "codex_trust.trust._resolve_pin_sha",
+        lambda _src, ref: (
+            ref
+            if len(ref) == 40
+            else (new_sha_same if ref == "v3.29.1" else new_sha_diff)
+        ),
+    )
+
+    def _stage(
+        _src: str, sha: str, staging_root: Path, _plugin: str
+    ) -> tuple[Path, str]:
+        dest = staging_root / "repo"
+        if sha == new_sha_same:
+            _write_fake_plugin(dest, version="3.29.1")
+            return dest, "3.29.1"
+        _write_fake_plugin(dest, version="3.30.0", hook_note="changed")
+        return dest, "3.30.0"
+
+    hook_key = "planning-with-files@planning-with-files:hooks/hooks.json:stop:0:0"
+
+    def _live_rows() -> list[dict[str, Any]]:
+        latest = plugin_cache / (
+            "3.30.0" if (plugin_cache / "3.30.0").is_dir() else "3.29.1"
+        )
+        return [
+            {
+                "source": "plugin",
+                "key": hook_key,
+                "pluginId": "planning-with-files@planning-with-files",
+                "sourcePath": str(latest / "hooks" / "hooks.json"),
+                "eventName": "Stop",
+                "trustStatus": "untrusted",
+                "currentHash": "sha256:curhook",
+            }
+        ]
+
+    synced_calls = 0
+
+    def _fake_sync() -> bool:
+        nonlocal synced_calls
+        synced_calls += 1
+        return True
+
+    # 1. Version-only update (3.29.0 -> 3.29.1): dry-run passes with zero diff; --apply installs additively + trusts + syncs PWF
+    dry_resp = update_plugin(
+        "planning-with-files",
+        ref="v3.29.1",
+        apply=False,
+        cwd=tmp_path,
+        codex_home=codex_home,
+        client_factory=lambda h: _FakeRpcClient(
+            config_path=h / "config.toml", hooks_rows_fn=_live_rows
+        ),
+        stage_checkout_fn=_stage,
+        sync_pwf_fn=_fake_sync,
+    )
+    assert dry_resp.rc == 0
+    assert dry_resp.hook_surface_unchanged is True
+    assert dry_resp.returns[0].code is CodexTrustReturnCode.RET_DRY_RUN
+    assert not (plugin_cache / "3.29.1").exists()
+
+    app_resp = update_plugin(
+        "planning-with-files",
+        ref="v3.29.1",
+        apply=True,
+        cwd=tmp_path,
+        codex_home=codex_home,
+        client_factory=lambda h: _FakeRpcClient(
+            config_path=h / "config.toml", hooks_rows_fn=_live_rows
+        ),
+        stage_checkout_fn=_stage,
+        sync_pwf_fn=_fake_sync,
+    )
+    assert app_resp.rc == 0
+    assert app_resp.applied is True
+    assert app_resp.pwf_synced is True
+    assert synced_calls == 1
+    assert old_cache.is_dir()  # Old version preserved additively for active sessions!
+    assert (plugin_cache / "3.29.1").is_dir()
+    updated_cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    assert updated_cfg["marketplaces"]["planning-with-files"]["ref"] == new_sha_same
+    assert updated_cfg["hooks"]["state"][hook_key][
+        "trusted_content_hash"
+    ] == plugin_content_hash(plugin_cache / "3.29.1")
+
+    # 2. Hook diff blocks --apply unless --trust-hook-diff is passed
+    blocked_resp = update_plugin(
+        "planning-with-files",
+        ref="v3.30.0",
+        apply=True,
+        trust_hook_diff=False,
+        cwd=tmp_path,
+        codex_home=codex_home,
+        client_factory=lambda h: _FakeRpcClient(
+            config_path=h / "config.toml", hooks_rows_fn=_live_rows
+        ),
+        stage_checkout_fn=_stage,
+        sync_pwf_fn=_fake_sync,
+    )
+    assert blocked_resp.rc == 1
+    assert blocked_resp.applied is False
+    assert blocked_resp.hook_surface_unchanged is False
+    assert blocked_resp.errors[0].code is CodexTrustErrorCode.ERR_HOOK_SURFACE_CHANGED
+    assert (
+        blocked_resp.returns[0].code is CodexTrustReturnCode.RET_CONFIRMATION_REQUIRED
+    )
+    assert "+echo changed" in (blocked_resp.hook_surface_diff or "")
+    assert not (plugin_cache / "3.30.0").exists()
+
+    confirmed_resp = update_plugin(
+        "planning-with-files",
+        ref="v3.30.0",
+        apply=True,
+        trust_hook_diff=True,
+        cwd=tmp_path,
+        codex_home=codex_home,
+        client_factory=lambda h: _FakeRpcClient(
+            config_path=h / "config.toml", hooks_rows_fn=_live_rows
+        ),
+        stage_checkout_fn=_stage,
+        sync_pwf_fn=_fake_sync,
+    )
+    assert confirmed_resp.rc == 0
+    assert confirmed_resp.applied is True
+    assert (plugin_cache / "3.30.0").is_dir()
+    assert old_cache.is_dir()

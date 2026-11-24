@@ -76,12 +76,14 @@ def configure_logging(
     jsonl_path: Path | None = None,
     console_stream: TextIO | None = None,
     level: int = logging.INFO,
+    file_level: int | None = None,
     colors: bool | None = None,
     logger_name: str = "",
 ) -> logging.Logger:
     """Configure dual-sink `structlog` (`ConsoleRenderer` -> stderr + `orjson` JSONL -> file)."""
     stream = sys.stderr if console_stream is None else console_stream
     use_colors = bool(stream.isatty()) if colors is None else colors
+    resolved_file_level = logging.INFO if file_level is None else file_level
 
     structlog.configure(
         processors=[
@@ -98,7 +100,10 @@ def configure_logging(
         target_logger.removeHandler(existing)
         existing.close()
 
-    target_logger.setLevel(level)
+    # Keep logger gate permissive enough for the JSONL file sink when console uses WARNING.
+    target_logger.setLevel(
+        min(level, resolved_file_level) if jsonl_path is not None else level
+    )
     if logger_name:
         target_logger.propagate = False
 
@@ -124,7 +129,7 @@ def configure_logging(
             ],
         )
         file_handler = logging.FileHandler(jsonl_path, encoding="utf-8")
-        file_handler.setLevel(level)
+        file_handler.setLevel(resolved_file_level)
         file_handler.setFormatter(jsonl_formatter)
         target_logger.addHandler(file_handler)
 

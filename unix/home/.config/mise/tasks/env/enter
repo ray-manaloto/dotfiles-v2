@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#MISE description="Enter pc, mac, or vm project workspace via Tailscale SSH with automatic docker/tart exec fallback"
+#USAGE arg "<target>" help="Target environment: pc, mac, or vm"
+#USAGE flag "-p --project <project>" default="dotfiles-v2" help="Project workspace: dotfiles-v2, kb-v2, or cpp-core"
+#USAGE flag "-c --cmd <cmd>" help="Optional command to execute instead of an interactive shell"
+set -euo pipefail
+
+target="${usage_target:-}"
+project="${usage_project:-dotfiles-v2}"
+cmd="${usage_cmd:-}"
+container_name="dotfiles-v2"
+vm_name="dotfiles-v2-macos"
+ssh_host_pc="${DOTFILES_PC_SSH_HOST:-pc}"
+
+case "${target}" in
+pc)
+	ssh_user="dev"
+	ts_name="dotfiles-v2-pc"
+	is_container=true
+	;;
+mac)
+	ssh_user="dev"
+	ts_name="dotfiles-v2-mac"
+	is_container=true
+	;;
+vm)
+	ssh_user="admin"
+	ts_name="dotfiles-v2-vm"
+	is_container=false
+	;;
+*)
+	echo "unknown target '${target}' (expected pc, mac, or vm)" >&2
+	exit 1
+	;;
+esac
+
+resolve_ts_dest() {
+	local want="$1" status_json dest=""
+	if command -v tailscale >/dev/null 2>&1; then
+		if status_json="$(tailscale status --json 2>/dev/null)"; then
+			dest="$(printf '%s' "${status_json}" | jq -r --arg h "${want}" '
+				[.Peer[]? | select(.HostName == $h and .Online == true)
+				| ((.DNSName // "" | sub("\\.$"; "")) | if length > 0 then . else empty end) // (.TailscaleIPs[0] // "")]
+				| map(select(length > 0)) | first // empty
+			')"
+		fi
+	fi
+	printf '%s' "${dest:-${want}}"
+}
+
+resolve_project_expr() {
+	local proj="$1"
+	# shellcheck disable=SC2016
+	case "${proj}" in
+	dotfiles-v2)
+		if [[ ${is_container} == "true" ]]; then
+			printf '%s' '/workspace'
+		else
+			printf '%s' '"$HOME/dev/dotfiles-v2"'
+		fi
+		;;
+	kb-v2 | knowledge-base-v2)
+		if [[ ${is_container} == "true" ]]; then
+			printf '%s' '$(for d in /workspace-kb "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2" /workspace; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+		else
+			printf '%s' '$(for d in "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2" "$HOME/dev/dotfiles-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+		fi
+		;;
+	cpp-core)
+		if [[ ${is_container} == "true" ]]; then
+			printf '%s' '$(for d in /workspace-cpp "$HOME/dev/cpp-core" /workspace; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+		else
+			printf '%s' '$(for d in "$HOME/dev/cpp-core" "$HOME/dev/dotfiles-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+		fi
+		;;
+	*)
+		echo "unknown project '${proj}' (expected dotfiles-v2, kb-v2, or cpp-core)" >&2
+		exit 1
+		;;
+	esac
+}
+
+proj_expr="$(resolve_project_expr "${project}")"
+# shellcheck disable=SC2016
+if [[ ${is_container} == "true" ]]; then
+	if [[ -n ${cmd} ]]; then
+		inner_script="$(printf 'cd %s && %s' "${proj_expr}" "${cmd}")"
+	else
+		inner_script="$(printf 'cd %s && exec bash -il' "${proj_expr}")"
+	fi
+else
+	if [[ -n ${cmd} ]]; then
+		inner_script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; cd %s && %s' "${proj_expr}" "${cmd}")"
+	else
+		inner_script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; cd %s && exec zsh -il' "${proj_expr}")"
+	fi
+fi
+
+ssh_dest="$(resolve_ts_dest "${ts_name}")"
+if ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" true >/dev/null 2>&1; then
+	if [[ -n ${cmd} ]]; then
+		exec ssh -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
+	fi
+	if [[ -t 0 && -t 1 ]]; then
+		exec ssh -t -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
+	fi
+	exec ssh -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
+fi
+
+printf 'env:enter: Tailscale SSH unavailable for %s (%s); falling back to direct runtime exec\n' "${target}" "${ssh_dest}" >&2
+
+if [[ ${target} == "pc" ]]; then
+	tty_flags=(-i)
+	[[ -z ${cmd} && -t 0 && -t 1 ]] && tty_flags=(-it)
+	exec env "DOCKER_HOST=ssh://${ssh_host_pc}" docker exec "${tty_flags[@]}" "${container_name}" /bin/bash -il -c "${inner_script}"
+elif [[ ${target} == "mac" ]]; then
+	tty_flags=(-i)
+	[[ -z ${cmd} && -t 0 && -t 1 ]] && tty_flags=(-it)
+	exec env -u DOCKER_HOST docker --context desktop-linux exec "${tty_flags[@]}" "${container_name}" /bin/bash -il -c "${inner_script}"
+else
+	if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+		echo "env:enter: vm fallback requires macOS with tart on PATH" >&2
+		exit 1
+	fi
+	tty_flags=(-i)
+	[[ -z ${cmd} && -t 0 && -t 1 ]] && tty_flags=(-it)
+	exec tart exec "${tty_flags[@]}" "${vm_name}" /bin/zsh -il -c "${inner_script}"
+fi
