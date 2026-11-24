@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -14,6 +15,8 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+
+NS_TS_RE = re.compile(r"^[0-9]{8}T[0-9]{6}\.[0-9]{9}(?:Z|[+-][0-9]{4})$")
 
 HOOK_PATH = (
     Path(__file__).resolve().parent.parent
@@ -214,6 +217,17 @@ def test_full_code_review_and_post_review_verification_gate() -> None:
             proof="Observed app.py output 42 exit 0",
         )
         assert ver_res.get("verified") is True
+        assert NS_TS_RE.fullmatch(str(ver_res.get("verified_at", "")))
+        assert isinstance(ver_res.get("verified_at_unix_ns"), int)
+        receipt_file = Path(str(ver_res["receipt_file"]))
+        receipt_data = json.loads(receipt_file.read_text(encoding="utf-8"))
+        latest_entry = receipt_data["receipts"][receipt_data["latest"]]
+        assert NS_TS_RE.fullmatch(latest_entry["recorded_at"])
+        assert NS_TS_RE.fullmatch(latest_entry["verification"]["verified_at"])
+        assert NS_TS_RE.fullmatch(latest_entry["verification"]["commands"][0]["ran_at"])
+        assert guard._format_ns_timestamp(1_700_000_000_000_000_007, utc=True).endswith(
+            ".000000007+0000"
+        )
         assert call_cmd("git merge --ff-only wt/feat", repo) == guard._allow()
         guard._git_exec(repo, "merge", "--ff-only", "wt/feat")
         assert call_cmd("git push origin main", repo) == guard._allow()
@@ -396,3 +410,34 @@ def test_full_code_review_and_post_review_verification_gate() -> None:
         )
         assert guard._run_hook(stop_payload, event="stop") == {}
         assert os.path.isfile(HOOK_PATH)
+
+
+def test_agy_code_review_guard_macos_python3_9_compatible() -> None:
+    mac_py = Path("/usr/bin/python3")
+    if not mac_py.is_file():
+        pytest.skip("/usr/bin/python3 not present")
+    hooks_json = (
+        Path(__file__).resolve().parent.parent
+        / "unix"
+        / "home"
+        / ".gemini"
+        / "config"
+        / "hooks.json"
+    )
+    proc = subprocess.run(
+        [
+            str(mac_py),
+            "-I",
+            "-B",
+            str(HOOK_PATH),
+            "--self-check",
+            "--check-hooks-json",
+            str(hooks_json),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["ok"] is True

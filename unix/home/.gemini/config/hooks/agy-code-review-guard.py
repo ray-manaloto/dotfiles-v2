@@ -12,9 +12,14 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+NANOSECOND_TIMESTAMP_RE = re.compile(
+    r"^([0-9]{8}T[0-9]{6})\.([0-9]{9})(Z|[+-][0-9]{4})$"
+)
 
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -334,6 +339,46 @@ def _receipt_path(common_dir: Path) -> Path:
     return common_dir / RECEIPT_FILENAME
 
 
+def _format_ns_timestamp(ns: int | None = None, *, utc: bool = False) -> str:
+    """Format epoch nanoseconds as `YYYYmmddTHHMMSS.NNNNNNNNN±HHMM` (9 zero-padded digits)."""
+    epoch_ns = time.time_ns() if ns is None else int(ns)
+    if epoch_ns < 0:
+        raise ValueError(f"Epoch nanoseconds must be non-negative, got {epoch_ns}")
+    sec, rem_ns = divmod(epoch_ns, 1_000_000_000)
+    dt_utc = datetime.fromtimestamp(sec, tz=timezone.utc)
+    dt_target = dt_utc if utc else dt_utc.astimezone()
+    return f"{dt_target:%Y%m%dT%H%M%S}.{rem_ns:09d}{dt_target:%z}"
+
+
+def _now_ns_pair(*, utc: bool = False) -> tuple[str, int]:
+    """Return `(formatted_ns_timestamp, epoch_ns)` sampled from a single `time.time_ns()` call."""
+    epoch_ns = time.time_ns()
+    return _format_ns_timestamp(epoch_ns, utc=utc), epoch_ns
+
+
+def _parse_timestamp_ns(ts: str) -> int | None:
+    """Parse 9-digit ns timestamp or legacy ISO timestamp into integer epoch nanoseconds."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    match = NANOSECOND_TIMESTAMP_RE.match(ts)
+    if match:
+        base, frac, tz_str = match.group(1), match.group(2), match.group(3)
+        offset = "+0000" if tz_str == "Z" else tz_str
+        try:
+            dt_obj = datetime.strptime(f"{base}{offset}", "%Y%m%dT%H%M%S%z")
+            return int(dt_obj.timestamp()) * 1_000_000_000 + int(frac)
+        except ValueError:
+            return None
+    norm = f"{ts[:-1]}+00:00" if ts.endswith("Z") else ts
+    try:
+        dt_obj = datetime.fromisoformat(norm)
+    except ValueError:
+        return None
+    if dt_obj.tzinfo is None:
+        dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+    return round(dt_obj.timestamp() * 1_000_000_000)
+
+
 def _load_receipts(common_dir: Path) -> dict[str, dict[str, Any]]:
     path = _receipt_path(common_dir)
     if not path.is_file():
@@ -359,6 +404,9 @@ def _load_receipts(common_dir: Path) -> dict[str, dict[str, Any]]:
                     "recorded_at": str(v.get("recorded_at", "")),
                     "summary": str(v.get("summary", "")),
                 }
+                rec_ns = v.get("recorded_at_unix_ns")
+                if isinstance(rec_ns, int) and not isinstance(rec_ns, bool):
+                    entry["recorded_at_unix_ns"] = rec_ns
                 verification = v.get("verification")
                 if isinstance(verification, dict):
                     entry["verification"] = verification
@@ -412,8 +460,24 @@ def _has_valid_verification_receipt(
     verified_at = ver.get("verified_at")
     if not isinstance(verified_at, str) or not verified_at:
         return False
-    if recorded_at and verified_at < recorded_at:
-        return False
+    rec_ns = entry.get("recorded_at_unix_ns")
+    ver_ns = ver.get("verified_at_unix_ns")
+    if (
+        isinstance(rec_ns, int)
+        and not isinstance(rec_ns, bool)
+        and isinstance(ver_ns, int)
+        and not isinstance(ver_ns, bool)
+    ):
+        if ver_ns < rec_ns:
+            return False
+    else:
+        parsed_rec = _parse_timestamp_ns(recorded_at)
+        parsed_ver = _parse_timestamp_ns(verified_at)
+        if parsed_rec is not None and parsed_ver is not None:
+            if parsed_ver < parsed_rec:
+                return False
+        elif recorded_at and verified_at < recorded_at:
+            return False
     proof = ver.get("proof")
     if not isinstance(proof, str) or len(proof.strip()) < MIN_PROOF_LEN:
         return False
@@ -440,12 +504,14 @@ def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
         raise RuntimeError(msg)
     commit_sha, tree_sha = target
 
+    rec_ts, rec_ns = _now_ns_pair()
     receipts = _load_receipts(common_dir)
     # Stage 1 always clears any stale Stage 2 verification so verification must run AFTER review.
     receipts[commit_sha] = {
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
-        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "recorded_at": rec_ts,
+        "recorded_at_unix_ns": rec_ns,
         "summary": summary.strip(),
     }
     path = _write_receipts(common_dir, commit_sha, receipts)
@@ -454,6 +520,8 @@ def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
         "receipt_file": str(path),
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
+        "recorded_at": rec_ts,
+        "recorded_at_unix_ns": rec_ns,
     }
 
 
@@ -531,10 +599,13 @@ def _verify_receipt(
         if proc.returncode != 0:
             msg = f"Verification command failed (exit {proc.returncode}): {cmd}\n{tail}".strip()
             raise RuntimeError(msg)
+        cmd_ts, cmd_ns = _now_ns_pair()
         cmd_results.append(
             {
                 "cmd": cmd,
                 "exit_code": 0,
+                "ran_at": cmd_ts,
+                "ran_at_unix_ns": cmd_ns,
                 "output": tail,
             }
         )
@@ -559,11 +630,17 @@ def _verify_receipt(
         )
         raise RuntimeError(msg)
     entry = dict(cur_entry)
-    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ver_ts, ver_ns = _now_ns_pair()
     recorded_at = str(entry.get("recorded_at", ""))
-    verified_at = max(now_iso, recorded_at)
+    rec_ns = entry.get("recorded_at_unix_ns")
+    if not (isinstance(rec_ns, int) and not isinstance(rec_ns, bool)):
+        rec_ns = _parse_timestamp_ns(recorded_at)
+    if isinstance(rec_ns, int) and ver_ns < rec_ns:
+        ver_ns = rec_ns
+        ver_ts = _format_ns_timestamp(ver_ns)
     entry["verification"] = {
-        "verified_at": verified_at,
+        "verified_at": ver_ts,
+        "verified_at_unix_ns": ver_ns,
         "proof": clean_proof,
         "commands": cmd_results,
         "evidence": clean_evidence,
@@ -576,8 +653,11 @@ def _verify_receipt(
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
         "verified": True,
+        "verified_at": ver_ts,
+        "verified_at_unix_ns": ver_ns,
         "commands": len(cmd_results),
         "proof": clean_proof,
+        "evidence": clean_evidence,
     }
 
 
@@ -1435,6 +1515,12 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     assert _unquote_truncated('"app.py"') == "app.py"
     assert _process_stdin_text("{bad json", event="pre-tool-use") == _allow()
     assert _process_stdin_text("{bad json", event="stop") == {}
+    sample_ts, sample_ns = _now_ns_pair()
+    assert NANOSECOND_TIMESTAMP_RE.match(sample_ts) is not None
+    assert sample_ns > 0
+    assert _format_ns_timestamp(1_700_000_000_000_000_007, utc=True).endswith(
+        ".000000007+0000"
+    )
     checks.append("stop_classifiers_ok")
 
     if hooks_json_path is not None:

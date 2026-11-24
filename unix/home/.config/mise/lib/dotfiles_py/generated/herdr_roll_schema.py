@@ -11,6 +11,7 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
+    StringConstraints,
 )
 
 type HerdrRollModels = Annotated[Any, Field(title="HerdrRollModels")]
@@ -219,6 +220,27 @@ class GraphSnapshot(BaseModel):
     spaces: Annotated[list[SpaceSnapshot], Field(validate_default=True)] = []
 
 
+class AgyLogProof(BaseModel):
+    """
+    Verification proof extracted from an Antigravity CLI startup log and ~/.gemini/config/hooks.json.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        frozen=True,
+    )
+    log_path: StrictStr | None = None
+    pid: StrictInt | None = None
+    pid_matched: StrictBool = False
+    conversation_id: StrictStr | None = None
+    conversation_matched: StrictBool = False
+    loaded_hook_count: Annotated[StrictInt | None, Field(ge=0)] = None
+    expected_hook_count: Annotated[StrictInt | None, Field(ge=0)] = None
+    hooks_matched: StrictBool = False
+    verified: StrictBool
+
+
 class SessionOutcome(BaseModel):
     """
     Outcome record for a single targeted session with nanosecond timestamp and typed errors/returns.
@@ -237,6 +259,26 @@ class SessionOutcome(BaseModel):
     result: StrictStr
     old_pid: StrictInt | None = None
     new_pid: StrictInt | None = None
+    process_started_at: (
+        Annotated[
+            str,
+            StringConstraints(
+                pattern=r"^[0-9]{8}T[0-9]{6}\.[0-9]{9}(?:Z|[+-][0-9]{4})$", strict=True
+            ),
+        ]
+        | None
+    ) = None
+    """
+    Foreground process start timestamp in zero-padded 9-digit nanosecond format.
+    """
+    process_lstart: StrictStr | None = None
+    """
+    Foreground process start timestamp in ps lstart format.
+    """
+    agy_log_proof: AgyLogProof | None = None
+    """
+    Active Antigravity CLI log PID, conversation ID, and hooks.json confirmation.
+    """
     elapsed_s: Annotated[StrictFloat, Field(ge=0.0)] = 0.0
     notes: list[StrictStr] = []
     timestamp: Annotated[

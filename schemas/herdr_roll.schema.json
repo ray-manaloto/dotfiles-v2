@@ -290,6 +290,52 @@
         }
       }
     },
+    "AgyLogProof": {
+      "type": "object",
+      "description": "Verification proof extracted from an Antigravity CLI startup log and ~/.gemini/config/hooks.json.",
+      "additionalProperties": false,
+      "required": ["verified"],
+      "properties": {
+        "log_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "pid": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "pid_matched": {
+          "type": "boolean",
+          "default": false
+        },
+        "conversation_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "conversation_matched": {
+          "type": "boolean",
+          "default": false
+        },
+        "loaded_hook_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "expected_hook_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "hooks_matched": {
+          "type": "boolean",
+          "default": false
+        },
+        "verified": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
     "SessionOutcome": {
       "type": "object",
       "description": "Outcome record for a single targeted session with nanosecond timestamp and typed errors/returns.",
@@ -332,6 +378,35 @@
         "new_pid": {
           "type": ["integer", "null"],
           "default": null
+        },
+        "process_started_at": {
+          "anyOf": [
+            {
+              "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Foreground process start timestamp in zero-padded 9-digit nanosecond format."
+        },
+        "process_lstart": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Foreground process start timestamp in ps lstart format."
+        },
+        "agy_log_proof": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgyLogProof"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Active Antigravity CLI log PID, conversation ID, and hooks.json confirmation."
         },
         "elapsed_s": {
           "type": "number",

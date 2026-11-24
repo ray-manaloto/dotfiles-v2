@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import os
 import shlex
 import sys
@@ -46,11 +45,14 @@ from herdr_roll.herdr import (
     hc_send,
     herdr_app_do,
     herdr_app_ls,
+    inspect_agy_cli_log,
     is_bare_shell,
     lsof_cwd,
+    process_start_info,
     program_name,
 )
 from herdr_roll.models import (
+    AgyLogProof,
     HarnessKind,
     HerdrRollErrorCode,
     HerdrRollErrorEntry,
@@ -111,7 +113,7 @@ def now_iso() -> str:
 
 
 def new_run_id(step: str) -> str:
-    return f"run-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}-{step}-{os.getpid()}"
+    return f"run-{format_ns_timestamp()}-{step}-{os.getpid()}"
 
 
 @contextmanager
@@ -559,6 +561,9 @@ def restart_one(
         *,
         new_pid: int | None = None,
         address_override: str | None = None,
+        process_started_at: str | None = None,
+        process_lstart: str | None = None,
+        agy_log_proof: AgyLogProof | None = None,
     ) -> SessionOutcome:
         return make_session_outcome(
             where=where,
@@ -569,6 +574,9 @@ def restart_one(
             result=result,
             old_pid=term.fg_pid or term.pid,
             new_pid=new_pid,
+            process_started_at=process_started_at,
+            process_lstart=process_lstart,
+            agy_log_proof=agy_log_proof,
             elapsed_s=time.monotonic() - started,
             notes=notes,
         )
@@ -746,11 +754,17 @@ def restart_one(
                 in_place_before_started_at=started_before,
             )
             run_optional_verify_turn(verified_addr)
+            p_started_at, p_lstart, p_agy, _ = _collect_verify_proof(
+                client, verified_addr, term.kind, new_pid, term.session_id
+            )
             return make_outcome(
                 "restarted",
                 ("in-place /restart",),
                 new_pid=new_pid,
                 address_override=verified_addr,
+                process_started_at=p_started_at,
+                process_lstart=p_lstart,
+                agy_log_proof=p_agy,
             )
 
         if fresh_tab:
@@ -766,6 +780,9 @@ def restart_one(
                 timing=timing,
             )
             run_optional_verify_turn(verified_addr)
+            p_started_at, p_lstart, p_agy, _ = _collect_verify_proof(
+                client, verified_addr, term.kind, new_pid, term.session_id
+            )
             if len(tab.terminals) == 1 and (
                 herdr_app_do("tab.close", "--id", tab.id, "--confirmed", "true") is None
             ):
@@ -778,6 +795,9 @@ def restart_one(
                 (f"fresh-tab={verified_addr}",),
                 new_pid=new_pid,
                 address_override=verified_addr,
+                process_started_at=p_started_at,
+                process_lstart=p_lstart,
+                agy_log_proof=p_agy,
             )
 
         _wait_for_exit(client, target, timing)
@@ -794,11 +814,17 @@ def restart_one(
             timing=timing,
         )
         run_optional_verify_turn(verified_addr)
+        p_started_at, p_lstart, p_agy, _ = _collect_verify_proof(
+            client, verified_addr, term.kind, new_pid, term.session_id
+        )
         return make_outcome(
             "ok",
             ("clean-env-in-place" if force_clean_env else "keep-env-in-place",),
             new_pid=new_pid,
             address_override=verified_addr,
+            process_started_at=p_started_at,
+            process_lstart=p_lstart,
+            agy_log_proof=p_agy,
         )
 
     except SkipStep as skip:
@@ -837,7 +863,7 @@ def cmd_snapshot(
                 previous = load_graph(graph_file) if graph_file.is_file() else None
                 merged = merge_graph(current, previous)
                 payload = _dump_pretty_json(merged)
-                stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+                stamp = format_ns_timestamp()
                 write_atomic(graph_file, payload)
                 write_atomic(root / f"graph-{stamp}.json", payload)
                 write_atomic(rec.run_dir / "graph.json", payload)
@@ -1302,6 +1328,9 @@ def cmd_start(
                 expected_git=None,
                 timing=timing_cfg,
             )
+            p_started_at, p_lstart, p_agy, _ = _collect_verify_proof(
+                worker_client, verified_addr, term.kind, new_pid, term.session_id
+            )
             return make_session_outcome(
                 where=where,
                 tab_id=tab.id,
@@ -1310,6 +1339,9 @@ def cmd_start(
                 session_id=term.session_id,
                 result="started",
                 new_pid=new_pid,
+                process_started_at=p_started_at,
+                process_lstart=p_lstart,
+                agy_log_proof=p_agy,
                 elapsed_s=time.monotonic() - t0,
             )
         except SkipStep as err:
@@ -1362,6 +1394,34 @@ def cmd_start(
         else EXIT_OK
     )
     return rec.finish(rc)
+
+
+def _collect_verify_proof(
+    live: LiveClient,
+    address: str,
+    kind: HarnessKind,
+    pid: int | None,
+    session_id: str | None,
+) -> tuple[str | None, str | None, AgyLogProof | None, list[str]]:
+    """Gather `psutil` start timestamps and (for `agy`) CLI log PID/conv/hook confirmation."""
+    started_at, lstart = process_start_info(pid)
+    notes: list[str] = []
+    if started_at:
+        notes.append(f"started_at={started_at}")
+    if lstart:
+        notes.append(f"lstart={lstart}")
+    agy_proof: AgyLogProof | None = None
+    if kind is HarnessKind.AGY:
+        _, fg_argv = live.foreground(address)
+        agy_proof = inspect_agy_cli_log(live.tree(address), session_id, fg_argv=fg_argv)
+        if agy_proof.log_path:
+            notes.append(f"cli_log={Path(agy_proof.log_path).name}")
+            notes.append(f"cli_pid={agy_proof.pid}")
+            notes.append(f"cli_conv={agy_proof.conversation_id or '-'}")
+            notes.append(
+                f"hooks={agy_proof.loaded_hook_count}/{agy_proof.expected_hook_count}"
+            )
+    return started_at, lstart, agy_proof, notes
 
 
 def cmd_verify(
@@ -1421,6 +1481,45 @@ def cmd_verify(
                     expected_git=None,
                     timing=timing_cfg,
                 )
+                started_at, lstart, agy_proof, proof_notes = _collect_verify_proof(
+                    live, verified_addr, term.kind, new_pid, term.session_id
+                )
+                if (
+                    agy_proof is not None
+                    and agy_proof.log_path is not None
+                    and not agy_proof.verified
+                ):
+                    mismatch: list[str] = []
+                    if not agy_proof.pid_matched:
+                        mismatch.append(f"cli_pid={agy_proof.pid} not in tree")
+                    if term.session_id and not agy_proof.conversation_matched:
+                        mismatch.append(
+                            f"cli_conv={agy_proof.conversation_id} != {term.session_id}"
+                        )
+                    if (
+                        agy_proof.expected_hook_count is not None
+                        and not agy_proof.hooks_matched
+                    ):
+                        mismatch.append(
+                            f"loaded hooks {agy_proof.loaded_hook_count} != hooks.json {agy_proof.expected_hook_count}"
+                        )
+                    rec.add_outcome(
+                        make_session_outcome(
+                            where=where,
+                            tab_id=tab.id,
+                            terminal=verified_addr,
+                            kind=term.kind,
+                            session_id=term.session_id,
+                            result="failed-verify-timeout",
+                            new_pid=new_pid,
+                            process_started_at=started_at,
+                            process_lstart=lstart,
+                            agy_log_proof=agy_proof,
+                            elapsed_s=time.monotonic() - t0,
+                            notes=(*mismatch, *proof_notes),
+                        )
+                    )
+                    continue
                 rec.add_outcome(
                     make_session_outcome(
                         where=where,
@@ -1430,10 +1529,22 @@ def cmd_verify(
                         session_id=term.session_id,
                         result="ok",
                         new_pid=new_pid,
+                        process_started_at=started_at,
+                        process_lstart=lstart,
+                        agy_log_proof=agy_proof,
                         elapsed_s=time.monotonic() - t0,
+                        notes=proof_notes,
                     )
                 )
             except SkipStep as err:
+                fg_pid, _ = live.foreground(term.address)
+                started_at, lstart, agy_proof, proof_notes = _collect_verify_proof(
+                    live,
+                    term.address,
+                    term.kind,
+                    fg_pid or term.fg_pid,
+                    term.session_id,
+                )
                 rec.add_outcome(
                     make_session_outcome(
                         where=where,
@@ -1442,8 +1553,11 @@ def cmd_verify(
                         kind=term.kind,
                         session_id=term.session_id,
                         result=err.result,
+                        process_started_at=started_at,
+                        process_lstart=lstart,
+                        agy_log_proof=agy_proof,
                         elapsed_s=time.monotonic() - t0,
-                        notes=err.notes,
+                        notes=(*err.notes, *proof_notes),
                     )
                 )
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from dotfiles_py.generated import (
+    AgyLogProof,
     GraphSnapshot,
     HarnessKind,
     HerdrRollErrorCode,
@@ -30,6 +31,7 @@ from dotfiles_py.generated import (
 from dotfiles_py.time_ns import now_ns_pair
 
 __all__ = [
+    "AgyLogProof",
     "GraphSnapshot",
     "HarnessKind",
     "HerdrRollErrorCode",
@@ -129,6 +131,9 @@ def make_session_outcome(
     result: str,
     old_pid: int | None = None,
     new_pid: int | None = None,
+    process_started_at: str | None = None,
+    process_lstart: str | None = None,
+    agy_log_proof: AgyLogProof | None = None,
     elapsed_s: float = 0.0,
     notes: Sequence[str] = (),
 ) -> SessionOutcome:
@@ -145,6 +150,9 @@ def make_session_outcome(
         result=result,
         old_pid=old_pid,
         new_pid=new_pid,
+        process_started_at=process_started_at,
+        process_lstart=process_lstart,
+        agy_log_proof=agy_log_proof,
         elapsed_s=round(float(elapsed_s), 2),
         notes=note_list,
         timestamp=ts,

@@ -29,6 +29,7 @@ from .common.envelope_schema import (
     ReturnEntry,
 )
 from .herdr_roll_schema import (
+    AgyLogProof,
     GraphSnapshot,
     HarnessKind,
     HerdrRollErrorCode,
@@ -51,6 +52,7 @@ from .herdr_roll_schema import (
 
 __all__ = [
     "AgyLearnModels",
+    "AgyLogProof",
     "CommonEnvelopeDefs",
     "CommonErrorCode",
     "CommonReturnCode",

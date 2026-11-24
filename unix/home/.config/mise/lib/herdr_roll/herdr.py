@@ -18,7 +18,8 @@ import orjson
 import psutil
 from tenacity import Retrying, retry_if_result, stop_after_delay, wait_exponential
 
-from herdr_roll.models import HarnessKind
+from dotfiles_py.time_ns import format_ns_timestamp
+from herdr_roll.models import AgyLogProof, HarnessKind
 
 RAW_STRIP = frozenset({"HC_TERMINAL_ID", "HC_SCOPE"})
 LAUNCHERS = frozenset({"fnox", "env"})
@@ -261,6 +262,146 @@ def open_file_paths(tree_pids: Sequence[int]) -> list[str]:
         except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError:
             continue
     return paths
+
+
+AGY_CLI_LOG_PID_RE = re.compile(r"Starting language server process with pid (\d+)")
+AGY_CLI_LOG_HOOKS_RE = re.compile(
+    r"loaded (\d+) named hooks from \d+ hooks\.json file\(s\)"
+)
+AGY_CLI_LOG_CONV_RE = re.compile(
+    r"(?:Resuming conversation |Starting conversation update stream for "
+    r"|GetConversationDetail: found conversation |Forwarding user message to conversation "
+    r"|Sending user message to conversation |cascade_id:)"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+)
+
+
+def process_start_info(pid: int | None) -> tuple[str | None, str | None]:
+    """Return `(started_at_ns, lstart)` for *pid* via `psutil`, or `(None, None)`."""
+    if pid is None or pid <= 0:
+        return None, None
+    try:
+        ctime = float(psutil.Process(pid).create_time())
+    except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError:
+        return None, None
+    if ctime <= 0:
+        return None, None
+    started_at = format_ns_timestamp(round(ctime * 1_000_000_000))
+    lstart = (
+        dt.datetime.fromtimestamp(ctime, tz=dt.UTC)
+        .astimezone()
+        .strftime("%a %b %e %H:%M:%S %Y")
+    )
+    return started_at, lstart
+
+
+def _expected_agy_hook_count(hooks_json_path: Path | None = None) -> int | None:
+    target = (
+        hooks_json_path
+        if hooks_json_path is not None
+        else (Path.home() / ".gemini" / "config" / "hooks.json")
+    )
+    if not target.is_file():
+        return None
+    try:
+        raw = orjson.loads(target.read_bytes())
+    except OSError, orjson.JSONDecodeError:
+        return None
+    return len(raw) if isinstance(raw, dict) else None
+
+
+def _log_file_arg(fg_argv: Sequence[str]) -> str | None:
+    words = list(fg_argv)
+    for idx, tok in enumerate(words):
+        if tok == "--log-file" and idx + 1 < len(words):
+            return words[idx + 1]
+        if tok.startswith("--log-file="):
+            return tok.split("=", 1)[1]
+    return None
+
+
+def inspect_agy_cli_log(
+    tree_pids: Sequence[int],
+    session_id: str | None,
+    *,
+    fg_argv: Sequence[str] = (),
+    hooks_json_path: Path | None = None,
+) -> AgyLogProof:
+    """Confirm active Antigravity CLI log PID, conversation ID, and loaded hook count."""
+    expected_hooks = _expected_agy_hook_count(hooks_json_path)
+    candidates: list[Path] = []
+    for raw_path in open_file_paths(tree_pids):
+        norm = raw_path.replace("\\", "/")
+        if "/antigravity-cli/log/cli-" in norm and norm.endswith(".log"):
+            candidates.append(Path(raw_path))
+    explicit_log = _log_file_arg(fg_argv)
+    if explicit_log:
+        candidates.append(Path(explicit_log).expanduser())
+
+    log_path: Path | None = next((p for p in candidates if p.is_file()), None)
+    if log_path is None:
+        return AgyLogProof(
+            log_path=None,
+            pid=None,
+            pid_matched=False,
+            conversation_id=None,
+            conversation_matched=False,
+            loaded_hook_count=None,
+            expected_hook_count=expected_hooks,
+            hooks_matched=False,
+            verified=False,
+        )
+
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return AgyLogProof(
+            log_path=str(log_path),
+            pid=None,
+            pid_matched=False,
+            conversation_id=None,
+            conversation_matched=False,
+            loaded_hook_count=None,
+            expected_hook_count=expected_hooks,
+            hooks_matched=False,
+            verified=False,
+        )
+
+    pid_matches = AGY_CLI_LOG_PID_RE.findall(text)
+    log_pid = int(pid_matches[0]) if pid_matches else None
+    pid_matched = log_pid is not None and log_pid in set(tree_pids)
+
+    hook_matches = AGY_CLI_LOG_HOOKS_RE.findall(text)
+    loaded_hooks = int(hook_matches[-1]) if hook_matches else None
+
+    conv_matches = AGY_CLI_LOG_CONV_RE.findall(text)
+    if session_id and session_id in conv_matches:
+        conv_id: str | None = session_id
+        conv_matched = True
+    else:
+        conv_id = conv_matches[0] if conv_matches else None
+        conv_matched = bool(session_id and conv_id == session_id)
+
+    hooks_matched = (
+        loaded_hooks is not None
+        and expected_hooks is not None
+        and loaded_hooks == expected_hooks
+    )
+    conv_ok = conv_matched if session_id else conv_id is not None
+    hooks_ok = hooks_matched if expected_hooks is not None else loaded_hooks is not None
+    verified = bool(pid_matched and conv_ok and hooks_ok)
+
+    return AgyLogProof(
+        log_path=str(log_path),
+        pid=log_pid,
+        pid_matched=pid_matched,
+        conversation_id=conv_id,
+        conversation_matched=conv_matched,
+        loaded_hook_count=loaded_hooks,
+        expected_hook_count=expected_hooks,
+        hooks_matched=hooks_matched,
+        verified=verified,
+    )
 
 
 def git_status_porcelain(folder: str | None) -> str | None:

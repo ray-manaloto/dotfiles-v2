@@ -19,10 +19,12 @@ from herdr_roll.herdr import (
     LiveClient,
     adaptive_poll,
     clean_relaunch_command,
+    inspect_agy_cli_log,
     is_transient_or_shell,
     lsof_cwd,
     open_file_paths,
     owned_by_harness,
+    process_start_info,
     processes,
 )
 from herdr_roll.models import (
@@ -743,8 +745,14 @@ class EngineTests(unittest.TestCase):
                 self.assertEqual(runs[0]["args"], ["snapshot", "--apply"])
                 self.assertEqual(runs[1]["args"], ["verify", "--apply"])
                 self.assertRegex(runs[0]["timestamp"], NANOSECOND_TIMESTAMP_RE)
+                self.assertRegex(runs[0]["run_id"], r"\.\d{9}[+-]\d{4}-snapshot-")
+                self.assertRegex(runs[0]["started_at"], NANOSECOND_TIMESTAMP_RE)
+                self.assertRegex(runs[0]["ended_at"], NANOSECOND_TIMESTAMP_RE)
                 self.assertIsInstance(runs[0]["timestamp_unix_ns"], int)
                 self.assertEqual(runs[0]["returns"][0]["code"], "RET_OK")
+                graph_archives = list(state_root.glob("graph-*.json"))
+                self.assertEqual(len(graph_archives), 1)
+                self.assertRegex(graph_archives[0].name, r"\.\d{9}[+-]\d{4}\.json$")
 
                 # Verify dual-sink structlog wrote clean JSONL without internal meta keys.
                 snap_jsonl = state_root / runs[0]["run_id"] / "snapshot.jsonl"
@@ -758,6 +766,136 @@ class EngineTests(unittest.TestCase):
                     self.assertNotIn("_record", row)
                     self.assertNotIn("_from_structlog", row)
                     self.assertRegex(row["timestamp"], NANOSECOND_TIMESTAMP_RE)
+
+    def test_verify_surfaces_process_lstart_and_agy_cli_log_proof(self) -> None:
+        started_at, lstart = process_start_info(os.getpid())
+        self.assertIsNotNone(started_at)
+        assert started_at is not None
+        self.assertRegex(started_at, NANOSECOND_TIMESTAMP_RE)
+        self.assertTrue(lstart)
+        self.assertEqual(process_start_info(None), (None, None))
+        self.assertEqual(process_start_info(-1), (None, None))
+
+        conv_id = "e4b6c8ee-177f-4fc6-8725-861036790dcf"
+        decoy_id = "3d3c3c7a-4053-466f-a68f-90c9f1e471f4"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_dir = tmp_path / "antigravity-cli" / "log"
+            log_dir.mkdir(parents=True)
+            cli_log = log_dir / "cli-20261123_142126.log"
+            cli_log.write_text(
+                "\n".join(
+                    [
+                        f"I1123 14:21:26.800542 37 server.go:2656] Starting language server process with pid {os.getpid()}",
+                        f"E1123 14:21:26.860862 210 reconcile_summaries.go:78] conversation {decoy_id} not found",
+                        "I1123 14:21:26.977402 1 hooks_manager.go:54] loaded 3 named hooks from 1 hooks.json file(s)",
+                        f"I1123 14:21:26.991681 1 common.go:496] Resuming conversation {conv_id}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            hooks_ok = tmp_path / "hooks_ok.json"
+            hooks_ok.write_text('{"h1": {}, "h2": {}, "h3": {}}', encoding="utf-8")
+            hooks_mismatch = tmp_path / "hooks_mismatch.json"
+            hooks_mismatch.write_text('{"h1": {}, "h2": {}}', encoding="utf-8")
+
+            with mock.patch(
+                "herdr_roll.herdr.open_file_paths", return_value=[str(cli_log)]
+            ):
+                proof_ok = inspect_agy_cli_log(
+                    [os.getpid()], conv_id, hooks_json_path=hooks_ok
+                )
+                self.assertTrue(proof_ok.verified)
+                self.assertTrue(proof_ok.pid_matched)
+                self.assertTrue(proof_ok.conversation_matched)
+                self.assertTrue(proof_ok.hooks_matched)
+                self.assertEqual(proof_ok.loaded_hook_count, 3)
+                self.assertEqual(proof_ok.expected_hook_count, 3)
+                self.assertEqual(proof_ok.conversation_id, conv_id)
+
+                proof_bad = inspect_agy_cli_log(
+                    [os.getpid()], conv_id, hooks_json_path=hooks_mismatch
+                )
+                self.assertFalse(proof_bad.verified)
+                self.assertFalse(proof_bad.hooks_matched)
+
+            state_root = tmp_path / "state"
+            sp = SpaceSnapshot(
+                id="sp1",
+                name="dotfiles-v2",
+                tabs=[
+                    TabSnapshot(
+                        id="tb1",
+                        name="dotfiles-v2-lead",
+                        terminals=[
+                            TerminalSnapshot(
+                                address="t3xb",
+                                kind=HarnessKind.AGY,
+                                session_id=conv_id,
+                                fg_pid=os.getpid(),
+                            ),
+                        ],
+                    ),
+                ],
+            )
+            fake_graph = GraphSnapshot(
+                taken_at="20261123T000000.000000000-0600", spaces=[sp]
+            )
+            fake_live = mock.MagicMock(spec=LiveClient)
+            fake_live.me = None
+            fake_live.foreground.return_value = (os.getpid(), ["agy"])
+            fake_live.tree.return_value = [os.getpid()]
+
+            with (
+                mock.patch("herdr_roll.engine.state_dir", return_value=state_root),
+                mock.patch("herdr_roll.engine.LiveClient", return_value=fake_live),
+                mock.patch("herdr_roll.engine.build_graph", return_value=fake_graph),
+                mock.patch(
+                    "herdr_roll.engine.verify_target",
+                    return_value=(os.getpid(), "t3xb"),
+                ),
+                mock.patch(
+                    "herdr_roll.engine.inspect_agy_cli_log", return_value=proof_ok
+                ),
+            ):
+                rc_ok = engine.cmd_verify(
+                    tabs=("t3xb",),
+                    apply=True,
+                    argv=("verify", "--tabs", "t3xb", "--apply"),
+                )
+            self.assertEqual(rc_ok, 0)
+            runs = [
+                orjson.loads(line)
+                for line in (state_root / "runs.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            outcome = runs[-1]["outcomes"][0]
+            self.assertEqual(outcome["result"], "ok")
+            self.assertRegex(outcome["process_started_at"], NANOSECOND_TIMESTAMP_RE)
+            self.assertTrue(outcome["process_lstart"])
+            self.assertTrue(outcome["agy_log_proof"]["verified"])
+            self.assertEqual(outcome["agy_log_proof"]["loaded_hook_count"], 3)
+
+            with (
+                mock.patch("herdr_roll.engine.state_dir", return_value=state_root),
+                mock.patch("herdr_roll.engine.LiveClient", return_value=fake_live),
+                mock.patch("herdr_roll.engine.build_graph", return_value=fake_graph),
+                mock.patch(
+                    "herdr_roll.engine.verify_target",
+                    return_value=(os.getpid(), "t3xb"),
+                ),
+                mock.patch(
+                    "herdr_roll.engine.inspect_agy_cli_log", return_value=proof_bad
+                ),
+            ):
+                rc_fail = engine.cmd_verify(
+                    tabs=("t3xb",),
+                    apply=True,
+                    argv=("verify", "--tabs", "t3xb", "--apply"),
+                )
+            self.assertEqual(rc_fail, engine.EXIT_FAILED)
 
     def test_cyclopts_cli_dispatches_and_returns_refused_envelope(self) -> None:
         with mock.patch("herdr_roll.cli.cmd_snapshot", return_value=0) as snap_mock:
