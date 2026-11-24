@@ -20,6 +20,53 @@ if [[ -L "${home_dir}/.agents/skills/antigravity-session-history" || -e "${home_
 	echo "KEEP  ~/.agents/skills/antigravity-session-history (explicitly preserved)"
 fi
 
+# 0. Untrack tracked-configs symlinks pointing under miserc.toml ignored_config_paths
+#    before running `mise prune` so retired/offline repos stop pinning legacy tools.
+python3 - "${apply}" "${home_dir}" <<'PY'
+import os
+import sys
+import tomllib
+from pathlib import Path
+
+apply = sys.argv[1] == "true"
+home = Path(sys.argv[2])
+miserc = home / ".config" / "mise" / "miserc.toml"
+state_dir = Path(os.environ.get("MISE_STATE_DIR", str(home / ".local" / "state" / "mise")))
+tracked_dir = state_dir / "tracked-configs"
+
+if not miserc.is_file() or not tracked_dir.is_dir():
+    sys.exit(0)
+
+try:
+    data = tomllib.loads(miserc.read_text(encoding="utf-8"))
+except (OSError, tomllib.TOMLDecodeError):
+    sys.exit(0)
+
+raw = data.get("ignored_config_paths")
+if not isinstance(raw, list):
+    sys.exit(0)
+
+ignored = tuple(
+    Path(entry).expanduser().resolve(strict=False)
+    for entry in raw
+    if isinstance(entry, str) and entry.strip()
+)
+if not ignored:
+    sys.exit(0)
+
+for link in sorted(tracked_dir.iterdir()):
+    try:
+        target = link.resolve(strict=True)
+    except OSError:
+        continue
+    if any(target == prefix or prefix in target.parents for prefix in ignored):
+        if apply:
+            link.unlink()
+            print(f"UNTRACKED ignored config: {link.name} -> {target}")
+        else:
+            print(f"WOULD UNTRACK ignored config: {link.name} -> {target}")
+PY
+
 # 1. mise prune --configs, mise prune, and mise reshim --force
 if [[ ${apply} == "true" ]]; then
 	mise -C "${home_dir}" prune --configs --yes

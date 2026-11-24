@@ -10,4 +10,5 @@ ignored_config_paths = [
   "~/dev/github/ray-manaloto/dotfiles-wt",
   "~/Downloads",
   "~/dev/github/ray-manaloto/knowledge-base",
+  "~/dev/github/ray-manaloto/opencode/offline",
 ]

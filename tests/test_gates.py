@@ -961,3 +961,132 @@ def test_post_task_learn_single_trigger_and_worktree_rm(monkeypatch) -> None:
         assert hook_mod._slug_matches_plan_key(
             "other", "/tmp/v2/repo-other/.planning/2026-11-23-other/task_plan.md"
         )
+
+
+def _load_doctor_checks():
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parents[1]
+    path = repo_root / "tasks" / "py" / "doctor_checks.py"
+    spec = importlib.util.spec_from_file_location("doctor_checks", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return repo_root, mod
+
+
+def test_iter_managed_entries_skips_runtime_caches_and_bounds_codex() -> None:
+    _, doc_mod = _load_doctor_checks()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        codex = Path(tmp) / ".codex"
+        codex.mkdir()
+        (codex / "config.toml").write_text("", encoding="utf-8")
+        tmp_dir = codex / ".tmp" / "sub1" / "sub2"
+        tmp_dir.mkdir(parents=True)
+        (tmp_dir / "noise.txt").write_text("x", encoding="utf-8")
+        deep_dir = codex / "sessions" / "day1"
+        deep_dir.mkdir(parents=True)
+        (deep_dir / "rollout.jsonl").write_text("{}", encoding="utf-8")
+
+        entries_d1 = doc_mod._iter_managed_entries(codex, max_depth=1)
+        names_d1 = {p.name for p in entries_d1}
+        assert "config.toml" in names_d1
+        assert "noise.txt" not in names_d1
+        assert "rollout.jsonl" not in names_d1
+
+        entries_d3 = doc_mod._iter_managed_entries(codex, max_depth=3)
+        names_d3 = {p.name for p in entries_d3}
+        assert "noise.txt" not in names_d3
+        assert "rollout.jsonl" not in names_d3
+
+
+def test_host_hygiene_shim_classification_and_ignored_tracked_configs(
+    monkeypatch,
+) -> None:
+    import sys
+
+    repo_root, doc_mod = _load_doctor_checks()
+
+    monkeypatch.delenv("CI", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        home.mkdir()
+        mise_dir = home / ".config" / "mise"
+        mise_dir.mkdir(parents=True)
+        ignored_repo = Path(tmp) / "ignored-offline"
+        ignored_repo.mkdir()
+        ignored_cfg = ignored_repo / "mise.toml"
+        ignored_cfg.write_text("[tools]\n", encoding="utf-8")
+        (mise_dir / "miserc.toml").write_text(
+            f'ignored_config_paths = ["{ignored_repo}"]\n',
+            encoding="utf-8",
+        )
+
+        data_dir = home / ".local" / "share" / "mise"
+        installs_dir = data_dir / "installs" / "lefthook" / "2.2.2"
+        installs_dir.mkdir(parents=True)
+        darwin_bin = installs_dir / "lefthook_2.2.2_MacOS_arm64"
+        darwin_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        darwin_bin.chmod(0o755)
+
+        shims_dir = data_dir / "shims"
+        shims_dir.mkdir(parents=True)
+        for sname in ("lefthook_2.2.2_macos_arm64", "cargo", "webclaw"):
+            (shims_dir / sname).write_text("", encoding="utf-8")
+
+        state_dir = home / ".local" / "state" / "mise"
+        tracked = state_dir / "tracked-configs"
+        tracked.mkdir(parents=True)
+        (tracked / "abc123").symlink_to(ignored_cfg)
+
+        skills_dir = home / ".agents" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / ".mise-skills.json").write_text(
+            json.dumps({"links": {}}), encoding="utf-8"
+        )
+
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("MISE_DATA_DIR", str(data_dir))
+        monkeypatch.setenv("MISE_STATE_DIR", str(state_dir))
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["mise", "-C", str(home)] and cmd[3] == "which":
+                tool = cmd[4]
+                if tool == "cargo":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        1,
+                        stdout="",
+                        stderr="mise ERROR cargo is a mise bin however it is not currently active.",
+                    )
+                if tool == "webclaw":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        1,
+                        stdout="",
+                        stderr="mise ERROR No version is set for shim: webclaw.",
+                    )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        def fake_check_output(cmd, **kwargs):
+            if "bin-paths" in cmd:
+                return f"{installs_dir}\n"
+            if "skills" in cmd:
+                return "[]"
+            return ""
+
+        monkeypatch.setattr(doc_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(doc_mod.subprocess, "check_output", fake_check_output)
+
+        errs, _ = doc_mod.check_host_hygiene(repo_root)
+        joined = "\n".join(errs)
+        assert "broken-shim: webclaw" in joined, joined
+        assert "broken-shim: cargo" not in joined, joined
+        assert "ignored-tracked-config: abc123" in joined, joined
+        if sys.platform == "darwin":
+            assert "broken-shim: lefthook_2.2.2_macos_arm64" not in joined, joined
+        miserc_txt = (
+            repo_root / "unix" / "home" / ".config" / "mise" / "miserc.toml"
+        ).read_text(encoding="utf-8")
+        assert "~/dev/github/ray-manaloto/opencode/offline" in miserc_txt

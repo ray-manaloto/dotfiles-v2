@@ -299,6 +299,26 @@ def _is_legacy_dotfiles_target(target: Path) -> bool:
     return False
 
 
+_SKIP_MANAGED_DIR_NAMES = frozenset(
+    {
+        ".git",
+        ".tmp",
+        ".venv",
+        "__pycache__",
+        "archived_sessions",
+        "cache",
+        "Cache",
+        "log",
+        "logs",
+        "node_modules",
+        "sessions",
+        "sqlite",
+        "tmp",
+        "worktrees",
+    }
+)
+
+
 def _iter_managed_entries(root_item: Path, *, max_depth: int = 3) -> list[Path]:
     items = [root_item]
     if not root_item.is_dir() or root_item.is_symlink():
@@ -313,7 +333,12 @@ def _iter_managed_entries(root_item: Path, *, max_depth: int = 3) -> list[Path]:
             return
         for child in children:
             items.append(child)
-            if child.is_dir() and not child.is_symlink() and depth < max_depth:
+            if (
+                child.name not in _SKIP_MANAGED_DIR_NAMES
+                and child.is_dir()
+                and not child.is_symlink()
+                and depth < max_depth
+            ):
                 _walk(child, depth + 1)
 
     _walk(root_item, 1)
@@ -419,10 +444,12 @@ def check_host_option_a(
         home / ".zcode",
         home / ".zcode" / "cli",
     }
+    codex_dir = home / ".codex"
     for root_item in scan_roots:
         if not root_item.exists() and not root_item.is_symlink():
             continue
-        for entry in _iter_managed_entries(root_item):
+        depth_limit = 1 if root_item == codex_dir else 3
+        for entry in _iter_managed_entries(root_item, max_depth=depth_limit):
             if entry.is_symlink():
                 raw_target = Path(os.readlink(entry))
                 resolved = entry.resolve(strict=False)
@@ -630,6 +657,44 @@ def _collect_host_tools_and_wrappers(
     return declared_wrappers, used_tools
 
 
+def _collect_installed_bin_names(installs_dir: Path) -> set[str]:
+    """Collect executable filenames under `installs/` cleanly without walking deep deps."""
+    names: set[str] = set()
+    if not installs_dir.is_dir():
+        return names
+    is_darwin = sys.platform == "darwin"
+
+    def _norm(name: str) -> str:
+        return name.lower() if is_darwin else name
+
+    def _scan(cur: Path, depth: int) -> None:
+        try:
+            with os.scandir(cur) as it:
+                entries = list(it)
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir(follow_symlinks=True)
+                is_file = entry.is_file(follow_symlinks=True)
+            except OSError:
+                continue
+            if is_file:
+                if os.access(entry.path, os.X_OK):
+                    names.add(_norm(entry.name))
+                continue
+            if not is_dir or depth >= 4:
+                continue
+            if cur.name == "node_modules" and entry.name != ".bin":
+                continue
+            if entry.name in {".git", "__pycache__", ".venv"}:
+                continue
+            _scan(Path(entry.path), depth + 1)
+
+    _scan(installs_dir, 0)
+    return names
+
+
 def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
     """Verify clean host shims, wrappers, plugins, pitchfork daemons, vb, local bins, opencode.jsonc, config.local.toml, and skills."""
     if os.environ.get("CI"):
@@ -645,13 +710,21 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
     host_mise_dir = home / ".config" / "mise"
     errors: list[str] = []
 
-    # 1. Broken shims via `mise -C ~ which`
+    # 1. Dead/broken shims + active global bin-paths check
+    installs_dir = data_dir / "installs"
     shims_dir = data_dir / "shims"
     if shims_dir.is_dir():
+        is_darwin = sys.platform == "darwin"
+        installed_bins = _collect_installed_bin_names(installs_dir)
         shim_names = [
             entry.name
             for entry in sorted(shims_dir.iterdir())
             if entry.name != ".DS_Store" and (entry.is_file() or entry.is_symlink())
+        ]
+        suspect_shims = [
+            name
+            for name in shim_names
+            if (name.lower() if is_darwin else name) not in installed_bins
         ]
 
         def _probe_shim(name: str) -> str | None:
@@ -672,13 +745,29 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
                     or proc.stdout.strip()
                     or f"rc={proc.returncode}"
                 )
+                if "is a mise bin however it is not currently active" in detail:
+                    return None
                 return f"broken-shim: {name} ({detail})"
             return None
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for msg in pool.map(_probe_shim, shim_names):
-                if msg:
-                    errors.append(msg)
+        if suspect_shims:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for msg in pool.map(_probe_shim, suspect_shims):
+                    if msg:
+                        errors.append(msg)
+
+    try:
+        bin_paths_out = subprocess.check_output(
+            ["mise", "-C", str(home), "bin-paths"],
+            text=True,
+            timeout=10,
+        )
+        for line in bin_paths_out.splitlines():
+            p = line.strip()
+            if p and "shims" not in Path(p).parts and not Path(p).is_dir():
+                errors.append(f"broken-global-bin-path: {p}")
+    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+        errors.append(f"mise-bin-paths-failed: {exc}")
 
     declared_wrappers, used_tools = _collect_host_tools_and_wrappers(
         host_mise_dir, state_dir
@@ -884,6 +973,18 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
                 )
             if manifest_path.is_file() and sname not in recorded_links:
                 errors.append(f"skills-parity: {sname} not tracked in {manifest_path}")
+
+    # 10. Ignored tracked-configs symlinks still lingering under state/tracked-configs
+    ignored_prefixes = _load_ignored_prefixes(host_mise_dir)
+    tracked_dir = state_dir / "tracked-configs"
+    if tracked_dir.is_dir() and ignored_prefixes:
+        for link in sorted(tracked_dir.iterdir()):
+            try:
+                target = link.resolve(strict=True)
+            except OSError:
+                continue
+            if _is_ignored_path(target, ignored_prefixes):
+                errors.append(f"ignored-tracked-config: {link.name} -> {target}")
 
     return (
         errors,
