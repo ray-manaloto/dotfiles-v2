@@ -1090,3 +1090,14 @@ def test_host_hygiene_shim_classification_and_ignored_tracked_configs(
             repo_root / "unix" / "home" / ".config" / "mise" / "miserc.toml"
         ).read_text(encoding="utf-8")
         assert "~/dev/github/ray-manaloto/opencode/offline" in miserc_txt
+
+
+def test_host_prune_uses_daemon_id_and_backend_mismatch_cleanup() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    prune_txt = (
+        repo_root / "unix" / "home" / ".config" / "mise" / "tasks" / "host" / "prune"
+    ).read_text(encoding="utf-8")
+    assert '["pitchfork", "clean", "--daemon", daemon_id]' in prune_txt
+    assert '["pitchfork", "clean", ns, "--daemon", name]' not in prune_txt
+    assert "unused mismatched-backend tool" in prune_txt
+    assert '["mise", "-C", str(home), "uninstall", "--all", tool_name]' in prune_txt

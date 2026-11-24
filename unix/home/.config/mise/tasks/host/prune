@@ -88,6 +88,7 @@ fi
 python3 - "${apply}" "${home_dir}" "${wrappers_dir}" "${plugins_dir}" "${fnox_cfg}" <<'PY'
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -234,6 +235,52 @@ if plugins_dir.is_dir():
         else:
             print(f"WOULD REMOVE orphan plugin dir: {pdir}")
 
+# 3b. Unused mismatched-backend tools flagged by `mise doctor --json` (e.g. legacy vfox:jdx/vfox-1password)
+_MISMATCH_WARN_RE = re.compile(
+    r"tool '([^']+)' installed with explicit backend '([^']+)'\s+differs from registry recommendation"
+)
+try:
+    doc_raw = subprocess.check_output(["mise", "-C", str(home), "doctor", "--json"], text=True)
+    doc_data = json.loads(doc_raw)
+except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+    doc_data = {}
+
+doc_warnings = doc_data.get("warnings") if isinstance(doc_data, dict) else []
+uninstalled_mismatch = False
+if isinstance(doc_warnings, list):
+    seen_mismatch: set[str] = set()
+    for warning in doc_warnings:
+        if not isinstance(warning, str):
+            continue
+        m = _MISMATCH_WARN_RE.search(warning)
+        if not m:
+            continue
+        tool_name, backend = m.group(1), m.group(2)
+        if tool_name in seen_mismatch or not tool_name or tool_name.startswith("-"):
+            continue
+        seen_mismatch.add(tool_name)
+        if tool_name in used_tools or backend in used_tools:
+            continue
+        try:
+            ls_rows = json.loads(
+                subprocess.check_output(["mise", "-C", str(home), "ls", "--json", tool_name], text=True)
+            )
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            continue
+        if not isinstance(ls_rows, list) or not ls_rows:
+            continue
+        if any(isinstance(r, dict) and r.get("active") is True for r in ls_rows):
+            continue
+        if apply:
+            subprocess.run(["mise", "-C", str(home), "uninstall", "--all", tool_name], check=False)
+            uninstalled_mismatch = True
+            print(f"UNINSTALLED unused mismatched-backend tool: {tool_name} ({backend})")
+        else:
+            print(f"WOULD UNINSTALL unused mismatched-backend tool: {tool_name} ({backend})")
+
+if apply and uninstalled_mismatch:
+    subprocess.run(["mise", "-C", str(home), "reshim", "--force"], check=False)
+
 # 4. Retired stopped pitchfork entries
 if shutil.which("pitchfork"):
     try:
@@ -253,7 +300,7 @@ if shutil.which("pitchfork"):
             is_retired = daemon_id in {"dotfiles-v2/vercel-board", "legacy/pitchfork"} or ns.startswith("test.results.")
             if status == "stopped" and is_retired and ns and name:
                 if apply:
-                    subprocess.run(["pitchfork", "clean", ns, "--daemon", name], check=False)
+                    subprocess.run(["pitchfork", "clean", "--daemon", daemon_id], check=False)
                     print(f"CLEANED retired stopped pitchfork entry: {daemon_id}")
                 else:
                     print(f"WOULD CLEAN retired stopped pitchfork entry: {daemon_id}")
