@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -539,6 +540,120 @@ def test_live_host_gates_ci_skip_and_mise_audit_fixable(monkeypatch) -> None:
     )
     assert len(fixable_1) == 1 and "3.15.3" in fixable_1[0]
 
+    # check_cli_wrappers_smoke skips on container=docker and VM vm-env.sh
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setenv("container", "docker")
+    assert doc_mod.check_cli_wrappers_smoke()[0] == []
+    monkeypatch.delenv("container", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_home = Path(tmp) / "home"
+        vm_env = fake_home / ".config" / "dotfiles-v2" / "vm-env.sh"
+        vm_env.parent.mkdir(parents=True)
+        vm_env.write_text("# vm\n", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        assert doc_mod.check_cli_wrappers_smoke()[0] == []
+
+        # check_host_hygiene skips vb-zsh-check when ~/.config/board/env.sh is absent
+        monkeypatch.setattr(doc_mod.platform, "system", lambda: "Darwin")
+        called_cmds: list[list[str]] = []
+
+        def _fake_run(cmd, **_kw):
+            called_cmds.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+
+        monkeypatch.setattr(doc_mod.subprocess, "run", _fake_run)
+        monkeypatch.setattr(doc_mod.subprocess, "check_output", lambda cmd, **_kw: "[]")
+        (fake_home / ".agents" / "skills").mkdir(parents=True)
+        (fake_home / ".agents" / "skills" / ".mise-skills.json").write_text(
+            '{"links": {}}', encoding="utf-8"
+        )
+        doc_mod.check_host_hygiene(repo_root)
+        assert not any(c[:2] == ["zsh", "-ic"] for c in called_cmds)
+
+        # check_mise_lock_integrity catches orphan locks/ dir even with 0 npm:* tools
+        orphan_root = Path(tmp) / "orphan-lock-repo"
+        mise_dir = orphan_root / "unix" / "home" / ".config" / "mise"
+        (mise_dir / "locks" / "npm-stale" / "1.0.0").mkdir(parents=True)
+        (mise_dir / "config.toml").write_text(
+            '[tools]\n[settings]\nlockfile_platforms = ["macos-arm64"]\n',
+            encoding="utf-8",
+        )
+        (mise_dir / "mise.lock").write_text("[tools]\n", encoding="utf-8")
+        (mise_dir / "mise.lock").chmod(0o644)
+        orphan_errs = doc_mod.check_mise_lock_integrity(orphan_root)
+        assert any("Unreferenced npm lock directory" in e for e in orphan_errs)
+
+    # mise-audit-fixable fails when --rc 1 and vulnerabilities empty
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        empty_audit = tmp_path / "audit.json"
+        empty_err = tmp_path / "audit.err"
+        empty_audit.write_text('{"vulnerabilities": []}', encoding="utf-8")
+        empty_err.write_text("network timeout\n", encoding="utf-8")
+        rc = doc_mod.main(
+            [
+                "mise-audit-fixable",
+                "--json-file",
+                str(empty_audit),
+                "--rc",
+                "1",
+                "--err-file",
+                str(empty_err),
+            ]
+        )
+        assert rc == 1
+
+
+def test_doctor_online_uv_audit_nested_adverse_and_zcode_failures() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    online_task = repo_root / "tasks" / "doctor" / "online"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        shim_bin = tmp_path / "bin"
+        shim_bin.mkdir()
+
+        def _mk(name: str, body: str) -> None:
+            p = shim_bin / name
+            p.write_text(body, encoding="utf-8")
+            p.chmod(0o755)
+
+        _mk(
+            "mise",
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" outdated "*) echo "{}"; exit 0 ;;\n'
+            '  *" audit "*) echo \'{"vulnerabilities":[]}\'; exit 0 ;;\n'
+            '  *" secret:doctor "*) exit 0 ;;\n'
+            "esac\n"
+            "exit 0\n",
+        )
+        _mk(
+            "uv",
+            "#!/bin/sh\n"
+            'echo \'{"vulnerabilities":[{"display_id":"GHSA-1234","dependency":{"name":"pkgA","version":"1.0"},"fix_versions":["1.1"]}],"adverse_statuses":[{"dependency":{"name":"pkgB","version":"2.0"},"status":"yanked"}]}\'\n'
+            "exit 1\n",
+        )
+        _mk("zcode", "#!/bin/sh\necho 'daemon crash' >&2\nexit 1\n")
+
+        env = {
+            "HOME": str(fake_home),
+            "PATH": f"{shim_bin}:/usr/bin:/bin:/opt/homebrew/bin:{Path(sys.executable).parent}",
+        }
+        proc = subprocess.run(
+            ["/bin/bash", str(online_task)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 1
+        assert "pkgA@1.0 GHSA-1234 (fixed in 1.1)" in proc.stderr
+        assert "adverse status pkgB@2.0: yanked" in proc.stderr
+        assert "FAIL  zcode-doctor" in proc.stderr
+
 
 def test_opencode_wrapper_routing_and_worktree_rm_common_dir() -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -624,6 +739,9 @@ def test_post_task_learn_single_trigger_and_worktree_rm(monkeypatch) -> None:
     assert spec is not None and spec.loader is not None
     hook_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hook_mod)
+
+    for var in ("AGY_DISABLE_AUTO_LEARN", "PLAN_ID", "PWF_PLAN_ROOT"):
+        monkeypatch.delenv(var, raising=False)
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -746,3 +864,100 @@ def test_post_task_learn_single_trigger_and_worktree_rm(monkeypatch) -> None:
             }
         )
         assert res2 == {}, res2
+
+        # 3. Unreviewed worktree:rm fires continue, and chained worktree:rm fails closed on unreviewed slug
+        tr3 = root / "t3.jsonl"
+        art3 = root / "art3"
+        art3.mkdir()
+        tr3.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "USER_INPUT",
+                            "content": "<USER_REQUEST>Clean up unreviewed</USER_REQUEST>",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "PLANNER_RESPONSE",
+                            "tool_calls": [
+                                {
+                                    "name": "run_command",
+                                    "args": {
+                                        "CommandLine": "mise run worktree:rm --force wt-slug && mise run worktree:rm --force unreviewed-wt"
+                                    },
+                                }
+                            ],
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        res3 = hook_mod._run_hook(
+            {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(tr3),
+                "artifactDirectoryPath": str(art3),
+                "cwd": str(ws),
+            }
+        )
+        assert res3.get("decision") == "continue"
+        assert "unreviewed-wt" in res3.get("reason", "")
+
+        # 4. Same-turn learn:record-review followed by later edit_file still triggers
+        tr4 = root / "t4.jsonl"
+        art4 = root / "art4"
+        art4.mkdir()
+        tr4.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "USER_INPUT",
+                            "content": "<USER_REQUEST>More work</USER_REQUEST>",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "PLANNER_RESPONSE",
+                            "tool_calls": [
+                                {
+                                    "name": "run_command",
+                                    "args": {
+                                        "CommandLine": "mise run learn:record-review --plan-key /tmp/p/task_plan.md --plan-sha256 deadbeef --outcome no_new_proposals --survivor-count 0"
+                                    },
+                                },
+                                {
+                                    "name": "edit_file",
+                                    "args": {"Path": str(ws / "later.py")},
+                                },
+                            ],
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        res4 = hook_mod._run_hook(
+            {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(tr4),
+                "artifactDirectoryPath": str(art4),
+                "cwd": str(ws),
+            }
+        )
+        assert res4.get("decision") == "continue", res4
+
+        # 5. _slug_matches_plan_key ignores unrelated ancestor path segments
+        assert not hook_mod._slug_matches_plan_key(
+            "v2", "/tmp/v2/repo-other/.planning/2026-11-23-other/task_plan.md"
+        )
+        assert hook_mod._slug_matches_plan_key(
+            "other", "/tmp/v2/repo-other/.planning/2026-11-23-other/task_plan.md"
+        )

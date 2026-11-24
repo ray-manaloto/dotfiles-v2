@@ -190,7 +190,16 @@ def _read_shared_reviews(
 def _slug_matches_plan_key(slug: str, plan_key: str) -> bool:
     parts = Path(plan_key).parts
     suffix = f"-{slug}"
-    return any(part == slug or part.endswith(suffix) for part in parts)
+    candidates: list[str] = []
+    if ".planning" in parts:
+        p_idx = parts.index(".planning")
+        if p_idx > 0:
+            candidates.append(parts[p_idx - 1])
+        if p_idx + 1 < len(parts):
+            candidates.append(parts[p_idx + 1])
+    elif len(parts) >= 2:
+        candidates.append(parts[-2])
+    return any(cand == slug or cand.endswith(suffix) for cand in candidates)
 
 
 def _worktree_slug_cleared_in_reviews(
@@ -820,24 +829,42 @@ def _plan_sha256(plan_path: Path) -> str | None:
         return None
 
 
-def _extract_worktree_rm_slug(command: str) -> str | None:
-    match = WORKTREE_RM_RE.search(command)
-    if not match:
-        return None
-    tail = match.group(1).strip()
-    if not tail:
-        return None
-    try:
-        tokens = shlex.split(tail)
-    except ValueError:
-        tokens = tail.split()
-    for token in tokens:
-        if token.startswith("-"):
+def _extract_worktree_rm_slugs(command: str) -> tuple[list[str], list[tuple[int, int]]]:
+    slugs: list[str] = []
+    spans: list[tuple[int, int]] = []
+    for match in WORKTREE_RM_RE.finditer(command):
+        tail = match.group(1).strip()
+        if not tail:
             continue
-        if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", token):
-            return token
-        return None
-    return None
+        try:
+            tokens = shlex.split(tail)
+        except ValueError:
+            tokens = tail.split()
+        for token in tokens:
+            if token.startswith("-"):
+                continue
+            if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", token):
+                slugs.append(token)
+                spans.append(match.span())
+            break
+    return slugs, spans
+
+
+def _extract_worktree_rm_slug(command: str) -> str | None:
+    slugs, _ = _extract_worktree_rm_slugs(command)
+    return slugs[0] if slugs else None
+
+
+def _strip_spans(command: str, spans: list[tuple[int, int]]) -> str:
+    if not spans:
+        return command
+    parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        parts.append(command[cursor:start])
+        cursor = end
+    parts.append(command[cursor:])
+    return "".join(parts)
 
 
 def _analyze_slice(
@@ -848,10 +875,10 @@ def _analyze_slice(
     *,
     transcript_path: Path | None = None,
     line_offset: int = 0,
-) -> tuple[bool, bool, list[Path], str | None, str | None, bool]:
-    """Return (already_learned, has_task_work, touched_plans, closed_worktree_slug, ship_closeout, is_zero_error_learn_apply_docs_only)."""
+) -> tuple[bool, bool, list[Path], list[str], str | None, bool]:
+    """Return (already_learned, has_task_work, touched_plans, closed_worktree_slugs, ship_closeout, is_zero_error_learn_apply_docs_only)."""
     if last_user_input and _is_explicit_user_learn(last_user_input):
-        return True, False, [], None, None, False
+        return True, False, [], [], None, False
 
     parsed: list[tuple[int, dict[str, Any]]] = []
     last_user_pos: int | None = None
@@ -880,16 +907,15 @@ def _analyze_slice(
     }
     full_records = _load_full_records(transcript_path, expected_types)
 
-    last_learn_idx = -1
-    saw_learn_cmd = False
-    last_work_idx = -1
+    last_learn_pos: tuple[int, int] = (-1, -1)
+    last_work_pos: tuple[int, int] = (-1, -1)
     has_task_work = False
     touched_plans: list[Path] = []
     edited_work_paths: list[Path | None] = []
     read_learning_proposal = False
     has_turn_error = False
     turn_user_text = last_user_input
-    closed_worktree_slug: str | None = None
+    closed_worktree_slugs: list[str] = []
     ship_closeout: str | None = None
 
     for idx, (abs_idx, raw_entry) in enumerate(turn_entries):
@@ -919,14 +945,15 @@ def _analyze_slice(
                 and SYSTEM_LEARN_RE.search(content)
             )
         ):
-            last_learn_idx = idx
+            last_learn_pos = (idx, -1)
 
         tool_calls = entry.get("tool_calls") or []
         if not isinstance(tool_calls, list):
             continue
-        for tc in tool_calls:
+        for tc_idx, tc in enumerate(tool_calls):
             if not isinstance(tc, dict):
                 continue
+            pos = (idx, tc_idx)
             name = tc.get("name")
             args = tc.get("args")
             if name in EDIT_TOOLS:
@@ -936,7 +963,7 @@ def _analyze_slice(
                     target_path is not None
                     and target_path.name == "learning_proposal.md"
                 ) or "learning_proposal.md" in target:
-                    last_learn_idx = idx
+                    last_learn_pos = pos
                 elif (
                     artifact_dir is not None
                     and target_path is not None
@@ -945,7 +972,7 @@ def _analyze_slice(
                     continue
                 else:
                     has_task_work = True
-                    last_work_idx = idx
+                    last_work_pos = pos
                     is_planning = target_path is not None and (
                         (
                             base_dir is not None
@@ -960,7 +987,7 @@ def _analyze_slice(
             elif name == "read_file":
                 target = _tool_target_str(args)
                 if "post-task-learn/SKILL.md" in target:
-                    last_learn_idx = idx
+                    last_learn_pos = pos
                 p = _path_from_arg(args, base_dir)
                 if (
                     p is not None and p.name == "learning_proposal.md"
@@ -972,24 +999,21 @@ def _analyze_slice(
                 cmd = _unquote_truncated(args.get("CommandLine"))
                 if cmd:
                     if LEARN_CMD_RE.search(cmd):
-                        last_learn_idx = idx
-                        saw_learn_cmd = True
-                    wt_slug = _extract_worktree_rm_slug(cmd)
-                    if wt_slug:
-                        closed_worktree_slug = wt_slug
-                        last_work_idx = idx
-                        cmd_without_wt = WORKTREE_RM_RE.sub("", cmd)
-                        if TASK_CMD_RE.search(cmd_without_wt):
-                            has_task_work = True
-                    elif TASK_CMD_RE.search(cmd):
+                        last_learn_pos = pos
+                    wt_slugs, wt_spans = _extract_worktree_rm_slugs(cmd)
+                    for slug in wt_slugs:
+                        if slug not in closed_worktree_slugs:
+                            closed_worktree_slugs.append(slug)
+                    cmd_without_wt = _strip_spans(cmd, wt_spans)
+                    if TASK_CMD_RE.search(cmd_without_wt):
                         has_task_work = True
-                        last_work_idx = idx
+                        last_work_pos = pos
                     ship_match = SHIP_CLOSEOUT_RE.search(cmd)
                     if ship_match:
                         ship_closeout = ship_match.group(1)
-                        last_work_idx = idx
+                        last_work_pos = pos
 
-    already_learned = (last_learn_idx > last_work_idx) or saw_learn_cmd
+    already_learned = last_learn_pos > last_work_pos
     is_zero_error_learn_apply_docs_only = (
         bool(edited_work_paths)
         and all(_is_learn_doc_path(p) for p in edited_work_paths)
@@ -1004,7 +1028,7 @@ def _analyze_slice(
         already_learned,
         has_task_work,
         touched_plans,
-        closed_worktree_slug,
+        closed_worktree_slugs,
         ship_closeout,
         is_zero_error_learn_apply_docs_only,
     )
@@ -1179,7 +1203,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         already_learned,
         has_task_work,
         touched_plans,
-        closed_worktree_slug,
+        closed_worktree_slugs,
         ship_closeout,
         is_zero_error_learn_apply_docs_only,
     ) = _analyze_slice(
@@ -1325,13 +1349,19 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
 
     _write_state(state_path, len(lines), learned_plans, None, owing_learn)
 
-    if closed_worktree_slug:
+    if closed_worktree_slugs:
         review_details = _read_shared_review_details()
-        if not _worktree_slug_cleared_in_reviews(
-            closed_worktree_slug, review_details, learned_plans, owing_learn
-        ):
+        unreviewed_slugs = [
+            slug
+            for slug in closed_worktree_slugs
+            if not _worktree_slug_cleared_in_reviews(
+                slug, review_details, learned_plans, owing_learn
+            )
+        ]
+        if unreviewed_slugs:
+            slug_list = ", ".join(unreviewed_slugs)
             reason = (
-                f"Automated post-task /learn check: worktree PWF task '{closed_worktree_slug}' finished. "
+                f"Automated post-task /learn check: worktree PWF task '{slug_list}' finished. "
                 + BASE_TRIGGER_SUFFIX
             )
             return {"decision": "continue", "reason": reason}

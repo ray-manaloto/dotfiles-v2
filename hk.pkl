@@ -183,8 +183,12 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
       #"rc=0; for f in {{ files }}; do if [ -f "$f" ] && grep -q '^#USAGE ' "$f"; then usage lint -W -q "$f" || rc=1; fi; done; exit $rc"#
   }
   ["jouet-rules"] = new Step {
-    glob = List("unix/home/.config/jouet/rules/**/*.toml")
-    check = "jouet rule test --all"
+    glob =
+      List(
+        "unix/home/.config/jouet/rules/**/*.toml",
+        "unix/home/.config/jouet/rules/**/*.luau",
+      )
+    check = "python3 -I -B tasks/py/doctor_checks.py jouet-rules"
   }
   ["pitchfork-config"] = new Step {
     glob = List("pitchfork.toml", "unix/home/.config/pitchfork/config.toml")

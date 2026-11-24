@@ -155,16 +155,23 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
     tools_cfg = cfg.get("tools", {})
     tools_lock = lock.get("tools", {})
 
+    resolved_root = repo_root.resolve(strict=False)
+    mise_cfg_root = resolved_root / "unix" / "home" / ".config" / "mise"
     referenced_aube_dirs: set[Path] = set()
+    npm_lock_unresolved = False
     for tool_name, spec in tools_cfg.items():
         want_ver = _tool_version(spec)
         entries = tools_lock.get(tool_name)
         if not isinstance(entries, list) or not entries:
             errors.append(f"mise.lock missing entry for [tools].{tool_name!r}")
+            if tool_name.startswith("npm:"):
+                npm_lock_unresolved = True
             continue
         entry_dicts = [e for e in entries if isinstance(e, dict)]
         if not entry_dicts:
             errors.append(f"mise.lock invalid entries for [tools].{tool_name!r}")
+            if tool_name.startswith("npm:"):
+                npm_lock_unresolved = True
             continue
         if want_ver:
             matching = [e for e in entry_dicts if str(e.get("version", "")) == want_ver]
@@ -173,6 +180,8 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                 errors.append(
                     f"mise.lock version mismatch for {tool_name}: config={want_ver}, lock=[{got_vers}]"
                 )
+                if tool_name.startswith("npm:"):
+                    npm_lock_unresolved = True
                 continue
         else:
             matching = entry_dicts
@@ -186,20 +195,25 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                     break
             if not aube_rel:
                 errors.append(f"mise.lock missing aube.path for {tool_name}@{want_ver}")
+                npm_lock_unresolved = True
                 continue
-            aube_dir = (
-                repo_root / "unix" / "home" / ".config" / "mise" / aube_rel
-            ).resolve(strict=False)
+            aube_dir = (mise_cfg_root / aube_rel).resolve(strict=False)
+            if not aube_dir.is_relative_to(resolved_root):
+                errors.append(
+                    f"mise.lock aube.path escapes repository root for {tool_name}@{want_ver}: {aube_rel!r}"
+                )
+                npm_lock_unresolved = True
+                continue
             referenced_aube_dirs.add(aube_dir)
             if not aube_dir.is_dir():
                 errors.append(
-                    f"Missing npm lock directory {aube_dir.relative_to(repo_root)} referenced by mise.lock"
+                    f"Missing npm lock directory {aube_dir.relative_to(resolved_root)} referenced by mise.lock"
                 )
                 continue
             for required_file in ("package.json", "aube-lock.yaml"):
                 fpath = aube_dir / required_file
                 if not fpath.is_file():
-                    errors.append(f"Missing {fpath.relative_to(repo_root)}")
+                    errors.append(f"Missing {fpath.relative_to(resolved_root)}")
         else:
             allowed_os = _tool_os_list(spec)
             for plat in platforms:
@@ -231,20 +245,20 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                 if (mode & 0o044) != 0o044:
                     errors.append(
                         f"Non-secret lockfile has restrictive mode {oct(mode)} (expected world-readable 0644): "
-                        f"{file_path.relative_to(repo_root)}"
+                        f"{file_path.resolve(strict=False).relative_to(resolved_root)}"
                     )
-        for pkg_dir in sorted(locks_dir.iterdir()):
-            if not pkg_dir.is_dir():
-                continue
-            for ver_dir in sorted(pkg_dir.iterdir()):
-                if (
-                    ver_dir.is_dir()
-                    and referenced_aube_dirs
-                    and ver_dir.resolve(strict=False) not in referenced_aube_dirs
-                ):
-                    errors.append(
-                        f"Unreferenced npm lock directory in locks/: {ver_dir.relative_to(repo_root)}"
-                    )
+        if not npm_lock_unresolved:
+            for pkg_dir in sorted(locks_dir.iterdir()):
+                if not pkg_dir.is_dir():
+                    continue
+                for ver_dir in sorted(pkg_dir.iterdir()):
+                    if (
+                        ver_dir.is_dir()
+                        and ver_dir.resolve(strict=False) not in referenced_aube_dirs
+                    ):
+                        errors.append(
+                            f"Unreferenced npm lock directory in locks/: {ver_dir.resolve(strict=False).relative_to(resolved_root)}"
+                        )
     return errors
 
 
@@ -382,6 +396,7 @@ def check_host_option_a(
         home / ".local" / "bin",
         home / ".config" / "fnox",
         home / ".config" / "git",
+        home / ".config" / "herdr-app",
         home / ".config" / "jouet" / "rules",
         home / ".config" / "zsh",
         home / ".config" / "starship.toml",
@@ -510,14 +525,19 @@ def check_mise_doctor_clean() -> tuple[list[str], str]:
     if os.environ.get("CI"):
         return [], "CI: skipped live host mise-doctor-clean"
     home = Path.home()
-    proc = subprocess.run(
-        ["mise", "-C", str(home), "doctor", "--json"],
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        timeout=15,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["mise", "-C", str(home), "doctor", "--json"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+        return [
+            f"mise-doctor-clean: failed to run `mise -C ~ doctor --json`: {exc}"
+        ], ""
     errors: list[str] = []
     if not proc.stdout.strip():
         return [
@@ -527,6 +547,10 @@ def check_mise_doctor_clean() -> tuple[list[str], str]:
         data = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         return [f"mise-doctor-clean: invalid JSON: {exc}"], ""
+    if not isinstance(data, dict):
+        return [
+            f"mise-doctor-clean: expected JSON object, got {type(data).__name__}"
+        ], ""
     if proc.returncode != 0:
         errors.append(f"mise-doctor-clean: exited {proc.returncode}")
     for err in data.get("errors") or []:
@@ -631,14 +655,17 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
         ]
 
         def _probe_shim(name: str) -> str | None:
-            proc = subprocess.run(
-                ["mise", "-C", str(home), "which", name],
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=10,
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    ["mise", "-C", str(home), "which", name],
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+                return f"broken-shim: {name} ({exc})"
             if proc.returncode != 0:
                 detail = (
                     proc.stderr.strip()
@@ -725,24 +752,27 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
                 if status == "stopped" and is_retired:
                     errors.append(f"retired-pitchfork-daemon: {daemon_id} (stopped)")
 
-    # 5. Interactive zsh `which vb && vb whoami`
-    if shutil.which("zsh") and (
-        platform.system() == "Darwin"
-        or (home / ".config" / "board" / "env.sh").is_file()
-    ):
-        vb_proc = subprocess.run(
-            ["zsh", "-ic", "which vb && vb whoami"],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
-        )
-        if vb_proc.returncode != 0:
-            errors.append(
-                f"vb-zsh-check: `zsh -ic 'which vb && vb whoami'` failed (rc={vb_proc.returncode}): "
-                f"{vb_proc.stderr.strip() or vb_proc.stdout.strip()}"
+    # 5. Interactive zsh `which vb && vb whoami` (only where board env is configured)
+    if shutil.which("zsh") and (home / ".config" / "board" / "env.sh").is_file():
+        try:
+            vb_proc = subprocess.run(
+                ["zsh", "-ic", "which vb && vb whoami"],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
             )
+        except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+            errors.append(
+                f"vb-zsh-check: `zsh -ic 'which vb && vb whoami'` failed: {exc}"
+            )
+        else:
+            if vb_proc.returncode != 0:
+                errors.append(
+                    f"vb-zsh-check: `zsh -ic 'which vb && vb whoami'` failed (rc={vb_proc.returncode}): "
+                    f"{vb_proc.stderr.strip() or vb_proc.stdout.strip()}"
+                )
 
     # 6. Stale ~/.local/bin/{uv,uvx,hermes,hermes-acp,hermes-agent}
     local_bin = home / ".local" / "bin"
@@ -863,10 +893,13 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
 
 def check_cli_wrappers_smoke() -> tuple[list[str], str]:
     """Smoke-test active CLI wrappers for opencode, codex, and agy without proxy warnings."""
-    if os.environ.get("CI"):
-        return [], "CI: skipped live cli-wrappers-smoke"
-
     home = Path.home()
+    if (
+        os.environ.get("CI")
+        or os.environ.get("container") == "docker"  # noqa: SIM112
+        or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
+    ):
+        return [], "CI/container/VM: skipped live cli-wrappers-smoke"
     env = dict(os.environ)
     env.pop("__MISE_ACTIVE_WRAPPERS", None)
     wrappers_bin = (
@@ -930,32 +963,42 @@ def check_jouet_rules(repo_root: Path) -> list[str]:
             for p in rules_dir.rglob("*")
             if p.suffix in {".toml", ".luau"} and p.is_file()
         ):
-            proc = subprocess.run(
-                ["jouet", "rule", "test", str(rule_file)],
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=15,
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    ["jouet", "rule", "test", str(rule_file)],
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+                errors.append(
+                    f"jouet-rules: {rule_file.relative_to(repo_root)} failed: {exc}"
+                )
+                continue
             if proc.returncode != 0:
                 errors.append(
                     f"jouet-rules: {rule_file.relative_to(repo_root)} failed: "
                     f"{proc.stderr.strip() or proc.stdout.strip()}"
                 )
-    all_proc = subprocess.run(
-        ["jouet", "rule", "test", "--all"],
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        timeout=30,
-        check=False,
-    )
-    if all_proc.returncode != 0:
-        errors.append(
-            f"jouet-rules: `jouet rule test --all` failed: "
-            f"{all_proc.stderr.strip() or all_proc.stdout.strip()}"
+    try:
+        all_proc = subprocess.run(
+            ["jouet", "rule", "test", "--all"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
         )
+    except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+        errors.append(f"jouet-rules: `jouet rule test --all` failed: {exc}")
+    else:
+        if all_proc.returncode != 0:
+            errors.append(
+                f"jouet-rules: `jouet rule test --all` failed: "
+                f"{all_proc.stderr.strip() or all_proc.stdout.strip()}"
+            )
     return errors
 
 
@@ -980,14 +1023,18 @@ def check_usage_lint(repo_root: Path) -> list[str]:
             if not re.search(r"^#USAGE ", text, re.MULTILINE):
                 continue
             checked += 1
-            proc = subprocess.run(
-                ["usage", "lint", "-W", "-q", str(path)],
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=15,
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    ["usage", "lint", "-W", "-q", str(path)],
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+                errors.append(f"usage-lint: {path.relative_to(repo_root)}: {exc}")
+                continue
             if proc.returncode != 0 or proc.stderr.strip() or proc.stdout.strip():
                 detail = (
                     proc.stderr.strip()
@@ -1022,16 +1069,22 @@ def check_pitchfork_config(repo_root: Path) -> list[str]:
             env = dict(os.environ)
             env["HOME"] = str(tmp_dir)
             env["XDG_CONFIG_HOME"] = str(tmp_dir / ".config")
-            proc = subprocess.run(
-                ["pitchfork", "daemons", "--json"],
-                cwd=tmp_dir,
-                env=env,
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=15,
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    ["pitchfork", "daemons", "--json"],
+                    cwd=tmp_dir,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:  # fmt: skip
+                errors.append(
+                    f"pitchfork-config: {cfg.relative_to(repo_root)} failed: {exc}"
+                )
+                continue
             if proc.returncode != 0:
                 errors.append(
                     f"pitchfork-config: {cfg.relative_to(repo_root)} failed: "
@@ -1340,8 +1393,10 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
     return errors
 
 
-def evaluate_mise_audit_payload(data: dict[str, Any]) -> tuple[list[str], list[str]]:
+def evaluate_mise_audit_payload(data: Any) -> tuple[list[str], list[str]]:
     """Return `(fixable_errors, unpatched_advisories)` from `mise audit --json` payload."""
+    if not isinstance(data, dict):
+        return [f"expected JSON object, got {type(data).__name__}"], []
     fixable: list[str] = []
     advisories: list[str] = []
     for vuln in data.get("vulnerabilities") or []:
@@ -1414,6 +1469,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("config-hygiene")
     p_audit = sub.add_parser("mise-audit-fixable")
     p_audit.add_argument("--json-file", type=Path, required=True)
+    p_audit.add_argument("--rc", type=int, default=0)
+    p_audit.add_argument("--err-file", type=Path, default=None)
     sub.add_parser("post-commit-advisory")
 
     args = parser.parse_args(argv)
@@ -1476,13 +1533,33 @@ def main(argv: list[str] | None = None) -> int:
             "configs and programs.json clean",
         )
     if args.cmd == "mise-audit-fixable":
-        data = json.loads(args.json_file.read_text(encoding="utf-8"))
+        err_text = (
+            args.err_file.read_text(encoding="utf-8").strip()
+            if args.err_file is not None and args.err_file.is_file()
+            else ""
+        )
+        try:
+            data = json.loads(args.json_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:  # fmt: skip
+            sys.stderr.write(f"FAIL  mise-audit: invalid JSON ({exc})\n")
+            if err_text:
+                sys.stderr.write(f"{err_text}\n")
+            return 1
         fixable, advisories = evaluate_mise_audit_payload(data)
         for adv in advisories:
             sys.stdout.write(f"ADVISORY  mise-audit: {adv}\n")
         if fixable:
             for item in fixable:
                 sys.stderr.write(f"FAIL  mise-audit: fixable {item}\n")
+            if err_text:
+                sys.stderr.write(f"{err_text}\n")
+            return 1
+        if args.rc != 0 and not (
+            isinstance(data, dict) and data.get("vulnerabilities")
+        ):
+            sys.stderr.write(f"FAIL  mise-audit: exited {args.rc}\n")
+            if err_text:
+                sys.stderr.write(f"{err_text}\n")
             return 1
         sys.stdout.write("PASS  mise-audit (0 fixable advisories)\n")
         return 0

@@ -61,13 +61,13 @@ else
 	if [[ ${verbose} == "true" ]]; then
 		cat "${audit_file}"
 	fi
-	if ! python3 -I -B "${repo_root}/tasks/py/doctor_checks.py" mise-audit-fixable --json-file "${audit_file}"; then
+	if ! python3 -I -B "${repo_root}/tasks/py/doctor_checks.py" mise-audit-fixable --json-file "${audit_file}" --rc "${audit_rc}" --err-file "${audit_err}"; then
 		fail_count=$((fail_count + 1))
 	fi
 fi
 rm -f "${audit_file}" "${audit_err}"
 
-# uv audit: fail on fixable/active vulnerabilities; ignore unpatched until fixed.
+# uv audit: fail on fixable vulnerabilities, adverse statuses, or command failures; ignore unpatched until fixed.
 uv_file="$(mktemp)"
 uv_err="$(mktemp)"
 uv_rc=0
@@ -77,40 +77,75 @@ fi
 if [[ ${verbose} == "true" && -s ${uv_file} ]]; then
 	cat "${uv_file}"
 fi
-if ! python3 -I -B - "${uv_file}" "${uv_rc}" <<'PY'
+if ! python3 -I -B - "${uv_file}" "${uv_rc}" "${uv_err}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 payload_path = Path(sys.argv[1])
 rc = int(sys.argv[2])
+err_path = Path(sys.argv[3])
 raw = payload_path.read_text(encoding="utf-8") if payload_path.is_file() else ""
+err_text = err_path.read_text(encoding="utf-8").strip() if err_path.is_file() else ""
 if not raw.strip():
     sys.stderr.write(f"FAIL  uv-audit: empty JSON output (rc={rc})\n")
+    if err_text:
+        sys.stderr.write(f"{err_text}\n")
     raise SystemExit(1)
-data = json.loads(raw)
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as exc:
+    sys.stderr.write(f"FAIL  uv-audit: invalid JSON ({exc})\n")
+    if err_text:
+        sys.stderr.write(f"{err_text}\n")
+    raise SystemExit(1)
+if not isinstance(data, dict):
+    sys.stderr.write(f"FAIL  uv-audit: expected JSON object, got {type(data).__name__}\n")
+    raise SystemExit(1)
+
 vulns = data.get("vulnerabilities") or []
+adverse_statuses = data.get("adverse_statuses") or []
 fixable = []
 advisory = []
 for v in vulns:
     if not isinstance(v, dict):
         continue
+    dep = v.get("dependency") if isinstance(v.get("dependency"), dict) else {}
     fix_vers = v.get("fix_versions") or v.get("fixed") or []
-    vid = v.get("id") or "unknown"
-    pkg = v.get("name") or v.get("package") or "unknown"
-    ver = v.get("version") or ""
+    vid = v.get("display_id") or v.get("id") or "unknown"
+    pkg = dep.get("name") or v.get("name") or v.get("package") or "unknown"
+    ver = dep.get("version") or v.get("version") or ""
     if fix_vers:
         fixable.append(f"{pkg}@{ver} {vid} (fixed in {', '.join(map(str, fix_vers))})")
     else:
         advisory.append(f"{pkg}@{ver} {vid} (no upstream fix yet)")
+
+adverse_msgs = []
+for adv in adverse_statuses:
+    if isinstance(adv, dict):
+        adep = adv.get("dependency") if isinstance(adv.get("dependency"), dict) else {}
+        apkg = adep.get("name") or adv.get("name") or adv.get("package") or "unknown"
+        aver = adep.get("version") or adv.get("version") or ""
+        astatus = adv.get("status") or adv.get("reason") or adv.get("adverse_status") or json.dumps(adv)
+        adverse_msgs.append(f"{apkg}@{aver}: {astatus}")
+    else:
+        adverse_msgs.append(str(adv))
+
 for item in advisory:
     sys.stdout.write(f"ADVISORY  uv-audit: {item}\n")
+for item in adverse_msgs:
+    sys.stderr.write(f"FAIL  uv-audit: adverse status {item}\n")
 if fixable:
     for item in fixable:
         sys.stderr.write(f"FAIL  uv-audit: fixable {item}\n")
+if fixable or adverse_msgs:
+    if err_text:
+        sys.stderr.write(f"{err_text}\n")
     raise SystemExit(1)
 if rc != 0 and not vulns:
     sys.stderr.write(f"FAIL  uv-audit: exited {rc}\n")
+    if err_text:
+        sys.stderr.write(f"{err_text}\n")
     raise SystemExit(1)
 sys.stdout.write("PASS  uv-audit (0 fixable advisories)\n")
 PY
@@ -126,24 +161,59 @@ fi
 
 # zcode doctor --json
 if command -v zcode >/dev/null 2>&1; then
-	zcode_out="$(ZCODE_CLI_SETTINGS_FILE="${repo_root}/unix/home/.zcode/cli/setting.json" zcode doctor --json </dev/null)"
-	if [[ ${verbose} == "true" ]]; then
+	zcode_err="$(mktemp)"
+	zcode_out=""
+	zcode_rc=0
+	if ! zcode_out="$(ZCODE_CLI_SETTINGS_FILE="${repo_root}/unix/home/.zcode/cli/setting.json" zcode doctor --json </dev/null 2>"${zcode_err}")"; then
+		zcode_rc=$?
+	fi
+	if [[ ${verbose} == "true" && -n ${zcode_out} ]]; then
 		printf '%s\n' "${zcode_out}"
 	fi
-	if ! python3 -I -B - "${zcode_out}" <<'PY'
+	if ! python3 -I -B - "${zcode_out}" "${zcode_rc}" "${zcode_err}" <<'PY'
 import json
 import sys
+from pathlib import Path
 
-data = json.loads(sys.argv[1])
-cfg = data.get("configuration", {})
-assert cfg.get("ok") is True, cfg
-assert cfg.get("user", {}).get("status") == "loaded", cfg
-assert cfg.get("diagnostics") == [], cfg
+raw = sys.argv[1]
+rc = int(sys.argv[2])
+err_path = Path(sys.argv[3])
+err_text = err_path.read_text(encoding="utf-8").strip() if err_path.is_file() else ""
+if not raw.strip():
+    sys.stderr.write(f"FAIL  zcode-doctor: empty JSON output (rc={rc})\n")
+    if err_text:
+        sys.stderr.write(f"{err_text}\n")
+    raise SystemExit(1)
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as exc:
+    sys.stderr.write(f"FAIL  zcode-doctor: invalid JSON ({exc}; rc={rc})\n")
+    if err_text:
+        sys.stderr.write(f"{err_text}\n")
+    raise SystemExit(1)
+if not isinstance(data, dict):
+    sys.stderr.write(f"FAIL  zcode-doctor: expected JSON object, got {type(data).__name__}\n")
+    raise SystemExit(1)
+cfg = data.get("configuration")
+if not isinstance(cfg, dict):
+    sys.stderr.write("FAIL  zcode-doctor: missing configuration object\n")
+    raise SystemExit(1)
+if (
+    rc != 0
+    or cfg.get("ok") is not True
+    or cfg.get("user", {}).get("status") != "loaded"
+    or cfg.get("diagnostics") != []
+):
+    sys.stderr.write(f"FAIL  zcode-doctor (rc={rc}): {json.dumps(cfg)}\n")
+    if err_text:
+        sys.stderr.write(f"{err_text}\n")
+    raise SystemExit(1)
 sys.stdout.write("PASS  zcode-doctor\n")
 PY
 	then
 		fail_count=$((fail_count + 1))
 	fi
+	rm -f "${zcode_err}"
 else
 	printf 'SKIP  zcode-doctor (zcode not installed)\n'
 fi
