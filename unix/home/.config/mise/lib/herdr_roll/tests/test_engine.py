@@ -1001,6 +1001,74 @@ class EngineTests(unittest.TestCase):
         rc_bad = cli.main(["snapshot", "--harnesses", "unknown_agent"])
         self.assertEqual(rc_bad, engine.EXIT_REFUSED)
 
+    def test_roll_tasks_resolve_repo_root_to_pyproject_dir(self) -> None:
+        mise_dir = Path(__file__).resolve().parents[3]
+        tasks_dir = mise_dir / "tasks" / "roll"
+        expected_root = Path(__file__).resolve().parents[7]
+        self.assertTrue((expected_root / "pyproject.toml").is_file())
+        for name in ("snapshot", "restart", "stop", "start", "verify", "self"):
+            text = (tasks_dir / name).read_text(encoding="utf-8")
+            self.assertIn(
+                'repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"', text
+            )
+            self.assertNotIn('${lib_dir}/../../../.."', text)
+            self.assertIn("if [[ ${common_dir} == /* ]]; then", text)
+        learn_dir = mise_dir / "tasks" / "learn"
+        for name in ("heal", "mark", "propose", "record-review", "render-proposal"):
+            text = (learn_dir / name).read_text(encoding="utf-8")
+            self.assertIn("if [[ ${common_dir} == /* ]]; then", text)
+        pwf_status = (mise_dir / "tasks" / "pwf" / "status").read_text(encoding="utf-8")
+        self.assertIn("if [[ ${common_dir} == /* ]]; then", pwf_status)
+
+    def test_service_re_excludes_claude_bg_daemons_and_hermes_tui(self) -> None:
+        live = LiveClient.__new__(LiveClient)
+        live._lock = threading.RLock()
+        live.max_workers = 1
+        live.listed = True
+        live.spaces = []
+        live.terminals = {
+            "t_c": {"address": "t_c", "state": "live"},
+            "t_h": {"address": "t_h", "state": "live"},
+        }
+        live.info = {
+            "t_c": {"foreground": {"pid": 100, "argv": ["claude"]}},
+            "t_h": {"foreground": {"pid": 200, "argv": ["python3.14", "hermes"]}},
+        }
+        live.procs = {
+            100: (1, "Mon", "claude"),
+            101: (
+                100,
+                "Mon",
+                "'claude bg-pty-host' --bg-pty-host /tmp/cc-daemon/spare.pty.sock",
+            ),
+            102: (100, "Mon", "claude bg-spare --bg-spare /tmp/cc-daemon/spare"),
+            200: (1, "Mon", "python3.14 hermes chat --tui"),
+            201: (
+                200,
+                "Mon",
+                "/opt/node --expose-gc /Users/u/.local/share/hermes-cli.noindex/tui/dist/entry.js",
+            ),
+        }
+        with mock.patch("herdr_roll.herdr.time.sleep"):
+            self.assertEqual(
+                live.active_jobs(
+                    "t_c",
+                    HarnessKind.CLAUDE,
+                    {HarnessKind.CLAUDE: ("claude",)},
+                    confirm_delay=0.05,
+                ),
+                [],
+            )
+            self.assertEqual(
+                live.active_jobs(
+                    "t_h",
+                    HarnessKind.HERMES,
+                    {HarnessKind.HERMES: ("hermes",)},
+                    confirm_delay=0.05,
+                ),
+                [],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

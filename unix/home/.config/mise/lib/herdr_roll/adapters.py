@@ -45,8 +45,18 @@ HARNESS_BINARIES: dict[HarnessKind, tuple[str, ...]] = {
     HarnessKind.CLAUDE: ("claude",),
     HarnessKind.OPENCODE: ("opencode",),
     HarnessKind.HERMES: ("hermes",),
-    HarnessKind.ZCODE: ("zcode",),
+    HarnessKind.ZCODE: ("zcode", "zcode-cli"),
 }
+
+
+def _is_zcode_token(tok: str) -> bool:
+    return Path(tok).name in {
+        "zcode",
+        "zcode.js",
+        "zcode.mjs",
+        "zcode.cjs",
+        "zcode-cli",
+    }
 
 
 class AdapterSkipError(Exception):
@@ -807,8 +817,8 @@ class ClaudeAdapter(BaseAdapter):
         rec = claude_record_for_tree(fg_pid, tree_pids)
         return (
             isinstance(rec, dict)
-            and "bridgeSessionId" in rec
-            and rec.get("bridgeSessionId") is None
+            and not rec.get("bridgeSessionId")
+            and rec.get("kind") != "bg"
             and rec.get("nameSource") != "user"
             and isinstance(rec.get("startedAt"), int)
         )
@@ -1231,10 +1241,12 @@ class HermesAdapter(BaseAdapter):
         del fg_pid, tree_pids
         if status_state is not None and status_state not in IDLE_STATES:
             return False
-        tail_lines = screen_text.splitlines()[-5:]
+        nonblank = [line for line in screen_text.splitlines() if line.strip()]
+        tail_lines = nonblank[-8:]
+        tail_text = "\n".join(tail_lines)
         has_prompt = any(line.lstrip().startswith("❯") for line in tail_lines)
         has_spinner = any(
-            spin in screen_text
+            spin in tail_text
             for spin in ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
         )
         return has_prompt and not has_spinner
@@ -1337,7 +1349,7 @@ class ZCodeAdapter(BaseAdapter):
         return (
             program_name(fg_argv) == "zcode"
             or program_name(term_argv) == "zcode"
-            or any(Path(tok).name == "zcode" for tok in (*fg_argv, *term_argv))
+            or any(_is_zcode_token(tok) for tok in (*fg_argv, *term_argv))
         )
 
     def _lookup_sqlite(self, cwd: str | None, title: str) -> str | None:
@@ -1405,11 +1417,12 @@ class ZCodeAdapter(BaseAdapter):
         del fg_pid, tree_pids
         if status_state is not None and status_state not in IDLE_STATES:
             return False
-        if not screen_text.strip():
+        nonblank = [line for line in screen_text.splitlines() if line.strip()]
+        if not nonblank:
             return False
-        lower = screen_text.lower()
+        lower_tail = "\n".join(nonblank[-8:]).lower()
         return not any(
-            busy in lower
+            busy in lower_tail
             for busy in (
                 "esc to cancel",
                 "thinking…",
@@ -1429,7 +1442,8 @@ class ZCodeAdapter(BaseAdapter):
     ) -> list[str]:
         del is_coordinator, screen_text
         words = unwrap_launchers(term.fg_argv) or unwrap_launchers(term.term_argv)
-        tail = words[1:] if words else []
+        idx = next((i for i, tok in enumerate(words) if _is_zcode_token(tok)), -1)
+        tail = words[idx + 1 :] if idx >= 0 else words[1:]
         if tail and tail[0] == "tui":
             tail = tail[1:]
         kept = _filter_by_table(tail, self.KEEP, self.DROP) if tail else []
@@ -1453,7 +1467,7 @@ class ZCodeAdapter(BaseAdapter):
         if new_pid is None or new_pid == old_pid:
             return False, "process PID did not advance"
         if program_name(fg_argv) != "zcode" and not any(
-            Path(tok).name == "zcode" for tok in fg_argv
+            _is_zcode_token(tok) for tok in fg_argv
         ):
             return False, f"unexpected foreground {fg_argv[:3]!r}"
         if _universal_blocking_dialog(screen_text, status_state):

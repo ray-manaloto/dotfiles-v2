@@ -31,6 +31,8 @@ SERVICE_RE = re.compile(
     r"\b(mcp|lsp|language-server|clangd|pyright|gopls|rust-analyzer|typescript-language-server|jdtls|sourcekit|"
     r"caffeinate|codebase-memory|openwiki|context7|exa|firecrawl|playwright|uv tool run|uv tool uvx|npx -y|npm exec|"
     r"bun x|modelcontextprotocol|node_repl|cua_node|codex-code-mode-host|hc (watch|tail)|fnox (daemon|mcp))\b|"
+    r"\bclaude\s+bg-(?:pty-host|spare)\b|--bg-(?:pty-host|spare)\b|"
+    r"hermes-cli(?:\.noindex)?/tui/dist/entry\.js|"
     r"\bnode\s+(--[\w-]+=\S*\s+|--(enable-source-maps|no-warnings|inspect|trace-warnings)\s+)*"
     r"(\S*/)?[\w.-]*server(\.[cm]?js)?(\s|$)|(^|/)(ty|ruff) server(\s|$)",
     re.IGNORECASE,

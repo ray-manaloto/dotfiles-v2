@@ -12,6 +12,7 @@ import orjson
 
 from herdr_roll.adapters import (
     ADAPTERS,
+    HARNESS_BINARIES,
     AdapterSkipError,
     AgyAdapter,
     ClaudeAdapter,
@@ -20,7 +21,9 @@ from herdr_roll.adapters import (
     OpenCodeAdapter,
     ZCodeAdapter,
     detect_kind,
+    harness_running,
 )
+from herdr_roll.herdr import owned_by_harness
 from herdr_roll.models import HarnessKind, TerminalSnapshot
 
 
@@ -243,6 +246,33 @@ class AdapterTests(unittest.TestCase):
                 self.assertFalse(
                     adapter.can_in_place_restart(
                         4242, [4242], force_clean_env=True, fresh_tab=False
+                    )
+                )
+                (sess_dir / "4243.json").write_text(
+                    '{"sessionId":"cl-4243","kind":"interactive","status":"idle","nameSource":"auto","startedAt":1700001}',
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    adapter.can_in_place_restart(
+                        4243, [4243], force_clean_env=False, fresh_tab=False
+                    )
+                )
+                (sess_dir / "4244.json").write_text(
+                    '{"sessionId":"cl-4244","kind":"interactive","bridgeSessionId":"br-1","status":"idle","nameSource":"auto","startedAt":1700002}',
+                    encoding="utf-8",
+                )
+                self.assertFalse(
+                    adapter.can_in_place_restart(
+                        4244, [4244], force_clean_env=False, fresh_tab=False
+                    )
+                )
+                (sess_dir / "4245.json").write_text(
+                    '{"sessionId":"cl-4245","kind":"bg","status":"idle","nameSource":"auto","startedAt":1700003}',
+                    encoding="utf-8",
+                )
+                self.assertFalse(
+                    adapter.can_in_place_restart(
+                        4245, [4245], force_clean_env=False, fresh_tab=False
                     )
                 )
 
@@ -1011,6 +1041,70 @@ class AdapterTests(unittest.TestCase):
                     screen_text="",
                 )
             )
+
+    def test_zcode_node_js_wrapper_matches_resumes_and_verifies(self) -> None:
+        adapter = ZCodeAdapter()
+        node_fg = [
+            "node",
+            "/opt/mise/installs/npm-zcode-app-cli/3.18.2/node_modules/zcode-app-cli/bin/zcode.js",
+            "--mode",
+            "build",
+            "--resume",
+            "sess_1234",
+        ]
+        self.assertTrue(adapter.matches(None, node_fg, []))
+        self.assertTrue(harness_running(HarnessKind.ZCODE, node_fg))
+        self.assertTrue(
+            owned_by_harness(HarnessKind.ZCODE, "zcode-cli", HARNESS_BINARIES)
+        )
+        term = TerminalSnapshot(
+            address="t3xv",
+            kind=HarnessKind.ZCODE,
+            session_id="sess_1234",
+            cwd="/tmp/z",
+            fg_pid=500,
+            fg_argv=node_fg,
+        )
+        self.assertEqual(
+            adapter.resume_argv(
+                term,
+                session_id="sess_1234",
+                is_coordinator=False,
+                prompt=None,
+                screen_text="",
+            ),
+            ["zcode", "--mode", "build", "--resume", "sess_1234"],
+        )
+        ok, err = adapter.verify_resumed(
+            old_pid=400,
+            new_pid=501,
+            fg_argv=node_fg,
+            tree_pids=[501, 502],
+            status_state=None,
+            screen_text="Earlier turn Thinking…\n"
+            + "ok line\n" * 8
+            + "◈ account:zai\n",
+            session_id="sess_1234",
+        )
+        self.assertTrue(ok, err)
+        self.assertFalse(adapter.is_idle(None, 501, [], "◈ account:zai\nthinking…\n"))
+
+        hermes = HermesAdapter()
+        self.assertTrue(
+            hermes.is_idle(
+                None,
+                600,
+                [],
+                "Earlier scrollback ⠋ forging session…\n"
+                + "line\n" * 10
+                + " ─ ready │ voice off\n ❯\n\n\n",
+            )
+        )
+        self.assertFalse(
+            hermes.is_idle(
+                None, 600, [], " ─ ⠋ synthesizing…\n ❯ Ctrl+C to interrupt\n"
+            )
+        )
 
 
 if __name__ == "__main__":

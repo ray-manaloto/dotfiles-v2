@@ -580,7 +580,11 @@ print_learn_heal() {
 	if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
 		common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
 		if [[ -n ${common_dir} ]]; then
-			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+			if [[ ${common_dir} == /* ]]; then
+				common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+			else
+				common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+			fi
 			if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
 				venv_py="${common_root}/.venv/bin/python"
 			fi
