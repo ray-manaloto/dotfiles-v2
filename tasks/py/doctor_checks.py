@@ -36,7 +36,6 @@ FORBIDDEN_PROJECT_RUNTIME_DEPS = frozenset(
     }
 )
 
-DOCUMENTED_BACKEND_OPTOUTS = frozenset({"aqua:oxc-project/oxc/oxfmt"})
 ALLOWED_DOTFILES_MERGE_RELATIVE = frozenset(
     {"../../.claude.mcp-jdx.json", "../../.codex/mcp-jdx.toml"}
 )
@@ -143,6 +142,13 @@ def _tool_version(spec: Any) -> str | None:
     return None
 
 
+def _is_npm_or_aube_lock_entries(tool_name: str, entries: list[dict[str, Any]]) -> bool:
+    return tool_name.startswith("npm:") or any(
+        str(e.get("backend", "")).startswith("npm:") or isinstance(e.get("aube"), dict)
+        for e in entries
+    )
+
+
 def check_mise_lock_integrity(repo_root: Path) -> list[str]:
     """Verify `unix/home/.config/mise/{config.toml,mise.lock,locks/**}` parity and permissions."""
     errors: list[str] = []
@@ -181,12 +187,12 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                 errors.append(
                     f"mise.lock version mismatch for {tool_name}: config={want_ver}, lock=[{got_vers}]"
                 )
-                if tool_name.startswith("npm:"):
+                if _is_npm_or_aube_lock_entries(tool_name, entry_dicts):
                     npm_lock_unresolved = True
                 continue
         else:
             matching = entry_dicts
-        if tool_name.startswith("npm:"):
+        if _is_npm_or_aube_lock_entries(tool_name, matching):
             aube_rel: str | None = None
             for entry in matching:
                 aube_info = entry.get("aube")
@@ -1430,7 +1436,9 @@ def _load_mise_registry_map() -> dict[str, tuple[str, list[str]]]:
         short = parts[0]
         backends = parts[1:]
         for backend in backends:
-            by_backend.setdefault(backend, (short, backends))
+            backend_norm = backend.split("[", 1)[0].lower()
+            if backend_norm:
+                by_backend.setdefault(backend_norm, (short, backends))
     return by_backend
 
 
@@ -1442,54 +1450,50 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
     if not main_cfg_path.is_file():
         return ["config-hygiene: missing unix/home/.config/mise/config.toml"]
 
-    main_text = main_cfg_path.read_text(encoding="utf-8")
-    main_lines = main_text.splitlines()
-    main_cfg = tomllib.loads(main_text)
-
     try:
-        reg_map = _load_mise_registry_map()
+        raw_reg_map = _load_mise_registry_map()
     except (OSError, subprocess.SubprocessError) as exc:
         return [f"config-hygiene: failed to load `mise registry`: {exc}"]
 
-    # 1. Registry canonical short names (allowing documented explicit backend opt-outs)
-    for tool_key in main_cfg.get("tools", {}):
-        if ":" not in tool_key or tool_key not in reg_map:
-            continue
-        short, backends = reg_map[tool_key]
-        if backends[0] == tool_key:
-            errors.append(
-                f"config-hygiene: use canonical registry short name `{short}` instead of `{tool_key}`"
-            )
-            continue
-        # Non-primary backend: only allow documented explicit opt-outs (e.g. aqua:oxc-project/oxc/oxfmt)
-        has_comment = False
-        for idx, raw_line in enumerate(main_lines):
-            if f'"{tool_key}"' in raw_line or f"'{tool_key}'" in raw_line:
-                prev_line = main_lines[idx - 1].strip() if idx > 0 else ""
-                if "#" in raw_line or prev_line.startswith("#"):
-                    has_comment = True
-                break
-        if tool_key not in DOCUMENTED_BACKEND_OPTOUTS or not has_comment:
-            errors.append(
-                f"config-hygiene: `{tool_key}` overrides canonical short name `{short}` without documented opt-out"
-            )
+    reg_map: dict[str, tuple[str, list[str]]] = {}
+    short_to_backends: dict[str, list[str]] = {}
+    for backend, (short, backends) in raw_reg_map.items():
+        backend_norm = backend.split("[", 1)[0].lower()
+        if backend_norm:
+            reg_map.setdefault(backend_norm, (short, backends))
+        short_to_backends.setdefault(short.lower(), backends)
 
-    # 2. Hyphenated npm: tools require prerelease = true
-    for tool_key, spec in main_cfg.get("tools", {}).items():
-        if not str(tool_key).startswith("npm:"):
-            continue
-        ver = _tool_version(spec) or ""
-        if "-" in ver and not (
-            isinstance(spec, dict) and spec.get("prerelease") is True
-        ):
-            errors.append(
-                f"config-hygiene: hyphenated npm tool `{tool_key}` ({ver}) must set `prerelease = true`"
-            )
-
-    # 3 & 4. Wrapper checks across config*.toml
+    # 1, 2, 3, 4 & 6. Registry canonical short names, hyphenated npm prerelease, wrapper checks, and dotfiles paths across config*.toml
     for cfg_file in sorted(mise_dir.glob("config*.toml")):
         cfg_data = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
         rel = cfg_file.relative_to(repo_root).as_posix()
+        tools_tbl = cfg_data.get("tools")
+        if isinstance(tools_tbl, dict):
+            for tool_key, spec in tools_tbl.items():
+                key_str = str(tool_key)
+                if ":" in key_str:
+                    lookup_key = key_str.split("[", 1)[0].lower()
+                    reg_entry = reg_map.get(lookup_key)
+                    if reg_entry is not None:
+                        short, _backends = reg_entry
+                        errors.append(
+                            f"config-hygiene: {rel}: use canonical mise registry short name `{short}` instead of `{key_str}`"
+                        )
+                    is_npm_tool = lookup_key.startswith("npm:")
+                else:
+                    backends = short_to_backends.get(key_str.lower(), [])
+                    is_npm_tool = bool(
+                        backends and backends[0].lower().startswith("npm:")
+                    )
+
+                if is_npm_tool:
+                    ver = _tool_version(spec) or ""
+                    if "-" in ver and not (
+                        isinstance(spec, dict) and spec.get("prerelease") is True
+                    ):
+                        errors.append(
+                            f"config-hygiene: {rel}: hyphenated npm tool `{key_str}` ({ver}) must set `prerelease = true`"
+                        )
         wrappers = cfg_data.get("wrappers")
         if isinstance(wrappers, dict):
             oc = wrappers.get("opencode")

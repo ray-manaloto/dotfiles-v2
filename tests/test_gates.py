@@ -424,13 +424,16 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
         v_errs = doc_mod.check_mise_version_parity(root)
         assert any("version skew detected" in e for e in v_errs)
 
-        # config-hygiene catches non-canonical short name, missing prerelease, --standalone, missing proxy RUST_LOG, programs.json, and raw .. traversal
+        # config-hygiene catches non-canonical short name (with zero opt-out exceptions across config*.toml),
+        # missing prerelease, --standalone, missing proxy RUST_LOG, programs.json, and raw .. traversal
         mise_dir = root / "unix" / "home" / ".config" / "mise"
         mise_dir.mkdir(parents=True)
         (mise_dir / "config.toml").write_text(
             "[tools]\n"
             '"aqua:FiloSottile/age" = "1.3.2"\n'
+            "# Keep aqua backend explicitly\n"
             '"aqua:oxc-project/oxc/oxfmt" = "0.80.0"\n'
+            '"aqua:anchore/syft" = "1.57.2"\n'
             '"npm:zcode-app-cli" = "3.18.2-48"\n\n'
             "[wrappers.opencode]\n"
             'command = "fnox"\n'
@@ -439,6 +442,10 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
             "[dotfiles]\n"
             '"~/.zshenv" = { source = "../../.zshenv", mode = "symlink" }\n'
             '"~/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true }\n',
+            encoding="utf-8",
+        )
+        (mise_dir / "config.macos.toml").write_text(
+            '[tools]\n"aqua:sharkdp/bat[exe=bat]" = "0.26.1"\noxfmt = "0.80.0-rc.1"\n',
             encoding="utf-8",
         )
         prog_dir = root / "unix" / "home" / ".config" / "herdr-app"
@@ -450,22 +457,77 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
             doc_mod,
             "_load_mise_registry_map",
             lambda: {
-                "aqua:FiloSottile/age": ("age", ["aqua:FiloSottile/age"]),
+                "aqua:filosottile/age": ("age", ["aqua:FiloSottile/age"]),
+                "npm:oxfmt": ("oxfmt", ["npm:oxfmt", "aqua:oxc-project/oxc/oxfmt"]),
                 "aqua:oxc-project/oxc/oxfmt": (
                     "oxfmt",
                     ["npm:oxfmt", "aqua:oxc-project/oxc/oxfmt"],
                 ),
+                "aqua:anchore/syft": ("syft", ["aqua:anchore/syft"]),
+                "aqua:sharkdp/bat": ("bat", ["aqua:sharkdp/bat"]),
             },
         )
         c_errs = doc_mod.check_config_hygiene(root)
-        assert any("canonical registry short name `age`" in e for e in c_errs)
-        assert any("without documented opt-out" in e for e in c_errs)
-        assert any("prerelease = true" in e for e in c_errs)
+        assert any(
+            "config.toml: use canonical mise registry short name `age`" in e
+            for e in c_errs
+        )
+        assert any(
+            "config.toml: use canonical mise registry short name `oxfmt`" in e
+            for e in c_errs
+        )
+        assert any(
+            "config.toml: use canonical mise registry short name `syft`" in e
+            for e in c_errs
+        )
+        assert any(
+            "config.macos.toml: use canonical mise registry short name `bat`" in e
+            for e in c_errs
+        )
+        assert any(
+            "config.macos.toml: hyphenated npm tool `oxfmt` (0.80.0-rc.1) must set `prerelease = true`"
+            in e
+            for e in c_errs
+        )
+        assert any("prerelease = true" in e and "zcode-app-cli" in e for e in c_errs)
         assert any("not hardcode `--standalone`" in e for e in c_errs)
         assert any("fnox::commands::proxy=error" in e for e in c_errs)
         assert any("raw parent traversal" in e for e in c_errs)
         assert not any("mcp-jdx" in e for e in c_errs)
         assert any("must invoke `codex-hc`" in e for e in c_errs)
+
+
+def test_check_mise_lock_integrity_accepts_canonical_npm_registry_tool() -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        mise_dir = root / "unix" / "home" / ".config" / "mise"
+        lock_pkg_dir = mise_dir / "locks" / "oxfmt" / "0.80.0"
+        lock_pkg_dir.mkdir(parents=True)
+        for fname in ("package.json", "aube-lock.yaml"):
+            fpath = lock_pkg_dir / fname
+            fpath.write_text("{}\n", encoding="utf-8")
+            fpath.chmod(0o644)
+
+        (mise_dir / "config.toml").write_text(
+            '[tools]\noxfmt = "0.80.0"\n\n'
+            '[settings]\nlockfile_platforms = ["macos-arm64"]\n',
+            encoding="utf-8",
+        )
+        (mise_dir / "mise.lock").write_text(
+            "[[tools.oxfmt]]\n"
+            'version = "0.80.0"\n'
+            'aube = { path = "locks/oxfmt/0.80.0", digest = "sha256:deadbeef" }\n'
+            'backend = "npm:oxfmt"\n'
+            'specifiers = ["0.80.0"]\n',
+            encoding="utf-8",
+        )
+        (mise_dir / "mise.lock").chmod(0o644)
+        assert doc_mod.check_mise_lock_integrity(root) == []
+
+        (lock_pkg_dir / "aube-lock.yaml").unlink()
+        missing_errs = doc_mod.check_mise_lock_integrity(root)
+        assert any("aube-lock.yaml" in e for e in missing_errs)
 
 
 def test_live_host_gates_ci_skip_and_mise_audit_fixable(monkeypatch) -> None:

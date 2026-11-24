@@ -62,29 +62,6 @@ url = "https://github.com/owenlamont/ryl/releases/download/v0.30.0/ryl-aarch64-a
 url_api = "https://api.github.com/repos/owenlamont/ryl/releases/assets/757823626"
 provenance = "github-attestations"
 
-[[tools."aqua:oxc-project/oxc/oxfmt"]]
-version = "0.80.0"
-backend = "aqua:oxc-project/oxc/oxfmt"
-specifiers = ["0.80.0"]
-
-[tools."aqua:oxc-project/oxc/oxfmt"."platforms.linux-arm64"]
-checksum = "sha256:5170d9c9072c1e2da6970524306aeccd107aa1d237f81cff5e2a6011844fb483"
-checksum_source = "mise-versions"
-url = "https://github.com/oxc-project/oxc/releases/download/oxfmt_v0.80.0/oxfmt-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/oxc-project/oxc/releases/assets/783612277"
-
-[tools."aqua:oxc-project/oxc/oxfmt"."platforms.linux-x64"]
-checksum = "sha256:e393d1d65cff7f051cc5eb21fca7e29691dd4e9fdbb9bde09f73cd50cd8ec22d"
-checksum_source = "mise-versions"
-url = "https://github.com/oxc-project/oxc/releases/download/oxfmt_v0.80.0/oxfmt-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/oxc-project/oxc/releases/assets/783612416"
-
-[tools."aqua:oxc-project/oxc/oxfmt"."platforms.macos-arm64"]
-checksum = "sha256:32a03838f50d2417b55eae71226c940da9d7964b77e49648a51957795527b479"
-checksum_source = "mise-versions"
-url = "https://github.com/oxc-project/oxc/releases/download/oxfmt_v0.80.0/oxfmt-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/oxc-project/oxc/releases/assets/783612273"
-
 [[tools.aube]]
 version = "2.11.0"
 backend = "packslip:github.com/aubepkg/aube"
@@ -733,6 +710,12 @@ aube = { path = "locks/npm-zcode-app-cli/3.18.2-48", digest = "sha256:6acc4b9bd2
 backend = "npm:zcode-app-cli"
 specifiers = ["3.18.2-48"]
 
+[[tools.oxfmt]]
+version = "0.80.0"
+aube = { path = "locks/oxfmt/0.80.0", digest = "sha256:fa6a6ae0fbf529982a681ada265799f34785c81627f2d3671cd17bfd44c11d9e" }
+backend = "npm:oxfmt"
+specifiers = ["0.80.0"]
+
 [[tools."packslip:grafana/flint"]]
 version = "0.22.15"
 backend = "packslip:grafana/flint"
@@ -993,6 +976,29 @@ checksum = "sha256:5362da8cb2928f98f3ce0ffda697cf0f8de70081db000dae316d6d3a404f6
 checksum_source = "mise-versions"
 url = "https://github.com/starship/starship/releases/download/v1.27.0/starship-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/starship/starship/releases/assets/650074353"
+
+[[tools.syft]]
+version = "1.57.2"
+backend = "aqua:anchore/syft"
+specifiers = ["1.57.2"]
+
+[tools.syft."platforms.linux-arm64"]
+checksum = "sha256:8efe605309c98798e1ee0cffdcf8c05ca26819b4cd44c0b03650f1e963e9bdb6"
+url = "https://github.com/anchore/syft/releases/download/v1.57.2/syft_1.57.2_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/anchore/syft/releases/assets/756262248"
+provenance = "cosign"
+
+[tools.syft."platforms.linux-x64"]
+checksum = "sha256:ad92bd3ec1b94a3df01d4d0aec199afa9c42b72e86da436ff5f837914d32706b"
+url = "https://github.com/anchore/syft/releases/download/v1.57.2/syft_1.57.2_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/anchore/syft/releases/assets/756262255"
+provenance = "cosign"
+
+[tools.syft."platforms.macos-arm64"]
+checksum = "sha256:38afbcc03a9d9afac2d7572432fd2c435e051e03930582ea90f4710ffb515224"
+url = "https://github.com/anchore/syft/releases/download/v1.57.2/syft_1.57.2_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/anchore/syft/releases/assets/756262237"
+provenance = "cosign"
 
 [[tools.tailscale]]
 version = "1.104.7"
