@@ -117,3 +117,30 @@
   - [ ] [#16](https://github.com/ray-manaloto/dotfiles-v2/issues/16) Migrate
     active sibling repos (`cpp-core`, `renovate-config`) off project-level
     `[tools]` and `hk 2.12.0` (separate follow-up tracking issue).
+- [x] **Follow-up (Phase 12: `agy-learn` enforcement, `roll:self` / `agy`
+  `1.5.16` / staging prune, BuildKit SBOM, native `env:inventory`, and
+  zero-opt-out `mise registry`):**
+  - [x] [#17](https://github.com/ray-manaloto/dotfiles-v2/issues/17) Enforce
+    canonical `plan_key`, anti-rubber-stamp `no_new_proposals`/`PROPOSED`/
+    `APPLIED` gates, legacy `hook_drift` warnings, and `Errors Encountered`
+    row-count cross-check in `agy-pwf-guard.py` (`PLAN_ID` / worktree slug:
+    `agy-learn-anti-rubber-stamp`; shipped on `main` at `f531e5e`).
+  - [x] [#18](https://github.com/ray-manaloto/dotfiles-v2/issues/18) Refresh live
+    status before `skipped-busy`, raise `roll:self` `--busy-wait` default to
+    `90s`, support `agy 1.5.16` `-r`/`--resume`, and share stdlib fail-closed
+    `mise_staging_prune` across `host:prune` and `host-hygiene` (`PLAN_ID` /
+    worktree slug: `roll-self-agy-resume-and-staging-prune`; shipped on `main`
+    at `2d0405c`).
+  - [x] [#19](https://github.com/ray-manaloto/dotfiles-v2/issues/19) Parallelize
+    `container:up --target all` and `env:doctor --target all`, emit BuildKit
+    `--sbom=true --provenance=mode=max` metadata, document Phase 10-11 ops in
+    `mise-bootstrap-ops/SKILL.md`, and ship schema-first `env:inventory` +
+    sanitized `inventory/latest.{host,pc,mac,vm}.json` (`PLAN_ID` / worktree
+    slug: `parallel-containers-and-native-inventory`; shipped on `main` at
+    `1d413d2` and `2b4e4a5`).
+  - [x] [#20](https://github.com/ray-manaloto/dotfiles-v2/issues/20) Remove
+    `DOCUMENTED_BACKEND_OPTOUTS` and `#` bypass, enforce canonical
+    `mise registry` short names across all `config*.toml`, switch `oxfmt` to
+    `0.80.0` (`npm:oxfmt`/`aube`), add `syft` `1.57.2`, and support canonical
+    `npm:` entries in `check_mise_lock_integrity` (`PLAN_ID` / worktree slug:
+    `mise-registry-canonical`; shipped on `main` at `23794f3`).
