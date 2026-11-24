@@ -102,16 +102,16 @@
     `vercel-board-pc-orchestration`; blocked by `#9` and OpenWiki
     `vercel/board` mapping).
 - [ ] **Follow-up (Deep Audit, Full `mise`/`jdx` & Dependency Upgrades, Hardened Tier 1–3 Health Gates):**
-  - [ ] [#13](https://github.com/ray-manaloto/dotfiles-v2/issues/13) Upgrade
+  - [x] [#13](https://github.com/ray-manaloto/dotfiles-v2/issues/13) Upgrade
     `mise` (`2026.11.13`), `packslip` (`1.11.5`), `hk` (`2.14.0`), all outdated
     global tools & `uv` deps, add `webclaw` (`0.7.4`) & `@vercel/board`
     (`0.56.1`), and canonicalize `mise registry` names (`PLAN_ID` / worktree
     slug: `jdx-and-deps-upgrades`).
-  - [ ] [#14](https://github.com/ray-manaloto/dotfiles-v2/issues/14) Fix
+  - [x] [#14](https://github.com/ray-manaloto/dotfiles-v2/issues/14) Fix
     `opencode`/`vb`/`fnox` wrappers, `.dockerignore` secret leak,
     `config.local.toml -> fnox`, `[dotfiles]` `main_checkout`, `bootstrap:skills`,
     and Mac host cleanup (`PLAN_ID` / worktree slug: `cli-wrappers-and-dotfiles`).
-  - [ ] [#15](https://github.com/ray-manaloto/dotfiles-v2/issues/15) Enforce
+  - [x] [#15](https://github.com/ray-manaloto/dotfiles-v2/issues/15) Enforce
     Tier 1–3 zero-warning/zero-error health gates and fix `post-task-learn`
     double-trigger (`PLAN_ID` / worktree slug: `strict-gates-and-learn-hook`).
   - [ ] [#16](https://github.com/ray-manaloto/dotfiles-v2/issues/16) Migrate
