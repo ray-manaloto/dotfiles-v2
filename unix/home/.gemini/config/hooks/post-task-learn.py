@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -70,19 +74,24 @@ STATUS_TOKEN_RE = re.compile(
     r"|\[(pending|in_progress|complete)\]"
 )
 
+LEARN_CMD_RE = re.compile(
+    r"\b(?:mise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+learn:(?:record-review|propose|render-proposal)|agy_learn\.cli\s+(?:record-review|propose|render-proposal))\b"
+)
+
 BASE_TRIGGER_SUFFIX = (
     "Load the `post-task-learn` skill and run one bounded `/learn` review of the task just completed: "
     "inspect user corrections, failures, and reusable fixes; prioritize extracting repeatable workflows "
-    "or error checklists into Skills (`skills/<name>/SKILL.md`) over appending to always-on rules. "
-    "Only fast-exit in one line if truly zero errors, retries, or reusable lessons occurred; otherwise "
-    "create/update `learning_proposal.md` with RequestFeedback=true without modifying configuration files before explicit approval."
+    "into Skills or Tier 1-3 deterministic gates (`hk.pkl` -> `mise doctor project` -> hook) over prose rules. "
+    "Record the review via `mise run learn:record-review` (`--outcome no_new_proposals --survivor-count 0` is valid "
+    "when 0 survivors exist) or `mise run learn:propose` + `mise run learn:render-proposal` (<= 8 KB `learning_proposal.md`, "
+    "always setting `RequestFeedback=false` during automated Stop hooks)."
 )
 TRIGGER_REASON = (
     "Automated post-task /learn check (per https://antigravity.google/docs/commands/learn/). "
     + BASE_TRIGGER_SUFFIX
 )
-ERROR_HEADING_RE = re.compile(r"^#{1,3}\s+Errors\s+Encountered\b", re.IGNORECASE)
-SECTION_HEADING_RE = re.compile(r"^#{1,2}(?!#)\s+")
+ERROR_HEADING_RE = re.compile(r"^(#{1,3})\s+Errors\s+Encountered\b", re.IGNORECASE)
+ANY_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+")
 PLACEHOLDER_CELLS = frozenset({"", "-", "none", "none yet", "n/a", "na", "nil"})
 
 
@@ -97,13 +106,129 @@ def _is_explicit_user_learn(text: str) -> bool:
     return bool(USER_LEARN_CMD_RE.match(_extract_user_request(text)))
 
 
+def _now_ns_pair() -> tuple[str, int]:
+    epoch_ns = time.time_ns()
+    sec, rem_ns = divmod(epoch_ns, 1_000_000_000)
+    dt = datetime.fromtimestamp(sec, timezone.utc).astimezone()
+    return f"{dt:%Y%m%dT%H%M%S}.{rem_ns:09d}{dt:%z}", epoch_ns
+
+
+def _shared_state_dir() -> Path:
+    xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = (
+        Path(os.path.expanduser(xdg_state))
+        if xdg_state
+        else Path.home() / ".local" / "state"
+    )
+    return base / "agy-learn"
+
+
+def _shared_reviews_path() -> Path:
+    return _shared_state_dir() / "reviews.jsonl"
+
+
+def _read_shared_reviews(
+    reviews_path: Path | None = None,
+) -> dict[str, tuple[str, str, int]]:
+    path = reviews_path or _shared_reviews_path()
+    if not path.is_file():
+        return {}
+    latest: dict[str, tuple[str, str, int]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for raw in lines:
+        if not raw.strip():
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        raw_key = rec.get("plan_key")
+        sha = rec.get("plan_sha256")
+        outcome = rec.get("outcome")
+        ts_ns = rec.get("timestamp_unix_ns", 0)
+        if not (
+            isinstance(raw_key, str)
+            and raw_key
+            and isinstance(sha, str)
+            and sha
+            and isinstance(outcome, str)
+            and outcome
+        ):
+            continue
+        try:
+            key = str(Path(os.path.expanduser(raw_key)).resolve(strict=False))
+        except OSError:
+            key = raw_key
+        ns_val = ts_ns if isinstance(ts_ns, int) and not isinstance(ts_ns, bool) else 0
+        prev = latest.get(key)
+        if prev is None or ns_val >= prev[2]:
+            latest[key] = (sha, outcome, ns_val)
+    return latest
+
+
+def _append_owing_review(
+    *,
+    plan_key: str,
+    label: str,
+    digest: str,
+    error_count: int,
+    transcript_path: Path,
+    line_count: int,
+) -> None:
+    reviews_path = _shared_reviews_path()
+    reviews_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = reviews_path.with_suffix(".jsonl.lock")
+    ts, ns = _now_ns_pair()
+    rev_id = "rev-" + hashlib.sha256(f"{plan_key}:{digest}:{ns}".encode()).hexdigest()[:12]
+    record = {
+        "review_id": rev_id,
+        "plan_key": plan_key,
+        "plan_id": label,
+        "worktree_slug": None,
+        "plan_sha256": digest,
+        "error_count": max(0, int(error_count)),
+        "outcome": "owing_learn",
+        "survivor_count": 0,
+        "proposal_ids": [],
+        "provenance": {
+            "transcript_step": f"{transcript_path.name}#L{line_count}",
+            "plan_error_ref": f"{plan_key}#Errors Encountered",
+            "transcript_path": str(transcript_path),
+            "plan_path": plan_key,
+        },
+        "repo_root": None,
+        "conversation_id": None,
+        "notes": "Auto-marked owing_learn after Stop-hook retry exhaustion.",
+        "timestamp": ts,
+        "timestamp_unix_ns": ns,
+    }
+    line = json.dumps(record, separators=(",", ":")) + "\n"
+    try:
+        with lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                with reviews_path.open("a", encoding="utf-8") as handle:
+                    handle.write(line)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return
+
+
 def _read_state(
     state_path: Path, total_lines: int
-) -> tuple[int, dict[str, str], dict[str, Any] | None]:
+) -> tuple[int, dict[str, str], dict[str, Any] | None, dict[str, str]]:
     try:
         raw = json.loads(state_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
-            return 0, {}, None
+            return 0, {}, None, {}
         val = int(raw.get("last_line", 0))
         last_line = val if 0 <= val <= total_lines else 0
         raw_plans = raw.get("learned_plans")
@@ -112,6 +237,12 @@ def _read_state(
             for k, v in raw_plans.items():
                 if isinstance(k, str) and isinstance(v, str):
                     learned_plans[k] = v
+        raw_owing = raw.get("owing_learn")
+        owing_learn: dict[str, str] = {}
+        if isinstance(raw_owing, dict):
+            for k, v in raw_owing.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    owing_learn[k] = v
         raw_pending = raw.get("pending_proposal")
         pending: dict[str, Any] | None = None
         if isinstance(raw_pending, dict):
@@ -139,9 +270,22 @@ def _read_state(
                     "baseline_proposal_sha": baseline,
                     "retries": retries,
                 }
-        return last_line, learned_plans, pending
+                raw_pp = raw_pending.get("pending_plans")
+                if isinstance(raw_pp, list):
+                    valid_pp = [
+                        item
+                        for item in raw_pp
+                        if isinstance(item, dict)
+                        and isinstance(item.get("plan_key"), str)
+                        and isinstance(item.get("label"), str)
+                        and isinstance(item.get("digest"), str)
+                        and isinstance(item.get("error_count"), int)
+                    ]
+                    if valid_pp:
+                        pending["pending_plans"] = valid_pp
+        return last_line, learned_plans, pending, owing_learn
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return 0, {}, None
+        return 0, {}, None, {}
 
 
 def _write_state(
@@ -149,6 +293,7 @@ def _write_state(
     last_line: int,
     learned_plans: dict[str, str],
     pending_proposal: dict[str, Any] | None = None,
+    owing_learn: dict[str, str] | None = None,
 ) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -161,6 +306,8 @@ def _write_state(
     }
     if pending_proposal is not None:
         payload["pending_proposal"] = pending_proposal
+    if owing_learn:
+        payload["owing_learn"] = owing_learn
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload) + "\n")
@@ -184,6 +331,7 @@ def _file_sha256(path: Path | None) -> str:
 
 def _count_plan_errors(text: str) -> int:
     in_section = False
+    err_heading_level = 0
     fence_char = ""
     fence_len = 0
     count = 0
@@ -209,11 +357,15 @@ def _count_plan_errors(text: str) -> int:
         if fence_char:
             continue
         stripped = line.strip()
-        if ERROR_HEADING_RE.match(stripped):
+        err_match = ERROR_HEADING_RE.match(stripped)
+        if err_match:
             in_section = True
+            err_heading_level = len(err_match.group(1))
             continue
-        if in_section and SECTION_HEADING_RE.match(stripped):
-            break
+        if in_section:
+            heading_match = ANY_MD_HEADING_RE.match(stripped)
+            if heading_match and len(heading_match.group(1)) <= err_heading_level:
+                break
         if not in_section or not stripped.startswith("|"):
             continue
         cells = [c.strip() for c in stripped.strip("|").split("|")]
@@ -232,8 +384,59 @@ def _count_plan_errors(text: str) -> int:
     return count
 
 
-def _slice_wrote_learning_proposal(lines: list[str], base_dir: Path | None) -> bool:
-    for raw in lines:
+def _unquote_truncated(val: Any) -> str:
+    if not isinstance(val, str):
+        return ""
+    if len(val) >= 2 and val.startswith('"') and val.endswith('"'):
+        try:
+            decoded = json.loads(val)
+            if isinstance(decoded, str):
+                return decoded
+        except json.JSONDecodeError:
+            pass
+    if val.startswith('"') and not val.endswith('"'):
+        return val[1:]
+    return val
+
+
+def _load_full_records(
+    transcript_path: Path | None, needed_indices: set[int]
+) -> dict[int, dict[str, Any]]:
+    if transcript_path is None or not needed_indices:
+        return {}
+    full_path = transcript_path.with_name("transcript_full.jsonl")
+    if not full_path.is_file():
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    max_idx = max(needed_indices)
+    try:
+        with full_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for idx, raw in enumerate(handle):
+                if idx > max_idx:
+                    break
+                if idx not in needed_indices:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    out[idx] = obj
+    except OSError:
+        return {}
+    return out
+
+
+def _slice_wrote_learning_proposal(
+    lines: list[str],
+    base_dir: Path | None,
+    *,
+    transcript_path: Path | None = None,
+    line_offset: int = 0,
+) -> bool:
+    parsed_slice: list[tuple[int, dict[str, Any]]] = []
+    needed_full: set[int] = set()
+    for rel_idx, raw in enumerate(lines):
         if not raw.strip():
             continue
         try:
@@ -242,19 +445,35 @@ def _slice_wrote_learning_proposal(lines: list[str], base_dir: Path | None) -> b
             continue
         if not isinstance(entry, dict):
             continue
+        abs_idx = line_offset + rel_idx
+        parsed_slice.append((abs_idx, entry))
+        trunc = entry.get("truncated_fields")
+        if isinstance(trunc, list) and ("tool_calls" in trunc or "content" in trunc):
+            needed_full.add(abs_idx)
+
+    full_records = _load_full_records(transcript_path, needed_full)
+    for abs_idx, raw_entry in parsed_slice:
+        entry = full_records.get(abs_idx, raw_entry)
         tool_calls = entry.get("tool_calls") or []
         if not isinstance(tool_calls, list):
             continue
         for tc in tool_calls:
-            if not isinstance(tc, dict) or tc.get("name") not in EDIT_TOOLS:
+            if not isinstance(tc, dict):
                 continue
+            name = tc.get("name")
             args = tc.get("args")
-            target = _tool_target_str(args)
-            target_path = _path_from_arg(args, base_dir)
-            if (
-                target_path is not None and target_path.name == "learning_proposal.md"
-            ) or "learning_proposal.md" in target:
-                return True
+            if name in EDIT_TOOLS:
+                target = _tool_target_str(args)
+                target_path = _path_from_arg(args, base_dir)
+                if (
+                    target_path is not None
+                    and target_path.name == "learning_proposal.md"
+                ) or "learning_proposal.md" in target:
+                    return True
+            elif name == "run_command" and isinstance(args, dict):
+                cmd = _unquote_truncated(args.get("CommandLine"))
+                if cmd and LEARN_CMD_RE.search(cmd):
+                    return True
     return False
 
 
@@ -263,7 +482,7 @@ def _tool_target_str(args: Any) -> str:
         for key in ("Path", "TargetFile", "path", "target_file"):
             val = args.get(key)
             if isinstance(val, str):
-                return val
+                return _unquote_truncated(val)
     return json.dumps(args, ensure_ascii=False)
 
 
@@ -273,7 +492,10 @@ def _path_from_arg(args: Any, base_dir: Path | None) -> Path | None:
     for key in ("Path", "TargetFile", "path", "target_file"):
         val = args.get(key)
         if isinstance(val, str) and val:
-            candidate = Path(os.path.expanduser(val))
+            unquoted = _unquote_truncated(val).strip()
+            if not unquoted:
+                continue
+            candidate = Path(os.path.expanduser(unquoted))
             if not candidate.is_absolute() and base_dir is not None:
                 candidate = base_dir / candidate
             return candidate
@@ -422,7 +644,11 @@ def _plans_for_root(root: Path) -> list[Path]:
             if active_id:
                 plan = planning / active_id / "task_plan.md"
                 return [plan] if plan.is_file() else []
-        candidates = sorted(planning.glob("*/task_plan.md"))
+        candidates = [
+            p
+            for p in sorted(planning.glob("*/task_plan.md"))
+            if p.parent.name != ".archive" and p.is_file()
+        ]
         if len(candidates) == 1:
             return [candidates[0]]
         return []
@@ -433,19 +659,19 @@ def _plans_for_root(root: Path) -> list[Path]:
 def _discover_plans(payload: dict[str, Any], touched_plans: list[Path]) -> list[Path]:
     roots: list[Path] = []
     cwd_raw = payload.get("cwd")
-    if isinstance(cwd_raw, str) and cwd_raw:
-        roots.append(Path(cwd_raw))
+    if isinstance(cwd_raw, str) and cwd_raw.strip():
+        roots.append(Path(os.path.expanduser(cwd_raw.strip())))
     wp_raw = payload.get("workspacePaths")
     if isinstance(wp_raw, list):
         for wp in wp_raw:
-            if isinstance(wp, str) and wp:
-                roots.append(Path(wp))
+            if isinstance(wp, str) and wp.strip():
+                roots.append(Path(os.path.expanduser(wp.strip())))
 
     found: list[Path] = []
     seen: set[str] = set()
 
     def add_plan(p: Path) -> None:
-        if not p.is_file():
+        if not p.is_file() or ".archive" in p.parts:
             return
         try:
             key = str(p.resolve())
@@ -458,14 +684,13 @@ def _discover_plans(payload: dict[str, Any], touched_plans: list[Path]) -> list[
     env_plan_id = os.environ.get("PLAN_ID", "").strip()
     pwf_root_raw = os.environ.get("PWF_PLAN_ROOT", "").strip()
     if pwf_root_raw:
+        pwf_root = Path(os.path.expanduser(pwf_root_raw))
         if env_plan_id:
             if _valid_slug(env_plan_id):
-                add_plan(
-                    Path(pwf_root_raw) / ".planning" / env_plan_id / "task_plan.md"
-                )
+                add_plan(pwf_root / ".planning" / env_plan_id / "task_plan.md")
         else:
             seen_roots: set[str] = set()
-            for root in [Path(pwf_root_raw), *roots]:
+            for root in [pwf_root, *roots]:
                 try:
                     rkey = str(root.resolve())
                 except OSError:
@@ -520,14 +745,17 @@ def _analyze_slice(
     last_user_input: str,
     base_dir: Path | None,
     artifact_dir: Path | None,
+    *,
+    transcript_path: Path | None = None,
+    line_offset: int = 0,
 ) -> tuple[bool, bool, list[Path], str | None, str | None, bool]:
     """Return (already_learned, has_task_work, touched_plans, closed_worktree_slug, ship_closeout, is_zero_error_learn_apply_docs_only)."""
     if last_user_input and _is_explicit_user_learn(last_user_input):
         return True, False, [], None, None, False
 
-    parsed: list[dict[str, Any]] = []
+    parsed: list[tuple[int, dict[str, Any]]] = []
     last_user_pos: int | None = None
-    for raw in lines:
+    for rel_idx, raw in enumerate(lines):
         if not raw.strip():
             continue
         try:
@@ -538,9 +766,19 @@ def _analyze_slice(
             continue
         if entry.get("type") == "USER_INPUT":
             last_user_pos = len(parsed)
-        parsed.append(entry)
+        parsed.append((line_offset + rel_idx, entry))
 
     turn_entries = parsed[last_user_pos:] if last_user_pos is not None else parsed
+    needed_full = {
+        abs_idx
+        for abs_idx, obj in turn_entries
+        if isinstance(obj.get("truncated_fields"), list)
+        and (
+            "tool_calls" in obj["truncated_fields"]
+            or "content" in obj["truncated_fields"]
+        )
+    }
+    full_records = _load_full_records(transcript_path, needed_full)
 
     last_learn_idx = -1
     last_work_idx = -1
@@ -553,7 +791,8 @@ def _analyze_slice(
     closed_worktree_slug: str | None = None
     ship_closeout: str | None = None
 
-    for idx, entry in enumerate(turn_entries):
+    for idx, (abs_idx, raw_entry) in enumerate(turn_entries):
+        entry = full_records.get(abs_idx, raw_entry)
         entry_type = entry.get("type")
         content = entry.get("content")
         if entry_type == "USER_INPUT" and isinstance(content, str):
@@ -629,8 +868,10 @@ def _analyze_slice(
                 if p is not None and p.name == "task_plan.md":
                     touched_plans.append(p)
             elif name == "run_command" and isinstance(args, dict):
-                cmd = args.get("CommandLine")
-                if isinstance(cmd, str):
+                cmd = _unquote_truncated(args.get("CommandLine"))
+                if cmd:
+                    if LEARN_CMD_RE.search(cmd):
+                        last_learn_idx = idx
                     if TASK_CMD_RE.search(cmd):
                         has_task_work = True
                         last_work_idx = idx
@@ -664,6 +905,31 @@ def _analyze_slice(
     )
 
 
+def _resolve_base_dir(payload: dict[str, Any]) -> Path | None:
+    cwd_raw = payload.get("cwd")
+    if isinstance(cwd_raw, str) and cwd_raw.strip():
+        return Path(os.path.expanduser(cwd_raw.strip()))
+    wp_raw = payload.get("workspacePaths")
+    if isinstance(wp_raw, list):
+        for wp in wp_raw:
+            if isinstance(wp, str) and wp.strip():
+                return Path(os.path.expanduser(wp.strip()))
+    return None
+
+
+def _shared_review_cleared(
+    shared_reviews: dict[str, tuple[str, str, int]],
+    plan_key: str,
+    digest: str,
+) -> bool:
+    entry = shared_reviews.get(plan_key)
+    return (
+        entry is not None
+        and entry[0] == digest
+        and entry[1] in ("proposed", "no_new_proposals", "applied")
+    )
+
+
 def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if os.environ.get("AGY_DISABLE_AUTO_LEARN") == "1":
         return {}
@@ -673,9 +939,9 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     transcript_raw = payload.get("transcriptPath")
-    if not isinstance(transcript_raw, str) or not transcript_raw:
+    if not isinstance(transcript_raw, str) or not transcript_raw.strip():
         return {}
-    transcript_path = Path(transcript_raw)
+    transcript_path = Path(os.path.expanduser(transcript_raw.strip()))
     if not transcript_path.is_file():
         return {}
 
@@ -688,45 +954,101 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
 
     artifact_raw = payload.get("artifactDirectoryPath")
     artifact_dir = (
-        Path(artifact_raw).expanduser()
-        if isinstance(artifact_raw, str) and artifact_raw
+        Path(os.path.expanduser(artifact_raw.strip()))
+        if isinstance(artifact_raw, str) and artifact_raw.strip()
         else None
     )
     state_base = artifact_dir if artifact_dir is not None else transcript_path.parent
     state_path = state_base / ".post-task-learn-state.json"
 
-    last_line, learned_plans, pending_proposal = _read_state(state_path, len(lines))
+    last_line, learned_plans, pending_proposal, owing_learn = _read_state(
+        state_path, len(lines)
+    )
 
-    cwd_raw = payload.get("cwd")
-    base_dir = Path(cwd_raw) if isinstance(cwd_raw, str) and cwd_raw else None
+    base_dir = _resolve_base_dir(payload)
     proposal_path = (
         artifact_dir / "learning_proposal.md" if artifact_dir is not None else None
     )
     cur_proposal_sha = _file_sha256(proposal_path)
     new_lines = lines[last_line:]
+    shared_reviews = _read_shared_reviews()
 
     if payload.get("continuationActive") or payload.get("continuation_active"):
         if pending_proposal is not None:
             wrote_proposal = (
                 bool(cur_proposal_sha)
                 and cur_proposal_sha != pending_proposal["baseline_proposal_sha"]
-            ) or _slice_wrote_learning_proposal(new_lines, base_dir)
-            if wrote_proposal or int(pending_proposal["retries"]) >= 1:
-                learned_plans[pending_proposal["plan_key"]] = pending_proposal["digest"]
-                _write_state(state_path, len(lines), learned_plans, None)
+            ) or _slice_wrote_learning_proposal(
+                new_lines,
+                base_dir,
+                transcript_path=transcript_path,
+                line_offset=last_line,
+            )
+            pending_plans = pending_proposal.get("pending_plans") or [
+                {
+                    "plan_key": pending_proposal["plan_key"],
+                    "label": pending_proposal["label"],
+                    "digest": pending_proposal["digest"],
+                    "error_count": pending_proposal["error_count"],
+                }
+            ]
+            if wrote_proposal:
+                for item in pending_plans:
+                    learned_plans[item["plan_key"]] = item["digest"]
+                    owing_learn.pop(item["plan_key"], None)
+                _write_state(state_path, len(lines), learned_plans, None, owing_learn)
                 return {}
-            updated_pending = dict(pending_proposal)
-            updated_pending["retries"] = int(pending_proposal["retries"]) + 1
-            _write_state(state_path, len(lines), learned_plans, updated_pending)
+
+            remaining_plans: list[dict[str, Any]] = []
+            for item in pending_plans:
+                if _shared_review_cleared(
+                    shared_reviews, item["plan_key"], item["digest"]
+                ):
+                    learned_plans[item["plan_key"]] = item["digest"]
+                    owing_learn.pop(item["plan_key"], None)
+                else:
+                    remaining_plans.append(item)
+
+            if not remaining_plans:
+                _write_state(state_path, len(lines), learned_plans, None, owing_learn)
+                return {}
+
+            if int(pending_proposal["retries"]) >= 1:
+                for item in remaining_plans:
+                    owing_learn[item["plan_key"]] = item["digest"]
+                    _append_owing_review(
+                        plan_key=item["plan_key"],
+                        label=item["label"],
+                        digest=item["digest"],
+                        error_count=int(item["error_count"]),
+                        transcript_path=transcript_path,
+                        line_count=len(lines),
+                    )
+                _write_state(state_path, len(lines), learned_plans, None, owing_learn)
+                return {}
+
+            first_rem = remaining_plans[0]
+            updated_pending = {
+                "plan_key": first_rem["plan_key"],
+                "label": ", ".join(p["label"] for p in remaining_plans),
+                "digest": first_rem["digest"],
+                "error_count": sum(int(p["error_count"]) for p in remaining_plans),
+                "baseline_proposal_sha": pending_proposal["baseline_proposal_sha"],
+                "retries": int(pending_proposal["retries"]) + 1,
+                "pending_plans": remaining_plans,
+            }
+            _write_state(
+                state_path, len(lines), learned_plans, updated_pending, owing_learn
+            )
             reason = (
-                f"Post-task /learn hard gate: completed plan '{pending_proposal['label']}' "
-                f"recorded {pending_proposal['error_count']} error(s) in `## Errors Encountered`, "
-                "but `learning_proposal.md` was not created/updated. Do NOT fast-exit — write/update "
-                "`learning_proposal.md` (RequestFeedback=true) evaluating Skill (`skills/<name>/SKILL.md`), "
-                "Rule, or Hook extraction for those errors before stopping."
+                f"Post-task /learn hard gate: completed plan '{updated_pending['label']}' "
+                f"recorded {updated_pending['error_count']} error(s) in `## Errors Encountered`, "
+                "but no review or proposal was recorded. Do NOT fast-exit — record via "
+                "`mise run learn:record-review` (`--outcome no_new_proposals --survivor-count 0` if 0 survivors) "
+                "or update `learning_proposal.md` (`RequestFeedback=false`) evaluating Tier 1-5 extraction."
             )
             return {"decision": "continue", "reason": reason}
-        _write_state(state_path, len(lines), learned_plans, None)
+        _write_state(state_path, len(lines), learned_plans, None, owing_learn)
         return {}
 
     last_user_input = payload.get("lastUserInput")
@@ -738,7 +1060,14 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         closed_worktree_slug,
         ship_closeout,
         is_zero_error_learn_apply_docs_only,
-    ) = _analyze_slice(new_lines, user_text, base_dir, artifact_dir)
+    ) = _analyze_slice(
+        new_lines,
+        user_text,
+        base_dir,
+        artifact_dir,
+        transcript_path=transcript_path,
+        line_offset=last_line,
+    )
 
     discovered_plans = _discover_plans(payload, touched_plans)
     completed_unlearned: list[tuple[Path, str, str, int]] = []
@@ -760,6 +1089,10 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 plan_key = str(plan_path.resolve())
             except OSError:
                 plan_key = str(plan_path)
+            if _shared_review_cleared(shared_reviews, plan_key, digest):
+                learned_plans[plan_key] = digest
+                owing_learn.pop(plan_key, None)
+                continue
             if learned_plans.get(plan_key) != digest:
                 completed_unlearned.append(
                     (plan_path, plan_key, digest, _count_plan_errors(text))
@@ -768,12 +1101,23 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
             has_incomplete_plan = True
 
     if already_learned:
-        wrote_proposal = _slice_wrote_learning_proposal(new_lines, base_dir)
+        wrote_proposal = _slice_wrote_learning_proposal(
+            new_lines,
+            base_dir,
+            transcript_path=transcript_path,
+            line_offset=last_line,
+        )
         explicit_learn = bool(user_text and _is_explicit_user_learn(user_text))
         for _, plan_key, digest, err_count in completed_unlearned:
-            if wrote_proposal or explicit_learn or err_count == 0:
+            if (
+                wrote_proposal
+                or explicit_learn
+                or err_count == 0
+                or _shared_review_cleared(shared_reviews, plan_key, digest)
+            ):
                 learned_plans[plan_key] = digest
-        _write_state(state_path, len(lines), learned_plans, None)
+                owing_learn.pop(plan_key, None)
+        _write_state(state_path, len(lines), learned_plans, None, owing_learn)
         return {}
 
     if is_zero_error_learn_apply_docs_only and all(
@@ -781,38 +1125,51 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     ):
         for _, plan_key, digest, _ in completed_unlearned:
             learned_plans[plan_key] = digest
-        _write_state(state_path, len(lines), learned_plans, None)
+            owing_learn.pop(plan_key, None)
+        _write_state(state_path, len(lines), learned_plans, None, owing_learn)
         return {}
 
     if completed_unlearned:
-        labels = ", ".join(_plan_label(p) for p, _, _, _ in completed_unlearned)
-        total_errors = sum(err for _, _, _, err in completed_unlearned)
-        if total_errors > 0 and proposal_path is not None:
-            first_path, first_key, first_digest, _ = completed_unlearned[0]
-            for _, pk, dig, _ in completed_unlearned[1:]:
-                learned_plans[pk] = dig
+        ordered = sorted(completed_unlearned, key=lambda item: (item[3] == 0, item[1]))
+        labels = ", ".join(_plan_label(p) for p, _, _, _ in ordered)
+        total_errors = sum(err for _, _, _, err in ordered)
+        if total_errors > 0:
+            first_path, first_key, first_digest, _ = ordered[0]
+            pending_plans = [
+                {
+                    "plan_key": pk,
+                    "label": _plan_label(p),
+                    "digest": dig,
+                    "error_count": err,
+                }
+                for p, pk, dig, err in ordered
+            ]
             next_pending = {
                 "plan_key": first_key,
-                "label": _plan_label(first_path),
+                "label": labels if len(ordered) > 1 else _plan_label(first_path),
                 "digest": first_digest,
                 "error_count": total_errors,
                 "baseline_proposal_sha": cur_proposal_sha,
                 "retries": 0,
+                "pending_plans": pending_plans,
             }
-            _write_state(state_path, len(lines), learned_plans, next_pending)
+            _write_state(
+                state_path, len(lines), learned_plans, next_pending, owing_learn
+            )
             reason = (
                 f"Automated post-task /learn check: planning-with-files task completed ({labels}) "
                 f"with {total_errors} logged error(s) in `## Errors Encountered`. "
                 + BASE_TRIGGER_SUFFIX
                 + " Review the completed `task_plan.md` (`Errors Encountered`, `Decisions Made`), "
-                "`findings.md`, and `progress.md` alongside user messages — fast-exit is blocked until "
-                "`learning_proposal.md` evaluates Skill/Rule/Hook extraction."
+                "`findings.md`, and `progress.md` alongside user messages — record review (`no_new_proposals` "
+                "for 0 survivors or `propose` + `render-proposal` with `RequestFeedback=false`)."
             )
             return {"decision": "continue", "reason": reason}
 
-        for _, plan_key, digest, _ in completed_unlearned:
+        for _, plan_key, digest, _ in ordered:
             learned_plans[plan_key] = digest
-        _write_state(state_path, len(lines), learned_plans, None)
+            owing_learn.pop(plan_key, None)
+        _write_state(state_path, len(lines), learned_plans, None, owing_learn)
         reason = (
             f"Automated post-task /learn check: planning-with-files task completed ({labels}). "
             + BASE_TRIGGER_SUFFIX
@@ -820,7 +1177,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
         )
         return {"decision": "continue", "reason": reason}
 
-    _write_state(state_path, len(lines), learned_plans, None)
+    _write_state(state_path, len(lines), learned_plans, None, owing_learn)
 
     if closed_worktree_slug:
         reason = (
@@ -845,25 +1202,161 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _find_agy_learn_runner(payload: dict[str, Any]) -> tuple[Path, Path] | None:
+    candidates: list[Path] = []
+    base = _resolve_base_dir(payload)
+    if base is not None:
+        candidates.append(base)
+    script_path = Path(__file__).resolve()
+    for parent in script_path.parents:
+        if (parent / "unix" / "home" / ".config" / "mise" / "lib" / "agy_learn").is_dir():
+            candidates.append(parent)
+            break
+    for cand in candidates:
+        venv_py = cand / ".venv" / "bin" / "python"
+        lib_dir = cand / "unix" / "home" / ".config" / "mise" / "lib"
+        if venv_py.is_file() and (lib_dir / "agy_learn").is_dir():
+            return venv_py, lib_dir
+    return None
+
+
+def _stdlib_heal_summary() -> dict[str, Any]:
+    state_dir = _shared_state_dir()
+    reviews = _read_shared_reviews(state_dir / "reviews.jsonl")
+    owing = [k for k, (_, outcome, _) in sorted(reviews.items()) if outcome == "owing_learn"]
+    proposals_path = state_dir / "proposals.jsonl"
+    active_count = 0
+    escalate_count = 0
+    if proposals_path.is_file():
+        latest_props: dict[str, dict[str, Any]] = {}
+        try:
+            for raw in proposals_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if not raw.strip():
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict) and isinstance(obj.get("proposal_id"), str):
+                    latest_props[obj["proposal_id"]] = obj
+        except OSError:
+            pass
+        for prop in latest_props.values():
+            if prop.get("status") in ("pending", "approved"):
+                active_count += 1
+                if int(prop.get("occurrences") or 1) >= 2 and prop.get("recommended_tier") in (
+                    "skill",
+                    "rule",
+                ):
+                    escalate_count += 1
+    return {
+        "healthy": len(owing) == 0,
+        "owing_plans": owing,
+        "active_proposals_count": active_count,
+        "auto_escalated_count": escalate_count,
+        "already_applied_count": 0,
+        "proposal_md_within_budget": True,
+    }
+
+
+def _run_session_start(payload: dict[str, Any]) -> dict[str, Any]:
+    if os.environ.get("AGY_DISABLE_AUTO_LEARN") == "1":
+        return {}
+    report: dict[str, Any] | None = None
+    runner = _find_agy_learn_runner(payload)
+    if runner is not None:
+        venv_py, lib_dir = runner
+        repo_arg = str(lib_dir.parents[3])
+        cmd = [
+            str(venv_py),
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))",
+            str(lib_dir),
+            "heal",
+            "--check",
+            "--json",
+            "--repo",
+            repo_arg,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=False,
+            )
+            if proc.stdout.strip():
+                parsed = json.loads(proc.stdout.strip().splitlines()[-1])
+                if isinstance(parsed, dict):
+                    report = parsed
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            report = None
+
+    if report is None:
+        report = _stdlib_heal_summary()
+
+    owing = report.get("owing_plans") or []
+    active_raw = report.get("active_proposals")
+    active_count = (
+        len(active_raw)
+        if isinstance(active_raw, list)
+        else int(report.get("active_proposals_count") or 0)
+    )
+    escalated = report.get("auto_escalated_ids") or []
+    applied = report.get("already_applied_ids") or []
+    within_budget = report.get("proposal_md_within_budget", True)
+
+    parts: list[str] = []
+    if owing:
+        parts.append(f"owing_learn={len(owing)} ({', '.join(str(x) for x in owing[:3])})")
+    if escalated:
+        parts.append(f"auto_escalate={len(escalated)}")
+    if active_count:
+        parts.append(f"active_proposals={active_count}")
+    if applied:
+        parts.append(f"already_applied={len(applied)}")
+    if not within_budget:
+        parts.append("learning_proposal.md>8KB")
+
+    if not parts:
+        return {}
+
+    msg = (
+        "[agy-learn] Read-only heal summary: "
+        + "; ".join(parts)
+        + ". Run `mise run learn:heal --check` for details (read-only; no files modified)."
+    )
+    return {"injectSteps": [{"systemMessage": {"systemMessage": msg}}]}
+
+
 def _check_hooks_json(path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or "post-task-learn" not in data:
         raise AssertionError(f"missing 'post-task-learn' in {path}")
     block = data["post-task-learn"]
-    stop_handlers = block.get("Stop") if isinstance(block, dict) else None
-    if not isinstance(stop_handlers, list) or not stop_handlers:
-        raise AssertionError(f"missing Stop handlers for post-task-learn in {path}")
-    cmd = (
-        stop_handlers[0].get("command", "")
-        if isinstance(stop_handlers[0], dict)
-        else ""
-    )
-    if not isinstance(cmd, str) or "post-task-learn.py" not in cmd:
-        raise AssertionError(f"unexpected hook command: {cmd!r}")
-    if cmd.startswith("/") or "/Users/" in cmd:
-        raise AssertionError(
-            f"hook command must be portable relative path, got: {cmd!r}"
-        )
+    if not isinstance(block, dict):
+        raise AssertionError(f"invalid post-task-learn block in {path}")
+
+    for event_key in ("SessionStart", "Stop"):
+        handlers = block.get(event_key)
+        if not isinstance(handlers, list) or not handlers:
+            raise AssertionError(
+                f"missing {event_key} handlers for post-task-learn in {path}"
+            )
+        cmd = handlers[0].get("command", "") if isinstance(handlers[0], dict) else ""
+        if not isinstance(cmd, str) or "post-task-learn.py" not in cmd:
+            raise AssertionError(f"unexpected {event_key} hook command: {cmd!r}")
+        if event_key == "SessionStart" and "--session-start" not in cmd:
+            raise AssertionError(
+                f"SessionStart handler must pass --session-start, got: {cmd!r}"
+            )
+        if cmd.startswith("/") or "/Users/" in cmd:
+            raise AssertionError(
+                f"hook command must be portable relative path, got: {cmd!r}"
+            )
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -874,11 +1367,12 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     checks: list[str] = []
     saved_env = {
         k: os.environ.pop(k, None)
-        for k in ("PLAN_ID", "PWF_PLAN_ROOT", "AGY_DISABLE_AUTO_LEARN")
+        for k in ("PLAN_ID", "PWF_PLAN_ROOT", "AGY_DISABLE_AUTO_LEARN", "XDG_STATE_HOME")
     }
     try:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            os.environ["XDG_STATE_HOME"] = str(root / "xdg-state")
 
             # 1. continuationActive advances last_line so next turn still triggers
             ws1 = root / "ws1"
@@ -1358,9 +1852,26 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             assert res9b.get("decision") == "continue" and "hard gate" in res9b.get(
                 "reason", ""
             ), f"case 9b failed: {res9b}"
+            assert "RequestFeedback=true" not in res9b.get("reason", ""), (
+                "hard gate reason must not request RequestFeedback=true"
+            )
             res9c = _run_hook(dict(p9, continuationActive=True))
             assert res9c == {}, f"case 9c bounded retry failed: {res9c}"
-            checks.append("errors_encountered_hard_gate")
+            state9 = json.loads(
+                (art9 / ".post-task-learn-state.json").read_text(encoding="utf-8")
+            )
+            p9_key = str((pdir9 / "task_plan.md").resolve())
+            assert p9_key not in state9["learned_plans"], (
+                f"retry exhaustion must NOT silently mark learned: {state9}"
+            )
+            assert p9_key in state9.get("owing_learn", {}), (
+                f"retry exhaustion must mark owing_learn: {state9}"
+            )
+            shared9 = _read_shared_reviews()
+            assert shared9.get(p9_key, ("", "", 0))[1] == "owing_learn", (
+                f"retry exhaustion must append owing_learn to reviews.jsonl: {shared9}"
+            )
+            checks.append("errors_encountered_hard_gate_marks_owing_learn")
 
             # 10. Updating learning_proposal.md satisfies hard gate and marks plan learned
             ws10 = root / "ws10"
@@ -1824,6 +2335,200 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             )
             checks.append("non_doc_learn_apply_triggers")
 
+            # 17. transcript_full.jsonl hydration + truncated tool_calls unquoting
+            t17 = root / "t17.jsonl"
+            t17_full = root / "transcript_full.jsonl"
+            art17 = root / "art17"
+            art17.mkdir()
+            _write_jsonl(
+                t17,
+                [
+                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Work</USER_REQUEST>"},
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [],
+                        "truncated_fields": ["tool_calls"],
+                    },
+                ],
+            )
+            _write_jsonl(
+                t17_full,
+                [
+                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Work</USER_REQUEST>"},
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "edit_file",
+                                "args": {"Path": f'"{ws1 / "hydrated.py"}"'},
+                            }
+                        ],
+                    },
+                ],
+            )
+            res17a = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t17),
+                    "artifactDirectoryPath": str(art17),
+                    "cwd": str(ws1),
+                }
+            )
+            assert res17a.get("decision") == "continue", (
+                f"case 17a hydrated edit_file should trigger: {res17a}"
+            )
+            checks.append("transcript_full_hydration_and_unquoting")
+
+            # 18. Automated Stop hook reasons never ask for RequestFeedback=true
+            assert "RequestFeedback=true" not in BASE_TRIGGER_SUFFIX
+            assert "RequestFeedback=true" not in TRIGGER_REASON
+            checks.append("no_request_feedback_true_in_auto_reasons")
+
+            # 19. Multi-plan completion does NOT silently bypass completed_unlearned[1:]
+            ws19 = root / "ws19"
+            p19a = ws19 / ".planning" / "2026-11-23-a-clean"
+            p19b = ws19 / ".planning" / "2026-11-23-b-errors"
+            p19a.mkdir(parents=True)
+            p19b.mkdir(parents=True)
+            plan19a = p19a / "task_plan.md"
+            plan19b = p19b / "task_plan.md"
+            plan19a.write_text(
+                "# Clean\n\n### Phase 1: Do\n**Status:** complete\n", encoding="utf-8"
+            )
+            plan19b.write_text(
+                "# Err\n\n### Phase 1: Do\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| Multi bug | Fixed |\n",
+                encoding="utf-8",
+            )
+            t19 = root / "t19.jsonl"
+            art19 = root / "art19"
+            art19.mkdir()
+            _write_jsonl(
+                t19,
+                [
+                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"},
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {"name": "edit_file", "args": {"Path": str(plan19a)}},
+                            {"name": "edit_file", "args": {"Path": str(plan19b)}},
+                        ],
+                    },
+                ],
+            )
+            res19 = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t19),
+                    "artifactDirectoryPath": str(art19),
+                    "cwd": str(ws19),
+                }
+            )
+            assert res19.get("decision") == "continue" and "1 logged error(s)" in res19.get(
+                "reason", ""
+            ), f"case 19 failed: {res19}"
+            state19 = json.loads(
+                (art19 / ".post-task-learn-state.json").read_text(encoding="utf-8")
+            )
+            assert str(plan19b.resolve()) not in state19["learned_plans"], (
+                f"case 19 bypassed second error plan: {state19}"
+            )
+            checks.append("multi_plan_no_silent_bypass")
+
+            # 20. workspacePaths[0] fallback, .archive exclusion, and ### Errors Encountered boundary
+            ws20 = root / "ws20"
+            arch20 = ws20 / ".planning" / ".archive"
+            arch20.mkdir(parents=True)
+            (arch20 / "task_plan.md").write_text(
+                "# Archived\n\n### Phase 1: Old\n**Status:** complete\n",
+                encoding="utf-8",
+            )
+            p20 = ws20 / ".planning" / "active20"
+            p20.mkdir(parents=True)
+            (p20 / "task_plan.md").write_text(
+                "# Active20\n\n### Phase 1: Do\n**Status:** complete\n\n"
+                "### Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| None yet | - |\n\n"
+                "### Later Notes\n| Key | Val |\n|---|---|\n| Foo | Bar |\n",
+                encoding="utf-8",
+            )
+            assert _count_plan_errors((p20 / "task_plan.md").read_text(encoding="utf-8")) == 0
+            t20 = root / "t20.jsonl"
+            art20 = root / "art20"
+            art20.mkdir()
+            _write_jsonl(
+                t20,
+                [{"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"}],
+            )
+            res20 = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t20),
+                    "artifactDirectoryPath": str(art20),
+                    "workspacePaths": [str(ws20)],
+                }
+            )
+            assert res20.get("decision") == "continue" and "active20" in res20.get(
+                "reason", ""
+            ), f"case 20 failed: {res20}"
+            checks.append("workspace_paths_archive_exclusion_and_h3_errors_stop")
+
+            # 21. Shared reviews.jsonl no_new_proposals satisfies hard gate
+            ws21 = root / "ws21"
+            p21 = ws21 / ".planning" / "rev21"
+            p21.mkdir(parents=True)
+            plan21 = p21 / "task_plan.md"
+            plan21.write_text(
+                "# Rev21\n\n### Phase 1: Do\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| Bug Z | Fixed Z |\n",
+                encoding="utf-8",
+            )
+            t21 = root / "t21.jsonl"
+            art21 = root / "art21"
+            art21.mkdir()
+            _write_jsonl(
+                t21,
+                [{"type": "USER_INPUT", "content": "<USER_REQUEST>Done</USER_REQUEST>"}],
+            )
+            p21_payload = {
+                "terminationReason": "NO_TOOL_CALL",
+                "fullyIdle": True,
+                "transcriptPath": str(t21),
+                "artifactDirectoryPath": str(art21),
+                "cwd": str(ws21),
+            }
+            assert _run_hook(p21_payload).get("decision") == "continue"
+            sha21 = hashlib.sha256(plan21.read_bytes()).hexdigest()
+            with _shared_reviews_path().open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "review_id": "rev-test21",
+                            "plan_key": str(plan21.resolve()),
+                            "plan_sha256": sha21,
+                            "outcome": "no_new_proposals",
+                            "timestamp_unix_ns": time.time_ns(),
+                        }
+                    )
+                    + "\n"
+                )
+            assert _run_hook(dict(p21_payload, continuationActive=True)) == {}, (
+                "case 21 shared no_new_proposals review should satisfy hard gate"
+            )
+            checks.append("shared_zero_survivor_review_clears_hard_gate")
+
+            # 22. SessionStart surfaces owing_learn read-only via injectSteps
+            ss_out = _run_session_start({"cwd": str(ws9)})
+            assert ss_out.get("injectSteps"), (
+                f"case 22 SessionStart should surface owing_learn from case 9: {ss_out}"
+            )
+            checks.append("session_start_surfaces_owing_learn_read_only")
+
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)
             checks.append("hooks_json_portable")
@@ -1839,6 +2544,11 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--session-start",
+        action="store_true",
+        help="Run read-only agy-learn heal check for SessionStart hook.",
+    )
     parser.add_argument(
         "--self-check",
         action="store_true",
@@ -1865,9 +2575,14 @@ def main() -> int:
         return 0
 
     try:
-        raw_payload = json.load(sys.stdin)
+        raw_text = sys.stdin.read()
+        raw_payload = json.loads(raw_text) if raw_text.strip() else {}
     except (json.JSONDecodeError, OSError, ValueError):
         raw_payload = None
+    if args.session_start:
+        result = _run_session_start(raw_payload if isinstance(raw_payload, dict) else {})
+        sys.stdout.write(json.dumps(result) + "\n")
+        return 0
     result = _run_hook(raw_payload) if isinstance(raw_payload, dict) else {}
     sys.stdout.write(json.dumps(result) + "\n")
     return 0

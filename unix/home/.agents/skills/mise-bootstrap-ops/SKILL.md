@@ -68,3 +68,21 @@ description: >-
 - Skip unit tests for upstream CLI behavior, git hooks, or doctor shell
   snippets; verify toolchain/config invariants via `mise doctor project` and
   `hk check` (reserve unit tests for project code).
+
+## 6. Global Skills Sync, Lockfiles & Tailscale PacketFilter
+
+- Keep `~/.claude/skills` a real directory (remove any symlink first) and
+  assert `claude_dir.resolve() != agents_dir.resolve()` inside `bootstrap:skills`
+  before `mise skills sync --global --prune` so `../../.agents/skills/<name>`
+  links never self-loop.
+- Run `MISE_CONFIG_DIR="$PWD" mise lock --global && chmod 0644 mise.lock` inside
+  the managed `.config/mise/` directory so `linux-x64`, `linux-arm64`, and `macos-arm64`
+  remain locked (`mise skills sync --global` cannot be combined with `--dir`).
+- Explicit relative `source` paths in `[dotfiles]` resolve from `config.toml`'s
+  directory (`.config/mise/`), while omitted `source` resolves under
+  `dotfiles.root`.
+- Anchor root ignores (`/.agents/`, `/.claude/`) in `.gitignore` so managed
+  `.agents/` skill directories stay trackable.
+- When `tailscale ping` succeeds (`1ms`) while `curl --proxy http://127.0.0.1:1055`
+  or `tailscale nc` times out, inspect `tailscale debug netmap | jq '.PacketFilter'`
+  on both peers for `tag:dev-env` ACL rules.

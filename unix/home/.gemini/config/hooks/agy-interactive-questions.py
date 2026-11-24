@@ -11,14 +11,22 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
 
-class _HookState(TypedDict):
-    last_user_idx: int
-    last_blocked_step_idx: int
-    blocks_in_turn: int
-    pre_denied_fps: list[str]
+def _make_hook_state(
+    *,
+    last_user_idx: int = -2,
+    last_blocked_step_idx: int = -1,
+    blocks_in_turn: int = 0,
+    pre_denied_fps: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "last_user_idx": last_user_idx,
+        "last_blocked_step_idx": last_blocked_step_idx,
+        "blocks_in_turn": blocks_in_turn,
+        "pre_denied_fps": list(pre_denied_fps or ()),
+    }
 
 
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -135,13 +143,8 @@ def _looks_like_unasked_options(text: str) -> bool:
     return pros_hits >= 2 and cons_hits >= 2
 
 
-def _read_state(state_path: Path) -> _HookState:
-    out: _HookState = {
-        "last_user_idx": -2,
-        "last_blocked_step_idx": -1,
-        "blocks_in_turn": 0,
-        "pre_denied_fps": [],
-    }
+def _read_state(state_path: Path) -> dict[str, Any]:
+    out = _make_hook_state()
     try:
         raw = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -163,7 +166,7 @@ def _read_state(state_path: Path) -> _HookState:
     return out
 
 
-def _write_state(state_path: Path, state: _HookState) -> None:
+def _write_state(state_path: Path, state: dict[str, Any]) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         dir=state_path.parent, prefix=f".{state_path.name}."
@@ -181,21 +184,47 @@ def _write_state(state_path: Path, state: _HookState) -> None:
             Path(tmp_name).unlink(missing_ok=True)
 
 
-def _load_full_content(transcript_path: Path, line_idx: int) -> str | None:
+def _load_full_records(
+    transcript_path: Path, needed_indices: set[int]
+) -> dict[int, dict[str, Any]]:
+    if not needed_indices:
+        return {}
     full_path = transcript_path.with_name("transcript_full.jsonl")
     if not full_path.is_file():
-        return None
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    max_idx = max(needed_indices)
     try:
         with full_path.open("r", encoding="utf-8", errors="replace") as handle:
             for idx, raw in enumerate(handle):
-                if idx == line_idx:
+                if idx > max_idx:
+                    break
+                if idx not in needed_indices:
+                    continue
+                try:
                     obj = json.loads(raw)
-                    if isinstance(obj, dict) and isinstance(obj.get("content"), str):
-                        return obj["content"]
-                    return None
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-    return None
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    out[idx] = obj
+    except OSError:
+        return {}
+    return out
+
+
+def _unquote_truncated(val: Any) -> str:
+    if not isinstance(val, str):
+        return ""
+    if len(val) >= 2 and val.startswith('"') and val.endswith('"'):
+        try:
+            decoded = json.loads(val)
+            if isinstance(decoded, str):
+                return decoded
+        except json.JSONDecodeError:
+            pass
+    if val.startswith('"') and not val.endswith('"'):
+        return val[1:]
+    return val
 
 
 def _scan_last_user_idx(transcript_path: Path) -> int | None:
@@ -313,12 +342,7 @@ def _run_pre_tool_use_hook(payload: dict[str, Any]) -> dict[str, Any]:
 
     state = _read_state(state_path)
     if user_idx is not None and state["last_user_idx"] != user_idx:
-        state = _HookState(
-            last_user_idx=user_idx,
-            last_blocked_step_idx=-1,
-            blocks_in_turn=0,
-            pre_denied_fps=[],
-        )
+        state = _make_hook_state(last_user_idx=user_idx)
 
     pre_fps = list(state["pre_denied_fps"])
     if fp in pre_fps:
@@ -346,7 +370,7 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     transcript_raw = payload.get("transcriptPath")
     if not isinstance(transcript_raw, str) or not transcript_raw:
         return {}
-    transcript_path = Path(transcript_raw)
+    transcript_path = Path(os.path.expanduser(transcript_raw))
     if not transcript_path.is_file():
         return {}
 
@@ -380,7 +404,15 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if final_resp is None:
         return {}
 
-    final_line_idx, resp_obj = final_resp
+    final_line_idx, raw_resp_obj = final_resp
+    truncated = raw_resp_obj.get("truncated_fields")
+    resp_obj = raw_resp_obj
+    if isinstance(truncated, list) and (
+        "content" in truncated or "tool_calls" in truncated
+    ):
+        full_records = _load_full_records(transcript_path, {final_line_idx})
+        resp_obj = full_records.get(final_line_idx, raw_resp_obj)
+
     tool_calls = resp_obj.get("tool_calls") or []
     if isinstance(tool_calls, list) and len(tool_calls) > 0:
         return {}
@@ -393,38 +425,28 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     content = resp_obj.get("content")
-    text = content if isinstance(content, str) else ""
-    truncated = resp_obj.get("truncated_fields")
-    if isinstance(truncated, list) and "content" in truncated:
-        full_text = _load_full_content(transcript_path, final_line_idx)
-        if full_text is not None:
-            text = full_text
+    text = _unquote_truncated(content) if isinstance(content, str) else ""
 
     if not _looks_like_unasked_options(text):
         return {}
 
     artifact_dir = payload.get("artifactDirectoryPath")
     state_base = (
-        Path(artifact_dir)
+        Path(os.path.expanduser(artifact_dir))
         if isinstance(artifact_dir, str) and artifact_dir
         else transcript_path.parent
     )
     state_path = state_base / ".agy-interactive-questions-state.json"
     state = _read_state(state_path)
     if state["last_user_idx"] != last_user_idx:
-        state = _HookState(
-            last_user_idx=last_user_idx,
-            last_blocked_step_idx=-1,
-            blocks_in_turn=0,
-            pre_denied_fps=[],
-        )
+        state = _make_hook_state(last_user_idx=last_user_idx)
 
     if state["last_blocked_step_idx"] == step_idx or state["blocks_in_turn"] >= 2:
         return {}
 
     _write_state(
         state_path,
-        _HookState(
+        _make_hook_state(
             last_user_idx=last_user_idx,
             last_blocked_step_idx=step_idx,
             blocks_in_turn=state["blocks_in_turn"] + 1,
@@ -749,9 +771,70 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         assert multi_deny_1.get("decision") == "deny", (
             f"case 12a failed: {multi_deny_1}"
         )
-        multi_allow_2 = _run_pre_tool_use_hook(multi_bad_payload)
-        assert multi_allow_2 == _allow(), f"case 12b failed: {multi_allow_2}"
+        res12b = _run_pre_tool_use_hook(multi_bad_payload)
+        assert res12b == _allow(), f"case 12b failed: {res12b}"
         checks.append("pre_tool_use_multi_select_missing_pros_cons_denied_once")
+
+        # 13. Hydrates truncated tool_calls and content from transcript_full.jsonl
+        full_transcript = root / "transcript_full.jsonl"
+        _write_transcript(
+            transcript,
+            [
+                {"type": "USER_INPUT", "content": "Prior"},
+                {"type": "USER_INPUT", "content": "Decide"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 50,
+                    "tool_calls": [],
+                    "truncated_fields": ["tool_calls", "content"],
+                    "content": '"1. `(Recommended)` Option A\\n   - **Pros:** Fast."',
+                },
+            ],
+        )
+        _write_transcript(
+            full_transcript,
+            [
+                {"type": "USER_INPUT", "content": "Prior"},
+                {"type": "USER_INPUT", "content": "Decide"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 50,
+                    "tool_calls": [{"name": "ask_question", "args": {}}],
+                    "content": "1. `(Recommended)` Option A\n   - **Pros:** Fast.",
+                },
+            ],
+        )
+        assert _run_hook(base_payload()) == {}, "case 13a full tool_calls should allow"
+        _write_transcript(
+            full_transcript,
+            [
+                {"type": "USER_INPUT", "content": "Prior"},
+                {"type": "USER_INPUT", "content": "Decide2"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 51,
+                    "tool_calls": [],
+                    "content": "1. (Recommended) Option A\n   - **Pros:** Fast.\n   - **Cons:** Slow.\n2. Option B\n   - **Pros:** Small.",
+                },
+            ],
+        )
+        _write_transcript(
+            transcript,
+            [
+                {"type": "USER_INPUT", "content": "Prior"},
+                {"type": "USER_INPUT", "content": "Decide2"},
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "step_index": 51,
+                    "tool_calls": [],
+                    "truncated_fields": ["content"],
+                    "content": '"1. `(Recommended)` Option A"',
+                },
+            ],
+        )
+        res13b = _run_hook(base_payload())
+        assert res13b.get("decision") == "continue", f"case 13b failed: {res13b}"
+        checks.append("transcript_full_hydration_tool_calls_and_content")
 
     if hooks_json_path is not None:
         _check_hooks_json(hooks_json_path)

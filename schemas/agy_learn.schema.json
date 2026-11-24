@@ -1,0 +1,561 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/agy_learn.schema.json",
+  "title": "AgyLearnModels",
+  "description": "Domain schemas, 5-tier enforcement enums, ledger DTOs, heal reports, and typed response envelopes for agy_learn.",
+  "$defs": {
+    "LearnErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for agy_learn operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_IO_FAILURE",
+        "ERR_LOCK_CONFLICT",
+        "ERR_MISSING_PROVENANCE",
+        "ERR_OWING_LEARN",
+        "ERR_PROPOSAL_NOT_FOUND",
+        "ERR_PROPOSAL_BUDGET_EXCEEDED",
+        "ERR_DECLINED_ACTIVE",
+        "ERR_PRECONDITION_FAILED"
+      ]
+    },
+    "LearnReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for agy_learn operations.",
+      "enum": [
+        "RET_OK",
+        "RET_NO_NEW_PROPOSALS",
+        "RET_PROPOSED",
+        "RET_APPLIED",
+        "RET_DECLINED",
+        "RET_ESCALATED",
+        "RET_AUTO_PRUNED",
+        "RET_HEAL_CLEAN",
+        "RET_HEAL_ACTION_REQUIRED",
+        "RET_RENDERED",
+        "RET_SKIPPED"
+      ]
+    },
+    "EnforcementTier": {
+      "type": "string",
+      "description": "5-tier enforcement ladder ordered from highest determinism (Tier 1) to prose (Tier 5).",
+      "enum": ["hk_pkl", "mise_doctor", "agy_hook", "skill", "rule"]
+    },
+    "RetentionClass": {
+      "type": "string",
+      "description": "Retention lifecycle class for learned items.",
+      "enum": ["safety-invariant", "workflow-skill", "one-time-note"]
+    },
+    "ProposalStatus": {
+      "type": "string",
+      "description": "Lifecycle status of a proposal in proposals.jsonl.",
+      "enum": ["pending", "approved", "applied", "declined", "superseded", "shipped"]
+    },
+    "ReviewVerdict": {
+      "type": "string",
+      "description": "Verdict recorded for a completed /learn review.",
+      "enum": ["proposed", "no_new_proposals", "owing_learn", "applied"]
+    },
+    "HealFindingKind": {
+      "type": "string",
+      "description": "Categories of findings surfaced by read-only agy-learn heal --check.",
+      "enum": [
+        "owing_learn",
+        "already_applied",
+        "auto_escalate",
+        "declined_expired",
+        "proposal_bloat",
+        "active_proposal",
+        "hook_drift"
+      ]
+    },
+    "HealSeverity": {
+      "type": "string",
+      "description": "Severity level of a heal finding.",
+      "enum": ["info", "warn", "action_required"]
+    },
+    "LearnErrorEntry": {
+      "type": "object",
+      "description": "Typed agy_learn domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/LearnErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "LearnReturnEntry": {
+      "type": "object",
+      "description": "Typed agy_learn domain return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/LearnReturnCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "ProvenanceRef": {
+      "type": "object",
+      "description": "Mandatory evidence linking a review or proposal to a transcript step or plan error row.",
+      "additionalProperties": false,
+      "properties": {
+        "transcript_step": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "plan_error_ref": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "transcript_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "plan_path": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "LearnProposal": {
+      "type": "object",
+      "description": "Schema-validated /learn proposal entry stored in $XDG_STATE_HOME/agy-learn/proposals.jsonl.",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "dedup_key",
+        "title",
+        "summary",
+        "target_path",
+        "tier",
+        "recommended_tier",
+        "retention_class",
+        "status",
+        "occurrences",
+        "provenance",
+        "timestamp",
+        "timestamp_unix_ns"
+      ],
+      "properties": {
+        "proposal_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dedup_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tier": {
+          "$ref": "#/$defs/EnforcementTier"
+        },
+        "recommended_tier": {
+          "$ref": "#/$defs/EnforcementTier"
+        },
+        "retention_class": {
+          "$ref": "#/$defs/RetentionClass"
+        },
+        "status": {
+          "$ref": "#/$defs/ProposalStatus",
+          "default": "pending"
+        },
+        "occurrences": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "provenance": {
+          "$ref": "#/$defs/ProvenanceRef"
+        },
+        "proposed_diff": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "declined_until_unix_ns": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "shipped_commit": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "notes": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        }
+      }
+    },
+    "LearnReviewRecord": {
+      "type": "object",
+      "description": "Cross-session /learn review record stored in $XDG_STATE_HOME/agy-learn/reviews.jsonl.",
+      "additionalProperties": false,
+      "required": [
+        "review_id",
+        "plan_key",
+        "plan_sha256",
+        "error_count",
+        "outcome",
+        "survivor_count",
+        "provenance",
+        "timestamp",
+        "timestamp_unix_ns"
+      ],
+      "properties": {
+        "review_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "worktree_slug": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "plan_sha256": {
+          "type": "string",
+          "minLength": 1
+        },
+        "error_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outcome": {
+          "$ref": "#/$defs/ReviewVerdict"
+        },
+        "survivor_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "proposal_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "provenance": {
+          "$ref": "#/$defs/ProvenanceRef"
+        },
+        "repo_root": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "conversation_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "notes": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        }
+      }
+    },
+    "HealFinding": {
+      "type": "object",
+      "description": "Single read-only diagnostic finding produced by agy-learn heal --check.",
+      "additionalProperties": false,
+      "required": ["kind", "severity", "subject", "message"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/HealFindingKind"
+        },
+        "severity": {
+          "$ref": "#/$defs/HealSeverity"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recommended_tier": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnforcementTier"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "proposal_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "plan_key": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "HealReport": {
+      "type": "object",
+      "description": "Read-only self-healing report for agy-learn state, escalations, applied detection, and budget health.",
+      "additionalProperties": false,
+      "required": [
+        "healthy",
+        "read_only",
+        "state_dir",
+        "reviews_count",
+        "proposals_count",
+        "proposal_md_bytes",
+        "proposal_md_within_budget",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "healthy": {
+          "type": "boolean"
+        },
+        "read_only": {
+          "type": "boolean",
+          "default": true
+        },
+        "state_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviews_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "proposals_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnProposal"
+          },
+          "default": []
+        },
+        "owing_plans": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "auto_escalated_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "already_applied_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "expired_declined_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HealFinding"
+          },
+          "default": []
+        },
+        "proposal_md_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "proposal_md_within_budget": {
+          "type": "boolean"
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "LearnResponse": {
+      "type": "object",
+      "description": "Top-level typed response envelope for agy_learn CLI commands.",
+      "additionalProperties": false,
+      "required": ["command", "rc", "timestamp", "timestamp_unix_ns", "errors", "returns"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rc": {
+          "type": "integer"
+        },
+        "review": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LearnReviewRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "proposal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LearnProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "heal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HealReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rendered_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "rendered_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "InteractiveQuestionsHookState": {
+      "type": "object",
+      "description": "Persisted per-conversation state for agy-interactive-questions hook.",
+      "additionalProperties": false,
+      "required": ["last_user_idx", "last_blocked_step_idx", "blocks_in_turn", "pre_denied_fps"],
+      "properties": {
+        "last_user_idx": {
+          "type": "integer",
+          "default": -2
+        },
+        "last_blocked_step_idx": {
+          "type": "integer",
+          "default": -1
+        },
+        "blocks_in_turn": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "pre_denied_fps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

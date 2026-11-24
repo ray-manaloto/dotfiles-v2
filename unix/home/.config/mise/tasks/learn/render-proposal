@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#MISE description="Render thin <= 8 KB active-only learning_proposal.md from proposals.jsonl"
+#USAGE flag "--out <path>" help="Output markdown path"
+#USAGE flag "--repo <repo>" help="Repository root for already-applied pruning"
+#USAGE flag "--max-bytes <n>" help="Maximum byte budget (default 8192)"
+#USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+
+args=(render-proposal)
+[[ -n ${usage_out:-} ]] && args+=(--out "${usage_out}")
+[[ -n ${usage_repo:-} ]] && args+=(--repo "${usage_repo}")
+[[ -n ${usage_max_bytes:-} ]] && args+=(--max-bytes "${usage_max_bytes}")
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

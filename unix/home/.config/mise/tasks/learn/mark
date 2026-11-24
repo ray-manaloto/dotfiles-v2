@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#MISE description="Update status of an agy-learn proposal (approved, applied, declined, shipped, superseded)"
+#USAGE flag "--proposal-id <id>" help="Proposal ID"
+#USAGE flag "--status <status>" help="New status: approved, applied, declined, shipped, superseded"
+#USAGE flag "--shipped-commit <sha>" help="Optional commit SHA when shipped"
+#USAGE flag "--notes <notes>" help="Optional status notes"
+#USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+
+args=(mark)
+[[ -n ${usage_proposal_id:-} ]] && args+=(--proposal-id "${usage_proposal_id}")
+[[ -n ${usage_status:-} ]] && args+=(--status "${usage_status}")
+[[ -n ${usage_shipped_commit:-} ]] && args+=(--shipped-commit "${usage_shipped_commit}")
+[[ -n ${usage_notes:-} ]] && args+=(--notes "${usage_notes}")
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

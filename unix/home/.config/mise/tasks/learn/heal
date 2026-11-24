@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#MISE description="Run read-only self-healing checks on agy-learn ledger and proposal budgets"
+#USAGE flag "--check" help="Run read-only checks (default)"
+#USAGE flag "--json" help="Emit HealReport JSON"
+#USAGE flag "--repo <repo>" help="Repository root for already-applied detection"
+#USAGE flag "--proposal-md <path>" help="Path to learning_proposal.md for 8 KB budget check"
+#USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+
+args=(heal)
+[[ ${usage_check:-true} == "true" ]] && args+=(--check)
+[[ ${usage_json:-false} == "true" ]] && args+=(--json)
+[[ -n ${usage_repo:-} ]] && args+=(--repo "${usage_repo}")
+[[ -n ${usage_proposal_md:-} ]] && args+=(--proposal-md "${usage_proposal_md}")
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

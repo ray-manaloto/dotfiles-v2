@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#MISE description="Create or auto-escalate an agy-learn proposal with provenance and 30-day declined buffer"
+#USAGE flag "--dedup-key <key>" help="Stable deduplication key"
+#USAGE flag "--title <title>" help="Short proposal title"
+#USAGE flag "--summary <summary>" help="Concise proposal rationale and fix"
+#USAGE flag "--target-path <path>" help="Target file path"
+#USAGE flag "--tier <tier>" help="Enforcement tier: hk_pkl, mise_doctor, agy_hook, skill, or rule"
+#USAGE flag "--retention-class <class>" help="Retention class: safety-invariant, workflow-skill, or one-time-note"
+#USAGE flag "--transcript-step <step>" help="Transcript step provenance ref"
+#USAGE flag "--plan-error-ref <ref>" help="Plan error row provenance ref"
+#USAGE flag "--proposed-diff <diff>" help="Optional concise diff or snippet"
+#USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+
+args=(propose)
+[[ -n ${usage_dedup_key:-} ]] && args+=(--dedup-key "${usage_dedup_key}")
+[[ -n ${usage_title:-} ]] && args+=(--title "${usage_title}")
+[[ -n ${usage_summary:-} ]] && args+=(--summary "${usage_summary}")
+[[ -n ${usage_target_path:-} ]] && args+=(--target-path "${usage_target_path}")
+[[ -n ${usage_tier:-} ]] && args+=(--tier "${usage_tier}")
+[[ -n ${usage_retention_class:-} ]] && args+=(--retention-class "${usage_retention_class}")
+[[ -n ${usage_transcript_step:-} ]] && args+=(--transcript-step "${usage_transcript_step}")
+[[ -n ${usage_plan_error_ref:-} ]] && args+=(--plan-error-ref "${usage_plan_error_ref}")
+[[ -n ${usage_proposed_diff:-} ]] && args+=(--proposed-diff "${usage_proposed_diff}")
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

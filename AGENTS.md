@@ -81,6 +81,19 @@ and C++26 workstation setup.
   than direct script paths so `mise` parses flags. In `hk.pkl`, pair
   `Builtins.mise` + `Builtins.mise_config_dir` for all mise configs and exclude
   them from `tombi-format` while keeping `tombi lint --error-on-warnings`.
+- **Schema-first Python, dual-sink logging & `agy-learn`:** Declare all Python
+  DTOs, enums, requests, and responses in Draft 2020-12 `schemas/**/*.schema.json`
+  and generate Pydantic v2 models via `mise run py:codegen` (`datamodel-codegen`,
+  enforced by `schema_first_ast.py` and `schema_contract_check.py`). Keep
+  `pyproject.toml` runtime dependencies slim (`pydantic`, `orjson`, `structlog`,
+  `psutil`, `filelock`, `tenacity`, `cyclopts`), emit 9-digit zero-padded
+  nanosecond timestamps (`YYYYmmddTHHMMSS.NNNNNNNNN±HHMM`) + closed
+  `errors[]`/`returns[]` lists on responses, and log via `dotfiles_py.logging`
+  dual-sink `structlog` + `orjson` (no raw `print()` or bare `logging.getLogger`).
+  Keep Antigravity hooks under `unix/home/.gemini/config/hooks/*.py` stdlib-only
+  and `/usr/bin/python3` (`3.9.6`) compatible (`timezone.utc`, tuple `except`).
+  Record `/learn` reviews/proposals in `agy_learn` (`mise run learn:heal --check`,
+  5-tier ladder `hk.pkl -> mise doctor project -> Antigravity hook -> Skill -> Rule`).
 - **`mise` `[dotfiles]` & guest sync pitfalls:** Always anchor `dotfiles.root`
   in `unix/home/.config/mise/config.toml` via symlink-resolving Tera syntax
   (`"{{ config_source | canonicalize | dirname }}/../.."`), pass

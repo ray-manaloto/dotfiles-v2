@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+#MISE description="Record a validated /learn review (including 0-survivor no_new_proposals or owing_learn)"
+#USAGE flag "--plan-key <plan_key>" help="Canonical plan key or path"
+#USAGE flag "--plan-sha256 <sha256>" help="Plan or turn SHA-256 digest"
+#USAGE flag "--outcome <outcome>" help="Verdict: proposed, no_new_proposals, owing_learn, or applied"
+#USAGE flag "--error-count <n>" help="Logged Errors Encountered count"
+#USAGE flag "--survivor-count <n>" help="Surviving proposal count (0 valid for no_new_proposals)"
+#USAGE flag "--transcript-step <step>" help="Transcript step provenance ref"
+#USAGE flag "--plan-error-ref <ref>" help="Plan error row provenance ref"
+#USAGE flag "--plan-id <id>" help="PWF PLAN_ID"
+#USAGE flag "--worktree-slug <slug>" help="Worktree slug"
+#USAGE flag "--notes <notes>" help="Optional review notes"
+#USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+
+args=(record-review)
+[[ -n ${usage_plan_key:-} ]] && args+=(--plan-key "${usage_plan_key}")
+[[ -n ${usage_plan_sha256:-} ]] && args+=(--plan-sha256 "${usage_plan_sha256}")
+[[ -n ${usage_outcome:-} ]] && args+=(--outcome "${usage_outcome}")
+[[ -n ${usage_error_count:-} ]] && args+=(--error-count "${usage_error_count}")
+[[ -n ${usage_survivor_count:-} ]] && args+=(--survivor-count "${usage_survivor_count}")
+[[ -n ${usage_transcript_step:-} ]] && args+=(--transcript-step "${usage_transcript_step}")
+[[ -n ${usage_plan_error_ref:-} ]] && args+=(--plan-error-ref "${usage_plan_error_ref}")
+[[ -n ${usage_plan_id:-} ]] && args+=(--plan-id "${usage_plan_id}")
+[[ -n ${usage_worktree_slug:-} ]] && args+=(--worktree-slug "${usage_worktree_slug}")
+[[ -n ${usage_notes:-} ]] && args+=(--notes "${usage_notes}")
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+exec uv run --project "${repo_root}" --offline --locked python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

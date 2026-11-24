@@ -569,6 +569,19 @@ run_doctor() {
 	return 0
 }
 
+print_learn_heal() {
+	local dir="$1"
+	local self_dir lib_dir repo_root venv_py
+	self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+	lib_dir="$(cd "${self_dir}/../../lib" && pwd -P)"
+	repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+	venv_py="${repo_root}/.venv/bin/python"
+	[[ -d "${lib_dir}/agy_learn" && -x ${venv_py} ]] || return 0
+	printf '\nLearn Heal (read-only):\n  '
+	"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' \
+		"${lib_dir}" heal --check --repo "${dir}" || true
+}
+
 find_pwf_scripts || true
 
 primary_plan_id=""
@@ -599,6 +612,8 @@ print_primary "${target_dir}" "${primary_plan_id}" "${primary_pid_source}" "${pr
 if [[ ${here} != "true" ]]; then
 	print_worktrees "${target_dir}" "${primary_plan_id}"
 fi
+
+print_learn_heal "${target_dir}"
 
 if [[ ${doctor} == "true" ]]; then
 	run_doctor "${target_dir}" "${primary_plan_id}" "${primary_pwf_root}"

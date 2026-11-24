@@ -34,13 +34,6 @@ BANNED_CALL_CONSTRUCTORS = frozenset(
 )
 BANNED_IMPORTS = BANNED_BASES | BANNED_DECORATORS | BANNED_CALL_CONSTRUCTORS
 
-# Temporary narrow exemption for untouched Issue #12 hook file until migrated.
-PRE_ISSUE_12_EXEMPTIONS = frozenset(
-    {
-        ("unix/home/.gemini/config/hooks/agy-interactive-questions.py", "_HookState"),
-    }
-)
-
 
 def _is_exempt_path(rel_posix: str) -> bool:
     if rel_posix.startswith("unix/home/.config/mise/lib/dotfiles_py/generated/"):
@@ -116,8 +109,6 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
             continue
 
         if not isinstance(node, ast.ClassDef):
-            continue
-        if (rel_posix, node.name) in PRE_ISSUE_12_EXEMPTIONS:
             continue
         if _has_ignore_comment(lines, node):
             continue

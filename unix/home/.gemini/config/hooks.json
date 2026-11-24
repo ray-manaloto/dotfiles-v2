@@ -79,6 +79,13 @@
     ]
   },
   "post-task-learn": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python3 -I -B ./hooks/post-task-learn.py --session-start",
+        "timeout": 10
+      }
+    ],
     "Stop": [
       {
         "type": "command",

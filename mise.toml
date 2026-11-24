@@ -274,3 +274,8 @@ test -f "unix/home/.agents/skills/herdr-roll/SKILL.md"
 .venv/bin/python -I -B -m unittest discover -s unix/home/.config/mise/lib/herdr_roll/tests -t unix/home/.config/mise/lib
 '''
 hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable, .venv is synced via `mise deps uv`, and herdr_roll unit tests pass."
+
+[doctor.checks.agy-learn-heal]
+description = "Self-healing agy-learn ledger and schemas pass read-only health check"
+run = "mise run learn:heal --check --repo ."
+hint = "Inspect '$XDG_STATE_HOME/agy-learn/' via 'mise run learn:heal --check' and resolve any owing_learn or proposal bloat."

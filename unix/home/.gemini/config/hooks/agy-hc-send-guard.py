@@ -21,8 +21,6 @@ SEPARATORS = frozenset(
     {";", "&&", "||", "|", "&", "\n", "then", "do", "else", "elif", "{", "}", "(", ")"}
 )
 
-Inspector = Callable[[str], dict[str, Any] | None]
-
 
 def _allow() -> dict[str, Any]:
     return {"decision": "allow"}
@@ -33,10 +31,9 @@ def _deny(reason: str) -> dict[str, Any]:
 
 
 def _split_shell_segments(command: str) -> list[list[str]]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&")
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&()\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
-    lexer.wordchars = lexer.wordchars.replace("\n", "")
     try:
         tokens = list(lexer)
     except ValueError:
@@ -60,8 +57,24 @@ def _parse_hc_send_segment(segment: list[str]) -> tuple[str, str | None, str] | 
     idx = 0
     while idx < len(segment):
         tok = segment[idx]
-        if ENV_ASSIGN_RE.match(tok) or Path(tok).name == "env":
+        if ENV_ASSIGN_RE.match(tok):
             idx += 1
+            continue
+        if Path(tok).name == "env":
+            idx += 1
+            while idx < len(segment) and segment[idx].startswith("-"):
+                flag = segment[idx]
+                if flag in {
+                    "-u",
+                    "--unset",
+                    "-C",
+                    "--chdir",
+                    "-S",
+                    "--split-string",
+                } and idx + 1 < len(segment):
+                    idx += 2
+                    continue
+                idx += 1
             continue
         break
     if idx + 1 >= len(segment):
@@ -148,7 +161,8 @@ def _is_agy_terminal(info: dict[str, Any]) -> bool:
 
 
 def _check_command(
-    command: str, inspector: Inspector = _inspect_terminal
+    command: str,
+    inspector: Callable[[str], dict[str, Any] | None] = _inspect_terminal,
 ) -> dict[str, Any]:
     for segment in _split_shell_segments(command):
         parsed = _parse_hc_send_segment(segment)
@@ -163,9 +177,9 @@ def _check_command(
         raw_state = status.get("state") if isinstance(status, dict) else ""
         state = raw_state if isinstance(raw_state, str) else ""
 
-        if state == "working":
+        if state in ("working", "blocked"):
             return _deny(
-                f"agy-hc-send-guard: Peer Antigravity tab '{target}' is currently working; "
+                f"agy-hc-send-guard: Peer Antigravity tab '{target}' is currently {state}; "
                 "do not run 'hc send'. Deliver messages via native 'send_message' instead."
             )
 
@@ -195,7 +209,8 @@ def _check_command(
 
 
 def _run_hook(
-    payload: dict[str, Any], inspector: Inspector = _inspect_terminal
+    payload: dict[str, Any],
+    inspector: Callable[[str], dict[str, Any] | None] = _inspect_terminal,
 ) -> dict[str, Any]:
     if os.environ.get("AGY_DISABLE_HC_SEND_GUARD") == "1":
         return _allow()
@@ -218,7 +233,8 @@ def _run_hook(
 
 
 def _process_stdin_text(
-    raw_stdin: str, inspector: Inspector = _inspect_terminal
+    raw_stdin: str,
+    inspector: Callable[[str], dict[str, Any] | None] = _inspect_terminal,
 ) -> dict[str, Any]:
     try:
         payload = json.loads(raw_stdin)
@@ -283,6 +299,11 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             "agent": "antigravity",
             "status": {"app": "antigravity", "state": "working"},
             "foreground": {"argv": ["agy", "--conversation", "uuid-1"]},
+        },
+        "agy-blocked": {
+            "agent": "antigravity",
+            "status": {"app": "antigravity", "state": "blocked"},
+            "foreground": {"argv": ["agy", "--conversation", "uuid-2"]},
         },
     }
 
@@ -353,6 +374,22 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         == _allow()
     )
     checks.append("agy_idle_and_done_valid_doorbell_allowed")
+
+    # 9. Blocked agy tab denies even valid Wake doorbell
+    res9 = call_cmd(
+        'hc send agy-blocked "Wake doorbell: check incoming native send_message."'
+    )
+    assert res9.get("decision") == "deny", f"case 9 failed: {res9}"
+    checks.append("agy_blocked_doorbell_denied")
+
+    # 10. Subshell () and newline-separated hc send plus env -u FOO are caught cleanly
+    res10a = call_cmd('(hc send agy-idle "Full payload")')
+    assert res10a.get("decision") == "deny", f"case 10a subshell failed: {res10a}"
+    res10b = call_cmd('echo ok\nhc send agy-idle "Full payload"')
+    assert res10b.get("decision") == "deny", f"case 10b newline failed: {res10b}"
+    res10c = call_cmd('env -u FOO hc send agy-idle "Full payload"')
+    assert res10c.get("decision") == "deny", f"case 10c env -u failed: {res10c}"
+    checks.append("subshell_newline_and_env_hc_send_caught")
 
     if hooks_json_path is not None:
         _check_hooks_json(hooks_json_path)

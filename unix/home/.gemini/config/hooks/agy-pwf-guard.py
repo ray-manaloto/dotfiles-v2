@@ -591,6 +591,58 @@ def _candidate_worktree_plans(base_dir: Path | None, slug: str) -> list[Path]:
     return plans
 
 
+def _shared_reviews_path() -> Path:
+    xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = (
+        Path(os.path.expanduser(xdg_state))
+        if xdg_state
+        else Path.home() / ".local" / "state"
+    )
+    return base / "agy-learn" / "reviews.jsonl"
+
+
+def _read_shared_reviews(reviews_path: Path | None = None) -> dict[str, tuple[str, str, int]]:
+    path = reviews_path or _shared_reviews_path()
+    if not path.is_file():
+        return {}
+    latest: dict[str, tuple[str, str, int]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for raw in lines:
+        if not raw.strip():
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        raw_key = rec.get("plan_key")
+        sha = rec.get("plan_sha256")
+        outcome = rec.get("outcome")
+        ts_ns = rec.get("timestamp_unix_ns", 0)
+        if not (
+            isinstance(raw_key, str)
+            and raw_key
+            and isinstance(sha, str)
+            and sha
+            and isinstance(outcome, str)
+            and outcome
+        ):
+            continue
+        try:
+            key = str(Path(os.path.expanduser(raw_key)).resolve(strict=False))
+        except OSError:
+            key = raw_key
+        ns_val = ts_ns if isinstance(ts_ns, int) and not isinstance(ts_ns, bool) else 0
+        prev = latest.get(key)
+        if prev is None or ns_val >= prev[2]:
+            latest[key] = (sha, outcome, ns_val)
+    return latest
+
+
 def _check_worktree_rm(
     payload: dict[str, Any], base_dir: Path | None, command: str
 ) -> dict[str, Any]:
@@ -600,25 +652,32 @@ def _check_worktree_rm(
     plans = _candidate_worktree_plans(base_dir, slug)
     if not plans:
         return _allow()
-    artifact_raw = payload.get("artifactDirectoryPath")
-    if not isinstance(artifact_raw, str) or not artifact_raw.strip():
-        return _allow()
-    artifact_dir = Path(os.path.expanduser(artifact_raw.strip()))
-    state_path = artifact_dir / ".post-task-learn-state.json"
+
     learned_plans: dict[str, Any] = {}
     pending_key: str | None = None
-    if state_path.is_file():
-        try:
-            raw_state = json.loads(state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            raw_state = {}
-        if isinstance(raw_state, dict):
-            lp = raw_state.get("learned_plans")
-            if isinstance(lp, dict):
-                learned_plans = lp
-            pend = raw_state.get("pending_proposal")
-            if isinstance(pend, dict) and isinstance(pend.get("plan_key"), str):
-                pending_key = pend["plan_key"]
+    owing_plans: dict[str, Any] = {}
+    artifact_raw = payload.get("artifactDirectoryPath")
+    if isinstance(artifact_raw, str) and artifact_raw.strip():
+        artifact_dir = Path(os.path.expanduser(artifact_raw.strip()))
+        state_path = artifact_dir / ".post-task-learn-state.json"
+        if state_path.is_file():
+            try:
+                raw_state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                raw_state = {}
+            if isinstance(raw_state, dict):
+                lp = raw_state.get("learned_plans")
+                if isinstance(lp, dict):
+                    learned_plans = lp
+                op = raw_state.get("owing_learn")
+                if isinstance(op, dict):
+                    owing_plans = op
+                pend = raw_state.get("pending_proposal")
+                if isinstance(pend, dict) and isinstance(pend.get("plan_key"), str):
+                    pending_key = pend["plan_key"]
+
+    shared_reviews = _read_shared_reviews()
+    valid_outcomes = ("proposed", "no_new_proposals", "applied")
 
     for plan_path in plans:
         try:
@@ -626,7 +685,23 @@ def _check_worktree_rm(
             digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
         except OSError:
             continue
-        if learned_plans.get(plan_key) != digest or pending_key == plan_key:
+        shared = shared_reviews.get(plan_key)
+        if shared is not None and shared[0] == digest and shared[1] == "owing_learn":
+            return _deny(
+                f"PWF/learn guard: completed plan '{slug}' is marked `owing_learn` "
+                "(retry-exhausted `/learn` review). Run `/learn` and record a review "
+                "before removing its worktree."
+            )
+        if owing_plans.get(plan_key) == digest or pending_key == plan_key:
+            return _deny(
+                f"PWF/learn guard: run `/learn` on completed plan '{slug}' "
+                "(and update `learning_proposal.md` or record a review) before removing its worktree."
+            )
+        shared_ok = (
+            shared is not None and shared[0] == digest and shared[1] in valid_outcomes
+        )
+        local_ok = learned_plans.get(plan_key) == digest
+        if not (local_ok or shared_ok):
             return _deny(
                 f"PWF/learn guard: run `/learn` on completed plan '{slug}' "
                 "(and update `learning_proposal.md` if `Errors Encountered` is "
@@ -685,6 +760,10 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if target_path == (repo_root / "mise.local.toml").resolve(strict=False):
         return _allow()
 
+    is_linked, branch = _check_linked_worktree(repo_root)
+    if not is_linked and _is_docs_or_roadmap_bypass(target_path, repo_root):
+        return _allow()
+
     plan_path = _resolve_active_plan(repo_root)
     if plan_path is None:
         return _deny()
@@ -693,7 +772,6 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if _is_docs_or_roadmap_bypass(target_path, repo_root):
         return _allow()
 
-    is_linked, branch = _check_linked_worktree(repo_root)
     if not is_linked:
         return _deny(
             f"PWF guard: active repo edits in PWF-adopted repos must run in a "
@@ -762,7 +840,7 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
     checks: list[str] = []
     saved_env = {
         k: os.environ.pop(k, None)
-        for k in ("PLAN_ID", "PWF_PLAN_ROOT", "AGY_DISABLE_PWF_GUARD")
+        for k in ("PLAN_ID", "PWF_PLAN_ROOT", "AGY_DISABLE_PWF_GUARD", "XDG_STATE_HOME")
     }
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1282,6 +1360,110 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 f"timestamp format mismatch: {sample_ts}"
             )
             checks.append("nanosecond_timestamp_format")
+
+            # 16. Cross-session worktree:rm lookup checks $XDG_STATE_HOME/agy-learn/reviews.jsonl
+            xdg_state16 = root / "xdg-state-16"
+            os.environ["XDG_STATE_HOME"] = str(xdg_state16)
+            wt_cross = root / "pwf-repo-cross16"
+            wt_cross_plan_dir = wt_cross / ".planning" / "2026-11-23-cross16"
+            wt_cross_plan_dir.mkdir(parents=True)
+            wt_cross_plan = wt_cross_plan_dir / "task_plan.md"
+            wt_cross_plan.write_text(
+                "# Cross16\n\n### Phase 1: Do\n**Status:** complete\n",
+                encoding="utf-8",
+            )
+            cross_sha = hashlib.sha256(wt_cross_plan.read_bytes()).hexdigest()
+            reviews_path16 = xdg_state16 / "agy-learn" / "reviews.jsonl"
+            reviews_path16.parent.mkdir(parents=True)
+            # Without review and without artifactDirectoryPath -> still denies!
+            res16a = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm cross16"},
+                    },
+                }
+            )
+            assert res16a.get("decision") == "deny", f"case 16a should deny: {res16a}"
+            # Owing review denies even across sessions
+            reviews_path16.write_text(
+                json.dumps(
+                    {
+                        "plan_key": str(wt_cross_plan.resolve()),
+                        "plan_sha256": cross_sha,
+                        "outcome": "owing_learn",
+                        "timestamp_unix_ns": 100,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            res16b = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm cross16"},
+                    },
+                }
+            )
+            assert res16b.get("decision") == "deny", (
+                f"case 16b owing_learn should deny: {res16b}"
+            )
+            # Valid no_new_proposals review later clears cross-session worktree:rm
+            with reviews_path16.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "plan_key": str(wt_cross_plan.resolve()),
+                            "plan_sha256": cross_sha,
+                            "outcome": "no_new_proposals",
+                            "timestamp_unix_ns": 200,
+                        }
+                    )
+                    + "\n"
+                )
+            res16c = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm cross16"},
+                    },
+                }
+            )
+            assert res16c == _allow(), f"case 16c shared review should allow: {res16c}"
+            checks.append("worktree_rm_cross_session_shared_reviews")
+
+            # 17. ROADMAP.md and docs/** on main are not blocked by stale all-complete ENV PLAN_ID
+            (pwf_repo / "mise.local.toml").unlink(missing_ok=True)
+            os.environ["PLAN_ID"] = "plan-done"
+            for bypass_rel in ("ROADMAP.md", "docs/guide.md"):
+                res17 = _run_hook(
+                    {
+                        "toolCall": {
+                            "name": "edit_file",
+                            "args": {"Path": str(pwf_repo / bypass_rel)},
+                        }
+                    }
+                )
+                assert res17 == _allow(), (
+                    f"case 17 {bypass_rel} on main should allow despite stale complete PLAN_ID: {res17}"
+                )
+            res17_code = _run_hook(
+                {
+                    "toolCall": {
+                        "name": "edit_file",
+                        "args": {"Path": str(pwf_repo / "AGENTS.md")},
+                    }
+                }
+            )
+            assert res17_code.get("decision") == "deny", (
+                f"case 17 non-doc on main must still deny: {res17_code}"
+            )
+            os.environ.pop("PLAN_ID", None)
+            checks.append("main_docs_roadmap_bypass_with_stale_complete_env_plan_id")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)

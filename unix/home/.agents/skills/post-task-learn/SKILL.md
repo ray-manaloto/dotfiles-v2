@@ -3,9 +3,9 @@ name: post-task-learn
 description: >-
   Run a bounded post-ticket or post-task learning pass mirroring Antigravity's
   built-in /learn command after completing a ticket, PR packet, or mutating
-  task. Inspect recent user corrections, failed attempts, and verified fixes;
-  propose durable Rule or Skill updates via learning_proposal.md with
-  RequestFeedback=true, or fast-exit when nothing reusable emerged.
+  task. Record validated reviews and proposals in the schema-first agy-learn
+  ledger using the 5-tier enforcement ladder, or record a 0-survivor
+  no_new_proposals review when nothing reusable emerged.
 ---
 
 # Post-Task Learning Pass (`/learn`)
@@ -27,60 +27,66 @@ files before explicit user approval.
 - **Ask-question boundary**: `ask_question` does not trigger the `Stop` hook,
   so after completing a mutating task before calling `ask_question`, run one
   bounded `/learn` check first.
-- **Anti-fast-exit gate**: Do NOT fast-exit when `task_plan.md` logged
+- **Anti-fast-exit gate**: Do NOT skip review when `task_plan.md` logged
   `Errors Encountered`, commands failed and needed retries, a multi-step
   workflow was discovered, or global `~/.gemini/config/` / `AGENTS.md` files
   changed without verifying local Mac host sync.
 - **Host sync check**: Whenever `dotfiles-v2` modifies global `.gemini/config/**`
   files, verify host symlinks and `~/.gemini/config/hooks.json` match before
   closing the task.
-- **Fast exit**: Only if the completed task had zero errors, retries, or
-  reusable lessons, output `Post-task /learn: no reusable customization updates needed.`
-  and stop immediately without modifying `learning_proposal.md`.
+- **Valid `0`-survivor review**: If the completed task had zero reusable
+  survivors after checking errors and retries, record
+  `mise run learn:record-review --outcome no_new_proposals --survivor-count 0`
+  with provenance (`--transcript-step` / `--plan-error-ref`) and stop cleanly.
 
-## 2. Classify Rules vs. Skills & Prefer Updates
+## 2. 5-Tier Enforcement Ladder & Retention Classes
 
-- Consult the `agy-customizations` skill (`docs/rules.md`, `docs/skills.md`,
-  `docs/hooks.md`) before drafting changes so schemas, frontmatter, and
-  budgets match (`24 KB` max per rule file; `20,000`-token aggregate rule
-  budget).
-- **Skill-first extraction**: Prefer creating or updating a
-  progressive-disclosure Skill (`skills/<name>/SKILL.md`) for repeatable
-  workflows, debugging checklists, and tool/environment gotchas rather than
-  appending runbook details to always-on `AGENTS.md` or rule files.
-- **`SKILL.md` lint preflight (`agnix` + `rumdl`):** When drafting `SKILL.md`
-  files, avoid hardcoded home-directory path prefixes in prose or examples (use
-  `$HOME/...` or `~/` instead to satisfy `agnix` `XP-SK-002`), keep blank lines
-  around fenced blocks and mixed list items (`rumdl` `MD031`/`MD076`), and run
-  `rumdl fmt` + `agnix --strict` on new skills.
-- **Update Existing (Prefer)**: update an active rule, skill, or workflow doc
-  when it was outdated, missed an edge case, or diverged from the verified fix.
-- **No meta-tests for tooling/config:** Do not propose unit tests for upstream
-  CLI behavior, git hooks, or doctor shell snippets; prefer
-  `mise doctor project` and `hk check` (reserve unit tests for project code).
-- **Classify**:
-  - **Rule**: universal behavioral guardrails, constraints, or formatting
-    invariants (`AGENTS.md` / `GEMINI.md` are always active with no frontmatter;
-    files under `.agents/rules/<name>.md` or `~/.gemini/config/rules/<name>.md`
-    require YAML frontmatter with a valid `trigger`).
-  - **Skill**: multi-step tool chains, flag combinations, or checklists
-    (`.agents/skills/<name>/SKILL.md` or `~/.gemini/config/skills/<name>/SKILL.md`).
-  - **Hook**: deterministic lifecycle enforcement (`hooks.json`).
-- **Repository governance**:
-  - Global rules, hooks, and skills (`~/.gemini/GEMINI.md`,
-    `~/.config/agents/AGENTS.md`, `~/.gemini/config/{hooks,rules,skills,hooks.json}`)
-    are managed in `dotfiles-v2` (coordinate updates via `dotfiles-v2-lead`).
-  - In `knowledge-base-v2`, wiki mapping/QA rounds use `kb:retro` +
-    `session-retro`, while code/ticket tasks use `post-task-learn`.
-  - Coordinate with `ticket-retro` / `session-retro` when closing a ticket or
-    session so findings are linked rather than duplicated.
+Prefer the highest deterministic tier that enforces an invariant cleanly:
 
-## 3. Mandatory Proposal Workflow
+1. **Tier 1 — `hk.pkl` (`hk_pkl`)**: git-hook / `ruff` / `ty` / `agnix` /
+   schema gates (`pre-commit` / `pre-push`).
+2. **Tier 2 — `mise doctor project` (`mise_doctor`)**: environment, lockfile,
+   sync, and runtime health invariants.
+3. **Tier 3 — Antigravity Hook (`agy_hook`)**: `PreToolUse` / `Stop` /
+   `SessionStart` lifecycle guards (`$HOME/.gemini/config/hooks/`).
+4. **Tier 4 — Skill (`skill`)**: repeatable multi-step tool chains, flag
+   combinations, and debugging checklists (`skills/<name>/SKILL.md`).
+5. **Tier 5 — Rule (`rule`)**: concise universal behavioral guardrails
+   (`AGENTS.md` or `~/.gemini/config/rules/<name>.md` with `trigger:`
+   frontmatter; `24 KB` max per file).
 
-1. Create or update `learning_proposal.md` in the conversation artifact
-   directory with `ArtifactMetadata`: `UserFacing: true` and
-   `RequestFeedback: true`.
-2. Record the classification (`Rule`, `Skill`, or `Hook`), rationale, target
-   file path, and exact text additions/diffs.
-3. Point the user to `learning_proposal.md` with only key open decisions, and
-   apply changes only after explicit user approval.
+- **Auto-escalation (`occurrences >= 2`)**: Any `skill` or `rule` proposal
+  that recurs twice or more automatically escalates to a deterministic Tier 1–3
+  gate (`hk_pkl`, `mise_doctor`, or `agy_hook`).
+- **Retention classes**: Tag every proposal with `safety-invariant`,
+  `workflow-skill`, or `one-time-note` (`one-time-note` is auto-pruned during
+  rendering).
+- **30-day `declined` buffer**: Previously declined items are skipped for 30
+  days unless `occurrences >= 2` overrides the buffer and escalates.
+- **`SKILL.md` lint preflight (`agnix` + `rumdl`)**: Avoid hardcoded
+  home-directory path prefixes in prose or examples (use `$HOME/...` or `~/`
+  to satisfy `agnix` `XP-SK-002`), keep blank lines around fenced blocks and
+  lists (`rumdl` `MD031`/`MD076`), and run `rumdl fmt` + `agnix --strict`.
+- **No meta-tests for tooling/config**: Prefer `mise doctor project` and
+  `hk check` over unit tests for upstream CLIs, git hooks, or doctor snippets.
+- **Repository governance**: Global rules, hooks, and skills are managed in
+  `dotfiles-v2`; in `knowledge-base-v2`, wiki mapping/QA rounds use `kb:retro`
+  - `session-retro` while code/ticket tasks use `post-task-learn`.
+
+## 3. Ledger & Thin Proposal Workflow
+
+1. Record every review in `$XDG_STATE_HOME/agy-learn/reviews.jsonl` via
+   `mise run learn:record-review` (with mandatory `--transcript-step` or
+   `--plan-error-ref` provenance).
+2. Add surviving proposals to `$XDG_STATE_HOME/agy-learn/proposals.jsonl` via
+   `mise run learn:propose` (with `--tier`, `--retention-class`, and provenance).
+3. Render a thin `<= 8 KB` active-only `learning_proposal.md` via
+   `mise run learn:render-proposal --out <artifact_dir>/learning_proposal.md`
+   (which auto-prunes applied, shipped, declined, and `one-time-note` items).
+4. **Feedback metadata rule**: Always set `RequestFeedback: false` during
+   automated `Stop`-hook runs and `0`-survivor reviews so Herdr tabs do not
+   raise false `blocked` dialogs; reserve `RequestFeedback: true` exclusively
+   for explicit user `/learn` approval prompts.
+5. Run read-only `mise run learn:heal --check` at session checks or before
+   closing to detect `owing_learn`, escalations, or already-shipped items
+   without mutating rules, hooks, or GitHub issues without approval.
