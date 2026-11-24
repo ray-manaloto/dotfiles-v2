@@ -503,6 +503,16 @@ if zsh_completions.is_dir():
             except OSError:
                 pass
 
+herdr_mods_dir = home / ".config" / "herdr-app" / "mods"
+if herdr_mods_dir.is_dir():
+    for entry in sorted(herdr_mods_dir.iterdir()):
+        if entry.is_symlink() and not entry.exists():
+            dead_candidates.append(entry)
+        elif entry.is_dir() and not entry.is_symlink():
+            for child in sorted(entry.iterdir()):
+                if child.is_symlink() and not child.exists():
+                    dead_candidates.append(child)
+
 for dead in dead_candidates:
     kind = "zero-byte file" if (dead.is_file() and not dead.is_symlink()) else "dead symlink"
     if apply:

@@ -1,0 +1,309 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/env_stats.schema.json",
+  "title": "EnvStatsModels",
+  "description": "Schema-first models, enums, and typed responses for multi-environment stats, agy session telemetry, and Herdr realtime-stats orchestration.",
+  "$defs": {
+    "EnvTargetName": {
+      "type": "string",
+      "description": "Canonical environment target identifiers supported by env:top and env-stats.",
+      "enum": ["host", "pc-host", "pc", "mac", "vm"]
+    },
+    "EnvTargetState": {
+      "type": "string",
+      "description": "Reachability state of a monitored environment.",
+      "enum": ["ready", "unavailable", "unknown"]
+    },
+    "EnvStatsErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for env_stats operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_IO_FAILURE",
+        "ERR_COMMAND_FAILED",
+        "ERR_PARSE_FAILED"
+      ]
+    },
+    "EnvStatsReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for env_stats operations.",
+      "enum": ["RET_OK", "RET_PARTIAL", "RET_DRY_RUN", "RET_SKIPPED"]
+    },
+    "EnvStatsErrorEntry": {
+      "type": "object",
+      "description": "Typed env_stats domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/EnvStatsErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "EnvStatsReturnEntry": {
+      "type": "object",
+      "description": "Typed env_stats domain return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/EnvStatsReturnCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "AgySessionStatus": {
+      "type": "object",
+      "description": "Normalized live Antigravity CLI session snapshot emitted atomically by agy-statusline.",
+      "additionalProperties": false,
+      "required": [
+        "conversation_id",
+        "updated_at",
+        "agent_state",
+        "context_window_size",
+        "used_tokens",
+        "used_percentage",
+        "compaction_limit",
+        "compaction_used_percentage",
+        "compaction_headroom_tokens",
+        "swarm_working",
+        "swarm_idle",
+        "swarm_total"
+      ],
+      "properties": {
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "updated_at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "model_display_name": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "effort": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "agent_state": {
+          "type": "string"
+        },
+        "cycle_mode": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "context_window_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "used_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "used_percentage": {
+          "type": "number",
+          "minimum": 0
+        },
+        "compaction_limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "compaction_used_percentage": {
+          "type": "number",
+          "minimum": 0
+        },
+        "compaction_headroom_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "swarm_working": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "swarm_idle": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "swarm_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "swarm_title": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "plan_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "plan_tier": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "total_cost_usd": {
+          "type": ["number", "null"],
+          "default": null
+        }
+      }
+    },
+    "EnvHostMetrics": {
+      "type": "object",
+      "description": "Live resource and top-command descriptor for one environment target.",
+      "additionalProperties": false,
+      "required": ["target", "status", "top_command"],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/EnvTargetName"
+        },
+        "status": {
+          "$ref": "#/$defs/EnvTargetState"
+        },
+        "cpu_percent": {
+          "type": ["number", "null"],
+          "default": null
+        },
+        "load_1m": {
+          "type": ["number", "null"],
+          "default": null
+        },
+        "load_5m": {
+          "type": ["number", "null"],
+          "default": null
+        },
+        "cpu_count": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "mem_used_bytes": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "mem_total_bytes": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "mem_used_percent": {
+          "type": ["number", "null"],
+          "default": null
+        },
+        "top_command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "detail": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "HerdrModSyncState": {
+      "type": "object",
+      "description": "Synchronization status of Herdr mods and realtime-stats layout.",
+      "additionalProperties": false,
+      "required": ["usage_limits_installed", "env_stats_installed"],
+      "properties": {
+        "usage_limits_installed": {
+          "type": "boolean"
+        },
+        "env_stats_installed": {
+          "type": "boolean"
+        },
+        "layout_name": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "realtime_stats_space_id": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "EnvStatsSnapshotResponse": {
+      "type": "object",
+      "description": "Top-level envelope response for env_stats snapshot and status CLI.",
+      "additionalProperties": false,
+      "required": [
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns",
+        "rc",
+        "environments",
+        "agy_sessions",
+        "herdr"
+      ],
+      "properties": {
+        "timestamp": {
+          "$ref": "./common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "./common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvStatsErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvStatsReturnEntry"
+          },
+          "default": []
+        },
+        "rc": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "environments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvHostMetrics"
+          },
+          "default": []
+        },
+        "agy_sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgySessionStatus"
+          },
+          "default": []
+        },
+        "herdr": {
+          "$ref": "#/$defs/HerdrModSyncState"
+        }
+      }
+    }
+  }
+}

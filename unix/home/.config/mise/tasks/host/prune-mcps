@@ -131,21 +131,52 @@ for claude_path in claude_candidates:
 codex_cfg = home / ".codex" / "config.toml"
 if codex_cfg.is_file():
     raw_lines = codex_cfg.read_text(encoding="utf-8").splitlines(keepends=True)
+    sec_re = re.compile(r'^\s*\[\[?([^\]]+?)\]\]?\s*(?:#.*)?$')
+    kv_re = re.compile(r'^\s*(environment|endpoint)\s*=\s*["\']([^"\']+)["\']')
+
+    # Detect dead [otel] stanzas (e.g. symphony-cpp-local / http://127.0.0.1:4318/v1/logs)
+    # using stdlib-only parsing compatible with /usr/bin/python3 (3.9+).
+    dead_otel = False
+    in_otel = False
+    for line in raw_lines:
+        m = sec_re.match(line)
+        if m:
+            sec_name = m.group(1).strip()
+            in_otel = sec_name == "otel" or sec_name.startswith("otel.")
+            continue
+        if in_otel:
+            kvm = kv_re.match(line)
+            if kvm:
+                key, val = kvm.group(1), kvm.group(2)
+                if (key == "environment" and val == "symphony-cpp-local") or (
+                    key == "endpoint"
+                    and (
+                        val == "http://127.0.0.1:4318/v1/logs"
+                        or val.startswith(("http://127.0.0.1:4318", "http://localhost:4318"))
+                    )
+                ):
+                    dead_otel = True
+                    break
+
     kept_lines: list[str] = []
     skip_section = False
     codex_changed = False
-    sec_re = re.compile(r'^\s*\[\[?([^\]]+?)\]\]?\s*(?:#.*)?$')
     for line in raw_lines:
         m = sec_re.match(line)
         if m:
             sec_name = m.group(1).strip()
             skip_section = False
-            for srv in LEGACY_MCP_NAMES:
-                if sec_name in {f"mcp_servers.{srv}", f'mcp_servers."{srv}"'} or sec_name.startswith((f"mcp_servers.{srv}.", f'mcp_servers."{srv}".')):
-                    skip_section = True
-                    found.append(f"codex-mcp {codex_cfg}: [{sec_name}]")
-                    codex_changed = True
-                    break
+            if dead_otel and (sec_name == "otel" or sec_name.startswith("otel.")):
+                skip_section = True
+                found.append(f"codex-dead-otel {codex_cfg}: [{sec_name}]")
+                codex_changed = True
+            if not skip_section:
+                for srv in LEGACY_MCP_NAMES:
+                    if sec_name in {f"mcp_servers.{srv}", f'mcp_servers."{srv}"'} or sec_name.startswith((f"mcp_servers.{srv}.", f'mcp_servers."{srv}".')):
+                        skip_section = True
+                        found.append(f"codex-mcp {codex_cfg}: [{sec_name}]")
+                        codex_changed = True
+                        break
             if not skip_section:
                 for plug in LEGACY_CODEX_PLUGINS:
                     if sec_name in {f'plugins."{plug}"', f"plugins.{plug}"}:
@@ -159,7 +190,7 @@ if codex_cfg.is_file():
         bak = _backup(codex_cfg)
         codex_cfg.write_text("".join(kept_lines), encoding="utf-8")
         os.chmod(codex_cfg, 0o600)
-        print(f"PRUNED codex legacy MCP/plugin sections ({codex_cfg}, backup={bak})")
+        print(f"PRUNED codex legacy MCP/plugin/[otel] sections ({codex_cfg}, backup={bak})")
 
 if not found:
     print("OK  host:prune-mcps: zero legacy global MCP entries found")

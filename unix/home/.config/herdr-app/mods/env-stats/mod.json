@@ -1,0 +1,15 @@
+{
+  "place": "none",
+  "focusable": true,
+  "palette": [
+    {
+      "title": "Env Stats & Live AGY",
+      "command": "tab.new",
+      "args": {
+        "name": "Env Stats",
+        "mod": "env-stats"
+      },
+      "words": "stats top bottom btm btop quota agy swarm"
+    }
+  ]
+}

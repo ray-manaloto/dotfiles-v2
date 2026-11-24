@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+#MISE description="Launch real-time system monitor (btm --basic or pc /usr/bin/btop) for host, pc-host, pc, mac, or vm"
+#USAGE arg "<target>" help="Target environment: host, pc-host, pc, mac, or vm"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker/host SSH alias (default: pc)"
+#USAGE flag "--exec" help="Force direct docker exec / tart exec instead of Tailscale SSH for pc, mac, or vm"
+#USAGE flag "--loop" help="Reconnect automatically on disconnect (for persistent Herdr grid panes)"
+#USAGE flag "--dry-run" help="Print the resolved target command without executing it"
+set -euo pipefail
+
+target="${usage_target:-}"
+ssh_host_pc="${DOTFILES_PC_SSH_HOST:-${usage_host:-pc}}"
+force_exec="${usage_exec:-false}"
+loop_mode="${usage_loop:-false}"
+dry_run="${usage_dry_run:-false}"
+container_name="dotfiles-v2"
+vm_name="dotfiles-v2-macos"
+
+case "${target}" in
+host | pc-host | pc | mac | vm) ;;
+*)
+	echo "unknown target '${target}' (expected host, pc-host, pc, mac, or vm)" >&2
+	exit 1
+	;;
+esac
+
+resolve_ts_dest() {
+	local want="$1" status_json dest=""
+	if command -v tailscale >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+		if status_json="$(tailscale status --json 2>/dev/null)"; then
+			dest="$(printf '%s' "${status_json}" | jq -r --arg h "${want}" '
+				[.Peer[]? | select(.HostName == $h and .Online == true)
+				| ((.DNSName // "" | sub("\\.$"; "")) | if length > 0 then . else empty end) // (.TailscaleIPs[0] // "")]
+				| map(select(length > 0)) | first // empty
+			')"
+		fi
+	fi
+	printf '%s' "${dest:-${want}}"
+}
+
+run_once() {
+	local tty_ssh=() tty_exec=(-i)
+	if [[ -t 0 && -t 1 ]]; then
+		tty_ssh=(-t)
+		tty_exec=(-it)
+	fi
+
+	case "${target}" in
+	host)
+		local btm_bin=""
+		if command -v btm >/dev/null 2>&1; then
+			btm_bin="$(command -v btm)"
+		elif [[ -x "${HOME}/.local/share/mise/shims/btm" ]]; then
+			btm_bin="${HOME}/.local/share/mise/shims/btm"
+		fi
+		if [[ ${dry_run} == "true" ]]; then
+			printf 'DRY-RUN host: %s --basic\n' "${btm_bin:-btm}"
+			return 0
+		fi
+		if [[ -n ${btm_bin} ]]; then
+			"${btm_bin}" --basic
+		else
+			mise x bottom -- btm --basic
+		fi
+		;;
+	pc-host)
+		if [[ ${dry_run} == "true" ]]; then
+			printf 'DRY-RUN pc-host: ssh %s -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=5 -o ServerAliveCountMax=3 %s /usr/bin/btop\n' \
+				"${tty_ssh[*]:-}" "${ssh_host_pc}"
+			return 0
+		fi
+		ssh ${tty_ssh[@]+"${tty_ssh[@]}"} -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "${ssh_host_pc}" "/usr/bin/btop"
+		;;
+	pc | mac | vm)
+		local ssh_user ts_name inner_cmd ssh_dest=""
+		case "${target}" in
+		pc)
+			ssh_user="dev"
+			ts_name="dotfiles-v2-pc"
+			# shellcheck disable=SC2016
+			inner_cmd='export PATH="/opt/mise/shims:${HOME}/.local/share/mise/shims:${PATH}"; exec btm --basic'
+			;;
+		mac)
+			ssh_user="dev"
+			ts_name="dotfiles-v2-mac"
+			# shellcheck disable=SC2016
+			inner_cmd='export PATH="/opt/mise/shims:${HOME}/.local/share/mise/shims:${PATH}"; exec btm --basic'
+			;;
+		vm)
+			ssh_user="admin"
+			ts_name="dotfiles-v2-vm"
+			# shellcheck disable=SC2016
+			inner_cmd='export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; exec btm --basic'
+			;;
+		esac
+
+		if [[ ${force_exec} != "true" ]]; then
+			ssh_dest="$(resolve_ts_dest "${ts_name}")"
+			if ssh -n -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" true </dev/null >/dev/null 2>&1; then
+				if [[ ${dry_run} == "true" ]]; then
+					printf 'DRY-RUN %s: ssh %s -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=5 -o ServerAliveCountMax=3 %s@%s %s\n' \
+						"${target}" "${tty_ssh[*]:-}" "${ssh_user}" "${ssh_dest}" "${inner_cmd}"
+					return 0
+				fi
+				ssh ${tty_ssh[@]+"${tty_ssh[@]}"} -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "${ssh_user}@${ssh_dest}" "${inner_cmd}"
+				return $?
+			fi
+		fi
+
+		if [[ ${target} == "pc" ]]; then
+			if [[ ${dry_run} == "true" ]]; then
+				printf 'DRY-RUN pc: DOCKER_HOST=ssh://%s docker exec %s %s /bin/bash -lc %s\n' \
+					"${ssh_host_pc}" "${tty_exec[*]}" "${container_name}" "${inner_cmd}"
+				return 0
+			fi
+			env "DOCKER_HOST=ssh://${ssh_host_pc}" docker exec "${tty_exec[@]}" "${container_name}" /bin/bash -lc "${inner_cmd}"
+		elif [[ ${target} == "mac" ]]; then
+			if [[ ${dry_run} == "true" ]]; then
+				printf 'DRY-RUN mac: docker --context desktop-linux exec %s %s /bin/bash -lc %s\n' \
+					"${tty_exec[*]}" "${container_name}" "${inner_cmd}"
+				return 0
+			fi
+			env -u DOCKER_HOST docker --context desktop-linux exec "${tty_exec[@]}" "${container_name}" /bin/bash -lc "${inner_cmd}"
+		else
+			if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+				echo "env:top: vm fallback requires macOS with tart on PATH" >&2
+				return 1
+			fi
+			if [[ ${dry_run} == "true" ]]; then
+				printf 'DRY-RUN vm: tart exec %s %s /bin/zsh -lc %s\n' \
+					"${tty_exec[*]}" "${vm_name}" "${inner_cmd}"
+				return 0
+			fi
+			tart exec "${tty_exec[@]}" "${vm_name}" /bin/zsh -lc "${inner_cmd}"
+		fi
+		;;
+	esac
+}
+
+if [[ ${loop_mode} == "true" && ${dry_run} != "true" ]]; then
+	trap 'exit 0' INT TERM
+	while true; do
+		run_once || true
+		sleep 2
+	done
+else
+	run_once
+fi

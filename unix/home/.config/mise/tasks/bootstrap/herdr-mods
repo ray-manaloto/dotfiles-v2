@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+#MISE description="Install or sync nozikov/herdr-usage-limits, main-stats Herdr layout, and validate env-stats + usage-limits mods (macOS host only)"
+#USAGE flag "--check" help="Verify Herdr mods and main-stats layout without modifying files"
+set -euo pipefail
+
+if [[ -n ${CI:-} || ${container:-} == "docker" || "$(uname -s)" != "Darwin" || -r "${HOME}/.config/dotfiles-v2/vm-env.sh" || ${MISE_ENV:-} == *vm* ]]; then
+	exit 0
+fi
+
+check_only="${usage_check:-false}"
+herdr_home="${HERDR_APP_HOME:-${HOME}/.config/herdr-app}"
+cache_dir="${XDG_CACHE_HOME:-${HOME}/.cache}/dotfiles-v2/herdr-usage-limits.noindex"
+src_override="${HERDR_USAGE_LIMITS_SRC:-}"
+repo_url="https://github.com/nozikov/herdr-usage-limits.git"
+
+mods_dir="${herdr_home}/mods"
+ul_dst="${mods_dir}/usage-limits"
+env_stats_dst="${mods_dir}/env-stats"
+layouts_dir="${herdr_home}/layouts"
+main_layout="${layouts_dir}/main.json"
+stats_layout="${layouts_dir}/main-stats.json"
+
+if [[ ${check_only} == "true" ]]; then
+	if [[ ! -d ${ul_dst} || ! -f "${ul_dst}/main.js" ]]; then
+		echo "bootstrap:herdr-mods: missing ${ul_dst}" >&2
+		exit 1
+	fi
+	if [[ ! -d ${env_stats_dst} || ! -f "${env_stats_dst}/main.js" ]]; then
+		echo "bootstrap:herdr-mods: missing ${env_stats_dst}" >&2
+		exit 1
+	fi
+	if command -v herdr-app >/dev/null 2>&1; then
+		herdr-app check "${ul_dst}"
+		herdr-app check "${env_stats_dst}"
+	fi
+	exit 0
+fi
+
+src_root=""
+if [[ -n ${src_override} && -d "${src_override}/mods/usage-limits" ]]; then
+	src_root="${src_override}"
+elif [[ ${MISE_OFFLINE:-0} == "1" || ${MISE_OFFLINE:-false} == "true" ]]; then
+	if [[ -d "${cache_dir}/mods/usage-limits" ]]; then
+		src_root="${cache_dir}"
+	fi
+else
+	mkdir -p "$(dirname "${cache_dir}")"
+	if [[ -d "${cache_dir}/.git" ]]; then
+		git -C "${cache_dir}" pull --ff-only --quiet || true
+	else
+		git clone --depth 1 --quiet "${repo_url}" "${cache_dir}"
+	fi
+	if [[ -d "${cache_dir}/mods/usage-limits" ]]; then
+		src_root="${cache_dir}"
+	fi
+fi
+
+if [[ -n ${src_root} ]]; then
+	mkdir -p "${ul_dst}"
+	if command -v rsync >/dev/null 2>&1; then
+		rsync -a --delete --exclude='.git' --exclude='.DS_Store' --exclude='test' --exclude='node_modules' \
+			"${src_root}/mods/usage-limits/" "${ul_dst}/"
+	else
+		rm -rf "${ul_dst}"
+		cp -R "${src_root}/mods/usage-limits" "${ul_dst}"
+	fi
+fi
+
+if [[ -f ${main_layout} ]]; then
+	python3 - "${main_layout}" "${stats_layout}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+main_path = Path(sys.argv[1])
+stats_path = Path(sys.argv[2])
+try:
+    data = json.loads(main_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    sys.exit(0)
+
+def _replace_status(node: object) -> bool:
+    if not isinstance(node, dict):
+        return False
+    children = node.get("children")
+    if isinstance(children, list):
+        for idx, child in enumerate(children):
+            if isinstance(child, dict) and child.get("id") == "status":
+                children[idx] = {
+                    "id": "status-row",
+                    "type": "row",
+                    "size": {"px": 28},
+                    "resizable": False,
+                    "children": [
+                        {
+                            "id": "status",
+                            "type": "block",
+                            "size": {"weight": 1},
+                            "content": {"mod": "workspace-status"},
+                        },
+                        {
+                            "id": "usage-limits",
+                            "type": "block",
+                            "size": {"weight": 2.2},
+                            "min": 130,
+                            "content": {"mod": "usage-limits"},
+                        },
+                    ],
+                }
+                return True
+            if _replace_status(child):
+                return True
+    return False
+
+_replace_status(data)
+stats_path.parent.mkdir(parents=True, exist_ok=True)
+stats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+fi
+
+if command -v herdr-app >/dev/null 2>&1; then
+	[[ -d ${ul_dst} ]] && herdr-app check "${ul_dst}"
+	[[ -d ${env_stats_dst} ]] && herdr-app check "${env_stats_dst}"
+fi

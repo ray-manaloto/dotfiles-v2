@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#MISE description="Ensure Herdr realtime-stats space, env-stats mod tab, and optional 5-pane env:top grid"
+#USAGE flag "--grid" help="Also open or refresh the 5-pane env:top --loop TUI grid tab (host, pc-host, pc, mac, vm)"
+#USAGE flag "--env-stats" help="Open or focus the native GPUI env-stats mod tab inside realtime-stats"
+#USAGE flag "--dry-run" help="Print planned herdr-app commands without mutating live Herdr spaces"
+#USAGE flag "--json" help="Emit machine-readable JSON result"
+set -euo pipefail
+
+want_grid="${usage_grid:-false}"
+want_env_stats="${usage_env_stats:-false}"
+dry_run="${usage_dry_run:-false}"
+json_out="${usage_json:-false}"
+
+if [[ ${want_grid} != "true" && ${want_env_stats} != "true" ]]; then
+	want_env_stats="true"
+fi
+
+if ! command -v herdr-app >/dev/null 2>&1; then
+	if [[ ${dry_run} == "true" ]]; then
+		printf '{"ok":true,"dry_run":true,"herdr_app":false,"space":"realtime-stats","grid":%s,"env_stats":%s}\n' \
+			"${want_grid}" "${want_env_stats}"
+		exit 0
+	fi
+	echo "herdr:realtime-stats: herdr-app unavailable" >&2
+	exit 1
+fi
+
+space_id=""
+if ls_json="$(herdr-app ls 2>/dev/null)"; then
+	space_id="$(printf '%s' "${ls_json}" | jq -r '.spaces[]? | select(.name == "realtime-stats") | .id' | head -n 1 || true)"
+fi
+
+commands=()
+if [[ -z ${space_id} ]]; then
+	commands+=("space.new --name realtime-stats")
+	if [[ ${dry_run} != "true" ]]; then
+		created="$(herdr-app "do" space.new --name "realtime-stats")"
+		space_id="$(printf '%s' "${created}" | jq -r '.space // empty')"
+	else
+		space_id="realtime-stats"
+	fi
+fi
+
+if [[ ${want_env_stats} == "true" ]]; then
+	commands+=("tab.new --space ${space_id} --name Env Stats --mod env-stats")
+	if [[ ${dry_run} != "true" ]]; then
+		herdr-app "do" tab.new --space "${space_id}" --name "Env Stats" --mod "env-stats" >/dev/null
+	fi
+fi
+
+if [[ ${want_grid} == "true" ]]; then
+	commands+=(
+		"tab.new --space ${space_id} --name Top Grid --argv [\"mise\",\"run\",\"env:top\",\"host\",\"--loop\"]"
+		'pane.split:right --argv ["mise","run","env:top","pc-host","--loop"]'
+		'pane.split:down --argv ["mise","run","env:top","pc","--loop"]'
+		'pane.split:right --argv ["mise","run","env:top","mac","--loop"]'
+		'pane.split:down --argv ["mise","run","env:top","vm","--loop"]'
+	)
+	if [[ ${dry_run} != "true" ]]; then
+		tab_res="$(herdr-app "do" tab.new --space "${space_id}" --name "Top Grid" --argv '["mise","run","env:top","host","--loop"]')"
+		p_host="$(printf '%s' "${tab_res}" | jq -r '.pane // empty')"
+		p_pchost="$(herdr-app "do" pane.split --direction right ${p_host:+--pane "$p_host"} --argv '["mise","run","env:top","pc-host","--loop"]' | jq -r '.pane // empty')"
+		herdr-app "do" pane.split --direction down ${p_host:+--pane "$p_host"} --argv '["mise","run","env:top","mac","--loop"]' >/dev/null
+		p_pc="$(herdr-app "do" pane.split --direction down ${p_pchost:+--pane "$p_pchost"} --argv '["mise","run","env:top","pc","--loop"]' | jq -r '.pane // empty')"
+		herdr-app "do" pane.split --direction right ${p_pc:+--pane "$p_pc"} --argv '["mise","run","env:top","vm","--loop"]' >/dev/null
+	fi
+fi
+
+if [[ ${json_out} == "true" ]]; then
+	jq -n \
+		--arg space "${space_id}" \
+		--argjson dry_run "${dry_run}" \
+		--argjson grid "${want_grid}" \
+		--argjson env_stats "${want_env_stats}" \
+		'{ok: true, dry_run: $dry_run, space: $space, grid: $grid, env_stats: $env_stats}'
+else
+	printf 'herdr:realtime-stats space=%s dry_run=%s env_stats=%s grid=%s\n' \
+		"${space_id}" "${dry_run}" "${want_env_stats}" "${want_grid}"
+fi

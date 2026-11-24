@@ -110,6 +110,8 @@ for rel in managed_rels:
 for key in (
     "~/.gemini/config/hooks.json/dotfiles-v2",
     "~/.gemini/antigravity-cli/settings.json/orchestrator-neon",
+    "~/.gemini/antigravity-cli/settings.json/statusline",
+    "~/.local/bin/agy-statusline",
     "~/.gemini/config/AGENTS.md",
 ):
     if key not in dotfiles_tbl:

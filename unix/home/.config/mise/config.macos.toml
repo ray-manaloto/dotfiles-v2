@@ -24,6 +24,12 @@ exclude = ["*"]
 [dotfile_groups.macos-host.entries]
 "~/.config/herdr-app/programs.json" = { source = ".config/herdr-app/programs.json", mode = "symlink", main_checkout = true }
 
+[dotfile_groups.herdr-env-stats]
+root = ".config/herdr-app/mods/env-stats"
+target = "~/.config/herdr-app/mods/env-stats"
+mode = "copy"
+exclude = ["gpui-kit.d.ts", "jsconfig.json", ".DS_Store"]
+
 [shell_alias]
 df-pc = "mise -C ~ run env:enter pc"
 df-mac = "mise -C ~ run env:enter mac"

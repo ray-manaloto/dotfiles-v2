@@ -881,6 +881,35 @@ def find_orphaned_mise_staging_dirs(
     return _find_orphaned_mise_staging_dirs(installs_dir, home)
 
 
+def find_dead_codex_otel(codex_cfg: Path) -> list[str]:
+    """Return descriptions of dead `[otel]` stanzas (e.g. `symphony-cpp-local` or `127.0.0.1:4318`) in *codex_cfg*."""
+    if not codex_cfg.is_file():
+        return []
+    try:
+        data = tomllib.loads(codex_cfg.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):  # fmt: skip
+        return []
+    otel_tbl = data.get("otel")
+    if not isinstance(otel_tbl, dict):
+        return []
+    reasons: list[str] = []
+    if otel_tbl.get("environment") == "symphony-cpp-local":
+        reasons.append("environment=symphony-cpp-local")
+    stack: list[dict[object, object]] = [otel_tbl]
+    while stack:
+        cur = stack.pop()
+        ep = cur.get("endpoint")
+        if isinstance(ep, str) and (
+            ep == "http://127.0.0.1:4318/v1/logs"
+            or ep.startswith(("http://127.0.0.1:4318", "http://localhost:4318"))
+        ):
+            reasons.append(f"endpoint={ep}")
+        for val in cur.values():
+            if isinstance(val, dict):
+                stack.append(val)
+    return reasons
+
+
 def _collect_installed_bin_names(installs_dir: Path) -> set[str]:
     """Collect executable filenames under `installs/` cleanly without walking deep deps."""
     names: set[str] = set()
@@ -1165,6 +1194,14 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
     oc_jsonc = home / ".config" / "opencode" / "opencode.jsonc"
     if oc_jsonc.exists() or oc_jsonc.is_symlink():
         errors.append(f"unmanaged-opencode-jsonc: {oc_jsonc}")
+
+    # 7b. Dead [otel] stanza in ~/.codex/config.toml (Tier 0 B1)
+    codex_cfg = home / ".codex" / "config.toml"
+    dead_otel_reasons = find_dead_codex_otel(codex_cfg)
+    if dead_otel_reasons:
+        errors.append(
+            f"dead-codex-otel: {codex_cfg} has dead [otel] stanza ({', '.join(dead_otel_reasons)}; run `mise run host:prune-mcps --apply`)"
+        )
 
     # 8. Untracked config.local.toml
     checked_local_paths: set[Path] = set()

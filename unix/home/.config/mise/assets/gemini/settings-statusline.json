@@ -1,0 +1,9 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/settings.json",
+  "statusLine": {
+    "type": "command",
+    "command": "~/.local/bin/agy-statusline",
+    "enabled": true,
+    "stack_with_default": false
+  }
+}

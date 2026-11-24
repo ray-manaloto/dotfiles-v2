@@ -1,0 +1,245 @@
+#!/bin/sh
+# Atomic <25ms Antigravity CLI statusLine renderer & telemetry leaf.
+# Reads stdin JSON once, merges active /swarm + PLAN_ID + ~508k compaction headroom,
+# atomically updates $XDG_CACHE_HOME/usage-telemetry/agy-sessions/<cid>.json and
+# $XDG_CACHE_HOME/herdr-usage-limits/antigravity.json, and emits a compact statusLine.
+set -eu
+
+if [ -x /usr/bin/jq ]; then
+	jq_bin=/usr/bin/jq
+elif command -v jq >/dev/null 2>&1; then
+	jq_bin=$(command -v jq)
+else
+	printf 'agy (jq unavailable)\n'
+	exit 0
+fi
+
+# Read stdin without spawning `cat` (single-line fast path, multi-line safe).
+payload=""
+while IFS= read -r _line || [ -n "${_line}" ]; do
+	if [ -z "${payload}" ]; then
+		payload=${_line}
+	else
+		payload="${payload}
+${_line}"
+	fi
+done
+[ -n "${payload}" ] || exit 0
+
+cache_home=${XDG_CACHE_HOME:-${HOME}/.cache}
+agy_sessions_dir="${cache_home}/usage-telemetry/agy-sessions"
+herdr_agy_cache="${HERDR_USAGE_AGY_CACHE:-${cache_home}/herdr-usage-limits/antigravity.json}"
+compaction_limit=${AGY_COMPACTION_LIMIT:-508000}
+case "${compaction_limit}" in
+'' | *[!0-9]*) compaction_limit=508000 ;;
+0) compaction_limit=508000 ;;
+esac
+
+# Probe PLAN_ID from env, .planning/.active_plan, or mise.local.toml in PWD.
+plan_id=${PLAN_ID:-}
+probe_dir=${PWD:-}
+if [ -z "${plan_id}" ] && [ -n "${probe_dir}" ]; then
+	if [ -f "${probe_dir}/.planning/.active_plan" ]; then
+		IFS= read -r plan_id <"${probe_dir}/.planning/.active_plan" || plan_id=""
+	elif [ -f "${probe_dir}/mise.local.toml" ]; then
+		plan_id=$(sed -n '/^[[:space:]]*PLAN_ID[[:space:]]*=/{s/^[[:space:]]*PLAN_ID[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p;q;}' "${probe_dir}/mise.local.toml" 2>/dev/null || true)
+	fi
+fi
+
+# Extract conversation_id/session_id with zero subprocesses.
+cid_hint=""
+case "${payload}" in
+*'"conversation_id"'*)
+	cid_hint=${payload#*'"conversation_id"'}
+	cid_hint=${cid_hint#*:}
+	cid_hint=${cid_hint#*'"'}
+	cid_hint=${cid_hint%%'"'*}
+	;;
+*'"session_id"'*)
+	cid_hint=${payload#*'"session_id"'}
+	cid_hint=${cid_hint#*:}
+	cid_hint=${cid_hint#*'"'}
+	cid_hint=${cid_hint%%'"'*}
+	;;
+esac
+
+swarm_members_file=/dev/null
+swarm_meta_file=/dev/null
+case "${cid_hint}" in
+'' | *[!A-Za-z0-9._-]*) ;;
+*)
+	swarm_dir="${HOME}/.gemini/antigravity-cli/brain/${cid_hint}/.system_generated/swarm"
+	[ -r "${swarm_dir}/members.json" ] && swarm_members_file="${swarm_dir}/members.json"
+	[ -r "${swarm_dir}/swarm.json" ] && swarm_meta_file="${swarm_dir}/swarm.json"
+	;;
+esac
+
+saved_quota_file=/dev/null
+[ -r "${herdr_agy_cache}" ] && saved_quota_file="${herdr_agy_cache}"
+
+# shellcheck disable=SC2016
+jq_out=$(
+	"${jq_bin}" -r \
+		--arg plan_id "${plan_id}" \
+		--argjson compact_default "${compaction_limit}" \
+		--rawfile swarm_members_raw "${swarm_members_file}" \
+		--rawfile swarm_meta_raw "${swarm_meta_file}" \
+		--rawfile saved_quota_raw "${saved_quota_file}" '
+  def fmt_k($n):
+    if $n >= 1000000 then "\((($n / 100000) | floor) / 10)M"
+    elif $n >= 1000 then "\((($n / 1000) | round))k"
+    else "\($n)" end;
+  def reset_str: .reset_time // "";
+  def keep_quota($old):
+    if ($old | type) != "object" or reset_str > ($old | reset_str) then .
+    elif reset_str < ($old | reset_str) then $old
+    elif ($old.remaining_fraction // 1) < (.remaining_fraction // 1) then .remaining_fraction = $old.remaining_fraction
+    else . end;
+
+  (now | floor) as $now_epoch
+  | . as $in
+  | (if type == "object" then . else error("not-object") end)
+  | (($in.conversation_id // $in.session_id // "") | tostring) as $cid
+  | ($in.model.display_name // $in.model.id // "agy") as $model_disp
+  | ($in.model.id // null) as $model_id
+  | ($in.model.effort // null) as $effort
+  | ($in.agent_state // "idle") as $state
+  | ($in.cycle_mode // null) as $cycle
+  | ($in.context_window.context_window_size // 0 | tonumber? // 0 | floor) as $win_sz
+  | ($in.context_window.used_percentage // 0 | tonumber? // 0) as $used_pct
+  | (
+      if ($in.context_window.current_usage | type) == "object" then
+        (($in.context_window.current_usage.input_tokens // 0)
+         + ($in.context_window.current_usage.cache_read_input_tokens // 0)
+         + ($in.context_window.current_usage.cache_creation_input_tokens // 0))
+      elif $win_sz > 0 and $used_pct > 0 then
+        (($win_sz * $used_pct / 100) | floor)
+      else 0 end
+    ) as $used_tok
+  | (if $win_sz > 0 and $win_sz < $compact_default then $win_sz else $compact_default end) as $compact_lim
+  | (if $compact_lim > $used_tok then ($compact_lim - $used_tok) else 0 end) as $headroom
+  | (if $compact_lim > 0 then (($used_tok * 100 / $compact_lim) | round | if . > 100 then 100 else . end) else 0 end) as $compact_pct
+  | ($swarm_members_raw | try fromjson catch null) as $sm
+  | ($swarm_meta_raw | try fromjson catch null) as $smeta
+  | (
+      if ($sm | type) == "object" and ($sm.members | type) == "object" then
+        [ $sm.members | to_entries[] | .value | select((.killed // false) | not) ]
+      else [] end
+    ) as $live_members
+  | ([ $live_members[] | select((.phase // .desired_state // "") | ascii_downcase | (. == "working" or . == "running")) ] | length) as $sw_work
+  | ([ $live_members[] | select((.phase // .desired_state // "") | ascii_downcase | (. == "waiting" or . == "idle")) ] | length) as $sw_idle
+  | ($live_members | length) as $sw_tot
+  | ($smeta.title // $sm.title // null) as $sw_title
+  | (
+      if ($in.quota | type) == "object" then
+        (
+          $in.quota["gemini-5h"].remaining_fraction
+          // $in.quota["gemini-weekly"].remaining_fraction
+          // ([ $in.quota[] | select(type == "object" and (.remaining_fraction | type) == "number") | .remaining_fraction ] | first)
+          // null
+        )
+      else null end
+    ) as $q5h
+  | ($in.terminal_width // 120 | tonumber? // 120) as $cols
+  | (
+      [
+        (if $state != "idle" then "[\($state)]" else empty end),
+        $model_disp,
+        (
+          if $cols < 95 then
+            "ctx \(fmt_k($used_tok))/~\(fmt_k($compact_lim)) (\($compact_pct)% · -\(fmt_k($headroom)))"
+          else
+            "ctx \(fmt_k($used_tok))/~\(fmt_k($compact_lim)) (\($compact_pct)% · ~\(fmt_k($headroom)) left)"
+          end
+        ),
+        (if $q5h != null then "q:\((($q5h * 100) | round))%" else empty end),
+        (if $sw_tot > 0 then "swarm:\($sw_work)w/\($sw_idle)i" else empty end),
+        (if ($plan_id | length) > 0 then "plan:\($plan_id)" else empty end)
+      ] | join(" | ")
+    ) as $line
+  | (
+      if ($cid | length) > 0 then
+        {
+          conversation_id: $cid,
+          updated_at: $now_epoch,
+          model_id: $model_id,
+          model_display_name: $model_disp,
+          effort: $effort,
+          agent_state: $state,
+          cycle_mode: $cycle,
+          context_window_size: $win_sz,
+          used_tokens: $used_tok,
+          used_percentage: $used_pct,
+          compaction_limit: $compact_lim,
+          compaction_used_percentage: $compact_pct,
+          compaction_headroom_tokens: $headroom,
+          swarm_working: $sw_work,
+          swarm_idle: $sw_idle,
+          swarm_total: $sw_tot,
+          swarm_title: $sw_title,
+          plan_id: (if ($plan_id | length) > 0 then $plan_id else null end),
+          plan_tier: ($in.plan_tier // null),
+          total_cost_usd: ($in.cost.total_usd // null)
+        } | tojson
+      else "" end
+    ) as $sess_json
+  | ($saved_quota_raw | try fromjson catch {}) as $saved
+  | (if ($saved | type) == "object" and (($saved.quota // {}) | type) == "object" then $saved else {} end) as $saved_obj
+  | (
+      if ($in.quota | type) == "object" then
+        {
+          at: $now_epoch,
+          plan: ($in.plan_tier // $saved_obj.plan // null),
+          quota: (($saved_obj.quota // {}) + ($in.quota | with_entries(.key as $k | .value |= keep_quota($saved_obj.quota[$k] // null))))
+        } | tojson
+      else "" end
+    ) as $quota_json
+  | "\($cid)\u001f\($line)\u001f\($sess_json)\u001f\($quota_json)"
+' <<EOF 2>/dev/null || true
+${payload}
+EOF
+)
+
+[ -n "${jq_out}" ] || exit 0
+
+sep=$(printf '\037')
+IFS=${sep} read -r out_cid out_line out_sess out_quota <<EOF
+${jq_out}
+EOF
+
+printf '%s\n' "${out_line}"
+
+umask 077
+case "${out_cid}" in
+'' | *[!A-Za-z0-9._-]*) ;;
+*)
+	if [ -n "${out_sess}" ]; then
+		if [ -d "${agy_sessions_dir}" ] || mkdir -p "${agy_sessions_dir}" 2>/dev/null; then
+			sess_file="${agy_sessions_dir}/${out_cid}.json"
+			sess_tmp="${sess_file}.tmp.$$"
+			if printf '%s\n' "${out_sess}" >"${sess_tmp}" 2>/dev/null; then
+				mv "${sess_tmp}" "${sess_file}" 2>/dev/null || rm -f "${sess_tmp}"
+			else
+				rm -f "${sess_tmp}"
+			fi
+		fi
+	fi
+	;;
+esac
+
+if [ -n "${out_quota}" ]; then
+	case "${herdr_agy_cache}" in
+	*/*) q_dir=${herdr_agy_cache%/*} ;;
+	*) q_dir=. ;;
+	esac
+	if [ -d "${q_dir}" ] || mkdir -p "${q_dir}" 2>/dev/null; then
+		q_tmp="${herdr_agy_cache}.tmp.$$"
+		if printf '%s\n' "${out_quota}" >"${q_tmp}" 2>/dev/null; then
+			mv "${q_tmp}" "${herdr_agy_cache}" 2>/dev/null || rm -f "${q_tmp}"
+		else
+			rm -f "${q_tmp}"
+		fi
+	fi
+fi
+
+exit 0

@@ -19,6 +19,7 @@ aube = { version = "2.11.0", workflow = [
 ], minimum_release_age = "0s" }
 bat = "0.26.1"
 betterleaks = "1.10.1"
+bottom = "0.15.0"
 bun = "1.4.4"
 cmake = "4.5.1"
 communique = { version = "1.9.0", workflow = "release.yml@refs/heads/main", minimum_release_age = "0s" }
@@ -193,6 +194,7 @@ exclude = ["*"]
 "~/.codex/hooks.json/dcg-hooks" = { source = "assets/codex/dcg-hooks.json", merge = true, permissions = "0600" }
 "~/.codex/hooks.json/learn-hooks" = { source = "assets/codex/learn-hooks.json", merge = true, permissions = "0600" }
 "~/.gemini/antigravity-cli/settings.json/orchestrator-neon" = { source = "assets/gemini/settings-orchestrator.json", merge = true, permissions = "0600" }
+"~/.gemini/antigravity-cli/settings.json/statusline" = { source = "assets/gemini/settings-statusline.json", merge = true, permissions = "0600" }
 "~/.gemini/config/AGENTS.md" = { source = "~/.agents/AGENTS.md", main_checkout = true, depends = [
   "~/.agents/AGENTS.md",
 ] }
@@ -242,6 +244,7 @@ exclude = ["*"]
 	event = prepare-commit-msg
 ''' }
 "~/.local/bin/agentsview" = { source = "assets/agentsview/agentsview-wrapper.sh", main_checkout = true }
+"~/.local/bin/agy-statusline" = { main_checkout = true }
 "~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", main_checkout = true }
 "~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", main_checkout = true }
 "~/.zcode/AGENTS.md" = { source = "assets/agents/zcode-AGENTS.md.tera", mode = "template", depends = [
@@ -386,6 +389,7 @@ depends = [
   "bootstrap:claude",
   "bootstrap:herdr-app",
   "bootstrap:herdr-core",
+  "bootstrap:herdr-mods",
   "bootstrap:opencode",
   "bootstrap:zcode",
   "bootstrap:skills",
