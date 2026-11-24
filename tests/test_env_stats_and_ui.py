@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import resource
 import shutil
 import stat
 import subprocess
@@ -520,9 +521,12 @@ def test_agy_statusline_atomic_output_cache_and_sub25ms_latency(tmp_path: Path) 
     merged_q = json.loads(quota_cache.read_text(encoding="utf-8"))
     assert merged_q["quota"]["gemini-5h"]["remaining_fraction"] == 0.65
 
-    # Benchmark latency across 10 invocations: best-of-10 < 25ms even under parallel pytest-xdist CPU contention,
-    # and median strictly < 45ms under load (isolated single-process median < 25ms).
+    # Benchmark latency across 10 invocations:
+    # - Always verify child CPU time (user+sys) < 25ms/call (contention-invariant).
+    # - In isolated runs (no PYTEST_XDIST_WORKER), strictly require wall-clock median < 25ms.
+    # - Under parallel xdist load, allow OS scheduler jitter up to 75ms wall-clock median.
     timings_ms: list[float] = []
+    ru_before = resource.getrusage(resource.RUSAGE_CHILDREN)
     for _ in range(10):
         t0 = time.perf_counter()
         subprocess.run(
@@ -536,13 +540,24 @@ def test_agy_statusline_atomic_output_cache_and_sub25ms_latency(tmp_path: Path) 
             check=True,
         )
         timings_ms.append((time.perf_counter() - t0) * 1000.0)
+    ru_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu_per_call_ms = (
+        (ru_after.ru_utime - ru_before.ru_utime)
+        + (ru_after.ru_stime - ru_before.ru_stime)
+    ) * 100.0
     timings_ms.sort()
-    best_ms = timings_ms[0]
     median_ms = timings_ms[len(timings_ms) // 2]
-    assert best_ms < 25.0, f"agy-statusline best {best_ms:.2f}ms >= 25ms ({timings_ms})"
-    assert median_ms < 45.0, (
-        f"agy-statusline median {median_ms:.2f}ms >= 45ms ({timings_ms})"
+    assert cpu_per_call_ms < 25.0, (
+        f"agy-statusline child CPU {cpu_per_call_ms:.2f}ms >= 25ms"
     )
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        assert median_ms < 75.0, (
+            f"agy-statusline parallel wall median {median_ms:.2f}ms >= 75ms ({timings_ms})"
+        )
+    else:
+        assert median_ms < 25.0, (
+            f"agy-statusline isolated wall median {median_ms:.2f}ms >= 25ms ({timings_ms})"
+        )
 
 
 def test_env_stats_schema_first_collector_and_cli(tmp_path: Path) -> None:
