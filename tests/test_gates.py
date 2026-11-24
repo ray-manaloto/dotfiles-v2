@@ -1100,4 +1100,9 @@ def test_host_prune_uses_daemon_id_and_backend_mismatch_cleanup() -> None:
     assert '["pitchfork", "clean", "--daemon", daemon_id]' in prune_txt
     assert '["pitchfork", "clean", ns, "--daemon", name]' not in prune_txt
     assert "unused mismatched-backend tool" in prune_txt
-    assert '["mise", "-C", str(home), "uninstall", "--all", tool_name]' in prune_txt
+    assert '["mise", "-C", str(home), "doctor", "--json"]' in prune_txt
+    assert "check=False" in prune_txt
+    assert (
+        '["mise", "-C", str(home), "uninstall", "--all", "--yes", tool_name]'
+        in prune_txt
+    )

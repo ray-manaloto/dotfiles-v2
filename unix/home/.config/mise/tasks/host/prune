@@ -240,8 +240,13 @@ _MISMATCH_WARN_RE = re.compile(
     r"tool '([^']+)' installed with explicit backend '([^']+)'\s+differs from registry recommendation"
 )
 try:
-    doc_raw = subprocess.check_output(["mise", "-C", str(home), "doctor", "--json"], text=True)
-    doc_data = json.loads(doc_raw)
+    doc_proc = subprocess.run(
+        ["mise", "-C", str(home), "doctor", "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    doc_data = json.loads(doc_proc.stdout) if doc_proc.stdout.strip() else {}
 except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
     doc_data = {}
 
@@ -272,9 +277,13 @@ if isinstance(doc_warnings, list):
         if any(isinstance(r, dict) and r.get("active") is True for r in ls_rows):
             continue
         if apply:
-            subprocess.run(["mise", "-C", str(home), "uninstall", "--all", tool_name], check=False)
-            uninstalled_mismatch = True
-            print(f"UNINSTALLED unused mismatched-backend tool: {tool_name} ({backend})")
+            res = subprocess.run(
+                ["mise", "-C", str(home), "uninstall", "--all", "--yes", tool_name],
+                check=False,
+            )
+            if res.returncode == 0:
+                uninstalled_mismatch = True
+                print(f"UNINSTALLED unused mismatched-backend tool: {tool_name} ({backend})")
         else:
             print(f"WOULD UNINSTALL unused mismatched-backend tool: {tool_name} ({backend})")
 
