@@ -88,20 +88,34 @@ def _unwrap_shell_command(segment: list[str]) -> str | None:
     if Path(stripped[0]).name not in SHELL_WRAPPERS:
         return None
     i = 1
+    has_c = False
     while i < len(stripped):
         tok = stripped[i]
         if tok == "--":
+            i += 1
             break
-        if tok in {"-o", "+o"} and i + 1 < len(stripped):
-            i += 2
-            continue
-        if tok.startswith("-") and not tok.startswith("--") and "c" in tok[1:]:
+        if tok in {"-o", "+o", "--rcfile", "--init-file"}:
             if i + 1 < len(stripped):
-                return stripped[i + 1]
+                i += 2
+                continue
             return None
-        if not tok.startswith("-"):
-            break
-        i += 1
+        if tok.startswith(("--rcfile=", "--init-file=", "-o=", "+o=")):
+            i += 1
+            continue
+        if tok.startswith("--"):
+            i += 1
+            continue
+        if tok.startswith("-") and len(tok) > 1:
+            if "c" in tok[1:]:
+                has_c = True
+            i += 1
+            continue
+        if tok.startswith("+") and len(tok) > 1:
+            i += 1
+            continue
+        break
+    if has_c and i < len(stripped):
+        return stripped[i]
     return None
 
 

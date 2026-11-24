@@ -1431,7 +1431,7 @@ def test_doctor_checks_registry_aliases_and_container_lock_and_daemon_health(
         root = Path(tmp)
         mise_dir = root / "unix" / "home" / ".config" / "mise"
         mise_dir.mkdir(parents=True)
-        (mise_dir / "locks" / "extra").mkdir(parents=True)
+        (mise_dir / "locks" / "extra" / "1.0.0").mkdir(parents=True)
         (mise_dir / "config.toml").write_text(
             '[tools]\noxfmt = "0.80.0"\nbat = { version = "0.26.1" }\n'
             '[settings]\nlockfile_platforms = ["macos-arm64"]\n',
@@ -1464,6 +1464,31 @@ def test_doctor_checks_registry_aliases_and_container_lock_and_daemon_health(
         assert not any("Unreferenced npm lock directory" in e for e in errs)
         assert not any("mise.container.lock" in e for e in errs)
 
+        # Once oxfmt has valid aube.path + lockfiles in mise.lock, stale locks/extra/1.0.0 triggers unreferenced lock dir error
+        (mise_dir / "config.toml").write_text(
+            '[tools]\noxfmt = "0.80.0"\nbat = { version = "0.26.1" }\n'
+            '[settings]\nlockfile_platforms = ["macos-arm64"]\n',
+            encoding="utf-8",
+        )
+        (mise_dir / "mise.lock").write_text(
+            '[[tools.bat]]\nversion = "0.26.1"\n'
+            '[tools.bat."platforms.macos-arm64"]\nchecksum = "sha256:00"\n'
+            '[[tools.oxfmt]]\nversion = "0.80.0"\nbackend = "npm:oxfmt"\n'
+            '[tools.oxfmt.aube]\npath = "locks/oxfmt/0.80.0"\n',
+            encoding="utf-8",
+        )
+        (mise_dir / "mise.lock").chmod(0o644)
+        ox_lock_dir = mise_dir / "locks" / "oxfmt" / "0.80.0"
+        ox_lock_dir.mkdir(parents=True)
+        (ox_lock_dir / "package.json").write_text("{}\n", encoding="utf-8")
+        (ox_lock_dir / "aube-lock.yaml").write_text(
+            "lockfileVersion: 1\n", encoding="utf-8"
+        )
+        errs_resolved = doc_mod.check_mise_lock_integrity(root)
+        assert any("Unreferenced npm lock directory" in e for e in errs_resolved), (
+            errs_resolved
+        )
+
         # Bracketed option short-name in config.hygiene strips [...] before ":" check
         (mise_dir / "config.toml").write_text(
             '[tools]\n"bat[exe=a:b]" = "0.26.1"\n', encoding="utf-8"
@@ -1485,23 +1510,26 @@ def test_doctor_checks_registry_aliases_and_container_lock_and_daemon_health(
         hygiene_errs = doc_mod.check_config_hygiene(root)
         assert hygiene_errs == []
 
-    # codex-daemon-health ignores unrelated daemons holding PATH=...codex.system... and catches actual codex app-server
-    monkeypatch.delenv("CI", raising=False)
-    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
-    deleted_pem = Path("/tmp/definitely-missing-fnox-proxy-ca-test-999.pem")
+        # codex-daemon-health isolates HOME, ignores opencode-pty/codex.system, and catches app-server
+        fake_home = root / "isolated_home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
+        deleted_pem = root / "definitely-missing-fnox-proxy-ca-test-999.pem"
 
-    def fake_check_output(cmd, **_kwargs):
-        if "-o" in cmd and "pid=,args=" in cmd:
-            return (
-                " 111 /Users/u/.cache/opencode-pty daemon --runtime /tmp/pty\n"
-                " 222 /Users/u/.local/bin/codex app-server --listen stdio://\n"
-            )
-        return (
-            f" 222 /Users/u/.local/bin/codex app-server SSL_CERT_FILE={deleted_pem}\n"
-        )
+        def fake_check_output(cmd, **_kwargs):
+            if "-o" in cmd and "pid=,args=" in cmd:
+                return (
+                    " 111 /Users/u/.cache/opencode-pty daemon --runtime /tmp/pty\n"
+                    " 112 /usr/bin/codex.system --flag\n"
+                    " 222 /Users/u/.local/bin/codex app-server --listen stdio://\n"
+                )
+            return f" 222 /Users/u/.local/bin/codex app-server SSL_CERT_FILE={deleted_pem}\n"
 
-    monkeypatch.setattr(doc_mod.subprocess, "check_output", fake_check_output)
-    d_errs, _ = doc_mod.check_codex_daemon_health()
-    assert len(d_errs) == 1
-    assert "PID 222" in d_errs[0]
-    assert "PID 111" not in d_errs[0]
+        monkeypatch.setattr(doc_mod.subprocess, "check_output", fake_check_output)
+        d_errs, _ = doc_mod.check_codex_daemon_health()
+        assert len(d_errs) == 1
+        assert "PID 222" in d_errs[0]
+        assert "PID 111" not in d_errs[0]
+        assert "PID 112" not in d_errs[0]

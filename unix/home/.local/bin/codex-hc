@@ -6,10 +6,10 @@
 # `app-server` / `remote-control` / utility invocations still run clean without ephemeral proxy vars.
 # Usage: herdr-app do tab.new ... --argv '["codex-hc", "task"]'
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
-if [ -x "${HOME}/.local/bin/codex-wrapper" ]; then
-	wrapper="${HOME}/.local/bin/codex-wrapper"
-elif [ -x "${script_dir}/codex-wrapper" ]; then
+if [ -x "${script_dir}/codex-wrapper" ]; then
 	wrapper="${script_dir}/codex-wrapper"
+elif [ -x "${HOME}/.local/bin/codex-wrapper" ]; then
+	wrapper="${HOME}/.local/bin/codex-wrapper"
 else
 	echo "codex-hc: missing codex-wrapper in ~/.local/bin or ${script_dir}" >&2
 	exit 127

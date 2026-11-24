@@ -36,7 +36,7 @@ esac
 
 resolve_ts_dest() {
 	local want="$1" status_json dest=""
-	if command -v tailscale >/dev/null 2>&1; then
+	if command -v tailscale >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
 		if status_json="$(tailscale status --json 2>/dev/null)"; then
 			dest="$(printf '%s' "${status_json}" | jq -r --arg h "${want}" '
 				[.Peer[]? | select(.HostName == $h and .Online == true)
@@ -48,29 +48,29 @@ resolve_ts_dest() {
 	printf '%s' "${dest:-${want}}"
 }
 
-resolve_project_expr() {
+resolve_project_cd() {
 	local proj="$1"
 	# shellcheck disable=SC2016
 	case "${proj}" in
 	dotfiles-v2)
 		if [[ ${is_container} == "true" ]]; then
-			printf '%s' '/workspace'
+			printf '%s' 'proj_dir=/workspace; [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing project dir /workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		else
-			printf '%s' '"$HOME/dev/dotfiles-v2"'
+			printf '%s' 'proj_dir="$HOME/dev/dotfiles-v2"; [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing project dir ${proj_dir}" >&2; exit 1; }; cd "${proj_dir}"'
 		fi
 		;;
 	kb-v2 | knowledge-base-v2)
 		if [[ ${is_container} == "true" ]]; then
-			printf '%s' '$(for d in /workspace-kb "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2" /workspace; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+			printf '%s' 'proj_dir="$(for d in /workspace-kb "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing kb-v2 workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		else
-			printf '%s' '$(for d in "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2" "$HOME/dev/dotfiles-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+			printf '%s' 'proj_dir="$(for d in "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing kb-v2 workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		fi
 		;;
 	cpp-core)
 		if [[ ${is_container} == "true" ]]; then
-			printf '%s' '$(for d in /workspace-cpp "$HOME/dev/cpp-core" /workspace; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+			printf '%s' 'proj_dir="$(for d in /workspace-cpp "$HOME/dev/cpp-core"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing cpp-core workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		else
-			printf '%s' '$(for d in "$HOME/dev/cpp-core" "$HOME/dev/dotfiles-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+			printf '%s' 'proj_dir="$(for d in "$HOME/dev/cpp-core"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing cpp-core workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		fi
 		;;
 	*)
@@ -80,24 +80,24 @@ resolve_project_expr() {
 	esac
 }
 
-proj_expr="$(resolve_project_expr "${project}")"
+proj_cd="$(resolve_project_cd "${project}")"
 # shellcheck disable=SC2016
 if [[ ${is_container} == "true" ]]; then
 	if [[ -n ${cmd} ]]; then
-		inner_script="$(printf 'cd %s && %s' "${proj_expr}" "${cmd}")"
+		inner_script="$(printf '%s && %s' "${proj_cd}" "${cmd}")"
 	else
-		inner_script="$(printf 'cd %s && exec bash -il' "${proj_expr}")"
+		inner_script="$(printf '%s && exec bash -il' "${proj_cd}")"
 	fi
 else
 	if [[ -n ${cmd} ]]; then
-		inner_script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; cd %s && %s' "${proj_expr}" "${cmd}")"
+		inner_script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; %s && %s' "${proj_cd}" "${cmd}")"
 	else
-		inner_script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; cd %s && exec zsh -il' "${proj_expr}")"
+		inner_script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; %s && exec zsh -il' "${proj_cd}")"
 	fi
 fi
 
 ssh_dest="$(resolve_ts_dest "${ts_name}")"
-if ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" true >/dev/null 2>&1; then
+if ssh -n -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" true </dev/null >/dev/null 2>&1; then
 	if [[ -n ${cmd} ]]; then
 		exec ssh -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
 	fi
@@ -112,11 +112,11 @@ printf 'env:enter: Tailscale SSH unavailable for %s (%s); falling back to direct
 if [[ ${target} == "pc" ]]; then
 	tty_flags=(-i)
 	[[ -z ${cmd} && -t 0 && -t 1 ]] && tty_flags=(-it)
-	exec env "DOCKER_HOST=ssh://${ssh_host_pc}" docker exec "${tty_flags[@]}" "${container_name}" /bin/bash -il -c "${inner_script}"
+	exec env "DOCKER_HOST=ssh://${ssh_host_pc}" docker exec "${tty_flags[@]}" "${container_name}" /bin/bash -lc "${inner_script}"
 elif [[ ${target} == "mac" ]]; then
 	tty_flags=(-i)
 	[[ -z ${cmd} && -t 0 && -t 1 ]] && tty_flags=(-it)
-	exec env -u DOCKER_HOST docker --context desktop-linux exec "${tty_flags[@]}" "${container_name}" /bin/bash -il -c "${inner_script}"
+	exec env -u DOCKER_HOST docker --context desktop-linux exec "${tty_flags[@]}" "${container_name}" /bin/bash -lc "${inner_script}"
 else
 	if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
 		echo "env:enter: vm fallback requires macOS with tart on PATH" >&2
@@ -124,5 +124,5 @@ else
 	fi
 	tty_flags=(-i)
 	[[ -z ${cmd} && -t 0 && -t 1 ]] && tty_flags=(-it)
-	exec tart exec "${tty_flags[@]}" "${vm_name}" /bin/zsh -il -c "${inner_script}"
+	exec tart exec "${tty_flags[@]}" "${vm_name}" /bin/zsh -lc "${inner_script}"
 fi

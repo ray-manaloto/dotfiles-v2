@@ -6,8 +6,10 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import orjson
@@ -1255,12 +1257,17 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(args[args.index("--name") + 1], "dotfiles-wt")
         self.assertEqual(args[args.index("--tab") + 1], "worker")
 
-        # 2. Live space matched by name resolves current ID and invokes `tab.new`
+        # 2. Live space matched by (name, folder) resolves current ID and invokes `tab.new`
         with (
             mock.patch(
                 "herdr_roll.engine.herdr_app_ls",
                 return_value=[
-                    {"id": "sp_recreated", "name": "dotfiles-wt", "tabs": []}
+                    {
+                        "id": "sp_recreated",
+                        "name": "dotfiles-wt",
+                        "folder": "/tmp/wt",
+                        "tabs": [],
+                    }
                 ],
             ),
             mock.patch(
@@ -1277,6 +1284,92 @@ class EngineTests(unittest.TestCase):
         args2 = do_live_mock.call_args[0]
         self.assertEqual(args2[0], "tab.new")
         self.assertEqual(args2[args2.index("--space") + 1], "sp_recreated")
+
+        # 3. Duplicate name spaces require unique folder match; mismatch refuses hijack
+        self.assertIsNone(
+            engine._resolve_live_space_id(
+                [
+                    {"id": "s1", "name": "dotfiles-wt", "folder": "/tmp/other1"},
+                    {"id": "s2", "name": "dotfiles-wt", "folder": "/tmp/other2"},
+                ],
+                space,
+            )
+        )
+        self.assertEqual(
+            engine._resolve_live_space_id(
+                [
+                    {"id": "s1", "name": "dotfiles-wt", "folder": "/tmp/other1"},
+                    {"id": "s2", "name": "dotfiles-wt", "folder": "/tmp/wt"},
+                ],
+                space,
+            ),
+            "s2",
+        )
+
+        # 4. Remote --machine skips local Path.home() --folder and serializes concurrent space.new
+        remote_space = SpaceSnapshot(
+            id="sp_remote_closed",
+            name="pc-work",
+            folder="",
+            tabs=[
+                TabSnapshot(
+                    id="tb_r",
+                    name="w1",
+                    terminals=[
+                        TerminalSnapshot(
+                            address="pc/t1",
+                            kind=HarnessKind.CODEX,
+                            session_id="019-rem",
+                            cwd="",
+                        )
+                    ],
+                )
+            ],
+        )
+        remote_target = (
+            remote_space,
+            remote_space.tabs[0],
+            remote_space.tabs[0].terminals[0],
+        )
+        live_spaces: list[dict[str, Any]] = []
+        calls: list[tuple[str, ...]] = []
+
+        def fake_do(*call_args: str) -> dict[str, str]:
+            calls.append(call_args)
+            if call_args[0] == "space.new":
+                time.sleep(0.03)
+                live_spaces.append({"id": "sp_pc_new", "name": "pc-work", "tabs": []})
+                return {"space": "sp_pc_new", "tab": "tb_pc", "terminal": "pc/t_new1"}
+            return {"tab": "tb_pc2", "terminal": "pc/t_new2"}
+
+        with (
+            mock.patch(
+                "herdr_roll.engine.herdr_app_ls",
+                side_effect=lambda: list(live_spaces),
+            ),
+            mock.patch("herdr_roll.engine.herdr_app_do", side_effect=fake_do),
+        ):
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f1 = pool.submit(
+                    engine._launch_fresh_tab,
+                    remote_target,
+                    ["codex-hc", "resume", "019-rem"],
+                    str(Path.home()),
+                )
+                f2 = pool.submit(
+                    engine._launch_fresh_tab,
+                    remote_target,
+                    ["codex-hc", "resume", "019-rem"],
+                    str(Path.home()),
+                )
+                out_addrs = sorted([f1.result(), f2.result()])
+
+        self.assertEqual(out_addrs, ["pc/t_new1", "pc/t_new2"])
+        self.assertEqual([c[0] for c in calls], ["space.new", "tab.new"])
+        self.assertNotIn("--folder", calls[0])
+        self.assertIn("--machine", calls[0])
 
 
 if __name__ == "__main__":

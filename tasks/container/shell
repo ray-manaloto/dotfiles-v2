@@ -32,13 +32,13 @@ esac
 # shellcheck disable=SC2016
 case "${project}" in
 dotfiles-v2)
-	proj_expr='/workspace'
+	proj_cd='proj_dir=/workspace; [ -d "${proj_dir}" ] || { printf "%s\n" "tasks/container/shell: missing project dir /workspace" >&2; exit 1; }; cd "${proj_dir}"'
 	;;
 kb-v2 | knowledge-base-v2)
-	proj_expr='$(for d in /workspace-kb "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2" /workspace; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+	proj_cd='proj_dir="$(for d in /workspace-kb "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "tasks/container/shell: missing kb-v2 workspace" >&2; exit 1; }; cd "${proj_dir}"'
 	;;
 cpp-core)
-	proj_expr='$(for d in /workspace-cpp "$HOME/dev/cpp-core" /workspace; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+	proj_cd='proj_dir="$(for d in /workspace-cpp "$HOME/dev/cpp-core"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "tasks/container/shell: missing cpp-core workspace" >&2; exit 1; }; cd "${proj_dir}"'
 	;;
 *)
 	echo "unknown project '${project}' (expected dotfiles-v2, kb-v2, or cpp-core)" >&2
@@ -52,9 +52,9 @@ if [[ -z ${cmd} && -t 0 && -t 1 ]]; then
 fi
 
 if [[ -n ${cmd} ]]; then
-	script="$(printf 'cd %s && %s' "${proj_expr}" "${cmd}")"
+	script="$(printf '%s && %s' "${proj_cd}" "${cmd}")"
 else
-	script="$(printf 'cd %s && exec bash -il' "${proj_expr}")"
+	script="$(printf '%s && exec bash -il' "${proj_cd}")"
 fi
 
-exec "${dcmd[@]}" exec "${tty_flags[@]}" "${name}" /bin/bash -il -c "${script}"
+exec "${dcmd[@]}" exec "${tty_flags[@]}" "${name}" /bin/bash -lc "${script}"

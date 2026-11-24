@@ -914,6 +914,60 @@ def _strip_spans(command: str, spans: list[tuple[int, int]]) -> str:
     return "".join(parts)
 
 
+def _match_tool_result_in_slice(
+    results: list[dict[str, Any]],
+    planner_obj: dict[str, Any],
+    tc_idx: int,
+    tc_obj: dict[str, Any],
+) -> dict[str, Any] | None:
+    tc_id = tc_obj.get("id") or tc_obj.get("toolCallId") or tc_obj.get("callId")
+    if isinstance(tc_id, str) and tc_id:
+        by_id = next(
+            (
+                r
+                for r in results
+                if (
+                    r.get("tool_call_id")
+                    or r.get("toolCallId")
+                    or r.get("callId")
+                    or r.get("id")
+                )
+                == tc_id
+            ),
+            None,
+        )
+        if by_id is not None:
+            return by_id
+    p_step = planner_obj.get("step_index")
+    if isinstance(p_step, int) and not isinstance(p_step, bool):
+        want_step = p_step + 1 + tc_idx
+        by_step = next(
+            (r for r in results if r.get("step_index") == want_step),
+            None,
+        )
+        if by_step is not None:
+            return by_step
+    tool_calls = planner_obj.get("tool_calls")
+    if (
+        isinstance(tool_calls, list)
+        and len(results) == len(tool_calls)
+        and 0 <= tc_idx < len(results)
+    ):
+        return results[tc_idx]
+    tc_name = tc_obj.get("name")
+    if isinstance(tc_name, str) and tc_name:
+        named = [r for r in results if (r.get("name") or r.get("toolName")) == tc_name]
+        if len(named) == 1 and isinstance(tool_calls, list):
+            same_named = [
+                t
+                for t in tool_calls
+                if isinstance(t, dict) and t.get("name") == tc_name
+            ]
+            if len(same_named) == 1:
+                return named[0]
+    return None
+
+
 def _tool_call_succeeded_in_slice(
     turn_entries: list[tuple[int, dict[str, Any]]],
     entry_idx: int,
@@ -935,15 +989,9 @@ def _tool_call_succeeded_in_slice(
             results.append(rec)
     if not results:
         return True
-    matched: dict[str, Any] | None = None
-    p_step = planner_obj.get("step_index")
-    if isinstance(p_step, int) and not isinstance(p_step, bool):
-        want_step = p_step + 1 + tc_idx
-        matched = next((r for r in results if r.get("step_index") == want_step), None)
-    if matched is None and 0 <= tc_idx < len(results):
-        matched = results[tc_idx]
+    matched = _match_tool_result_in_slice(results, planner_obj, tc_idx, tc_obj)
     if matched is None:
-        return True
+        return False
     if (
         matched.get("type") == "ERROR_MESSAGE"
         or matched.get("status") == "ERROR"
@@ -951,10 +999,14 @@ def _tool_call_succeeded_in_slice(
     ):
         return False
     content = matched.get("content")
-    return not (
-        isinstance(content, str)
-        and (NONZERO_EXIT_RE.search(content) or TOOL_DENY_RE.search(content))
-    )
+    if isinstance(content, str):
+        if TOOL_DENY_RE.search(content):
+            return False
+        if "Command exited with code" in content:
+            return re.search(r"\bCommand exited with code 0\b", content) is not None
+        if NONZERO_EXIT_RE.search(content):
+            return False
+    return True
 
 
 def _analyze_slice(

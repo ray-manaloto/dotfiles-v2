@@ -15,14 +15,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-PHASE_HEADING_RE = re.compile(r"^\s*#{2,6}\s+Phase\b", re.IGNORECASE)
+PHASE_HEADING_RE = re.compile(r"^ ? ? ?#{2,6}\s+Phase(?:\s|$)", re.IGNORECASE)
 STATUS_RE = re.compile(
-    r"^\s*(?:[-*]\s*)?(?:\*\*Status:\*\*|Status:)\s*([a-zA-Z_-]+)",
+    r"(?:\*\*Status:\*\*[ \t]+(pending|in_progress|complete|active|todo|planned|blocked)(?![A-Za-z0-9_])"
+    r"|Status:[ \t]+(pending|in_progress|complete|active|todo|planned|blocked)(?![A-Za-z0-9_])"
+    r"|\[(pending|in_progress|complete)\])",
     re.IGNORECASE,
 )
-FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+BLOCKQUOTE_RE = re.compile(r"^ ? ? ?>")
 ERROR_HEADING_RE = re.compile(r"^(#{1,6})\s+Errors\s+Encountered\b", re.IGNORECASE)
-ANY_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+\S")
+ANY_MD_HEADING_RE = re.compile(r"^ ? ? ?(#{1,6})(?:\s+\S|$)")
 SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 MISE_PLAN_ID_RE = re.compile(r"""^\s*PLAN_ID\s*=\s*["']([^"']+)["']""")
 ERROR_PLACEHOLDER_CELLS = frozenset(
@@ -124,8 +127,13 @@ def _read_jsonl_rows(path: Path) -> tuple[list[dict[str, Any]], int]:
     return rows, parse_errors
 
 
-def _latest_reviews(state_dir: Path) -> tuple[dict[str, dict[str, Any]], int]:
+def _latest_reviews(
+    state_dir: Path, *, default_repo: Path | None = None
+) -> tuple[dict[str, dict[str, Any]], int]:
     rows, errs = _read_jsonl_rows(state_dir / "reviews.jsonl")
+    default_repo_str = (
+        str(default_repo.resolve(strict=False)) if default_repo is not None else None
+    )
     latest: dict[str, dict[str, Any]] = {}
     for rec in rows:
         raw_key = rec.get("plan_key")
@@ -140,7 +148,7 @@ def _latest_reviews(state_dir: Path) -> tuple[dict[str, dict[str, Any]], int]:
             and outcome
         ):
             continue
-        key = _normalize_plan_key(raw_key, rec.get("repo_root"))
+        key = _normalize_plan_key(raw_key, rec.get("repo_root") or default_repo_str)
         ts_ns = rec.get("timestamp_unix_ns", 0)
         ns_val = ts_ns if isinstance(ts_ns, int) and not isinstance(ts_ns, bool) else 0
         prev = latest.get(key)
@@ -251,12 +259,23 @@ def _read_mise_local_plan_id(root: Path) -> str | None:
     return None
 
 
+def _resolve_repo_root(root: Path) -> Path:
+    cur = root.resolve(strict=False)
+    for cand in (cur, *cur.parents):
+        if (cand / ".git").exists() or (cand / ".planning").is_dir():
+            return cand
+    return cur
+
+
 def _plans_for_root(root: Path) -> list[Path]:
-    planning = root / ".planning"
+    repo = _resolve_repo_root(root)
+    pwf_root_raw = os.environ.get("PWF_PLAN_ROOT", "").strip()
+    base = Path(os.path.expanduser(pwf_root_raw)) if pwf_root_raw else repo
+    planning = base / ".planning"
     if not planning.is_dir():
-        legacy = root / "task_plan.md"
+        legacy = base / "task_plan.md"
         return [legacy] if legacy.is_file() else []
-    pin = _read_mise_local_plan_id(root)
+    pin = _read_mise_local_plan_id(repo)
     if pin:
         pinned = planning / pin / "task_plan.md"
         return [pinned] if pinned.is_file() else []
@@ -287,18 +306,45 @@ def _parse_pwf_plan(text: str) -> tuple[int, int, int, int, bool]:
     total = complete = in_progress = pending = 0
     in_phase = False
     has_status = True
+    fence_char = ""
+    fence_len = 0
     for raw in text.splitlines():
-        if PHASE_HEADING_RE.match(raw):
+        line = raw.rstrip("\r")
+        fm = FENCE_RE.match(line)
+        if fm:
+            marker_run, rest = fm.group(1), fm.group(2)
+            marker = marker_run[0]
+            if not fence_char:
+                if not (marker == "`" and "`" in rest):
+                    fence_char = marker
+                    fence_len = len(marker_run)
+                    continue
+            elif (
+                marker == fence_char
+                and len(marker_run) >= fence_len
+                and not rest.strip(" \t")
+            ):
+                fence_char = ""
+                fence_len = 0
+                continue
+        if fence_char or BLOCKQUOTE_RE.match(line):
+            continue
+        if PHASE_HEADING_RE.match(line):
             if in_phase and not has_status:
                 return 0, 0, 0, 0, False
             total += 1
             in_phase = True
             has_status = False
             continue
+        if ANY_MD_HEADING_RE.match(line):
+            if in_phase and not has_status:
+                return 0, 0, 0, 0, False
+            in_phase = False
+            continue
         if in_phase:
-            m = STATUS_RE.match(raw)
+            m = STATUS_RE.search(line)
             if m:
-                st = m.group(1).lower()
+                st = (m.group(1) or m.group(2) or m.group(3) or "").lower()
                 has_status = True
                 if st == "complete":
                     complete += 1
@@ -435,12 +481,13 @@ def _handle_stop(payload: dict[str, Any], harness: str) -> dict[str, Any]:
     if not root.is_dir():
         return {}
 
+    repo = _resolve_repo_root(root)
     plans = _plans_for_root(root)
     if not plans:
         return {}
 
     state_dir = _resolve_state_dir()
-    latest_rev, _ = _latest_reviews(state_dir)
+    latest_rev, _ = _latest_reviews(state_dir, default_repo=repo)
 
     unreviewed: list[tuple[Path, str, str, int]] = []
     for plan_path in plans:
@@ -514,12 +561,16 @@ def _handle_stop(payload: dict[str, Any], harness: str) -> dict[str, Any]:
         p.parent.name if p.parent.parent.name == ".planning" else str(p)
         for p, _, _, _ in unreviewed
     )
+    _, first_key, first_sha, first_err = unreviewed[0]
     return {
         "decision": "block",
         "reason": (
             f"Automated post-task /learn check ({harness}): completed PWF plan '{labels}' has no recorded review in reviews.jsonl. "
-            "Run one bounded `/learn` review and record via `mise run learn:record-review --plan-key <plan_path> --plan-sha256 <sha256>` "
-            "(`--outcome no_new_proposals --survivor-count 0` if 0 survivors) or `mise run learn:propose`."
+            "Run one bounded `/learn` review and record via "
+            f"`mise run learn:record-review --plan-key {first_key} --plan-sha256 {first_sha} "
+            f"--error-count {first_err} --plan-error-ref {first_key}#Errors-Encountered "
+            f"--plan-path {first_key} --outcome no_new_proposals --survivor-count 0` "
+            "(or record proposals via `mise run learn:propose` followed by `mise run learn:record-review --outcome proposed ...`)."
         ),
     }
 

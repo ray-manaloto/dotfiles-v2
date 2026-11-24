@@ -29,4 +29,8 @@ args=(migrate)
 if [[ -x ${venv_py} ]]; then
 	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
 fi
+if [[ ${usage_apply:-false} != "true" ]]; then
+	echo "learn:migrate: read-only dry-run requires an existing .venv (refusing uv run fallback without --apply)" >&2
+	exit 1
+fi
 exec uv run --project "${repo_root}" --offline --locked --no-dev --quiet python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from agy_learn.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

@@ -22,7 +22,9 @@ import tempfile
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import date as dt_date
 from datetime import datetime, timedelta, timezone
+from datetime import time as dt_time
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -269,6 +271,12 @@ class _MiniTomlParser:
                 cur_tbl[k_parts[-1]] = v_obj
             return tbl
         num_clean = val.replace("_", "")
+        if re.fullmatch(r"0x[0-9a-fA-F]+", num_clean):
+            return int(num_clean, 16)
+        if re.fullmatch(r"0o[0-7]+", num_clean):
+            return int(num_clean, 8)
+        if re.fullmatch(r"0b[01]+", num_clean):
+            return int(num_clean, 2)
         if re.fullmatch(r"[+-]?(?:0|[1-9][0-9]*)", num_clean):
             return int(num_clean, 10)
         if re.fullmatch(
@@ -277,6 +285,18 @@ class _MiniTomlParser:
             re.IGNORECASE,
         ):
             return float(num_clean)
+        if re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?",
+            val,
+        ):
+            iso = val.replace("t", "T").replace(" ", "T")
+            if iso.endswith(("Z", "z")):
+                iso = iso[:-1] + "+00:00"
+            return datetime.fromisoformat(iso)
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", val):
+            return dt_date.fromisoformat(val)
+        if re.fullmatch(r"\d{2}:\d{2}:\d{2}(?:\.\d+)?", val):
+            return dt_time.fromisoformat(val)
         raise ValueError(f"Unsupported TOML value: {val!r}")
 
     @staticmethod
@@ -307,34 +327,79 @@ class _MiniTomlParser:
         return -1
 
     @staticmethod
-    def _unbalanced_delimiters(text: str) -> bool:
+    def _scan_value_state(text: str) -> tuple[int, bool, bool]:
+        """Return `(delimiter_depth, in_ml_double, in_ml_single)` across TOML value text."""
         depth = 0
         in_single = False
         in_double = False
+        in_ml_single = False
+        in_ml_double = False
         escaped = False
-        for ch in text:
-            if escaped:
-                escaped = False
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if in_ml_double:
+                if escaped:
+                    escaped = False
+                    i += 1
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    i += 1
+                    continue
+                if text.startswith('"""', i):
+                    in_ml_double = False
+                    i += 3
+                    continue
+                i += 1
+                continue
+            if in_ml_single:
+                if text.startswith("'''", i):
+                    in_ml_single = False
+                    i += 3
+                    continue
+                i += 1
                 continue
             if in_double:
-                if ch == "\\":
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
                     escaped = True
                 elif ch == '"':
                     in_double = False
+                i += 1
                 continue
             if in_single:
                 if ch == "'":
                     in_single = False
+                i += 1
+                continue
+            if text.startswith('"""', i):
+                in_ml_double = True
+                i += 3
+                continue
+            if text.startswith("'''", i):
+                in_ml_single = True
+                i += 3
                 continue
             if ch == '"':
                 in_double = True
             elif ch == "'":
                 in_single = True
+            elif ch == "#":
+                nl = text.find("\n", i)
+                i = n if nl < 0 else nl
             elif ch in "[{":
                 depth += 1
             elif ch in "]}":
                 depth -= 1
-        return depth > 0
+            i += 1
+        return depth, in_ml_double, in_ml_single
+
+    @classmethod
+    def _strip_comment_outside_multiline(cls, line: str, in_ml: bool) -> str:
+        return line if in_ml else cls._strip_comment(line)
 
     @classmethod
     def loads(cls, text: str) -> dict[str, Any]:
@@ -381,9 +446,22 @@ class _MiniTomlParser:
                 raise ValueError(f"Invalid TOML line: {stripped!r}")
             key_raw = stripped[:eq_idx].strip()
             val_raw = stripped[eq_idx + 1 :].strip()
-            while cls._unbalanced_delimiters(val_raw) and i < len(lines):
-                val_raw += "\n" + cls._strip_comment(lines[i]).strip()
+            depth, in_ml_dq, in_ml_sq = cls._scan_value_state(val_raw)
+            if in_ml_dq or in_ml_sq:
+                # Re-read initial value portion without stripping `#` inside an unclosed multiline string
+                raw_after_eq = lines[i - 1][lines[i - 1].find("=") + 1 :].lstrip()
+                val_raw = raw_after_eq
+                depth, in_ml_dq, in_ml_sq = cls._scan_value_state(val_raw)
+            while (depth > 0 or in_ml_dq or in_ml_sq) and i < len(lines):
+                nxt_line = lines[i]
                 i += 1
+                if in_ml_dq or in_ml_sq:
+                    val_raw += "\n" + nxt_line
+                else:
+                    val_raw += "\n" + cls._strip_comment(nxt_line).strip()
+                depth, in_ml_dq, in_ml_sq = cls._scan_value_state(val_raw)
+            if depth > 0 or in_ml_dq or in_ml_sq:
+                raise ValueError(f"Unterminated multiline TOML value for {key_raw!r}")
             key_parts = cls._parse_dotted_key(key_raw)
             val_obj = cls._parse_value(val_raw)
             target = current

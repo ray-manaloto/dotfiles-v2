@@ -21,13 +21,13 @@ fi
 # shellcheck disable=SC2016
 case "${project}" in
 dotfiles-v2)
-	proj_expr='"$HOME/dev/dotfiles-v2"'
+	proj_cd='proj_dir="$HOME/dev/dotfiles-v2"; [ -d "${proj_dir}" ] || { printf "%s\n" "tasks/vm/shell: missing project dir ${proj_dir}" >&2; exit 1; }; cd "${proj_dir}"'
 	;;
 kb-v2 | knowledge-base-v2)
-	proj_expr='$(for d in "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2" "$HOME/dev/dotfiles-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+	proj_cd='proj_dir="$(for d in "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "tasks/vm/shell: missing kb-v2 workspace" >&2; exit 1; }; cd "${proj_dir}"'
 	;;
 cpp-core)
-	proj_expr='$(for d in "$HOME/dev/cpp-core" "$HOME/dev/dotfiles-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)'
+	proj_cd='proj_dir="$(for d in "$HOME/dev/cpp-core"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "tasks/vm/shell: missing cpp-core workspace" >&2; exit 1; }; cd "${proj_dir}"'
 	;;
 *)
 	echo "unknown project '${project}' (expected dotfiles-v2, kb-v2, or cpp-core)" >&2
@@ -42,9 +42,9 @@ fi
 
 # shellcheck disable=SC2016
 if [[ -n ${cmd} ]]; then
-	script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; cd %s && %s' "${proj_expr}" "${cmd}")"
+	script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; %s && %s' "${proj_cd}" "${cmd}")"
 else
-	script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; cd %s && exec zsh -il' "${proj_expr}")"
+	script="$(printf 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"; %s && exec zsh -il' "${proj_cd}")"
 fi
 
-exec tart exec "${tty_flags[@]}" "${VM_NAME}" /bin/zsh -il -c "${script}"
+exec tart exec "${tty_flags[@]}" "${VM_NAME}" /bin/zsh -lc "${script}"

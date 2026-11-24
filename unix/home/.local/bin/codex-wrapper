@@ -17,13 +17,28 @@ strip_ephemeral_proxy_env() {
 		DENO_CERT RUST_LOG
 }
 
+canon_file() {
+	local p="$1" link="" dir="" depth=0
+	while [[ -L ${p} && ${depth} -lt 40 ]]; do
+		dir="$(cd "$(dirname "${p}")" 2>/dev/null && pwd -P)" || break
+		link="$(readlink "${p}")" || break
+		case "${link}" in
+		/*) p="${link}" ;;
+		*) p="${dir}/${link}" ;;
+		esac
+		depth=$((depth + 1))
+	done
+	dir="$(cd "$(dirname "${p}")" 2>/dev/null && pwd -P)" || return 1
+	printf '%s/%s\n' "${dir}" "$(basename "${p}")"
+}
+
 resolve_real_codex() {
 	local self_path self_real candidate cand_real dir IFS
 	self_path="$0"
-	self_real="$(cd "$(dirname "${self_path}")" 2>/dev/null && pwd -P)/$(basename "${self_path}")"
+	self_real="$(canon_file "${self_path}")"
 	candidate="${HOME}/.local/bin/codex"
 	if [[ -x ${candidate} ]]; then
-		cand_real="$(cd "$(dirname "${candidate}")" 2>/dev/null && pwd -P)/$(basename "${candidate}")"
+		cand_real="$(canon_file "${candidate}")"
 		if [[ ${cand_real} != "${self_real}" ]]; then
 			printf '%s\n' "${candidate}"
 			return 0
@@ -32,13 +47,14 @@ resolve_real_codex() {
 
 	IFS=':'
 	for dir in ${PATH:-}; do
+		dir="${dir%/}"
 		[[ -n ${dir} ]] || continue
 		case "${dir}" in
-		*/command-wrappers/bin) continue ;;
+		*/command-wrappers/bin | */mise/shims) continue ;;
 		esac
 		candidate="${dir}/codex"
 		[[ -x ${candidate} ]] || continue
-		cand_real="$(cd "$(dirname "${candidate}")" 2>/dev/null && pwd -P)/$(basename "${candidate}")"
+		cand_real="$(canon_file "${candidate}")"
 		case "$(basename "${cand_real}")" in
 		codex-wrapper | codex-hc) continue ;;
 		esac
@@ -89,7 +105,7 @@ for arg in "$@"; do
 	fi
 	if [[ ${end_opts} -eq 1 ]]; then
 		[[ -z ${subcommand} ]] && subcommand="${arg}"
-		continue
+		break
 	fi
 	case "${arg}" in
 	--)
@@ -108,7 +124,7 @@ for arg in "$@"; do
 	--disable=daemon_auto_start)
 		has_disable_daemon=1
 		;;
-	-c | --config | -m | --model | -p | --profile | -s | --sandbox | -a | --ask-for-approval | -C | --cd | -i | --image | --add-dir | --enable | --remote | --local-provider | --provider)
+	-c | --config | -m | --model | -p | --profile | -s | --sandbox | -a | --ask-for-approval | -C | --cd | -i | --image | --add-dir | --enable | --remote | --remote-auth-token-env | --local-provider | --provider)
 		expect_val=1
 		;;
 	-*)
@@ -128,7 +144,7 @@ if [[ ${has_meta_flag} -eq 1 ]]; then
 	is_bypass=1
 else
 	case "${subcommand}" in
-	app-server | remote-control | update | login | logout | doctor | features | help | completion | debug | cloud)
+	app-server | remote-control | update | login | logout | doctor | features | help | completion | debug | cloud | exec-server | mcp | plugin | app | sandbox)
 		is_bypass=1
 		;;
 	esac
@@ -151,7 +167,7 @@ fnox_cfg="${FNOX_CONFIG:-${HOME}/.config/fnox/config.toml}"
 if fnox_bin="$(resolve_fnox_bin)" && [[ -r ${fnox_cfg} ]]; then
 	export RUST_LOG="fnox::commands::proxy=error"
 	exec "${fnox_bin}" --non-interactive --config "${fnox_cfg}" proxy run -- \
-		env -u RUST_LOG "${real_codex}" "${extra_flags[@]}" "$@"
+		env -u RUST_LOG "${real_codex}" ${extra_flags[@]+"${extra_flags[@]}"} "$@"
 fi
 
-exec "${real_codex}" "${extra_flags[@]}" "$@"
+exec "${real_codex}" ${extra_flags[@]+"${extra_flags[@]}"} "$@"

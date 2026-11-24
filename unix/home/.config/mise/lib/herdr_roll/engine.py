@@ -379,8 +379,13 @@ def _handshake(
         raise SkipStep("skipped-no-handshake-ack", f"missing {READY_MARKER} {token}")
 
 
+_SPACE_LAUNCH_LOCK = threading.Lock()
+
+
 def _resolve_folder(target: TargetTuple) -> str:
     space, _, term = target
+    if "/" in term.address:
+        return term.cwd or space.folder or ""
     if term.cwd and Path(term.cwd).is_dir():
         return term.cwd
     if space.folder and Path(space.folder).is_dir():
@@ -391,16 +396,34 @@ def _resolve_folder(target: TargetTuple) -> str:
 def _resolve_live_space_id(
     spaces: list[dict[str, Any]], target_space: SpaceSnapshot
 ) -> str | None:
-    """Resolve target space ID from live `herdr-app ls` by exact ID first, then name."""
+    """Resolve target space ID from live `herdr-app ls` by exact ID, then unique `(name, folder)`."""
     for sp in spaces:
         sid = str(sp.get("id") or "")
         if sid and sid == target_space.id:
             return sid
-    if target_space.name:
-        for sp in spaces:
-            sid = str(sp.get("id") or "")
-            if sid and str(sp.get("name") or "") == target_space.name:
-                return sid
+    if not target_space.name:
+        return None
+    name_matches = [
+        sp
+        for sp in spaces
+        if str(sp.get("id") or "") and str(sp.get("name") or "") == target_space.name
+    ]
+    if not name_matches:
+        return None
+    if len(name_matches) == 1:
+        sp = name_matches[0]
+        sp_folder = str(sp.get("folder") or "")
+        if target_space.folder and sp_folder and sp_folder != target_space.folder:
+            return None
+        return str(sp["id"])
+    if target_space.folder:
+        folder_matches = [
+            sp
+            for sp in name_matches
+            if str(sp.get("folder") or "") == target_space.folder
+        ]
+        if len(folder_matches) == 1:
+            return str(folder_matches[0]["id"])
     return None
 
 
@@ -419,41 +442,40 @@ def _launch_fresh_tab(
         else argv
     )
     argv_json = orjson.dumps(launch_argv).decode("utf-8")
-    target_space_id = _resolve_live_space_id(herdr_app_ls(), space)
-    if target_space_id is not None:
-        resp = herdr_app_do(
-            "tab.new",
-            "--space",
-            target_space_id,
-            "--name",
-            tab.name,
-            "--folder",
-            cwd,
-            "--focus",
-            "false",
-            "--argv",
-            argv_json,
-        )
-        action_label = "tab.new"
-    else:
-        space_args = [
-            "--name",
-            space.name,
-            "--folder",
-            cwd,
-            "--tab",
-            tab.name,
-            "--focus",
-            "false",
-            "--argv",
-            argv_json,
-        ]
-        if "/" in term.address:
-            machine = term.address.split("/", 1)[0].strip()
+    machine = term.address.split("/", 1)[0].strip() if "/" in term.address else ""
+    with _SPACE_LAUNCH_LOCK:
+        target_space_id = _resolve_live_space_id(herdr_app_ls(), space)
+        if target_space_id is not None:
+            tab_args = [
+                "tab.new",
+                "--space",
+                target_space_id,
+                "--name",
+                tab.name,
+            ]
+            if cwd and not (machine and cwd == str(Path.home())):
+                tab_args.extend(["--folder", cwd])
+            tab_args.extend(["--focus", "false", "--argv", argv_json])
+            resp = herdr_app_do(*tab_args)
+            action_label = "tab.new"
+        else:
+            space_args = ["--name", space.name]
+            if cwd and not (machine and cwd == str(Path.home())):
+                space_args.extend(["--folder", cwd])
+            space_args.extend(
+                [
+                    "--tab",
+                    tab.name,
+                    "--focus",
+                    "false",
+                    "--argv",
+                    argv_json,
+                ]
+            )
             if machine:
                 space_args.extend(["--machine", machine])
-        resp = herdr_app_do("space.new", *space_args)
-        action_label = "space.new"
+            resp = herdr_app_do("space.new", *space_args)
+            action_label = "space.new"
     if not resp or not resp.get("terminal"):
         raise SkipStep(
             "failed-open",

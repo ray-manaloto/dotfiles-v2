@@ -25,6 +25,9 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+    env:
+      MISE_CONFIG_DIR: ${{ github.workspace }}/unix/home/.config/mise
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -34,6 +37,8 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78  # v5.3.0
         with:
+          version: 2026.11.13
+          cache: false
           install: false
 
       - name: Install locked global tools and project Python environment
@@ -44,8 +49,13 @@ jobs:
 
       - name: Verify mise lockfile and backend parity
         run: |
-          MISE_OFFLINE=1 MISE_CONFIG_DIR="${PWD}/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global
-          mise backends switch --dry-run
+          MISE_OFFLINE=1 mise -C unix/home/.config/mise lock --check --global
+          switch_out="$(mise -C unix/home/.config/mise backends switch --dry-run --global)"
+          printf '%s\n' "${switch_out}"
+          if printf '%s\n' "${switch_out}" | grep -Eq 'would switch|would replace stale'; then
+            echo "mise backends switch --dry-run detected backend drift" >&2
+            exit 1
+          fi
 
       - name: Run hk check suite
         run: hk check --all
@@ -64,6 +74,8 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+    env:
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -73,6 +85,8 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78  # v5.3.0
         with:
+          version: 2026.11.13
+          cache: false
           install: false
 
       - name: Run idempotent 2x mise bootstrap and verify zero missing dotfiles

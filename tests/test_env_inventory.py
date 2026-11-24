@@ -869,6 +869,40 @@ def test_env_inventory_cli_empty_target_json_logging_and_help_smoke(
         assert ox_proc.returncode == 0, ox_proc.stdout + ox_proc.stderr
 
 
+def test_format_json_with_oxfmt_honors_mise_data_and_xdg_data_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from env_inventory.collector import _format_json_with_oxfmt
+
+    mise_data = tmp_path / "custom_mise"
+    shim = mise_data / "shims" / "oxfmt"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("#!/bin/sh\necho '{\"formatted\": true}'\n", encoding="utf-8")
+    shim.chmod(0o755)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setenv("MISE_DATA_DIR", str(mise_data))
+    out = _format_json_with_oxfmt(
+        b'{"formatted":false}\n',
+        virtual_path=tmp_path / "sample.json",
+        repo_root=tmp_path,
+    )
+    assert out == b'{"formatted": true}\n'
+
+    xdg_data = tmp_path / "xdg_data"
+    shim2 = xdg_data / "mise" / "shims" / "oxfmt"
+    shim2.parent.mkdir(parents=True)
+    shim2.write_text('#!/bin/sh\necho \'{"via": "xdg"}\'\n', encoding="utf-8")
+    shim2.chmod(0o755)
+    monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_data))
+    out2 = _format_json_with_oxfmt(
+        b'{"via":"xdg"}\n',
+        virtual_path=tmp_path / "sample.json",
+        repo_root=tmp_path,
+    )
+    assert out2 == b'{"via": "xdg"}\n'
+
+
 def test_parallel_container_up_and_env_doctor_and_buildx_flags() -> None:
     container_up = (REPO_ROOT / "tasks" / "container" / "up").read_text(
         encoding="utf-8"

@@ -1510,7 +1510,16 @@ def _format_json_with_oxfmt(
     """Format JSON bytes via `oxfmt --stdin-filepath` when available so repo checks stay clean."""
     oxfmt_bin = shutil.which("oxfmt")
     if not oxfmt_bin:
-        shim = Path.home() / ".local" / "share" / "mise" / "shims" / "oxfmt"
+        mise_data = os.environ.get("MISE_DATA_DIR", "").strip()
+        if not mise_data:
+            xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
+            data_base = (
+                Path(os.path.expanduser(xdg_data))
+                if xdg_data
+                else Path.home() / ".local" / "share"
+            )
+            mise_data = str(data_base / "mise")
+        shim = Path(os.path.expanduser(mise_data)) / "shims" / "oxfmt"
         if shim.is_file() and os.access(shim, os.X_OK):
             oxfmt_bin = str(shim)
     if not oxfmt_bin:

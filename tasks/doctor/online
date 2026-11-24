@@ -51,7 +51,7 @@ run_outdated_check "mise-outdated-global" -C "${HOME}" outdated -b --json --glob
 switch_out="$(mktemp)"
 switch_err="$(mktemp)"
 switch_rc=0
-if ! mise -C "${repo_root}" backends switch --dry-run >"${switch_out}" 2>"${switch_err}"; then
+if ! mise -C "${repo_root}" backends switch --dry-run --global >"${switch_out}" 2>"${switch_err}"; then
 	switch_rc=$?
 fi
 if [[ ${verbose} == "true" && -s ${switch_out} ]]; then
@@ -60,6 +60,10 @@ fi
 if [[ ${switch_rc} -ne 0 ]]; then
 	printf 'FAIL  mise-backends-switch-dry-run (rc=%d)\n' "${switch_rc}" >&2
 	[[ -s ${switch_err} ]] && cat "${switch_err}" >&2
+	fail_count=$((fail_count + 1))
+elif grep -Eq 'would switch|would replace stale' "${switch_out}"; then
+	printf 'FAIL  mise-backends-switch-dry-run: backend drift detected:\n' >&2
+	cat "${switch_out}" >&2
 	fail_count=$((fail_count + 1))
 else
 	printf 'PASS  mise-backends-switch-dry-run\n'

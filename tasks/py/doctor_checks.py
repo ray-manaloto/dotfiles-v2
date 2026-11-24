@@ -1776,9 +1776,9 @@ def check_codex_hook_trust(
         or not shutil.which("codex")
     ):
         return [], "CI/unconfigured: skipped live codex-hook-trust check"
-    venv_py = _main_checkout_root(repo_root) / ".venv" / "bin" / "python"
+    venv_py = repo_root / ".venv" / "bin" / "python"
     if not venv_py.is_file():
-        venv_py = repo_root / ".venv" / "bin" / "python"
+        venv_py = _main_checkout_root(repo_root) / ".venv" / "bin" / "python"
     if not venv_py.is_file():
         return [], "skipped live codex-hook-trust (missing .venv/bin/python)"
     lib_dir = repo_root / "unix" / "home" / ".config" / "mise" / "lib"
@@ -1822,7 +1822,10 @@ def check_codex_hook_trust(
     for err in data.get("errors") or []:
         if isinstance(err, dict):
             code = str(err.get("code") or "")
-            if code == "ERR_ORPHANED_STATE" and not strict_host:
+            if (
+                code in {"ERR_ORPHANED_STATE", "ERR_LEGACY_BASELINE_DRIFT"}
+                and not strict_host
+            ):
                 continue
             errors.append(f"codex-hook-trust error: {code}: {err.get('message')}")
     for b in blocking:

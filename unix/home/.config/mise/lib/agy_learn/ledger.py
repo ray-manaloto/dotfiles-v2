@@ -1086,6 +1086,11 @@ def _canonical_matches_bare_review(
     bare = bare_rec.plan_key.strip()
     if not bare:
         return False
+    if bare_rec.repo_root and canon_rec.repo_root:
+        bare_repo = Path(os.path.expanduser(bare_rec.repo_root)).resolve(strict=False)
+        canon_repo = Path(os.path.expanduser(canon_rec.repo_root)).resolve(strict=False)
+        if bare_repo != canon_repo:
+            return False
     canon_dir = Path(canon_rec.plan_key).parent.name
     slug_match = (
         canon_dir == bare
@@ -1123,6 +1128,54 @@ def _resolve_bare_review_key(rec: LearnReviewRecord) -> str | None:
     return None
 
 
+def _compact_reviews_plan(
+    rows: list[LearnReviewRecord],
+) -> tuple[list[LearnReviewRecord], list[str]]:
+    """Deduplicate canonical + resolved bare rows by `(plan_key, plan_sha256, outcome)`."""
+    canonical_rows = [r for r in rows if not is_bare_plan_key(r.plan_key)]
+    migrated_ids: list[str] = []
+    # Map (plan_key, plan_sha256, outcome) -> (position_idx, rank_tuple, record)
+    best_by_sig: dict[
+        tuple[str, str, ReviewVerdict],
+        tuple[int, tuple[int, int, int], LearnReviewRecord],
+    ] = {}
+    unresolved_bare: list[tuple[int, LearnReviewRecord]] = []
+
+    for idx, rec in enumerate(rows):
+        bare = is_bare_plan_key(rec.plan_key)
+        if not bare:
+            target_key = rec.plan_key
+            target_rec = rec
+            rank = (rec.timestamp_unix_ns, rec.error_count, 1)
+        else:
+            resolved_key = _resolve_bare_review_key(rec)
+            if resolved_key is not None:
+                migrated_ids.append(rec.review_id)
+                target_key = resolved_key
+                target_rec = rec.model_copy(update={"plan_key": resolved_key})
+                rank = (rec.timestamp_unix_ns, rec.error_count, 0)
+            elif any(_canonical_matches_bare_review(rec, c) for c in canonical_rows):
+                migrated_ids.append(rec.review_id)
+                continue
+            else:
+                unresolved_bare.append((idx, rec))
+                continue
+
+        sig = (target_key, rec.plan_sha256, rec.outcome)
+        prev = best_by_sig.get(sig)
+        if prev is None:
+            best_by_sig[sig] = (idx, rank, target_rec)
+        elif rank > prev[1]:
+            best_by_sig[sig] = (prev[0], rank, target_rec)
+
+    ordered: list[tuple[int, LearnReviewRecord]] = [
+        (pos, rec) for pos, _rank, rec in best_by_sig.values()
+    ]
+    ordered.extend(unresolved_bare)
+    ordered.sort(key=lambda item: item[0])
+    return [rec for _, rec in ordered], migrated_ids
+
+
 def migrate_reviews(
     *,
     apply: bool = False,
@@ -1133,7 +1186,6 @@ def migrate_reviews(
     reviews_path = resolved / "reviews.jsonl"
     lock_path = reviews_path.with_suffix(f"{reviews_path.suffix}.lock")
     migrated_ids: list[str] = []
-    kept_rows: list[LearnReviewRecord] = []
     try:
         if apply:
             resolved.mkdir(parents=True, exist_ok=True)
@@ -1152,31 +1204,8 @@ def migrate_reviews(
                         errors=read_errs,
                         returns=[],
                     )
-                canonical_rows = [r for r in rows if not is_bare_plan_key(r.plan_key)]
-                canon_sigs = {
-                    (r.plan_key, r.plan_sha256, r.outcome) for r in canonical_rows
-                }
-                for rec in rows:
-                    if not is_bare_plan_key(rec.plan_key):
-                        kept_rows.append(rec)
-                        continue
-                    resolved_key = _resolve_bare_review_key(rec)
-                    if resolved_key is not None:
-                        migrated_ids.append(rec.review_id)
-                        sig = (resolved_key, rec.plan_sha256, rec.outcome)
-                        if sig not in canon_sigs:
-                            canon_sigs.add(sig)
-                            kept_rows.append(
-                                rec.model_copy(update={"plan_key": resolved_key})
-                            )
-                        continue
-                    if any(
-                        _canonical_matches_bare_review(rec, c) for c in canonical_rows
-                    ):
-                        migrated_ids.append(rec.review_id)
-                        continue
-                    kept_rows.append(rec)
-                if migrated_ids:
+                kept_rows, migrated_ids = _compact_reviews_plan(rows)
+                if migrated_ids or len(kept_rows) != len(rows):
                     payload = b"".join(
                         orjson.dumps(row.model_dump(mode="json")) + b"\n"
                         for row in kept_rows
@@ -1194,14 +1223,7 @@ def migrate_reviews(
                     errors=read_errs,
                     returns=[],
                 )
-            canonical_rows = [r for r in rows if not is_bare_plan_key(r.plan_key)]
-            for rec in rows:
-                if not is_bare_plan_key(rec.plan_key):
-                    continue
-                if _resolve_bare_review_key(rec) is not None or any(
-                    _canonical_matches_bare_review(rec, c) for c in canonical_rows
-                ):
-                    migrated_ids.append(rec.review_id)
+            _, migrated_ids = _compact_reviews_plan(rows)
     except Timeout as exc:
         ts, ns = now_ns_pair()
         return LearnResponse(
@@ -1351,6 +1373,22 @@ def apply_proposals(
             returns=[],
         )
 
+    if detect_shipped and repo_root is None:
+        ts, ns = now_ns_pair()
+        return LearnResponse(
+            command="apply",
+            rc=1,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                LearnErrorEntry(
+                    code=LearnErrorCode.ERR_INVALID_INPUT,
+                    message="--detect-shipped requires --repo <path>.",
+                )
+            ],
+            returns=[],
+        )
+
     from agy_learn.heal import (
         _recent_git_log,
         is_proposal_already_applied,
@@ -1422,6 +1460,11 @@ def apply_proposals(
 
             for idx, (pid, item_notes) in enumerate(targets.items()):
                 existing = by_id[pid]
+                if existing.status is status or (
+                    existing.status is ProposalStatus.SHIPPED
+                    and status is ProposalStatus.APPLIED
+                ):
+                    continue
                 updated = existing.model_copy(
                     update={
                         "status": status,
@@ -1472,11 +1515,22 @@ def apply_proposals(
         )
 
     if proposal_md is not None and applied_ids:
-        render_active_proposal_md(
+        render_resp = render_active_proposal_md(
             out_path=proposal_md,
             state_dir=state_dir,
             repo_root=repo_root,
         )
+        if render_resp.rc != 0:
+            return LearnResponse(
+                command="apply",
+                rc=render_resp.rc,
+                proposal=last_updated,
+                applied_ids=applied_ids,
+                timestamp=ts,
+                timestamp_unix_ns=ns,
+                errors=render_resp.errors,
+                returns=render_resp.returns,
+            )
 
     ret_code = (
         LearnReturnCode.RET_APPLIED if applied_ids else LearnReturnCode.RET_SKIPPED

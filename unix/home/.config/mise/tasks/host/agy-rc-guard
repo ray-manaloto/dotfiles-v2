@@ -30,10 +30,29 @@ plist="${HOME}/Library/LaunchAgents/${label}.plist"
 token_file="${HOME}/.gemini/antigravity-cli/antigravity-oauth-token"
 daemon_log="${HOME}/Library/Logs/antigravity-cli-daemon.log"
 
-agy_bin="${HOME}/.local/bin/agy"
-if [[ ! -x ${agy_bin} ]]; then
-	agy_bin="$(command -v agy 2>/dev/null || true)"
-fi
+resolve_agy_bin() {
+	local candidate="${HOME}/.local/bin/agy" dir IFS
+	if [[ -x ${candidate} ]]; then
+		printf '%s\n' "${candidate}"
+		return 0
+	fi
+	IFS=':'
+	for dir in ${PATH:-}; do
+		dir="${dir%/}"
+		[[ -n ${dir} ]] || continue
+		case "${dir}" in
+		*/command-wrappers/bin | */mise/shims) continue ;;
+		esac
+		candidate="${dir}/agy"
+		if [[ -x ${candidate} ]]; then
+			printf '%s\n' "${candidate}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+agy_bin="$(resolve_agy_bin || true)"
 if [[ -z ${agy_bin} || ! -x ${agy_bin} ]]; then
 	echo "agy:rc-guard: agy binary not found" >&2
 	exit 1
@@ -139,11 +158,12 @@ state_json="$(read_state)"
 
 if [[ ${repair} == "true" ]]; then
 	needs_reseed="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (not d["token_ok"] or d["auth_error_in_log"]) else "0")' "${state_json}")"
+	needs_recreate="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (not d["plist_exists"] or d["poisoned_ssl"] or not d["launchctl_loaded"]) else "0")' "${state_json}")"
+	needs_kickstart="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (d["plist_exists"] and not d["poisoned_ssl"] and d["launchctl_loaded"] and (not d["launchctl_running"] or not d["rc_running"])) else "0")' "${state_json}")"
 	needs_start="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if not d["plist_exists"] else "0")' "${state_json}")"
-	needs_kickstart="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("1" if (d["plist_exists"] and (not d["launchctl_running"] or not d["rc_running"] or d["poisoned_ssl"])) else "0")' "${state_json}")"
 
-	# #1401: interactive OAuth refresh can delete antigravity-oauth-token. Clean stop + re-seed via non-daemon status probe, then start/kickstart.
-	if [[ ${needs_reseed} -eq 1 && ${needs_start} -eq 0 ]]; then
+	# #1401 / #1269: stop & recreate LaunchAgent cleanly whenever token reseed, poisoned proxy env, or unloaded plist occurs.
+	if [[ (${needs_reseed} -eq 1 || ${needs_recreate} -eq 1) && ${needs_start} -eq 0 ]]; then
 		"${agy_bin}" remote-control stop </dev/null >/dev/null 2>&1 || true
 		needs_start=1
 	fi
@@ -162,7 +182,7 @@ if [[ ${repair} == "true" ]]; then
 		fi
 		"${start_cmd[@]}" </dev/null >/dev/null
 	elif [[ ${needs_kickstart} -eq 1 ]]; then
-		# #1269: kickstart stuck or stale LaunchAgent cleanly
+		# #1269: kickstart stuck loaded LaunchAgent cleanly
 		launchctl kickstart -k "gui/${uid}/${label}" >/dev/null
 	fi
 

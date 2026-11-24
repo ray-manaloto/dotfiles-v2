@@ -40,10 +40,14 @@ DECISION_HEADING_RE = re.compile(
     r"(?im)^(?:#{1,6}\s+|\*\*\s*)(?:next\s+step\s+options|key\s+decisions|decisions\s*&\s*trade-offs|options\s*\(with\s*trade-offs\))"
 )
 LEARN_EXEMPT_RE = re.compile(
-    r"(?:/learn\b|learning_proposal\.md|agy-learn|post-task-learn|record-review|learn:apply|proposals?)",
+    r"(?:/learn\b|learning_proposal\.md|agy-learn|post-task-learn|record-review|learn:(?:apply|propose|render-proposal)|\bproposal\s+\d+\b)",
     re.IGNORECASE,
 )
 PLAN_ID_LINE_RE = re.compile(r'^\s*PLAN_ID\s*=\s*"([^"\r\n]+)"')
+SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+PHASE_HEADING_RE = re.compile(r"^ ? ? ?### Phase([ \t]|$)")
+ANY_HEADING_RE = re.compile(r"^ ? ? ?(###|##|#)([ \t]|$)")
+BLOCKQUOTE_RE = re.compile(r"^ ? ? ?>")
 PLAN_STATUS_RE = re.compile(
     r"\*\*Status:\*\*[ \t]+(pending|in_progress|complete)(?![A-Za-z0-9_])|\[(pending|in_progress|complete)\]"
 )
@@ -291,6 +295,9 @@ def _resolve_state_path(payload: dict[str, Any]) -> Path | None:
 
 
 def _shared_reviews_path() -> Path:
+    override = os.environ.get("AGY_LEARN_STATE_DIR", "").strip()
+    if override:
+        return Path(os.path.expanduser(override)) / "reviews.jsonl"
     xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
     base = (
         Path(os.path.expanduser(xdg_state))
@@ -300,7 +307,67 @@ def _shared_reviews_path() -> Path:
     return base / "agy-learn" / "reviews.jsonl"
 
 
-def _resolve_active_complete_plan(payload: dict[str, Any]) -> tuple[Path, str] | None:
+def _valid_plan_slug(val: str) -> bool:
+    return bool(val) and ".." not in val and bool(SLUG_RE.match(val))
+
+
+def _plan_all_phases_complete(text: str) -> bool:
+    total = complete = 0
+    in_phase = False
+    has_status = True
+    fence_char = ""
+    fence_len = 0
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        fm = FENCE_RE.match(line)
+        if fm:
+            marker_run, rest = fm.group(1), fm.group(2)
+            marker = marker_run[0]
+            if not fence_char:
+                if not (marker == "`" and "`" in rest):
+                    fence_char = marker
+                    fence_len = len(marker_run)
+                    continue
+            elif (
+                marker == fence_char
+                and len(marker_run) >= fence_len
+                and rest.strip(" \t") == ""
+            ):
+                fence_char = ""
+                fence_len = 0
+                continue
+        if fence_char or BLOCKQUOTE_RE.match(line):
+            continue
+        if PHASE_HEADING_RE.match(line):
+            if in_phase and not has_status:
+                return False
+            total += 1
+            in_phase = True
+            has_status = False
+            continue
+        if ANY_HEADING_RE.match(line):
+            if in_phase and not has_status:
+                return False
+            in_phase = False
+            continue
+        if in_phase:
+            m = PLAN_STATUS_RE.search(line)
+            if m:
+                st = m.group(1) or m.group(2)
+                has_status = True
+                if st == "complete":
+                    complete += 1
+                else:
+                    return False
+                in_phase = False
+    if in_phase and not has_status:
+        return False
+    return total > 0 and complete == total
+
+
+def _resolve_active_complete_plan(
+    payload: dict[str, Any],
+) -> tuple[Path, Path, str] | None:
     cwd_raw = payload.get("cwd")
     base = (
         Path(os.path.expanduser(cwd_raw.strip()))
@@ -331,7 +398,7 @@ def _resolve_active_complete_plan(payload: dict[str, Any]) -> tuple[Path, str] |
                     break
         except OSError:
             pass
-    if not plan_id:
+    if not _valid_plan_slug(plan_id):
         return None
     plan_file = repo / ".planning" / plan_id / "task_plan.md"
     if not plan_file.is_file():
@@ -341,9 +408,8 @@ def _resolve_active_complete_plan(payload: dict[str, Any]) -> tuple[Path, str] |
         digest = hashlib.sha256(plan_file.read_bytes()).hexdigest()
     except OSError:
         return None
-    statuses = [m.group(1) or m.group(2) for m in PLAN_STATUS_RE.finditer(text)]
-    if statuses and all(st == "complete" for st in statuses):
-        return plan_file.resolve(strict=False), digest
+    if _plan_all_phases_complete(text):
+        return repo, plan_file.resolve(strict=False), digest
     return None
 
 
@@ -366,7 +432,7 @@ def _check_learn_boundary_before_ask(
     active = _resolve_active_complete_plan(payload)
     if active is None:
         return None
-    plan_path, digest = active
+    repo, plan_path, digest = active
     plan_key = str(plan_path)
     reviews_path = _shared_reviews_path()
     latest_outcome: str | None = None
@@ -389,7 +455,19 @@ def _check_learn_boundary_before_ask(
                 if not isinstance(rk, str) or not rk:
                     continue
                 try:
-                    rk_norm = str(Path(os.path.expanduser(rk)).resolve(strict=False))
+                    rk_path = Path(os.path.expanduser(rk))
+                    if rk_path.is_absolute():
+                        rk_norm = str(rk_path.resolve(strict=False))
+                    else:
+                        rk_base_raw = rec.get("repo_root")
+                        rk_base = (
+                            Path(os.path.expanduser(rk_base_raw.strip())).resolve(
+                                strict=False
+                            )
+                            if isinstance(rk_base_raw, str) and rk_base_raw.strip()
+                            else repo
+                        )
+                        rk_norm = str((rk_base / rk_path).resolve(strict=False))
                 except OSError:
                     rk_norm = rk
                 if rk_norm != plan_key:

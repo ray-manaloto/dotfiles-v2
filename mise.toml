@@ -330,7 +330,7 @@ def has_target(target_key: str) -> bool:
         for grp in all_groups:
             if name in (grp.get("items") or []) and "~/.claude/skills" in str(grp.get("dest_dir") or ""):
                 return True
-        if '"../../.agents/skills/' in skills_task_txt and (mise_dir.parent.parent.parent / ".agents" / "skills" / name / "SKILL.md").is_file():
+        if '"../../.agents/skills/' in skills_task_txt and (mise_dir.parent.parent / ".agents" / "skills" / name / "SKILL.md").is_file():
             return True
     return False
 

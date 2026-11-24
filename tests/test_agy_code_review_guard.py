@@ -636,3 +636,142 @@ def test_shell_wrapped_gates_past_tense_stop_and_nonzero_verification_rejection(
         event="stop",
     )
     assert stop_res.get("decision") == "continue"
+
+
+def test_hook_shell_unwrapping_tool_matching_and_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    guard = _load_guard()
+    hooks_dir = HOOK_PATH.parent
+
+    def _load_mod(filename: str) -> ModuleType:
+        spec = importlib.util.spec_from_file_location(
+            filename[:-3], hooks_dir / filename
+        )
+        assert spec is not None and spec.loader is not None
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    # 1. POSIX shell -c edge cases in agy-code-review-guard & agy-hc-send-guard & agy-pwf-guard
+    hc_guard = _load_mod("agy-hc-send-guard.py")
+    pwf_guard = _load_mod("agy-pwf-guard.py")
+    iq_guard = _load_mod("agy-interactive-questions.py")
+    ptl_guard = _load_mod("post-task-learn.py")
+
+    for cmd in (
+        "zsh -c -e 'git push origin main'",
+        "bash -lc -- 'git push origin main'",
+        "sh +e --rcfile /dev/null -c 'git push origin main'",
+    ):
+        segs = guard._split_shell_segments(cmd)
+        assert segs == [["git", "push", "origin", "main"]], (cmd, segs)
+
+    hc_segs = hc_guard._split_shell_segments("zsh -c -e 'hc send tab1 payload'")
+    assert hc_segs == [["hc", "send", "tab1", "payload"]]
+
+    pwf_targets = pwf_guard._extract_worktree_targets(
+        "(git -C /tmp/repo worktree remove --force /tmp/repo-wt); zsh -lc -- 'mise -C /tmp/repo run worktree:rm wt-slug'",
+        tmp_path,
+    )
+    assert [slug for slug, _ in pwf_targets] == ["repo-wt", "wt-slug"]
+
+    # 2. _tool_call_verified_exit_zero prioritizes "Command exited with code" over inner text and fails closed on missing result
+    entries = [
+        (
+            0,
+            {
+                "type": "PLANNER_RESPONSE",
+                "step_index": 1,
+                "tool_calls": [{"name": "read_file"}, {"name": "run_command"}],
+            },
+        ),
+        (
+            1,
+            {
+                "type": "GENERIC",
+                "step_index": 2,
+                "content": "read ok",
+            },
+        ),
+        (
+            2,
+            {
+                "type": "GENERIC",
+                "step_index": 3,
+                "content": "Command exited with code 0.\n\ntested failure message: exit code: 1",
+            },
+        ),
+    ]
+    assert guard._tool_call_verified_exit_zero(
+        entries, 0, entries[0][1], 1, entries[0][1]["tool_calls"][1], {}
+    )
+    assert ptl_guard._tool_call_succeeded_in_slice(
+        entries, 0, entries[0][1], 1, entries[0][1]["tool_calls"][1], {}
+    )
+    # Missing result for tc_idx >= len(results) without step match must fail closed (False)
+    short_entries = [
+        (
+            0,
+            {
+                "type": "PLANNER_RESPONSE",
+                "step_index": 10,
+                "tool_calls": [{"name": "read_file"}, {"name": "run_command"}],
+            },
+        ),
+        (1, {"type": "GENERIC", "content": "only read result"}),
+    ]
+    assert not guard._tool_call_verified_exit_zero(
+        short_entries,
+        0,
+        short_entries[0][1],
+        1,
+        short_entries[0][1]["tool_calls"][1],
+        {},
+    )
+    assert not ptl_guard._tool_call_succeeded_in_slice(
+        short_entries,
+        0,
+        short_entries[0][1],
+        1,
+        short_entries[0][1]["tool_calls"][1],
+        {},
+    )
+
+    # 3. interactive-questions narrowed LEARN_EXEMPT_RE, AGY_LEARN_STATE_DIR, and relative plan_key resolution
+    assert iq_guard.LEARN_EXEMPT_RE.search("Run learn:apply for proposal 2")
+    assert not iq_guard.LEARN_EXEMPT_RE.search("Choose architecture proposal for API")
+    repo_dir = tmp_path / "repo_rel"
+    (repo_dir / ".git").mkdir(parents=True)
+    plan_dir = repo_dir / ".planning" / "2026-11-24-rel"
+    plan_dir.mkdir(parents=True)
+    plan_file = plan_dir / "task_plan.md"
+    plan_file.write_text("### Phase 1\n- **Status:** complete\n", encoding="utf-8")
+    (repo_dir / "mise.local.toml").write_text(
+        '[env]\nPLAN_ID = "2026-11-24-rel"\n', encoding="utf-8"
+    )
+    sha = __import__("hashlib").sha256(plan_file.read_bytes()).hexdigest()
+    state_dir = tmp_path / "learn_state"
+    state_dir.mkdir()
+    monkeypatch.setenv("AGY_LEARN_STATE_DIR", str(state_dir))
+    assert iq_guard._shared_reviews_path() == state_dir / "reviews.jsonl"
+    (state_dir / "reviews.jsonl").write_text(
+        json.dumps(
+            {
+                "plan_key": ".planning/2026-11-24-rel/task_plan.md",
+                "repo_root": str(repo_dir),
+                "plan_sha256": sha,
+                "outcome": "no_new_proposals",
+                "timestamp_unix_ns": 10,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert (
+        iq_guard._check_learn_boundary_before_ask(
+            {"cwd": str(repo_dir)},
+            [{"question": "Which proposal?", "options": ["(Recommended) Opt 1"]}],
+        )
+        is None
+    )

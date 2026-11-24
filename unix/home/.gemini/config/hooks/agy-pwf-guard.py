@@ -38,14 +38,13 @@ ISSUE_URL_RE = re.compile(
 NS_TIMESTAMP_RE = re.compile(r"^\d{8}T\d{6}\.\d{9}[+-]\d{4}$")
 DOCS_BYPASS_FILES = frozenset({"ROADMAP.md", "README.md", "CHANGELOG.md"})
 DOCS_BYPASS_SUFFIXES = frozenset({".md", ".mdx", ".markdown", ".rst", ".adoc", ".txt"})
-WORKTREE_RM_RE = re.compile(
-    r"\bmise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+worktree:rm\b([^\n;&|]*)"
-)
-GIT_WORKTREE_RM_RE = re.compile(
-    r"\bgit\s+(?:(?:-C\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+)\s+)*worktree\s+remove\b([^\n;&|]*)"
-)
 SHELL_WRAPPERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh"})
 MAX_SHELL_UNWRAP_DEPTH = 4
+ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+PUNCT_SEP_CHARS = frozenset(";|&()\n")
+SEPARATORS = frozenset(
+    {";", "&&", "||", "|", "&", "\n", "then", "do", "else", "elif", "{", "}", "(", ")"}
+)
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 BLOCKQUOTE_RE = re.compile(r"^ ? ? ?>")
 MALFORMED_PHASE_RE = re.compile(r"^ ? ? ?### Phase([0-9:]|-[0-9])")
@@ -498,40 +497,122 @@ def _resolve_active_plan(repo_root: Path) -> Path | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _expand_shell_wrapped_commands(command: str, *, _depth: int = 0) -> list[str]:
-    """Return *command* plus any inner scripts unwrapped from `sh/bash/zsh -c/-lc/-lic`."""
-    out = [command]
-    if _depth >= MAX_SHELL_UNWRAP_DEPTH:
-        return out
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        return out
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if Path(tok).name in SHELL_WRAPPERS:
-            j = i + 1
-            while j < len(tokens):
-                opt = tokens[j]
-                if opt == "--":
+def _strip_env_prefix(segment: list[str]) -> list[str]:
+    idx = 0
+    while idx < len(segment):
+        tok = segment[idx]
+        if ENV_ASSIGN_RE.match(tok):
+            idx += 1
+            continue
+        if Path(tok).name == "env":
+            idx += 1
+            while idx < len(segment) and segment[idx].startswith("-"):
+                flag = segment[idx]
+                if flag == "--":
+                    idx += 1
                     break
-                if opt in {"-o", "+o"} and j + 1 < len(tokens):
-                    j += 2
+                if flag in {"-S", "--split-string"} and idx + 1 < len(segment):
+                    try:
+                        expanded = shlex.split(segment[idx + 1])
+                    except ValueError:
+                        expanded = []
+                    segment = [*segment[: idx + 2], *expanded, *segment[idx + 2 :]]
+                    idx += 2
                     continue
-                if opt.startswith("-") and not opt.startswith("--") and "c" in opt[1:]:
-                    if j + 1 < len(tokens):
-                        out.extend(
-                            _expand_shell_wrapped_commands(
-                                tokens[j + 1], _depth=_depth + 1
-                            )
-                        )
-                    break
-                if not opt.startswith("-"):
-                    break
-                j += 1
-        i += 1
-    return out
+                if flag.startswith("--split-string="):
+                    try:
+                        expanded = shlex.split(flag.split("=", 1)[1])
+                    except ValueError:
+                        expanded = []
+                    segment = [*segment[: idx + 1], *expanded, *segment[idx + 1 :]]
+                    idx += 1
+                    continue
+                if flag in {"-u", "--unset", "-C", "--chdir"} and idx + 1 < len(
+                    segment
+                ):
+                    idx += 2
+                    continue
+                idx += 1
+            continue
+        if Path(tok).name in {"exec", "command"}:
+            idx += 1
+            continue
+        break
+    return segment[idx:]
+
+
+def _unwrap_shell_command(segment: list[str]) -> str | None:
+    stripped = _strip_env_prefix(segment)
+    if not stripped:
+        return None
+    if Path(stripped[0]).name not in SHELL_WRAPPERS:
+        return None
+    i = 1
+    has_c = False
+    while i < len(stripped):
+        tok = stripped[i]
+        if tok == "--":
+            i += 1
+            break
+        if tok in {"-o", "+o", "--rcfile", "--init-file"}:
+            if i + 1 < len(stripped):
+                i += 2
+                continue
+            return None
+        if tok.startswith(("--rcfile=", "--init-file=", "-o=", "+o=")):
+            i += 1
+            continue
+        if tok.startswith("--"):
+            i += 1
+            continue
+        if tok.startswith("-") and len(tok) > 1:
+            if "c" in tok[1:]:
+                has_c = True
+            i += 1
+            continue
+        if tok.startswith("+") and len(tok) > 1:
+            i += 1
+            continue
+        break
+    if has_c and i < len(stripped):
+        return stripped[i]
+    return None
+
+
+def _split_shell_segments(command: str, *, _depth: int = 0) -> list[list[str]]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";|&()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+
+    raw_segments: list[list[str]] = []
+    cur: list[str] = []
+    for tok in tokens:
+        if tok in SEPARATORS or (tok and all(ch in PUNCT_SEP_CHARS for ch in tok)):
+            if cur:
+                raw_segments.append(cur)
+                cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        raw_segments.append(cur)
+
+    if _depth >= MAX_SHELL_UNWRAP_DEPTH:
+        return raw_segments
+
+    segments: list[list[str]] = []
+    for seg in raw_segments:
+        inner_cmd = _unwrap_shell_command(seg)
+        if inner_cmd is not None:
+            inner_segs = _split_shell_segments(inner_cmd, _depth=_depth + 1)
+            if inner_segs:
+                segments.extend(inner_segs)
+                continue
+        segments.append(seg)
+    return segments
 
 
 def _extract_worktree_targets(
@@ -540,42 +621,139 @@ def _extract_worktree_targets(
     """Extract all `(label_slug, extra_wt_dirs)` from `worktree:rm` and `git worktree remove` calls."""
     targets: list[tuple[str, list[Path]]] = []
     seen: set[tuple[str, str]] = set()
-    for expanded in _expand_shell_wrapped_commands(command):
-        for match in WORKTREE_RM_RE.finditer(expanded):
-            tail = match.group(1).strip()
-            if not tail:
+    mise_val_flags = {"-C", "--cd", "-E", "--env", "-j", "--jobs", "--profiles"}
+    git_val_flags = {
+        "-C",
+        "-c",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--super-prefix",
+        "--exec-path",
+        "--config-env",
+    }
+
+    for seg in _split_shell_segments(command):
+        stripped = _strip_env_prefix(seg)
+        if not stripped:
+            continue
+        prog = Path(stripped[0]).name
+        if prog == "mise":
+            mise_dir: Path | None = None
+            i = 1
+            while i < len(stripped):
+                tok = stripped[i]
+                if tok in {"-C", "--cd"} and i + 1 < len(stripped):
+                    p = Path(os.path.expanduser(stripped[i + 1]))
+                    mise_dir = (
+                        p.resolve(strict=False)
+                        if p.is_absolute()
+                        else (base_dir / p).resolve(strict=False)
+                        if base_dir is not None
+                        else None
+                    )
+                    i += 2
+                    continue
+                if tok.startswith("--cd="):
+                    p = Path(os.path.expanduser(tok.split("=", 1)[1]))
+                    mise_dir = (
+                        p.resolve(strict=False)
+                        if p.is_absolute()
+                        else (base_dir / p).resolve(strict=False)
+                        if base_dir is not None
+                        else None
+                    )
+                    i += 1
+                    continue
+                if tok in mise_val_flags and i + 1 < len(stripped):
+                    i += 2
+                    continue
+                if tok.startswith("-"):
+                    i += 1
+                    continue
+                break
+            if i >= len(stripped) or stripped[i] != "run":
                 continue
-            try:
-                tokens = shlex.split(tail)
-            except ValueError:
-                tokens = tail.split()
-            for token in tokens:
-                if token.startswith("-"):
+            i += 1
+            while i < len(stripped):
+                tok = stripped[i]
+                if tok in mise_val_flags and i + 1 < len(stripped):
+                    i += 2
+                    continue
+                if tok.startswith("-"):
+                    i += 1
+                    continue
+                break
+            if i >= len(stripped) or not (
+                stripped[i] == "worktree:rm" or stripped[i].endswith(":worktree:rm")
+            ):
+                continue
+            end_opts = False
+            for token in stripped[i + 1 :]:
+                if not end_opts and token == "--":
+                    end_opts = True
+                    continue
+                if not end_opts and token.startswith("-"):
                     continue
                 if _valid_slug(token):
-                    key = (token, "")
+                    key = (token, str(mise_dir) if mise_dir else "")
                     if key not in seen:
                         seen.add(key)
-                        targets.append((token, []))
+                        targets.append((token, [mise_dir] if mise_dir else []))
                 break
-
-        for match in GIT_WORKTREE_RM_RE.finditer(expanded):
-            tail = match.group(1).strip()
-            if not tail:
+        elif prog == "git":
+            git_base = base_dir
+            i = 1
+            while i < len(stripped):
+                tok = stripped[i]
+                if tok == "-C" and i + 1 < len(stripped):
+                    p = Path(os.path.expanduser(stripped[i + 1]))
+                    git_base = (
+                        p.resolve(strict=False)
+                        if p.is_absolute()
+                        else (git_base / p).resolve(strict=False)
+                        if git_base is not None
+                        else None
+                    )
+                    i += 2
+                    continue
+                if tok.startswith("-C") and len(tok) > 2:
+                    p = Path(os.path.expanduser(tok[2:]))
+                    git_base = (
+                        p.resolve(strict=False)
+                        if p.is_absolute()
+                        else (git_base / p).resolve(strict=False)
+                        if git_base is not None
+                        else None
+                    )
+                    i += 1
+                    continue
+                if tok in git_val_flags and i + 1 < len(stripped):
+                    i += 2
+                    continue
+                if tok.startswith("-"):
+                    i += 1
+                    continue
+                break
+            if (
+                i + 1 >= len(stripped)
+                or stripped[i] != "worktree"
+                or stripped[i + 1] != "remove"
+            ):
                 continue
-            try:
-                tokens = shlex.split(tail)
-            except ValueError:
-                tokens = tail.split()
-            for token in tokens:
-                if token.startswith("-"):
+            end_opts = False
+            for token in stripped[i + 2 :]:
+                if not end_opts and token == "--":
+                    end_opts = True
+                    continue
+                if not end_opts and token.startswith("-"):
                     continue
                 cand_path = Path(os.path.expanduser(token))
                 resolved_dirs: list[Path] = []
                 if cand_path.is_absolute():
-                    resolved_dirs.append(cand_path)
-                elif base_dir is not None:
-                    resolved_dirs.append((base_dir / cand_path).resolve(strict=False))
+                    resolved_dirs.append(cand_path.resolve(strict=False))
+                elif git_base is not None:
+                    resolved_dirs.append((git_base / cand_path).resolve(strict=False))
                 slug = cand_path.name
                 if slug:
                     key = (slug, str(resolved_dirs[0]) if resolved_dirs else "")

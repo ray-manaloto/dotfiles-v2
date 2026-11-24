@@ -26,6 +26,7 @@ from agy_learn import (
     run_heal_check,
 )
 from agy_learn.cli import main as agy_learn_cli_main
+from agy_learn.ledger import apply_proposals, migrate_reviews
 from dotfiles_py import NANOSECOND_TIMESTAMP_RE
 from dotfiles_py.generated import (
     EnforcementTier,
@@ -1271,3 +1272,165 @@ def test_propose_preserves_approved_status_stricter_tier_and_migrate_list_apply(
                 check=True,
             )
             assert json.loads(proc.stdout)["status"] == "ok"
+
+
+def test_learn_dedup_apply_guards_mini_toml_and_portable_hook_edges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 1. migrate_reviews deduplicates canonical vs resolved bare keeping highest (ts_ns, error_count) & checks repo_root
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    repo_a = tmp_path / "repo_a"
+    repo_b = tmp_path / "repo_b"
+    for rp in (repo_a, repo_b):
+        p = rp / ".planning" / "2026-11-24-s"
+        p.mkdir(parents=True)
+        (p / "task_plan.md").write_text("# Plan\n", encoding="utf-8")
+    plan_a = str((repo_a / ".planning" / "2026-11-24-s" / "task_plan.md").resolve())
+    rev_path = state_dir / "reviews.jsonl"
+    rows = [
+        {
+            "review_id": "rev-canon-old",
+            "plan_key": plan_a,
+            "plan_id": "2026-11-24-s",
+            "repo_root": str(repo_a),
+            "plan_sha256": "deadbeef",
+            "error_count": 0,
+            "outcome": "no_new_proposals",
+            "survivor_count": 0,
+            "proposal_ids": [],
+            "provenance": {"plan_path": plan_a},
+            "timestamp": "20261124T010000.000000001+0000",
+            "timestamp_unix_ns": 100,
+        },
+        {
+            "review_id": "rev-bare-newer",
+            "plan_key": "2026-11-24-s",
+            "plan_id": "2026-11-24-s",
+            "repo_root": str(repo_a),
+            "plan_sha256": "deadbeef",
+            "error_count": 2,
+            "outcome": "no_new_proposals",
+            "survivor_count": 0,
+            "proposal_ids": [],
+            "provenance": {"transcript_step": "t#1"},
+            "timestamp": "20261124T010002.000000001+0000",
+            "timestamp_unix_ns": 300,
+        },
+        {
+            "review_id": "rev-other-repo",
+            "plan_key": "2026-11-24-s",
+            "plan_id": "2026-11-24-s",
+            "repo_root": str(repo_b),
+            "plan_sha256": "deadbeef",
+            "error_count": 0,
+            "outcome": "no_new_proposals",
+            "survivor_count": 0,
+            "proposal_ids": [],
+            "provenance": {"transcript_step": "t#2"},
+            "timestamp": "20261124T010000.000000001+0000",
+            "timestamp_unix_ns": 50,
+        },
+    ]
+    rev_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    mig = migrate_reviews(apply=True, state_dir=state_dir)
+    assert mig.rc == 0
+    kept = [
+        json.loads(ln)
+        for ln in rev_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    by_key = {r["plan_key"]: r for r in kept}
+    assert by_key[plan_a]["review_id"] == "rev-bare-newer"
+    assert by_key[plan_a]["error_count"] == 2
+    assert len(kept) == 2
+
+    # 2. apply_proposals fails closed on --detect-shipped without --repo and refuses shipped -> applied downgrade
+    fail_ds = apply_proposals(detect_shipped=True, state_dir=state_dir)
+    assert fail_ds.rc == 1
+    assert fail_ds.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    p_resp = propose_item(
+        dedup_key="rule-a-shipped-guard",
+        title="Rule A",
+        summary="summary",
+        target_path="hk.pkl",
+        tier=EnforcementTier.HK_PKL,
+        retention_class=RetentionClass.SAFETY_INVARIANT,
+        provenance=ProvenanceRef(transcript_step="t#1"),
+        state_dir=state_dir,
+    )
+    assert p_resp.proposal is not None
+    pid = p_resp.proposal.proposal_id
+    mark_proposal(
+        proposal_id=pid,
+        status=ProposalStatus.SHIPPED,
+        state_dir=state_dir,
+    )
+    no_down = apply_proposals(
+        proposal_ids=[pid], status=ProposalStatus.APPLIED, state_dir=state_dir
+    )
+    assert no_down.rc == 0
+    assert no_down.applied_ids == []
+    assert read_proposals(state_dir=state_dir)[0][-1].status is ProposalStatus.SHIPPED
+
+    # 3. _MiniTomlParser handles multiline """...""" with `#`, hex ints, and ISO Z datetimes
+    spec = importlib.util.spec_from_file_location(
+        "agy_pwf_sync", HOOKS_DIR / "agy-pwf-sync.py"
+    )
+    assert spec is not None and spec.loader is not None
+    sync_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sync_mod)
+    parsed_toml = sync_mod._MiniTomlParser.loads(
+        'text = """line1\n# literal hash not comment\nline3"""\n'
+        "hex_num = 0xdead_beef\n"
+        "ts = 2026-11-24T09:00:00Z\n"
+    )
+    assert parsed_toml["text"] == "line1\n# literal hash not comment\nline3"
+    assert parsed_toml["hex_num"] == 0xDEADBEEF
+    assert parsed_toml["ts"].year == 2026
+
+    # 4. portable-learn-hook honors PWF_PLAN_ROOT, ignores fenced phases, and fixes Stop guidance
+    phook_path = (
+        REPO_ROOT
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "assets"
+        / "hooks"
+        / "portable-learn-hook.py"
+    )
+    pspec = importlib.util.spec_from_file_location("portable_learn_hook", phook_path)
+    assert pspec is not None and pspec.loader is not None
+    phook = importlib.util.module_from_spec(pspec)
+    pspec.loader.exec_module(phook)
+
+    pwf_root = tmp_path / "ext_pwf"
+    ext_plan = pwf_root / ".planning" / "ext-slug" / "task_plan.md"
+    ext_plan.parent.mkdir(parents=True)
+    ext_plan.write_text(
+        "```markdown\n### Phase 1\n- **Status:** pending\n```\n"
+        "### Phase 1\n- [complete]\n"
+        "## Errors Encountered\n| Error | Resolution |\n|-------|------------|\n| boom | fixed |\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PLAN_ID", raising=False)
+    monkeypatch.setenv("PWF_PLAN_ROOT", str(pwf_root))
+    monkeypatch.setenv("AGY_LEARN_STATE_DIR", str(tmp_path / "p_state"))
+    (tmp_path / "p_state").mkdir()
+    sub_dir = repo_a / "sub" / "nested"
+    sub_dir.mkdir(parents=True)
+    res_block = phook._handle_stop({"cwd": str(sub_dir), "session_id": "s1"}, "codex")
+    assert res_block.get("decision") == "block"
+    reason = res_block["reason"]
+    assert "--error-count 1" in reason
+    assert "--plan-error-ref" in reason
+    assert "or `mise run learn:propose`" not in reason
+
+    # 5. tasks/learn/migrate refuses uv run in dry-run without --apply
+    mig_task = (
+        REPO_ROOT / "unix" / "home" / ".config" / "mise" / "tasks" / "learn" / "migrate"
+    ).read_text(encoding="utf-8")
+    assert "usage_apply:-false" in mig_task
+    assert "refusing uv run fallback without --apply" in mig_task

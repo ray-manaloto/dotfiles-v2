@@ -19,6 +19,7 @@ import orjson
 from codex_trust.rpc import (
     CodexAppServerClient,
     CodexRpcError,
+    parse_semver,
     resolve_codex_binary,
     semver_ge,
 )
@@ -40,6 +41,8 @@ from dotfiles_py.time_ns import now_ns_pair
 _LOG = get_logger(__name__)
 
 _HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+_SAFE_IDENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 _SKIP_BUNDLE_NAMES = frozenset({"__pycache__", ".venv"})
 _CATALOG_PATHS = (
     ".agents/plugins/marketplace.json",
@@ -48,8 +51,40 @@ _CATALOG_PATHS = (
     ".cursor-plugin/marketplace.json",
 )
 _PLUGIN_ROOT_VAR_RE = re.compile(
-    r"(?:\$\{?(?:PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)\}?/([^\s\"']+))"
+    r"(?:\$\{?(?:PLUGIN_ROOT|CLAUDE_PLUGIN_ROOT)(?::-[^}]*)?\}?/([^\s\"']+))"
 )
+
+
+def _decl_hash_from_current(current_hash: str) -> str:
+    return current_hash.partition("/")[0].strip()
+
+
+def _validate_ident(value: str, label: str) -> None:
+    if not value or value in {".", ".."} or not _SAFE_IDENT_RE.fullmatch(value):
+        raise CodexRpcError(
+            f"invalid {label}: {value!r}",
+            code="ERR_INVALID_INPUT",
+        )
+
+
+def _validate_version(raw_ver: str) -> None:
+    if (
+        not raw_ver
+        or raw_ver in {".", ".."}
+        or raw_ver.startswith(".")
+        or not _SAFE_VERSION_RE.fullmatch(raw_ver)
+    ):
+        raise CodexRpcError(
+            f"invalid plugin.json version: {raw_ver!r}",
+            code="ERR_INVALID_INPUT",
+        )
+
+
+def _version_sort_key(ver: str) -> tuple[int, tuple[int, int, int], str]:
+    parsed = parse_semver(ver)
+    if ver != "local" and parsed is not None:
+        return (1, parsed, ver)
+    return (0, (0, 0, 0), ver)
 
 
 def default_codex_home() -> Path:
@@ -60,6 +95,8 @@ def default_codex_home() -> Path:
 
 def plugin_content_hash(root: Path) -> str:
     """Compute exact Codex `codex-plugin-bundle-v1` whole-bundle SHA-256 digest."""
+    if root.is_symlink():
+        raise CodexRpcError(f"plugin root must not be a symlink: {root}")
     resolved = root.resolve(strict=False)
     if resolved.is_symlink() or not resolved.is_dir():
         raise CodexRpcError(f"plugin root is not a directory: {root}")
@@ -161,9 +198,45 @@ def _toml_key_quote(key: str) -> str:
     return f'"{escaped}"'
 
 
+def _toml_key_literal_quote(key: str) -> str:
+    return f"'{key}'"
+
+
+def _toml_section_key(key: str) -> str:
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else _toml_key_quote(key)
+
+
+def _toml_key_alts_regex(key: str) -> str:
+    alts = [re.escape(_toml_key_quote(key))]
+    if "'" not in key and "\n" not in key:
+        alts.append(re.escape(_toml_key_literal_quote(key)))
+    if re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        alts.append(re.escape(key))
+    return "(?:" + "|".join(dict.fromkeys(alts)) + ")"
+
+
 def _toml_str_quote(val: str) -> str:
     escaped = val.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _upsert_kv_preserving_comments(body: str, key: str, value_toml: str) -> str:
+    pat = re.compile(
+        rf"(?m)^([ \t]*{re.escape(key)}[ \t]*=[ \t]*)([^#\r\n]*?)([ \t]*(?:#[^\r\n]*)?)$"
+    )
+    if pat.search(body):
+        return pat.sub(lambda m: f"{m.group(1)}{value_toml}{m.group(3)}", body, count=1)
+    insert = f"{key} = {value_toml}\n"
+    if body.strip() == "":
+        return insert + body
+    # Insert right after initial property lines, before trailing blank/comment block
+    lines = body.splitlines(keepends=True)
+    idx = len(lines)
+    while idx > 0 and (
+        lines[idx - 1].strip() == "" or lines[idx - 1].lstrip(" \t").startswith("#")
+    ):
+        idx -= 1
+    return "".join(lines[:idx]) + insert + "".join(lines[idx:])
 
 
 def _upsert_toml_trust_and_orphans(
@@ -179,62 +252,64 @@ def _upsert_toml_trust_and_orphans(
 
     if marketplace_ref_update is not None:
         mkt, new_sha = marketplace_ref_update
+        mkt_alts = _toml_key_alts_regex(mkt)
         sec_pat = re.compile(
-            rf"(?ms)^(\[marketplaces\.{re.escape(mkt)}\]\s*\n)(.*?)(?=^\[|\Z)"
+            rf"(?ms)^([ \t]*\[marketplaces\.{mkt_alts}\][ \t]*(?:#[^\n]*)?\r?\n)(.*?)(?=^[ \t]*\[|\Z)"
         )
         m = sec_pat.search(text)
         if m:
             body = m.group(2)
-            body = re.sub(r"(?m)^ref_type\s*=.*\n?", "", body)
-            if re.search(r"(?m)^ref\s*=", body):
-                body = re.sub(
-                    r"(?m)^ref\s*=.*$", f"ref = {_toml_str_quote(new_sha)}", body
-                )
-            else:
-                body = f"ref = {_toml_str_quote(new_sha)}\n" + body
+            body = re.sub(r"(?m)^[ \t]*ref_type[ \t]*=[^\n]*\r?\n?", "", body)
+            body = _upsert_kv_preserving_comments(body, "ref", _toml_str_quote(new_sha))
             text = text[: m.start()] + m.group(1) + body + text[m.end() :]
         else:
+            mkt_sec = _toml_section_key(mkt)
+            sep = "\n\n" if text.strip() else ""
             text = (
                 text.rstrip()
-                + f"\n\n[marketplaces.{mkt}]\nref = {_toml_str_quote(new_sha)}\n"
+                + f"{sep}[marketplaces.{mkt_sec}]\nref = {_toml_str_quote(new_sha)}\n"
             )
 
     for pkey in sorted(prune_keys):
-        qkey = re.escape(_toml_key_quote(pkey))
-        # Match either [hooks.state."<key>"] header block or bare string key under [hooks.state]
-        block_pat = re.compile(rf"(?ms)^\[hooks\.state\.{qkey}\]\s*\n.*?(?=^\[|\Z)")
+        key_alts = _toml_key_alts_regex(pkey)
+        block_pat = re.compile(
+            rf"(?ms)^[ \t]*\[hooks\.state\.{key_alts}\][ \t]*(?:#[^\n]*)?\r?\n.*?(?=^[ \t]*(?:\[|#)|\Z)"
+        )
         text = block_pat.sub("", text)
-        inline_pat = re.compile(rf"(?m)^{qkey}\s*=\s*\{{[^\n]*\}}\s*\n?")
+        inline_pat = re.compile(
+            rf"(?m)^[ \t]*{key_alts}[ \t]*=[ \t]*\{{[^\n]*\}}[ \t]*(?:#[^\n]*)?\r?\n?"
+        )
         text = inline_pat.sub("", text)
 
     for ukey, (t_hash, c_hash) in sorted(upserts.items()):
         qkey_raw = _toml_key_quote(ukey)
-        qkey = re.escape(qkey_raw)
-        lines = [f"trusted_hash = {_toml_str_quote(t_hash)}"]
-        if c_hash:
-            lines.append(f"trusted_content_hash = {_toml_str_quote(c_hash)}")
-        block_text = f"[hooks.state.{qkey_raw}]\n" + "\n".join(lines) + "\n"
-        block_pat = re.compile(rf"(?ms)^\[hooks\.state\.{qkey}\]\s*\n.*?(?=^\[|\Z)")
+        key_alts = _toml_key_alts_regex(ukey)
+        block_pat = re.compile(
+            rf"(?ms)^([ \t]*\[hooks\.state\.{key_alts}\][ \t]*(?:#[^\n]*)?\r?\n)(.*?)(?=^[ \t]*\[|\Z)"
+        )
         m = block_pat.search(text)
         if m:
-            existing_body = m.group(2) if m.lastindex and m.lastindex >= 2 else ""
-            _ = existing_body
-            # Preserve `enabled` line if present in original section
-            enabled_match = re.search(
-                r"(?m)^(enabled\s*=\s*(?:true|false))\s*$", m.group(0)
+            body = m.group(2)
+            body = _upsert_kv_preserving_comments(
+                body, "trusted_hash", _toml_str_quote(t_hash)
             )
-            if enabled_match:
-                block_text = (
-                    f"[hooks.state.{qkey_raw}]\n{enabled_match.group(1)}\n"
-                    + "\n".join(lines)
-                    + "\n"
+            if c_hash:
+                body = _upsert_kv_preserving_comments(
+                    body, "trusted_content_hash", _toml_str_quote(c_hash)
                 )
-            text = text[: m.start()] + block_text + "\n" + text[m.end() :]
+            text = text[: m.start()] + m.group(1) + body + text[m.end() :]
         else:
-            inline_pat = re.compile(rf"(?m)^{qkey}\s*=\s*\{{[^\n]*\}}\s*\n?")
+            inline_pat = re.compile(
+                rf"(?m)^[ \t]*{key_alts}[ \t]*=[ \t]*\{{[^\n]*\}}[ \t]*(?:#[^\n]*)?\r?\n?"
+            )
             if inline_pat.search(text):
                 text = inline_pat.sub("", text)
-            text = text.rstrip() + "\n\n" + block_text
+            lines = [f"trusted_hash = {_toml_str_quote(t_hash)}"]
+            if c_hash:
+                lines.append(f"trusted_content_hash = {_toml_str_quote(c_hash)}")
+            block_text = f"[hooks.state.{qkey_raw}]\n" + "\n".join(lines) + "\n"
+            sep = "\n\n" if text.strip() else ""
+            text = text.rstrip() + sep + block_text
 
     # Collapse excessive blank lines cleanly and verify TOML parses
     text = re.sub(r"\n{3,}", "\n\n", text).rstrip() + "\n"
@@ -253,9 +328,14 @@ def _apply_hook_trust_edits(
     edits: list[dict[str, Any]] = []
     if marketplace_ref_update is not None:
         mkt, new_sha = marketplace_ref_update
+        mkt_kp = (
+            mkt
+            if re.fullmatch(r"[A-Za-z0-9_-]+", mkt)
+            else orjson.dumps(mkt).decode("utf-8")
+        )
         edits.append(
             {
-                "keyPath": f"marketplaces.{mkt}.ref",
+                "keyPath": f"marketplaces.{mkt_kp}.ref",
                 "value": new_sha,
                 "mergeStrategy": "upsert",
             }
@@ -348,7 +428,6 @@ def _run_hook_trust(
     resolved_home = (codex_home or default_codex_home()).resolve(strict=False)
     resolved_cwd = cwd.resolve(strict=False)
     config_path = resolved_home / "config.toml"
-    rpc_client = client or CodexAppServerClient(codex_home=resolved_home)
 
     errors: list[CodexTrustErrorEntry] = []
     returns: list[CodexTrustReturnEntry] = []
@@ -360,6 +439,7 @@ def _run_hook_trust(
     legacy_baselines_pruned: list[str] = []
 
     try:
+        rpc_client = client or CodexAppServerClient(codex_home=resolved_home)
         rpc_res = rpc_client.hooks_list(resolved_cwd)
     except CodexRpcError as exc:
         err_code = (
@@ -370,7 +450,7 @@ def _run_hook_trust(
         return CodexTrustResponse(
             command=CodexTrustCommand.HOOK_TRUST,
             rc=1,
-            codex_version=getattr(rpc_client, "version", None),
+            codex_version=getattr(locals().get("rpc_client"), "version", None),
             codex_home=str(resolved_home),
             cwd=str(resolved_cwd),
             applied=False,
@@ -461,7 +541,7 @@ def _run_hook_trust(
                 )
             )
             needs_repair = True
-        elif c_hash is None:
+        elif trust_status == "trusted" and c_hash is None:
             unmigrated_keys.append(key)
             findings.append(
                 CodexHookFinding(
@@ -490,7 +570,7 @@ def _run_hook_trust(
                     legacy_paths_to_clean.append(leg)
 
         if needs_repair and current_hash:
-            upserts[key] = (current_hash, expected_bundle)
+            upserts[key] = (_decl_hash_from_current(current_hash), expected_bundle)
 
     # Detect orphaned plugin keys in [hooks.state.*] absent from live hooks/list
     for skey, sval in sorted(state_tbl.items()):
@@ -516,7 +596,8 @@ def _run_hook_trust(
             )
         )
 
-    for leg_path in sorted(set(legacy_paths_to_clean)):
+    legacy_drift_paths = sorted(set(legacy_paths_to_clean))
+    for leg_path in legacy_drift_paths:
         if repair:
             leg_path.unlink(missing_ok=True)
             legacy_baselines_pruned.append(str(leg_path))
@@ -545,16 +626,24 @@ def _run_hook_trust(
                 message=f"{len(orphaned_keys)} orphaned plugin hook state entry(s) present.",
             )
         )
+    if legacy_drift_paths and not repair:
+        errors.append(
+            CodexTrustErrorEntry(
+                code=CodexTrustErrorCode.ERR_LEGACY_BASELINE_DRIFT,
+                message=f"{len(legacy_drift_paths)} legacy .hook-trust baseline file(s) drift from current bundle hash.",
+            )
+        )
 
     applied = False
-    if repair and (upserts or orphaned_keys):
+    if repair and (upserts or orphaned_keys or legacy_baselines_pruned):
         try:
-            _apply_hook_trust_edits(
-                rpc_client,
-                config_path,
-                upserts,
-                set(orphaned_keys),
-            )
+            if upserts or orphaned_keys:
+                _apply_hook_trust_edits(
+                    rpc_client,
+                    config_path,
+                    upserts,
+                    set(orphaned_keys),
+                )
             repaired_keys = sorted(upserts)
             pruned_orphans = sorted(orphaned_keys)
             applied = True
@@ -562,7 +651,7 @@ def _run_hook_trust(
             returns = [
                 CodexTrustReturnEntry(
                     code=CodexTrustReturnCode.RET_REPAIRED,
-                    message=f"Repaired {len(repaired_keys)} hook(s) and pruned {len(pruned_orphans)} orphan(s).",
+                    message=f"Repaired {len(repaired_keys)} hook(s), pruned {len(pruned_orphans)} orphan(s), and cleaned {len(legacy_baselines_pruned)} legacy baseline(s).",
                 )
             ]
         except (CodexRpcError, OSError, ValueError) as exc:
@@ -575,6 +664,7 @@ def _run_hook_trust(
                 findings=findings,
                 orphaned_keys=orphaned_keys,
                 unmigrated_keys=unmigrated_keys,
+                legacy_baselines_pruned=legacy_baselines_pruned,
                 applied=False,
                 timestamp=ts,
                 timestamp_unix_ns=ns,
@@ -596,11 +686,11 @@ def _run_hook_trust(
                 message="All plugin hooks are already trusted and migrated.",
             )
         ]
-    elif findings:
+    elif findings or legacy_drift_paths:
         returns = [
             CodexTrustReturnEntry(
                 code=CodexTrustReturnCode.RET_FAILED,
-                message=f"Found {len(findings)} plugin hook issue(s); run with --repair.",
+                message=f"Found {len(findings)} plugin hook issue(s) and {len(legacy_drift_paths)} legacy baseline drift(s); run with --repair.",
             )
         ]
     else:
@@ -611,7 +701,7 @@ def _run_hook_trust(
             )
         ]
 
-    rc = 0 if (not findings or applied) else 1
+    rc = 0 if ((not findings and not legacy_drift_paths) or applied) else 1
     return CodexTrustResponse(
         command=CodexTrustCommand.HOOK_TRUST,
         rc=rc,
@@ -647,22 +737,39 @@ def _normalize_plugin_manifest(raw_bytes: bytes) -> bytes:
     return raw_bytes
 
 
+def _is_safe_bundle_entry(path: Path, root: Path) -> bool:
+    if path.is_symlink():
+        return False
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError, RuntimeError:
+        return False
+    return resolved.is_relative_to(root)
+
+
 def collect_hook_surface(plugin_root: Path) -> dict[str, bytes]:
     """Collect normalized hook-surface files (`hooks/**`, normalized `plugin.json`, referenced scripts)."""
+    if plugin_root.is_symlink():
+        raise CodexRpcError(f"plugin root must not be a symlink: {plugin_root}")
     surface: dict[str, bytes] = {}
     root = plugin_root.resolve(strict=False)
 
-    plugin_manifest = root / ".codex-plugin" / "plugin.json"
-    if plugin_manifest.is_file():
+    plugin_dir = root / ".codex-plugin"
+    plugin_manifest = plugin_dir / "plugin.json"
+    if (
+        not plugin_dir.is_symlink()
+        and _is_safe_bundle_entry(plugin_manifest, root)
+        and plugin_manifest.is_file()
+    ):
         surface[".codex-plugin/plugin.json"] = _normalize_plugin_manifest(
             plugin_manifest.read_bytes()
         )
 
     hooks_dir = root / "hooks"
     referenced_rel_paths: set[str] = set()
-    if hooks_dir.is_dir():
+    if _is_safe_bundle_entry(hooks_dir, root) and hooks_dir.is_dir():
         for fpath in sorted(hooks_dir.rglob("*")):
-            if not fpath.is_file():
+            if not _is_safe_bundle_entry(fpath, root) or not fpath.is_file():
                 continue
             rel = fpath.relative_to(root).as_posix()
             raw = fpath.read_bytes()
@@ -678,8 +785,21 @@ def collect_hook_surface(plugin_root: Path) -> dict[str, bytes]:
     seen_dirs: set[Path] = set()
     for rel_str in sorted(referenced_rel_paths):
         clean_rel = rel_str.lstrip("/")
-        cand = (root / clean_rel).resolve(strict=False)
-        if not cand.is_relative_to(root):
+        if not clean_rel or clean_rel in {".", ".."}:
+            continue
+        cursor = root
+        symlink_hit = False
+        for part in Path(clean_rel).parts:
+            if part in {"", "."}:
+                continue
+            cursor = cursor / part
+            if cursor.is_symlink():
+                symlink_hit = True
+                break
+        if symlink_hit:
+            continue
+        cand = cursor.resolve(strict=False)
+        if cand == root or not cand.is_relative_to(root):
             continue
         if cand.is_file():
             surface[cand.relative_to(root).as_posix()] = cand.read_bytes()
@@ -688,7 +808,8 @@ def collect_hook_surface(plugin_root: Path) -> dict[str, bytes]:
                 seen_dirs.add(parent)
                 for sib in sorted(parent.rglob("*")):
                     if (
-                        sib.is_file()
+                        _is_safe_bundle_entry(sib, root)
+                        and sib.is_file()
                         and sib.name not in _SKIP_BUNDLE_NAMES
                         and not sib.name.endswith(".pyc")
                         and "__pycache__" not in sib.parts
@@ -698,7 +819,8 @@ def collect_hook_surface(plugin_root: Path) -> dict[str, bytes]:
             seen_dirs.add(cand)
             for sib in sorted(cand.rglob("*")):
                 if (
-                    sib.is_file()
+                    _is_safe_bundle_entry(sib, root)
+                    and sib.is_file()
                     and sib.name not in _SKIP_BUNDLE_NAMES
                     and not sib.name.endswith(".pyc")
                     and "__pycache__" not in sib.parts
@@ -716,7 +838,9 @@ def _extract_referenced_paths(obj: Any, out: set[str]) -> None:
                     out.add(m.group(1))
                 for tok in re.findall(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", v):
                     if not tok.startswith("/"):
-                        out.add(tok.lstrip("./"))
+                        norm = tok[2:] if tok.startswith("./") else tok
+                        if norm:
+                            out.add(norm)
             else:
                 _extract_referenced_paths(v, out)
     elif isinstance(obj, list):
@@ -788,7 +912,15 @@ def _resolve_pin_sha(source: str, ref: str) -> str:
         # Local repository checkout
         for candidate in (f"{stripped}^{{commit}}", stripped):
             proc = subprocess.run(
-                ["git", "-C", source, "rev-parse", "--verify", candidate],
+                [
+                    "git",
+                    "-C",
+                    source,
+                    "rev-parse",
+                    "--verify",
+                    "--end-of-options",
+                    candidate,
+                ],
                 env=_git_clean_env(),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
@@ -801,6 +933,7 @@ def _resolve_pin_sha(source: str, ref: str) -> str:
         [
             "git",
             "ls-remote",
+            "--",
             source,
             f"refs/tags/{stripped}^{{}}",
             f"refs/tags/{stripped}",
@@ -817,14 +950,20 @@ def _resolve_pin_sha(source: str, ref: str) -> str:
             f"unable to resolve ref {ref!r} to a 40-char commit SHA from {source}",
             code="ERR_GIT_FAILED",
         )
-    lines = [ln.split() for ln in proc.stdout.strip().splitlines() if ln.strip()]
-    # Prefer peeled annotated tag `^{}` over lightweight tag/branch
-    for sha, name in lines:
-        if name.endswith("^{}") and _HEX40_RE.fullmatch(sha):
-            return sha.lower()
-    for sha, _name in lines:
-        if _HEX40_RE.fullmatch(sha):
-            return sha.lower()
+    by_name: dict[str, str] = {}
+    for ln in proc.stdout.strip().splitlines():
+        parts = ln.split()
+        if len(parts) >= 2 and _HEX40_RE.fullmatch(parts[0]):
+            by_name.setdefault(parts[1], parts[0].lower())
+    for preferred in (
+        f"refs/tags/{stripped}^{{}}",
+        f"refs/tags/{stripped}",
+        f"refs/heads/{stripped}",
+    ):
+        if preferred in by_name:
+            return by_name[preferred]
+    for sha in by_name.values():
+        return sha
     raise CodexRpcError(
         f"ref {ref!r} did not resolve to a valid 40-char commit SHA",
         code="ERR_GIT_FAILED",
@@ -839,8 +978,8 @@ def _checkout_pinned_plugin_source(
     checkout_dir.mkdir(parents=True, exist_ok=True)
     for cmd in (
         ["git", "init", "-q"],
-        ["git", "remote", "add", "origin", source],
-        ["git", "fetch", "--depth=1", "origin", sha],
+        ["git", "remote", "add", "origin", "--", source],
+        ["git", "fetch", "--depth=1", "origin", "--", sha],
         ["git", "checkout", "--detach", "-q", sha],
     ):
         proc = subprocess.run(
@@ -887,14 +1026,42 @@ def _checkout_pinned_plugin_source(
     rel_path = Path(str(local_src or "."))
     if rel_path.is_absolute() or ".." in rel_path.parts:
         raise CodexRpcError(f"invalid plugin source path: {rel_path}")
-    src_root = (checkout_dir / rel_path).resolve(strict=False)
+    checkout_resolved = checkout_dir.resolve(strict=False)
+    cursor = checkout_dir
+    for part in rel_path.parts:
+        if part in {"", "."}:
+            continue
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise CodexRpcError(f"plugin source path traverses symlink: {cursor}")
+    src_root = cursor.resolve(strict=False)
+    if not src_root.is_relative_to(checkout_resolved):
+        raise CodexRpcError(f"plugin source escapes checkout directory: {rel_path}")
 
     new_version = "0.0.0"
-    pj = src_root / ".codex-plugin" / "plugin.json"
+    plugin_meta_dir = src_root / ".codex-plugin"
+    pj = plugin_meta_dir / "plugin.json"
+    if (
+        plugin_meta_dir.is_symlink()
+        or pj.is_symlink()
+        or (pj.exists() and not pj.is_file())
+    ):
+        raise CodexRpcError(
+            f"invalid or symlinked .codex-plugin/plugin.json in {src_root}",
+            code="ERR_INVALID_INPUT",
+        )
     if pj.is_file():
         pj_data = orjson.loads(pj.read_bytes())
-        if isinstance(pj_data.get("version"), str) and pj_data["version"]:
-            new_version = pj_data["version"]
+        raw_ver = pj_data.get("version")
+        if raw_ver is not None:
+            if not isinstance(raw_ver, str):
+                raise CodexRpcError(
+                    f"invalid plugin.json version type: {raw_ver!r}",
+                    code="ERR_INVALID_INPUT",
+                )
+            if raw_ver:
+                _validate_version(raw_ver)
+                new_version = raw_ver
     return src_root, new_version
 
 
@@ -923,7 +1090,9 @@ def _copy_clean_bundle(src_root: Path, dst_root: Path) -> None:
                 shutil.copy2(src_file, dst_file)
 
 
-def _sync_agy_pwf(repo_root: Path | None = None) -> bool:
+def _sync_agy_pwf(
+    repo_root: Path | None = None, *, codex_home: Path | None = None
+) -> bool:
     candidates: list[Path] = []
     if repo_root is not None:
         candidates.append(
@@ -940,8 +1109,11 @@ def _sync_agy_pwf(repo_root: Path | None = None) -> bool:
     if sync_script is None:
         return False
     py_exe = shutil.which("python3") or "/usr/bin/python3"
+    cmd = [py_exe, "-I", "-B", str(sync_script)]
+    if codex_home is not None:
+        cmd.extend(["--codex-home", str(codex_home)])
     proc = subprocess.run(
-        [py_exe, "-I", "-B", str(sync_script)],
+        cmd,
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -972,6 +1144,31 @@ def update_plugin(
     if not sep:
         marketplace = plugin_name
     plugin_id = f"{plugin_name}@{marketplace}"
+    try:
+        _validate_ident(plugin_name, "plugin name")
+        _validate_ident(marketplace, "marketplace name")
+    except CodexRpcError as exc:
+        return CodexTrustResponse(
+            command=CodexTrustCommand.PLUGIN_UPDATE,
+            rc=1,
+            codex_home=str(resolved_home),
+            cwd=str(resolved_cwd),
+            plugin_id=plugin_id,
+            applied=False,
+            timestamp=ts,
+            timestamp_unix_ns=ns,
+            errors=[
+                CodexTrustErrorEntry(
+                    code=CodexTrustErrorCode.ERR_INVALID_INPUT,
+                    message=str(exc),
+                )
+            ],
+            returns=[
+                CodexTrustReturnEntry(
+                    code=CodexTrustReturnCode.RET_FAILED, message=str(exc)
+                )
+            ],
+        )
 
     cfg, _ = _read_codex_config(config_path)
     mkts = cfg.get("marketplaces") or {}
@@ -1046,9 +1243,12 @@ def update_plugin(
     plugin_cache_dir = resolved_home / "plugins" / "cache" / marketplace / plugin_name
     existing_versions = (
         sorted(
-            d.name
-            for d in plugin_cache_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
+            (
+                d.name
+                for d in plugin_cache_dir.iterdir()
+                if d.is_dir() and not d.name.startswith(".")
+            ),
+            key=_version_sort_key,
         )
         if plugin_cache_dir.is_dir()
         else []
@@ -1067,7 +1267,13 @@ def update_plugin(
             src_root, new_version = checkout_fn(
                 source, new_sha, stage_checkout, plugin_name
             )
+            _validate_version(new_version)
         except CodexRpcError as exc:
+            err_code = (
+                CodexTrustErrorCode.ERR_INVALID_INPUT
+                if exc.code == "ERR_INVALID_INPUT"
+                else CodexTrustErrorCode.ERR_GIT_FAILED
+            )
             return CodexTrustResponse(
                 command=CodexTrustCommand.PLUGIN_UPDATE,
                 rc=1,
@@ -1080,11 +1286,7 @@ def update_plugin(
                 applied=False,
                 timestamp=ts,
                 timestamp_unix_ns=ns,
-                errors=[
-                    CodexTrustErrorEntry(
-                        code=CodexTrustErrorCode.ERR_GIT_FAILED, message=str(exc)
-                    )
-                ],
+                errors=[CodexTrustErrorEntry(code=err_code, message=str(exc))],
                 returns=[
                     CodexTrustReturnEntry(
                         code=CodexTrustReturnCode.RET_FAILED, message=str(exc)
@@ -1096,11 +1298,23 @@ def update_plugin(
             stage_home / "plugins" / "cache" / marketplace / plugin_name / new_version
         )
         _copy_clean_bundle(src_root, staged_bundle)
+        install_receipt = {
+            "source_type": "git",
+            "source": source,
+            "ref_name": None if _HEX40_RE.fullmatch(ref.strip()) else ref.strip(),
+            "sparse_paths": [],
+            "revision": new_sha,
+        }
+        (staged_bundle / ".codex-marketplace-install.json").write_text(
+            orjson.dumps(install_receipt, option=orjson.OPT_INDENT_2).decode("utf-8")
+            + "\n",
+            encoding="utf-8",
+        )
 
         # Write minimal isolated CODEX_HOME config for native discovery on stage_home
         stage_cfg_text = (
             f"[plugins.{_toml_str_quote(plugin_id)}]\nenabled = true\n\n"
-            f'[marketplaces.{marketplace}]\nsource_type = "git"\nsource = {_toml_str_quote(source)}\nref = {_toml_str_quote(new_sha)}\n'
+            f'[marketplaces.{_toml_section_key(marketplace)}]\nsource_type = "git"\nsource = {_toml_str_quote(source)}\nref = {_toml_str_quote(new_sha)}\n'
         )
         _write_atomic_mode_0600(stage_home / "config.toml", stage_cfg_text)
 
@@ -1196,7 +1410,7 @@ def update_plugin(
             ch = str(row.get("currentHash") or "")
             if k and ch:
                 upserts[k] = (
-                    ch,
+                    _decl_hash_from_current(ch),
                     _bundle_hash_from_current(ch, staged_bundle) or bundle_hash,
                 )
 
@@ -1252,14 +1466,46 @@ def update_plugin(
             shutil.copytree(staged_bundle, live_dest)
 
         # Update marketplace ref and upsert hook trust hashes
-        live_client = mk_client(resolved_home)
-        _apply_hook_trust_edits(
-            live_client,
-            config_path,
-            upserts,
-            set(),
-            marketplace_ref_update=(marketplace, new_sha),
-        )
+        try:
+            live_client = mk_client(resolved_home)
+            _apply_hook_trust_edits(
+                live_client,
+                config_path,
+                upserts,
+                set(),
+                marketplace_ref_update=(marketplace, new_sha),
+            )
+        except (CodexRpcError, OSError, ValueError) as exc:
+            err_code = (
+                CodexTrustErrorCode.ERR_RPC_FAILED
+                if isinstance(exc, CodexRpcError)
+                else CodexTrustErrorCode.ERR_IO_FAILURE
+            )
+            return CodexTrustResponse(
+                command=CodexTrustCommand.PLUGIN_UPDATE,
+                rc=1,
+                codex_version=codex_ver,
+                codex_home=str(resolved_home),
+                cwd=str(resolved_cwd),
+                plugin_id=plugin_id,
+                old_ref=old_ref,
+                new_ref=new_sha,
+                old_version=old_version,
+                new_version=new_version,
+                bundle_hash=bundle_hash,
+                hook_surface_unchanged=surface_unchanged,
+                hook_surface_files=surface_files,
+                hook_surface_diff=surface_diff or None,
+                applied=False,
+                timestamp=ts,
+                timestamp_unix_ns=ns,
+                errors=[CodexTrustErrorEntry(code=err_code, message=str(exc))],
+                returns=[
+                    CodexTrustReturnEntry(
+                        code=CodexTrustReturnCode.RET_FAILED, message=str(exc)
+                    )
+                ],
+            )
 
         # Clean stale legacy baseline if superseded by trusted_content_hash
         leg = legacy_trust_path(config_path, plugin_id)
@@ -1270,12 +1516,19 @@ def update_plugin(
 
         pwf_synced = False
         if plugin_name == "planning-with-files":
-            pwf_synced = sync_pwf_fn() if sync_pwf_fn else _sync_agy_pwf()
+            pwf_synced = (
+                sync_pwf_fn()
+                if sync_pwf_fn
+                else _sync_agy_pwf(codex_home=resolved_home)
+            )
 
         preserved = sorted(
-            d.name
-            for d in plugin_cache_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and d.name != new_version
+            (
+                d.name
+                for d in plugin_cache_dir.iterdir()
+                if d.is_dir() and not d.name.startswith(".") and d.name != new_version
+            ),
+            key=_version_sort_key,
         )
         return CodexTrustResponse(
             command=CodexTrustCommand.PLUGIN_UPDATE,

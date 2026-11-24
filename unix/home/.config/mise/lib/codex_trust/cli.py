@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Annotated
 
 import cyclopts
 import orjson
+from cyclopts.exceptions import CycloptsError
 from pydantic import BaseModel
 
 from codex_trust.trust import (
@@ -26,9 +28,25 @@ def _emit_json(model_obj: BaseModel) -> None:
     )
 
 
-def _configure_logging(*, json_mode: bool) -> None:
+def _default_log_path() -> Path:
+    xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = (
+        Path(os.path.expanduser(xdg_state))
+        if xdg_state
+        else Path.home() / ".local" / "state"
+    )
+    return base / "codex-trust" / "codex-trust.log.jsonl"
+
+
+def _configure_logging(*, json_mode: bool, mutating: bool = False) -> None:
     level = logging.WARNING if json_mode else logging.INFO
-    configure_logging(jsonl_path=None, level=level, logger_name="codex_trust")
+    jsonl_path = _default_log_path() if mutating else None
+    configure_logging(
+        jsonl_path=jsonl_path,
+        level=level,
+        file_level=logging.INFO,
+        logger_name="codex_trust",
+    )
 
 
 def _build_app() -> cyclopts.App:
@@ -55,7 +73,7 @@ def _build_app() -> cyclopts.App:
     ) -> int:
         """Inspect or repair Codex plugin hook trust via native `hooks/list` RPC."""
         _ = check
-        _configure_logging(json_mode=json_out)
+        _configure_logging(json_mode=json_out, mutating=repair)
         resp = (
             repair_hook_trust(cwd=cwd, codex_home=codex_home)
             if repair
@@ -74,6 +92,8 @@ def _build_app() -> cyclopts.App:
                 sys.stdout.write(
                     f"  - [{finding.status.value}] {finding.key}: {finding.issue}\n"
                 )
+            for err in resp.errors:
+                sys.stderr.write(f"ERROR {err.code.value}: {err.message or ''}\n")
         return resp.rc
 
     @app.command(name="plugin-update")
@@ -94,7 +114,7 @@ def _build_app() -> cyclopts.App:
         ] = None,
     ) -> int:
         """Stage a pinned Codex plugin ref, gate hook-surface diffs, and additively install/trust."""
-        _configure_logging(json_mode=json_out)
+        _configure_logging(json_mode=json_out, mutating=apply)
         resp = update_plugin(
             plugin,
             ref=ref,
@@ -123,7 +143,13 @@ def _build_app() -> cyclopts.App:
 
 def main(argv: Sequence[str] | None = None) -> int:
     app = _build_app()
-    result = app(list(argv) if argv is not None else sys.argv[1:], exit_on_error=False)
+    try:
+        result = app(
+            list(argv) if argv is not None else sys.argv[1:], exit_on_error=False
+        )
+    except CycloptsError as exc:
+        sys.stderr.write(f"codex-trust: {exc}\n")
+        return 2
     return int(result) if isinstance(result, int) else 0
 
 

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import selectors
 import shutil
 import subprocess
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -68,9 +71,10 @@ def resolve_codex_binary() -> str:
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return str(candidate)
     for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
-        if not raw_dir or raw_dir.endswith("/command-wrappers/bin"):
+        cleaned = raw_dir.rstrip("/")
+        if not cleaned or cleaned.endswith(("/command-wrappers/bin", "/mise/shims")):
             continue
-        p = Path(raw_dir) / "codex"
+        p = Path(cleaned) / "codex"
         if p.is_file() and os.access(p, os.X_OK):
             return str(p)
     found = shutil.which("codex")
@@ -107,49 +111,141 @@ class CodexAppServerClient:
         self, requests: Sequence[tuple[str, dict[str, Any]]]
     ) -> list[dict[str, Any]]:
         env = clean_codex_env(self.codex_home)
-        proc = subprocess.Popen(
-            [self.codex_bin, "app-server", "--stdio"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        try:
+            proc = subprocess.Popen(
+                [self.codex_bin, "app-server", "--stdio"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                close_fds=True,
+            )
+        except OSError as exc:
+            raise CodexRpcError(
+                f"failed to start {self.codex_bin} app-server: {exc}"
+            ) from exc
+
         stdin = proc.stdin
         stdout = proc.stdout
+        stderr = proc.stderr
         assert stdin is not None
         assert stdout is not None
+        assert stderr is not None
+
+        os.set_blocking(stdout.fileno(), False)
+        os.set_blocking(stderr.fileno(), False)
+        sel = selectors.DefaultSelector()
+        sel.register(stdout, selectors.EVENT_READ, data="stdout")
+        sel.register(stderr, selectors.EVENT_READ, data="stderr")
+
+        stdout_buf = bytearray()
+        stderr_tail = bytearray()
+        stdout_eof = False
         results: list[dict[str, Any]] = []
 
+        def _append_stderr(chunk: bytes) -> None:
+            if not chunk:
+                return
+            stderr_tail.extend(chunk)
+            if len(stderr_tail) > 32768:
+                del stderr_tail[:-16384]
+
+        def _drain_stderr_nowait() -> None:
+            while True:
+                try:
+                    chunk = os.read(stderr.fileno(), 65536)
+                except BlockingIOError, OSError:
+                    break
+                if not chunk:
+                    break
+                _append_stderr(chunk)
+
         def send(payload: dict[str, Any]) -> None:
-            stdin.write(orjson.dumps(payload) + b"\n")
-            stdin.flush()
+            try:
+                stdin.write(orjson.dumps(payload) + b"\n")
+                stdin.flush()
+            except (OSError, BrokenPipeError) as exc:
+                _drain_stderr_nowait()
+                err_tail = stderr_tail.decode("utf-8", errors="replace")[-400:].strip()
+                raise CodexRpcError(
+                    f"failed writing RPC request to codex app-server: {exc}"
+                    + (f" ({err_tail})" if err_tail else "")
+                ) from exc
 
         def read_id(expected_id: int) -> dict[str, Any]:
+            nonlocal stdout_eof
+            deadline = time.monotonic() + self.timeout
             while True:
-                line = stdout.readline()
-                if not line:
-                    err_tail = ""
-                    if proc.stderr is not None:
-                        err_tail = proc.stderr.read().decode("utf-8", errors="replace")[
-                            -400:
-                        ]
+                while True:
+                    nl = stdout_buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    raw_line = bytes(stdout_buf[:nl])
+                    del stdout_buf[: nl + 1]
+                    try:
+                        msg = orjson.loads(raw_line)
+                    except ValueError:
+                        continue
+                    if not isinstance(msg, dict) or msg.get("id") != expected_id:
+                        continue
+                    if "error" in msg and msg["error"] is not None:
+                        raise CodexRpcError(f"codex app-server error: {msg['error']}")
+                    res = msg.get("result")
+                    if not isinstance(res, dict):
+                        raise CodexRpcError(
+                            f"invalid RPC result for id={expected_id}: {res!r}"
+                        )
+                    return res
+
+                if stdout_eof:
+                    _drain_stderr_nowait()
+                    err_tail = stderr_tail.decode("utf-8", errors="replace")[
+                        -400:
+                    ].strip()
                     raise CodexRpcError(
                         f"codex app-server closed before response id={expected_id}: {err_tail}".strip()
                     )
-                try:
-                    msg = orjson.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(msg, dict) or msg.get("id") != expected_id:
-                    continue
-                if "error" in msg and msg["error"] is not None:
-                    raise CodexRpcError(f"codex app-server error: {msg['error']}")
-                res = msg.get("result")
-                if not isinstance(res, dict):
+
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    _drain_stderr_nowait()
+                    err_tail = stderr_tail.decode("utf-8", errors="replace")[
+                        -400:
+                    ].strip()
                     raise CodexRpcError(
-                        f"invalid RPC result for id={expected_id}: {res!r}"
+                        f"codex app-server timed out waiting for response id={expected_id}: {err_tail}".strip()
                     )
-                return res
+
+                events = sel.select(timeout=rem)
+                if not events:
+                    _drain_stderr_nowait()
+                    err_tail = stderr_tail.decode("utf-8", errors="replace")[
+                        -400:
+                    ].strip()
+                    raise CodexRpcError(
+                        f"codex app-server timed out waiting for response id={expected_id}: {err_tail}".strip()
+                    )
+
+                for key, _ in events:
+                    try:
+                        chunk = os.read(key.fd, 65536)
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        chunk = b""
+                    if key.data == "stderr":
+                        if not chunk:
+                            with contextlib.suppress(KeyError, ValueError):
+                                sel.unregister(stderr)
+                        else:
+                            _append_stderr(chunk)
+                    else:
+                        if not chunk:
+                            stdout_eof = True
+                            with contextlib.suppress(KeyError, ValueError):
+                                sel.unregister(stdout)
+                        else:
+                            stdout_buf.extend(chunk)
 
         try:
             send(
@@ -200,11 +296,11 @@ class CodexAppServerClient:
                 next_id += 1
             return results
         finally:
-            try:
-                if proc.stdin:
-                    proc.stdin.close()
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                sel.close()
+            for fh in (stdin, stdout, stderr):
+                with contextlib.suppress(OSError):
+                    fh.close()
             proc.terminate()
             try:
                 proc.wait(timeout=min(self.timeout, 5.0))

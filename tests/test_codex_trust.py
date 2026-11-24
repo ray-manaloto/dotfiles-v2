@@ -11,13 +11,14 @@ from typing import Any
 import pytest
 
 from codex_trust import (
+    collect_hook_surface,
     diff_hook_surface,
     inspect_hook_trust,
     plugin_content_hash,
     repair_hook_trust,
     update_plugin,
 )
-from codex_trust.rpc import parse_semver, semver_ge
+from codex_trust.rpc import CodexAppServerClient, CodexRpcError, parse_semver, semver_ge
 from dotfiles_py.generated import (
     CodexHookStatus,
     CodexTrustErrorCode,
@@ -189,7 +190,16 @@ def test_inspect_and_repair_hook_trust_fixes_modified_unmigrated_and_orphans(
     )
     cfg_path.chmod(0o600)
 
-    bundle_hash = plugin_content_hash(cache_root)
+    plugin_content_hash(cache_root)
+    key_unmigrated = "planning-with-files@planning-with-files:hooks/hooks.json:post:0:0"
+    key_managed = "builtin:hooks.json:session_start:0:0"
+    legacy_path = codex_home / ".hook-trust"
+    legacy_path.mkdir(parents=True, exist_ok=True)
+    from codex_trust.trust import legacy_trust_path
+
+    leg_file = legacy_trust_path(cfg_path, "planning-with-files@planning-with-files")
+    leg_file.write_text("sha256:stalelegacy\n", encoding="utf-8")
+
     client = _FakeRpcClient(
         version="0.172.0",
         config_path=cfg_path,
@@ -202,8 +212,26 @@ def test_inspect_and_repair_hook_trust_fixes_modified_unmigrated_and_orphans(
                 "sourcePath": str(cache_root / "hooks" / "hooks.json"),
                 "eventName": "Stop",
                 "trustStatus": "modified",
-                "currentHash": "sha256:newhook123",
-            }
+                "currentHash": "sha256:newhook123/sha256:bundlepart",
+            },
+            {
+                "source": "plugin",
+                "key": key_unmigrated,
+                "pluginId": "planning-with-files@planning-with-files",
+                "sourcePath": str(cache_root / "hooks" / "hooks.json"),
+                "eventName": "PostToolUse",
+                "trustStatus": "trusted",
+                "currentHash": "sha256:declonly/sha256:bundlepart2",
+            },
+            {
+                "source": "plugin",
+                "key": key_managed,
+                "pluginId": "planning-with-files@planning-with-files",
+                "sourcePath": str(cache_root / "hooks" / "hooks.json"),
+                "eventName": "SessionStart",
+                "trustStatus": "managed",
+                "currentHash": "sha256:manageddecl",
+            },
         ],
     )
 
@@ -211,20 +239,29 @@ def test_inspect_and_repair_hook_trust_fixes_modified_unmigrated_and_orphans(
     assert resp_check.rc == 1
     statuses = {f.key: f.status for f in resp_check.findings}
     assert statuses[key_active] is CodexHookStatus.MODIFIED
+    assert statuses[key_unmigrated] is CodexHookStatus.UNMIGRATED
+    assert key_managed not in statuses
     assert statuses[key_orphan] is CodexHookStatus.ORPHANED
+    assert any(
+        e.code is CodexTrustErrorCode.ERR_LEGACY_BASELINE_DRIFT
+        for e in resp_check.errors
+    )
 
     resp_repair = repair_hook_trust(cwd=tmp_path, codex_home=codex_home, client=client)
     assert resp_repair.rc == 0
     assert resp_repair.applied is True
     assert key_active in resp_repair.repaired_keys
+    assert key_unmigrated in resp_repair.repaired_keys
     assert key_orphan in resp_repair.pruned_orphans
+    assert not leg_file.exists()
     assert stat.S_IMODE(cfg_path.stat().st_mode) == 0o600
 
     repaired_cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     state_tbl = repaired_cfg["hooks"]["state"]
     assert key_orphan not in state_tbl
     assert state_tbl[key_active]["trusted_hash"] == "sha256:newhook123"
-    assert state_tbl[key_active]["trusted_content_hash"] == bundle_hash
+    assert state_tbl[key_active]["trusted_content_hash"] == "sha256:bundlepart"
+    assert state_tbl[key_unmigrated]["trusted_hash"] == "sha256:declonly"
 
     # Rejects < 0.171.0 Codex
     old_client = _FakeRpcClient(version="0.170.5", config_path=cfg_path)
@@ -386,4 +423,143 @@ def test_update_plugin_additive_install_and_hook_diff_confirmation_gate(
     assert confirmed_resp.rc == 0
     assert confirmed_resp.applied is True
     assert (plugin_cache / "3.30.0").is_dir()
+    assert (plugin_cache / "3.29.1" / ".codex-marketplace-install.json").is_file()
     assert old_cache.is_dir()
+
+
+def test_codex_trust_security_toml_comments_and_rpc_edges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 1. Invalid plugin_name / marketplace rejected cleanly
+    bad_ident = update_plugin(
+        "../escape@mkt",
+        ref="v1.0.0",
+        cwd=tmp_path,
+        codex_home=tmp_path / "codex1",
+    )
+    assert bad_ident.rc == 1
+    assert bad_ident.errors[0].code is CodexTrustErrorCode.ERR_INVALID_INPUT
+
+    # 2. Invalid plugin.json version & symlink plugin_root rejected
+    plug_dir = _write_fake_plugin(tmp_path / "plug", version="1.2.3")
+    (plug_dir / ".codex").mkdir()
+    (plug_dir / ".codex" / "hook.sh").write_text(
+        "#!/bin/sh\necho ok\n", encoding="utf-8"
+    )
+    (plug_dir / "hooks" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "sh ${CLAUDE_PLUGIN_ROOT:-/fallback}/scripts/stop.sh && sh ./.codex/hook.sh",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    surface = collect_hook_surface(plug_dir)
+    assert ".codex/hook.sh" in surface  # Leading dot NOT stripped by lstrip("./")
+    assert "scripts/stop.sh" in surface  # :-fallback parsed cleanly
+
+    link_root = tmp_path / "plug_link"
+    link_root.symlink_to(plug_dir)
+    with pytest.raises(CodexRpcError):
+        plugin_content_hash(link_root)
+    with pytest.raises(CodexRpcError):
+        collect_hook_surface(link_root)
+
+    # 3. Indented TOML + quoted marketplace + trailing comments preserved without duplicates
+    from codex_trust.trust import _upsert_toml_trust_and_orphans
+
+    cfg = tmp_path / "quoted_cfg.toml"
+    cfg.write_text(
+        '  [marketplaces."my.mkt"] # pinned\n'
+        '  source = "https://example.com/repo.git"\n'
+        '  ref = "oldsha" # old tag\n\n'
+        "# comment before next section\n"
+        '  [hooks.state."k1"]\n'
+        "  enabled = true\n"
+        '  trusted_hash = "sha256:old"\n'
+        "# trailing comment stays\n"
+        "[other]\nx = 1\n",
+        encoding="utf-8",
+    )
+    _upsert_toml_trust_and_orphans(
+        cfg,
+        upserts={"k1": ("sha256:new", "sha256:bundle")},
+        prune_keys=set(),
+        marketplace_ref_update=("my.mkt", "a" * 40),
+    )
+    written = cfg.read_text(encoding="utf-8")
+    assert "# old tag" in written
+    assert "# comment before next section" in written
+    assert "# trailing comment stays" in written
+    parsed = tomllib.loads(written)
+    assert parsed["marketplaces"]["my.mkt"]["ref"] == "a" * 40
+    assert parsed["hooks"]["state"]["k1"]["enabled"] is True
+    assert parsed["hooks"]["state"]["k1"]["trusted_hash"] == "sha256:new"
+
+    # 4. RPC catches missing binary OSError & drains >64KiB stderr without deadlocking
+    missing_client = CodexAppServerClient(
+        codex_home=tmp_path,
+        codex_bin=str(tmp_path / "nonexistent-codex"),
+        timeout=2.0,
+    )
+    with pytest.raises(CodexRpcError):
+        missing_client.hooks_list(tmp_path)
+
+    fake_srv = tmp_path / "noisy_srv.py"
+    fake_srv.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "sys.stderr.write('X' * 131072)\n"
+        "sys.stderr.flush()\n"
+        "init_req = json.loads(sys.stdin.readline())\n"
+        "sys.stdout.write(json.dumps({'id': init_req['id'], 'result': {'userAgent': 'codex-cli 0.172.0'}}) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "sys.stdin.readline()  # initialized\n"
+        "req = json.loads(sys.stdin.readline())\n"
+        "sys.stdout.write(json.dumps({'id': req['id'], 'result': {'data': [{'hooks': []}]}}) + '\\n')\n"
+        "sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    fake_srv.chmod(0o755)
+    # Run with direct python3 script shim named codex-like
+    wrapper = tmp_path / "fake_codex"
+    wrapper.write_text(
+        f"#!/bin/sh\nexec python3 -I -B '{fake_srv}'\n", encoding="utf-8"
+    )
+    wrapper.chmod(0o755)
+    noisy_client = CodexAppServerClient(
+        codex_home=None, codex_bin=str(wrapper), timeout=5.0
+    )
+    assert noisy_client.hooks_list(tmp_path) == {"data": [{"hooks": []}]}
+
+    # 5. CLI --codex-home passed cleanly to _sync_agy_pwf & plugin.json invalid version blocked
+    bad_repo = tmp_path / "bad_repo"
+    _write_fake_plugin(bad_repo, version="1.0")
+    (bad_repo / ".codex-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "p", "version": "../evil"}), encoding="utf-8"
+    )
+    (tmp_path / "codex_home2").mkdir()
+    (tmp_path / "codex_home2" / "config.toml").write_text(
+        '[marketplaces.p]\nsource_type = "git"\nsource = "https://example.com/p.git"\n',
+        encoding="utf-8",
+    )
+    bad_ver_resp = update_plugin(
+        "p",
+        ref="a" * 40,
+        cwd=tmp_path,
+        codex_home=tmp_path / "codex_home2",
+        stage_checkout_fn=lambda _s, _sha, _d, _p: (bad_repo, "../evil"),
+    )
+    assert bad_ver_resp.rc == 1
+    assert bad_ver_resp.errors[0].code is CodexTrustErrorCode.ERR_INVALID_INPUT

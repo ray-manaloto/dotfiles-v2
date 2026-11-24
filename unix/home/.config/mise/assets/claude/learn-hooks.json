@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh -c 'command -v python3 >/dev/null 2>&1 && PY=python3 || PY=/usr/bin/python3; exec \"$PY\" -I -B \"$HOME/.config/mise/assets/hooks/portable-learn-hook.py\" --harness claude --event session-start'",
+            "command": "/bin/sh -c 'HOOK=\"$HOME/.config/mise/assets/hooks/portable-learn-hook.py\"; [ -f \"$HOOK\" ] || { echo \"{}\"; exit 0; }; command -v python3 >/dev/null 2>&1 && PY=python3 || PY=/usr/bin/python3; exec \"$PY\" -I -B \"$HOOK\" --harness claude --event session-start'",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh -c 'command -v python3 >/dev/null 2>&1 && PY=python3 || PY=/usr/bin/python3; exec \"$PY\" -I -B \"$HOME/.config/mise/assets/hooks/portable-learn-hook.py\" --harness claude --event stop'",
+            "command": "/bin/sh -c 'HOOK=\"$HOME/.config/mise/assets/hooks/portable-learn-hook.py\"; [ -f \"$HOOK\" ] || { echo \"{}\"; exit 0; }; command -v python3 >/dev/null 2>&1 && PY=python3 || PY=/usr/bin/python3; exec \"$PY\" -I -B \"$HOOK\" --harness claude --event stop'",
             "timeout": 15
           }
         ]

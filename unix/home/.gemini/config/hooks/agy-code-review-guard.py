@@ -220,20 +220,34 @@ def _unwrap_shell_command(segment: list[str]) -> str | None:
     if Path(stripped[0]).name not in SHELL_WRAPPERS:
         return None
     i = 1
+    has_c = False
     while i < len(stripped):
         tok = stripped[i]
         if tok == "--":
+            i += 1
             break
-        if tok in {"-o", "+o"} and i + 1 < len(stripped):
-            i += 2
-            continue
-        if tok.startswith("-") and not tok.startswith("--") and "c" in tok[1:]:
+        if tok in {"-o", "+o", "--rcfile", "--init-file"}:
             if i + 1 < len(stripped):
-                return stripped[i + 1]
+                i += 2
+                continue
             return None
-        if not tok.startswith("-"):
-            break
-        i += 1
+        if tok.startswith(("--rcfile=", "--init-file=", "-o=", "+o=")):
+            i += 1
+            continue
+        if tok.startswith("--"):
+            i += 1
+            continue
+        if tok.startswith("-") and len(tok) > 1:
+            if "c" in tok[1:]:
+                has_c = True
+            i += 1
+            continue
+        if tok.startswith("+") and len(tok) > 1:
+            i += 1
+            continue
+        break
+    if has_c and i < len(stripped):
+        return stripped[i]
     return None
 
 
@@ -1001,7 +1015,14 @@ def _check_command(command: str, initial_cwd: Path | None = None) -> dict[str, A
                 target_sha,
                 base_ref=base_override,
                 exclude_upstream=op_label
-                in {"gh pr create", "gh pr merge", "repotools pr-create"},
+                in {
+                    "gh pr create",
+                    "gh pr merge",
+                    "repotools pr-create",
+                    "mise run pr-create",
+                    "mise run //repo:pr-create",
+                    "mise run ship",
+                },
             )
             if changed is not None:
                 if not changed:
@@ -1216,6 +1237,60 @@ def _load_full_records(
     return out
 
 
+def _match_tool_result(
+    results: list[dict[str, Any]],
+    planner_obj: dict[str, Any],
+    tc_idx: int,
+    tc_obj: dict[str, Any],
+) -> dict[str, Any] | None:
+    tc_id = tc_obj.get("id") or tc_obj.get("toolCallId") or tc_obj.get("callId")
+    if isinstance(tc_id, str) and tc_id:
+        by_id = next(
+            (
+                r
+                for r in results
+                if (
+                    r.get("tool_call_id")
+                    or r.get("toolCallId")
+                    or r.get("callId")
+                    or r.get("id")
+                )
+                == tc_id
+            ),
+            None,
+        )
+        if by_id is not None:
+            return by_id
+    planner_step = planner_obj.get("step_index")
+    if isinstance(planner_step, int) and not isinstance(planner_step, bool):
+        want_step = planner_step + 1 + tc_idx
+        by_step = next(
+            (r for r in results if r.get("step_index") == want_step),
+            None,
+        )
+        if by_step is not None:
+            return by_step
+    tool_calls = planner_obj.get("tool_calls")
+    if (
+        isinstance(tool_calls, list)
+        and len(results) == len(tool_calls)
+        and 0 <= tc_idx < len(results)
+    ):
+        return results[tc_idx]
+    tc_name = tc_obj.get("name")
+    if isinstance(tc_name, str) and tc_name:
+        named = [r for r in results if (r.get("name") or r.get("toolName")) == tc_name]
+        if len(named) == 1 and isinstance(tool_calls, list):
+            same_named = [
+                t
+                for t in tool_calls
+                if isinstance(t, dict) and t.get("name") == tc_name
+            ]
+            if len(same_named) == 1:
+                return named[0]
+    return None
+
+
 def _tool_call_verified_exit_zero(
     entries: list[tuple[int, dict[str, Any]]],
     entry_idx: int,
@@ -1241,18 +1316,9 @@ def _tool_call_verified_exit_zero(
     if not results:
         return True
 
-    matched: dict[str, Any] | None = None
-    planner_step = planner_obj.get("step_index")
-    if isinstance(planner_step, int) and not isinstance(planner_step, bool):
-        want_step = planner_step + 1 + tc_idx
-        matched = next(
-            (r for r in results if r.get("step_index") == want_step),
-            None,
-        )
-    if matched is None and 0 <= tc_idx < len(results):
-        matched = results[tc_idx]
+    matched = _match_tool_result(results, planner_obj, tc_idx, tc_obj)
     if matched is None:
-        return True
+        return False
 
     if (
         matched.get("type") == "ERROR_MESSAGE"
@@ -1262,9 +1328,9 @@ def _tool_call_verified_exit_zero(
         return False
     content = matched.get("content")
     if isinstance(content, str):
+        if "Command exited with code" in content:
+            return bool(ZERO_EXIT_RE.search(content))
         if NONZERO_VERIFY_EXIT_RE.search(content):
-            return False
-        if "Command exited with code" in content and not ZERO_EXIT_RE.search(content):
             return False
     return True
 
