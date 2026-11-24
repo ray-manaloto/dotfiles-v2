@@ -22,6 +22,7 @@ from dotfiles_py.logging import configure_logging, get_logger
 from dotfiles_py.time_ns import format_ns_timestamp, now_ns_pair
 from herdr_roll.adapters import (
     ADAPTERS,
+    HARNESS_BINARIES,
     AdapterSkipError,
     claude_record_for_tree,
     harness_running,
@@ -68,15 +69,6 @@ from herdr_roll.models import (
     make_session_outcome,
     write_atomic,
 )
-
-HARNESS_BINARIES: dict[HarnessKind, tuple[str, ...]] = {
-    HarnessKind.AGY: ("agy",),
-    HarnessKind.CODEX: ("codex",),
-    HarnessKind.CLAUDE: ("claude",),
-    HarnessKind.OPENCODE: ("opencode",),
-    HarnessKind.HERMES: ("hermes",),
-    HarnessKind.ZCODE: ("zcode",),
-}
 
 EXIT_DIALOG = "Background work is running"
 READY_MARKER = "READY-TO-RESTART"

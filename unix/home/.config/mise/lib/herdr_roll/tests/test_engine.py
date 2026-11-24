@@ -13,7 +13,7 @@ from unittest import mock
 import orjson
 
 from dotfiles_py.time_ns import NANOSECOND_TIMESTAMP_RE
-from herdr_roll import cli, engine
+from herdr_roll import adapters, cli, engine
 from herdr_roll.graph import RefusedError, merge_graph, select_targets
 from herdr_roll.herdr import (
     LiveClient,
@@ -1006,6 +1006,7 @@ class EngineTests(unittest.TestCase):
         tasks_dir = mise_dir / "tasks" / "roll"
         expected_root = Path(__file__).resolve().parents[7]
         self.assertTrue((expected_root / "pyproject.toml").is_file())
+        self.assertIs(engine.HARNESS_BINARIES, adapters.HARNESS_BINARIES)
         for name in ("snapshot", "restart", "stop", "start", "verify", "self"):
             text = (tasks_dir / name).read_text(encoding="utf-8")
             self.assertIn(
@@ -1013,6 +1014,7 @@ class EngineTests(unittest.TestCase):
             )
             self.assertNotIn('${lib_dir}/../../../.."', text)
             self.assertIn("if [[ ${common_dir} == /* ]]; then", text)
+            self.assertIn("refusing to mutate disk in dry-run", text)
         learn_dir = mise_dir / "tasks" / "learn"
         for name in ("heal", "mark", "propose", "record-review", "render-proposal"):
             text = (learn_dir / name).read_text(encoding="utf-8")

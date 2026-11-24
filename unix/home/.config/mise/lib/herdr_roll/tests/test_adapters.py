@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sqlite3
 import tempfile
 import unittest
@@ -1055,8 +1056,22 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(adapter.matches(None, node_fg, []))
         self.assertTrue(harness_running(HarnessKind.ZCODE, node_fg))
         self.assertTrue(
+            owned_by_harness(HarnessKind.ZCODE, shlex.join(node_fg), HARNESS_BINARIES)
+        )
+        self.assertTrue(
             owned_by_harness(HarnessKind.ZCODE, "zcode-cli", HARNESS_BINARIES)
         )
+        self.assertFalse(adapter.matches(None, ["vim", "/tmp/zcode.js"], []))
+        ok_bad, _ = adapter.verify_resumed(
+            old_pid=400,
+            new_pid=501,
+            fg_argv=["vim", "/tmp/zcode.js"],
+            tree_pids=[501],
+            status_state=None,
+            screen_text="◈ account:zai\n",
+            session_id="sess_1234",
+        )
+        self.assertFalse(ok_bad)
         term = TerminalSnapshot(
             address="t3xv",
             kind=HarnessKind.ZCODE,

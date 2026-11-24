@@ -45,7 +45,7 @@ HARNESS_BINARIES: dict[HarnessKind, tuple[str, ...]] = {
     HarnessKind.CLAUDE: ("claude",),
     HarnessKind.OPENCODE: ("opencode",),
     HarnessKind.HERMES: ("hermes",),
-    HarnessKind.ZCODE: ("zcode", "zcode-cli"),
+    HarnessKind.ZCODE: ("zcode", "zcode-cli", "zcode.js", "zcode.mjs", "zcode.cjs"),
 }
 
 
@@ -1349,7 +1349,14 @@ class ZCodeAdapter(BaseAdapter):
         return (
             program_name(fg_argv) == "zcode"
             or program_name(term_argv) == "zcode"
-            or any(_is_zcode_token(tok) for tok in (*fg_argv, *term_argv))
+            or (
+                bool(fg_argv)
+                and owned_by_harness(self.kind, shlex.join(fg_argv), HARNESS_BINARIES)
+            )
+            or (
+                bool(term_argv)
+                and owned_by_harness(self.kind, shlex.join(term_argv), HARNESS_BINARIES)
+            )
         )
 
     def _lookup_sqlite(self, cwd: str | None, title: str) -> str | None:
@@ -1466,8 +1473,9 @@ class ZCodeAdapter(BaseAdapter):
         del tree_pids
         if new_pid is None or new_pid == old_pid:
             return False, "process PID did not advance"
-        if program_name(fg_argv) != "zcode" and not any(
-            _is_zcode_token(tok) for tok in fg_argv
+        if program_name(fg_argv) != "zcode" and not (
+            bool(fg_argv)
+            and owned_by_harness(self.kind, shlex.join(fg_argv), HARNESS_BINARIES)
         ):
             return False, f"unexpected foreground {fg_argv[:3]!r}"
         if _universal_blocking_dialog(screen_text, status_state):
