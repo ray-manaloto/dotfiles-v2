@@ -160,18 +160,26 @@ needs_recreate() {
 
 ref="$(resolve_ref)"
 apt_cache_url="$(resolve_apt_cache_url || true)"
-build_args=(docker build --progress=plain -t "${tag}" -f "${root}/docker/ubuntu/Dockerfile")
+inventory_state_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/dotfiles-v2/inventory"
+build_args=(docker buildx build --progress=plain --load --sbom=true --provenance=mode=max -t "${tag}" -f "${root}/docker/ubuntu/Dockerfile")
 if [[ -n ${apt_cache_url} ]]; then
 	build_args+=(--build-arg "DOTFILES_APT_CACHE=${apt_cache_url}")
 fi
-build_args+=("${root}")
 
 up_pc() {
-	local remote_home remote_dir keys want_image ts_hostname="${name}-pc"
+	local remote_home remote_dir keys want_image ts_hostname="${name}-pc" meta_file meta_tmp
 	remote_home="$(ssh -o BatchMode=yes "${host}" 'printf "%s" "$HOME"')"
 	remote_dir="${remote_home}/dev/containers/${name}"
 
-	DOCKER_BUILDKIT=1 DOCKER_HOST="ssh://${host}" "${build_args[@]}"
+	mkdir -p "${inventory_state_dir}"
+	meta_file="${inventory_state_dir}/buildx-pc.metadata.json"
+	meta_tmp="$(mktemp "${inventory_state_dir}/.buildx-pc.metadata.XXXXXX")"
+	if ! DOCKER_BUILDKIT=1 DOCKER_HOST="ssh://${host}" "${build_args[@]}" --metadata-file "${meta_tmp}" "${root}"; then
+		rm -f "${meta_tmp}"
+		exit 1
+	fi
+	chmod 0644 "${meta_tmp}"
+	mv -f "${meta_tmp}" "${meta_file}"
 
 	ssh -o BatchMode=yes "${host}" \
 		"mkdir -p '${remote_home}/dev/containers' && if [ -d '${remote_dir}/.git' ]; then git -C '${remote_dir}' -c core.hooksPath=/dev/null fetch -q origin '${ref}' && git -C '${remote_dir}' -c core.hooksPath=/dev/null checkout -q -B '${ref}' 'origin/${ref}'; else git -c core.hooksPath=/dev/null clone -q -b '${ref}' '${repo_url}' '${remote_dir}'; fi"
@@ -210,7 +218,7 @@ up_pc() {
 }
 
 up_mac() {
-	local local_dir secrets_running keys want_image ts_hostname="${name}-mac"
+	local local_dir secrets_running keys want_image ts_hostname="${name}-mac" meta_file meta_tmp
 	if [[ "$(uname -s)" != "Darwin" ]]; then
 		echo "mac Docker Desktop target must run on macOS" >&2
 		exit 1
@@ -236,7 +244,15 @@ up_mac() {
 		git -c core.hooksPath=/dev/null clone -q -b "${ref}" "${repo_url}" "${local_dir}"
 	fi
 
-	DOCKER_BUILDKIT=1 env -u DOCKER_HOST docker --context desktop-linux "${build_args[@]:1}"
+	mkdir -p "${inventory_state_dir}"
+	meta_file="${inventory_state_dir}/buildx-mac.metadata.json"
+	meta_tmp="$(mktemp "${inventory_state_dir}/.buildx-mac.metadata.XXXXXX")"
+	if ! DOCKER_BUILDKIT=1 env -u DOCKER_HOST docker --context desktop-linux "${build_args[@]:1}" --metadata-file "${meta_tmp}" "${root}"; then
+		rm -f "${meta_tmp}"
+		exit 1
+	fi
+	chmod 0644 "${meta_tmp}"
+	mv -f "${meta_tmp}" "${meta_file}"
 
 	want_image="$(env -u DOCKER_HOST docker --context desktop-linux image inspect --format '{{.Id}}' "${tag}")"
 	if needs_recreate "${want_image}" "${keys}" "${ts_hostname}" env -u DOCKER_HOST docker --context desktop-linux; then
@@ -265,13 +281,38 @@ up_mac() {
 	env -u DOCKER_HOST docker --context desktop-linux ps --filter "name=^${name}$" --format 'mac: {{.Names}} {{.Status}} {{.Image}}'
 }
 
+_tmp_all_dir=""
+
+run_all_containers() {
+	local log_pc log_mac pid_pc pid_mac rc_pc=0 rc_mac=0
+	_tmp_all_dir="$(mktemp -d)"
+	trap 'rm -rf "${_tmp_all_dir:-}"' EXIT
+	log_pc="${_tmp_all_dir}/pc.log"
+	log_mac="${_tmp_all_dir}/mac.log"
+
+	up_pc >"${log_pc}" 2>&1 &
+	pid_pc=$!
+	up_mac >"${log_mac}" 2>&1 &
+	pid_mac=$!
+
+	wait "${pid_pc}" || rc_pc=$?
+	wait "${pid_mac}" || rc_mac=$?
+
+	printf '=== container:up [pc] (rc=%d) ===\n' "${rc_pc}"
+	cat "${log_pc}"
+	printf '=== container:up [mac] (rc=%d) ===\n' "${rc_mac}"
+	cat "${log_mac}"
+
+	if [[ ${rc_pc} -ne 0 || ${rc_mac} -ne 0 ]]; then
+		echo "container:up: failed (pc=${rc_pc}, mac=${rc_mac})" >&2
+		return 1
+	fi
+}
+
 case "${target}" in
 pc) up_pc ;;
 mac) up_mac ;;
-all)
-	up_pc
-	up_mac
-	;;
+all) run_all_containers ;;
 *)
 	echo "unknown target '${target}' (expected pc, mac, or all)" >&2
 	exit 1

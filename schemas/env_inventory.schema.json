@@ -1,0 +1,688 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/env_inventory.schema.json",
+  "title": "EnvInventoryModels",
+  "description": "Schema-first contracts for dual-layer native environment inventory across host, pc, mac, and vm.",
+  "$defs": {
+    "InventoryTargetKind": {
+      "type": "string",
+      "description": "Supported canonical environment inventory target names.",
+      "enum": ["host", "pc", "mac", "vm"]
+    },
+    "InventoryErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for env_inventory operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_TIMEOUT",
+        "ERR_SUBPROCESS_FAILED",
+        "ERR_TARGET_UNREACHABLE",
+        "ERR_IO_FAILURE",
+        "ERR_PRIVACY_LEAK"
+      ]
+    },
+    "InventoryReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for env_inventory operations.",
+      "enum": ["RET_OK", "RET_PARTIAL", "RET_WRITTEN", "RET_SKIPPED"]
+    },
+    "InventoryErrorEntry": {
+      "type": "object",
+      "description": "Typed env_inventory domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/InventoryErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "InventoryReturnEntry": {
+      "type": "object",
+      "description": "Typed env_inventory domain return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/InventoryReturnCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "MiseToolEntry": {
+      "type": "object",
+      "description": "Normalized global mise tool entry from `mise ls --global --installed --json`.",
+      "additionalProperties": false,
+      "required": ["name", "version", "active", "installed"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string"
+        },
+        "requested_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "install_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "source_type": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "source_path": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "MiseSkillEntry": {
+      "type": "object",
+      "description": "Normalized skill link entry from `mise skills ls --json`.",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "path": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "MiseInventory": {
+      "type": "object",
+      "description": "Aggregated native mise doctor, installed tool, and skill export for a target.",
+      "additionalProperties": false,
+      "required": ["installed", "errors", "warnings", "tools", "skills"],
+      "properties": {
+        "installed": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "activated": {
+          "type": ["boolean", "null"],
+          "default": null
+        },
+        "build_target": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "config_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MiseToolEntry"
+          },
+          "default": []
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MiseSkillEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "ContainerOciMetadata": {
+      "type": "object",
+      "description": "Container OCI inspect and BuildKit SBOM/provenance metadata for pc/mac images.",
+      "additionalProperties": false,
+      "required": [
+        "image_tag",
+        "inspected",
+        "buildx_metadata_present",
+        "sbom_present",
+        "provenance_present"
+      ],
+      "properties": {
+        "image_tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inspected": {
+          "type": "boolean"
+        },
+        "image_id": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "image_digest": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "descriptor_media_type": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "architecture": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "os": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "size_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "created": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "repo_digests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "buildx_metadata_present": {
+          "type": "boolean"
+        },
+        "buildx_metadata_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "buildx_build_ref": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "sbom_present": {
+          "type": "boolean"
+        },
+        "provenance_present": {
+          "type": "boolean"
+        },
+        "provenance_build_type": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "provenance_materials": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "HarnessPluginEntry": {
+      "type": "object",
+      "description": "Normalized plugin entry from `claude plugin list --json` or `codex plugin list --json`.",
+      "additionalProperties": false,
+      "required": ["id", "enabled"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "scope": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "marketplace": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "installed": {
+          "type": ["boolean", "null"],
+          "default": null
+        },
+        "install_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "project_path": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "HarnessMcpEntry": {
+      "type": "object",
+      "description": "Normalized MCP server entry from `codex mcp list --json`.",
+      "additionalProperties": false,
+      "required": ["name", "enabled"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "disabled_reason": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "transport_type": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "command": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "url": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "auth_status": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "env_vars": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "HarnessStatus": {
+      "type": "object",
+      "description": "Native non-interactive inventory for a single AI harness CLI.",
+      "additionalProperties": false,
+      "required": ["name", "installed"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "mise_skill_links": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HarnessPluginEntry"
+          },
+          "default": []
+        },
+        "mcps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HarnessMcpEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "HarnessesInventory": {
+      "type": "object",
+      "description": "Per-harness inventory bundle for a target environment.",
+      "additionalProperties": false,
+      "required": ["agy", "claude", "codex", "opencode"],
+      "properties": {
+        "agy": {
+          "$ref": "#/$defs/HarnessStatus"
+        },
+        "claude": {
+          "$ref": "#/$defs/HarnessStatus"
+        },
+        "codex": {
+          "$ref": "#/$defs/HarnessStatus"
+        },
+        "opencode": {
+          "$ref": "#/$defs/HarnessStatus"
+        },
+        "zcode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HarnessStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "TargetInventory": {
+      "type": "object",
+      "description": "Complete sanitized inventory snapshot for a single target environment.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "target",
+        "reachable",
+        "arch",
+        "os",
+        "mise",
+        "harnesses",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "target": {
+          "$ref": "#/$defs/InventoryTargetKind"
+        },
+        "reachable": {
+          "type": "boolean"
+        },
+        "arch": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "os": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "mise": {
+          "$ref": "#/$defs/MiseInventory"
+        },
+        "container": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContainerOciMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "harnesses": {
+          "$ref": "#/$defs/HarnessesInventory"
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InventoryErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InventoryReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "InventoryHistoryRunRecord": {
+      "type": "object",
+      "description": "Append-only JSONL history record stored in $XDG_STATE_HOME/dotfiles-v2/inventory/history.jsonl.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "requested_target",
+        "targets",
+        "written_files",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "requested_target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TargetInventory"
+          },
+          "default": []
+        },
+        "written_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InventoryErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InventoryReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "EnvInventorySummary": {
+      "type": "object",
+      "description": "Summary metadata for an env:inventory execution.",
+      "additionalProperties": false,
+      "required": [
+        "requested_target",
+        "targets_collected",
+        "targets_reachable",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "requested_target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "targets_collected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "targets_reachable": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repo_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "history_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InventoryErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InventoryReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "EnvInventoryResponse": {
+      "type": "object",
+      "description": "Top-level typed response envelope for env:inventory CLI execution.",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "rc",
+        "summary",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rc": {
+          "type": "integer"
+        },
+        "summary": {
+          "$ref": "#/$defs/EnvInventorySummary"
+        },
+        "inventories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TargetInventory"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InventoryErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InventoryReturnEntry"
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

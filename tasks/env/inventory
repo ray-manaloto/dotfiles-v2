@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#MISE description="Collect sanitized schema-first native environment inventory for host, pc, mac, vm, or all"
+#USAGE flag "--target <target>" default="host" help="Target environment: host, pc, mac, vm, or all"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
+#USAGE flag "--tag <tag>" default="dotfiles-v2:dev" help="Docker image tag for container inspection"
+#USAGE flag "--write-repo" help="Write sanitized inventory/latest.<target>.json and append history.jsonl"
+#USAGE flag "--out-dir <path>" help="Override output directory for latest.<target>.json (implies --write-repo)"
+#USAGE flag "--state-dir <path>" help="Override local XDG inventory state directory"
+#USAGE flag "--json" help="Emit EnvInventoryResponse JSON (default)"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} == /* ]]; then
+			common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		else
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		fi
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+
+if [[ ! -x ${venv_py} ]]; then
+	echo "env:inventory: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from env_inventory.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" --help
+fi
+
+args=(
+	--target "${usage_target:-host}"
+	--host "${usage_host:-pc}"
+	--tag "${usage_tag:-dotfiles-v2:dev}"
+	--repo "${repo_root}"
+)
+[[ ${usage_write_repo:-false} == "true" ]] && args+=(--write-repo)
+[[ -n ${usage_out_dir:-} ]] && args+=(--out-dir "${usage_out_dir}")
+[[ -n ${usage_state_dir:-} ]] && args+=(--state-dir "${usage_state_dir}")
+if [[ ${usage_json:-true} == "true" ]]; then
+	args+=(--json)
+fi
+
+exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from env_inventory.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

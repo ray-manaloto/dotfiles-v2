@@ -11,10 +11,17 @@ and C++26 workstation setup.
 - **Tool scope:** Root `mise.toml` stays tool-free (`no-project-tools` doctor
   check). User/global tools and skills live in
   `unix/home/.config/mise/config.toml` and `unix/home/.config/mise/mise.lock`.
+  All `[tools]` declarations MUST unconditionally use canonical
+  `mise registry` short names (zero backend opt-outs, enforced by `hk`
+  `config-hygiene` and `mise doctor project`).
 - **Day-1 3 environments:** `pc` (`ssh://pc`, `ubuntu:26.10` `amd64`), `mac`
   (`docker --context desktop-linux`, `ubuntu:26.10` `arm64`), and `vm` (Tart
   `dotfiles-v2-macos` `arm64`). Always run containers with `-e container=docker`
-  and never `--privileged`. Never touch `cs-guest`.
+  and never `--privileged`. Never touch `cs-guest`. Multi-target builds and
+  diagnostics (`mise run container:up --target all`,
+  `mise run env:doctor --target all`, `mise run env:inventory --target all`)
+  must run `mac` and `pc` (and `vm` where applicable) concurrently whenever
+  possible with per-target log buffering and fail-closed exit aggregation.
 - **Option A `mise bootstrap` architecture:**
   - `docker/ubuntu/Dockerfile` copies `mise 2026.11.13` from digest-pinned
     multi-arch `ghcr.io/jdx/mise:2026.11.13@sha256:06a4e5b507ac24d0279d6d2fc1f0849cb54fd0c1eb305a93db028398364b45f9`

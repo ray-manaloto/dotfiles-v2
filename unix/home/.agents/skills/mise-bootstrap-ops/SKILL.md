@@ -86,3 +86,41 @@ description: >-
 - When `tailscale ping` succeeds (`1ms`) while `curl --proxy http://127.0.0.1:1055`
   or `tailscale nc` times out, inspect `tailscale debug netmap | jq '.PacketFilter'`
   on both peers for `tag:dev-env` ACL rules.
+
+## 7. Phase 10-11 Lessons: `packslip --system`, Login Parity & Shim-Mode Doctor
+
+- **`packslip --system` directory ownership (`src/install_fs.rs:382`):** On macOS,
+  `packslip install ... --system --bin-dir /usr/local/bin` rejects non-root or
+  group/world-writable prefix directories. Normalize `/usr/local` and
+  `/usr/local/bin` to `root:wheel` (`0755`) via
+  `sudo install -d -o root -g wheel -m 0755 /usr/local/bin && sudo chown root:wheel /usr/local /usr/local/bin && sudo chmod 0755 /usr/local /usr/local/bin`
+  before invoking `packslip install ... --system` in `tasks/vm/up`.
+- **Ubuntu container login vs non-login parity:** `config.container.toml`
+  appends `. /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-secrets.sh`
+  to `~/.profile` (`position = "append"`) alongside prepending at line 1 of
+  `~/.bashrc` above Ubuntu's interactive guard (and `/etc/bash.bashrc`), so login
+  and non-login shells resolve identical `MISE_*`, `PATH`, and secrets.
+- **Tart VM `MISE_ENV=vm`, `~/.zprofile`, and `brew:tailscale` LaunchAgent:**
+  `assets/vm/vm-env.sh` exports `MISE_ENV=vm` and prepends Homebrew,
+  `/usr/local/bin`, `~/.local/bin`, `~/.opencode/bin`, and
+  `~/.local/share/mise/shims` in deterministic order. `config.vm.toml` appends
+  `vm-env.sh` to `~/.zprofile` and `~/.bash_profile` (`position = "append"` so
+  it stays ahead of `/etc/zprofile`'s `path_helper`), prepends it to `~/.zshrc`
+  and `~/.bashrc`, `zsh/.zprofile` (symlinked to `~/.config/zsh/.zprofile`) sources
+  `vm-env.sh` when readable, and `brew:tailscale` runs non-root under `dev.mise.tailscaled`
+  LaunchAgent (`~/.local/state/tailscale/tailscaled.sock`).
+- **Shim-mode `mise doctor project` (`mise-doctor-clean`) PATH normalization:**
+  When `mise doctor` runs inside a shim-mode `mise` task (`MISE_SHELL` and
+  `__MISE_DIFF` unset while `shims` is on `PATH`), `_normalize_path_for_mise_doctor`
+  in `tasks/py/doctor_checks.py` strips `*/git-core` (`GIT_EXEC_PATH`) plus
+  `mise`-injected `installs/`, `command-wrappers/bin`, and repo `.venv/bin`
+  prefixes so `mise -C ~ doctor --json` sees real shell PATH ordering without
+  masking genuine misconfigurations (`~/.local/bin` or `/opt/homebrew/bin` ahead
+  of `shims`).
+- **Parallel multi-target builds & BuildKit SBOM/provenance:**
+  `tasks/container/up --target all` and `tasks/env/doctor --target all` run
+  `mac`, `pc` (and `vm` for doctor) concurrently with per-target log files and
+  fail-closed status aggregation; `container:up` passes
+  `docker buildx build --load --sbom=true --provenance=mode=max --metadata-file`
+  to persist BuildKit provenance and SBOM attestation metadata atomically under
+  `$XDG_STATE_HOME/dotfiles-v2/inventory/buildx-<target>.metadata.json`.

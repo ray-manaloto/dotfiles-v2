@@ -430,6 +430,14 @@ GUEST
 	pass_row "vm" "${out}"
 }
 
+run_doctor_target() {
+	local log_file="$1"
+	shift
+	local fail_count=0
+	"$@" >"${log_file}" 2>&1
+	[[ ${fail_count} -eq 0 ]]
+}
+
 case "${target}" in
 pc)
 	check_container "pc" "x86_64" env "DOCKER_HOST=ssh://${host}" docker
@@ -441,9 +449,36 @@ vm)
 	check_vm
 	;;
 all)
-	check_container "pc" "x86_64" env "DOCKER_HOST=ssh://${host}" docker
-	check_container "mac" "aarch64" env -u DOCKER_HOST docker --context desktop-linux
-	check_vm
+	tmp_dir="$(mktemp -d)"
+	trap 'rm -rf "${tmp_dir:-}"' EXIT
+	log_pc="${tmp_dir}/pc.log"
+	log_mac="${tmp_dir}/mac.log"
+	log_vm="${tmp_dir}/vm.log"
+
+	run_doctor_target "${log_pc}" check_container "pc" "x86_64" env "DOCKER_HOST=ssh://${host}" docker &
+	pid_pc=$!
+
+	run_doctor_target "${log_mac}" check_container "mac" "aarch64" env -u DOCKER_HOST docker --context desktop-linux &
+	pid_mac=$!
+
+	run_doctor_target "${log_vm}" check_vm &
+	pid_vm=$!
+
+	rc_pc=0
+	wait "${pid_pc}" || rc_pc=$?
+	rc_mac=0
+	wait "${pid_mac}" || rc_mac=$?
+	rc_vm=0
+	wait "${pid_vm}" || rc_vm=$?
+
+	for item in "pc:${rc_pc}:${log_pc}" "mac:${rc_mac}:${log_mac}" "vm:${rc_vm}:${log_vm}"; do
+		IFS=':' read -r lbl rc_val log_path <<<"${item}"
+		printf '=== env:doctor [%s] (rc=%d) ===\n' "${lbl}" "${rc_val}"
+		cat "${log_path}"
+		if [[ ${rc_val} -ne 0 ]]; then
+			fail_count=$((fail_count + 1))
+		fi
+	done
 	;;
 *)
 	echo "unknown target '${target}' (expected pc, mac, vm, or all)" >&2
