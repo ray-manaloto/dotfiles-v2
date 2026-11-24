@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -567,16 +568,62 @@ def _strip_git_core_from_path(path_value: str, git_exec_path: str = "") -> str:
     return os.pathsep.join(kept)
 
 
-def check_mise_doctor_clean() -> tuple[list[str], str]:
+def _normalize_path_for_mise_doctor(
+    path_value: str, env: Mapping[str, str], repo_root: Path, home: Path
+) -> str:
+    """Strip shim-mode `mise` task-injected tool/wrapper/repo-venv prefixes when `shims` stays in PATH."""
+    cleaned = _strip_git_core_from_path(path_value, env.get("GIT_EXEC_PATH", ""))
+    if env.get("MISE_SHELL") or env.get("__MISE_DIFF"):
+        return cleaned
+
+    raw_data_dir = env.get("MISE_DATA_DIR")
+    if raw_data_dir:
+        data_dir = Path(raw_data_dir).expanduser()
+    elif env.get("XDG_DATA_HOME"):
+        data_dir = Path(env["XDG_DATA_HOME"]).expanduser() / "mise"
+    else:
+        data_dir = home / ".local" / "share" / "mise"
+
+    bases = tuple(dict.fromkeys([data_dir, data_dir.resolve(strict=False)]))
+    shims_dirs = {os.path.normpath(str(d / "shims")) for d in bases}
+    entries = [entry for entry in cleaned.split(os.pathsep) if entry]
+    if not any(
+        os.path.normpath(entry) in shims_dirs or os.path.realpath(entry) in shims_dirs
+        for entry in entries
+    ):
+        return cleaned
+
+    installs_exact = {os.path.normpath(str(d / "installs")) for d in bases}
+    installs_prefixes = tuple(f"{p}{os.sep}" for p in installs_exact)
+    wrappers_dirs = {
+        os.path.normpath(str(d / "command-wrappers" / "bin")) for d in bases
+    }
+    repo_roots = (repo_root, repo_root.resolve(strict=False))
+    venv_dirs = {os.path.normpath(str(r / ".venv" / "bin")) for r in repo_roots}
+
+    def _is_mise_injected(entry: str) -> bool:
+        for candidate in (os.path.normpath(entry), os.path.realpath(entry)):
+            if (
+                candidate in installs_exact
+                or candidate.startswith(installs_prefixes)
+                or candidate in wrappers_dirs
+                or candidate in venv_dirs
+            ):
+                return True
+        return False
+
+    return os.pathsep.join(entry for entry in entries if not _is_mise_injected(entry))
+
+
+def check_mise_doctor_clean(repo_root: Path | None = None) -> tuple[list[str], str]:
     """Verify `mise -C ~ doctor --json` reports 0 errors and 0 warnings."""
     if os.environ.get("CI"):
         return [], "CI: skipped live host mise-doctor-clean"
     home = Path.home()
+    root = repo_root if repo_root is not None else Path(__file__).resolve().parents[2]
     env = dict(os.environ)
     if "PATH" in env:
-        env["PATH"] = _strip_git_core_from_path(
-            env["PATH"], env.get("GIT_EXEC_PATH", "")
-        )
+        env["PATH"] = _normalize_path_for_mise_doctor(env["PATH"], env, root, home)
     try:
         proc = subprocess.run(
             ["mise", "-C", str(home), "doctor", "--json"],
@@ -1619,7 +1666,7 @@ def main(argv: list[str] | None = None) -> int:
         errs, msg = check_host_option_a(repo_root, strict_host=args.strict_host)
         return _report("host-option-a", errs, msg)
     if args.cmd == "mise-doctor-clean":
-        errs, msg = check_mise_doctor_clean()
+        errs, msg = check_mise_doctor_clean(repo_root)
         return _report("mise-doctor-clean", errs, msg)
     if args.cmd == "host-hygiene":
         errs, msg = check_host_hygiene(repo_root)

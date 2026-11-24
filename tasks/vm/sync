@@ -41,6 +41,12 @@ git -C "${HOME}/dev/dotfiles-v2" checkout -q -B "${REF}" "origin/${REF}"
 if [[ -e "${HOME}/.config/mise" && ! -L "${HOME}/.config/mise" ]]; then
   rm -rf "${HOME}/.config/mise"
 fi
+for rc in "${HOME}/.zprofile" "${HOME}/.bash_profile"; do
+  if [[ -f "${rc}" ]]; then
+    grep -Fxv '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"' "${rc}" >"${rc}.tmp" || true
+    mv "${rc}.tmp" "${rc}"
+  fi
+done
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 export MISE_LOCKED=1
 export MISE_YES=1
@@ -49,5 +55,6 @@ export MISE_YES=1
   --from-dir "${HOME}/dev/dotfiles-v2" \
   --config-dir unix/home/.config/mise \
   --force-dotfiles --yes
+/usr/local/bin/mise -E vm,macos -C "${HOME}" run host:prune --apply
 /usr/local/bin/mise -C "${HOME}/dev/dotfiles-v2" deps uv
 GUEST

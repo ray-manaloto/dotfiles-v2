@@ -206,6 +206,7 @@ for _sk in agy-session-ops aube communique flint fnox herdr-roll hk-configure hk
 	test -f "/home/dev/.claude/skills/${_sk}/SKILL.md"
 	test -f "/home/dev/.gemini/config/skills/${_sk}/SKILL.md"
 done
+mise -C ~ doctor --json | python3 -c 'import json, sys; d = json.load(sys.stdin); assert not d.get("errors") and not d.get("warnings"), d'
 vb_status="unconfigured"
 if [ -r /home/dev/.config/board/env.sh ]; then
 	/home/dev/.local/bin/vb whoami </dev/null >/dev/null
@@ -304,6 +305,7 @@ check_vm() {
 	if ! out="$(
 		tart exec -i "${vm_name}" env SMOKE="${smoke}" ZCODE_SMOKE_MODEL="${ZCODE_SMOKE_MODEL:-}" /bin/bash -euo pipefail <<'GUEST'
 export PATH="${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
+export MISE_ENV=vm
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 sm="$(uname -sm)"
 test "${sm}" = "Darwin arm64"
@@ -323,7 +325,12 @@ want_oc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expa
 test "${link_oc_agents}" = "${want_oc_agents}"
 miss="$(mise -C "${HOME}/dev/dotfiles-v2" ls --missing | grep -vc '^Tool[[:space:]]' || true)"
 test "${miss}" -eq 0
-mise -C "${HOME}/dev/dotfiles-v2" doctor project >/dev/null
+if ! doctor_out="$(mise -C "${HOME}/dev/dotfiles-v2" doctor project 2>&1)"; then
+  printf '%s\n' "${doctor_out}" >&2
+  exit 1
+fi
+/bin/bash -lc 'mise -C ~ doctor --json' | python3 -c 'import json, sys; d = json.load(sys.stdin); assert not d.get("errors") and not d.get("warnings"), d'
+/bin/zsh -lc 'mise -C ~ doctor --json' | python3 -c 'import json, sys; d = json.load(sys.stdin); assert not d.get("errors") and not d.get("warnings"), d'
 hv="$(hk --version)"
 test -s "/Volumes/My Shared Files/agent-secrets/claude-oauth-token"
 cpath="$(/bin/bash -lc 'command -v claude')"

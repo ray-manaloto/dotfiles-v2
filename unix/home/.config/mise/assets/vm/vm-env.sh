@@ -18,6 +18,7 @@ done
 unset _df_p _df_new _df_old
 unset -f _df_prepend_path
 export PATH
+export MISE_ENV=vm
 export ZCODE_CREDENTIAL_SECRET_FILE="${HOME}/.zcode/v2/credential-secret"
 if [ -r "${HOME}/.config/agent-secrets/env.sh" ]; then
 	# shellcheck source=/dev/null

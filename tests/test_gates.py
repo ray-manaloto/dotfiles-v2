@@ -1234,3 +1234,104 @@ def test_guest_shim_first_path_herdr_roll_dep_and_workspace_roll_ownership(
         monkeypatch.setattr(doc_mod.subprocess, "check_output", fake_check_output)
         errs, _ = doc_mod.check_host_option_a(fake_repo, strict_host=True)
         assert not [e for e in errs if e.startswith("roll-ownership:")], errs
+
+
+def test_normalize_path_for_mise_doctor_shim_and_activated_modes(monkeypatch) -> None:
+    _, doc_mod = _load_doctor_checks()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        repo_root = root / "workspace"
+        home = root / "home"
+        data_dir = root / "opt" / "mise"
+        installs_dir = data_dir / "installs"
+        wrappers_bin = data_dir / "command-wrappers" / "bin"
+        shims_dir = data_dir / "shims"
+        repo_venv = repo_root / ".venv" / "bin"
+        other_venv = root / "other" / ".venv" / "bin"
+        local_bin = home / ".local" / "bin"
+        for d in (
+            installs_dir / "hk" / "2.14.0" / "bin",
+            wrappers_bin,
+            shims_dir,
+            repo_venv,
+            other_venv,
+            local_bin,
+        ):
+            d.mkdir(parents=True)
+
+        raw_path = os.pathsep.join(
+            [
+                "/usr/libexec/git-core",
+                str(wrappers_bin),
+                str(repo_venv),
+                str(installs_dir / "hk" / "2.14.0" / "bin"),
+                str(shims_dir),
+                str(other_venv),
+                str(local_bin),
+                "/usr/bin",
+            ]
+        )
+
+        # Shim mode: unset MISE_SHELL / __MISE_DIFF strips installs, command-wrappers, repo .venv, git-core
+        shim_env = {"MISE_DATA_DIR": str(data_dir)}
+        assert doc_mod._normalize_path_for_mise_doctor(
+            raw_path, shim_env, repo_root, home
+        ) == os.pathsep.join(
+            [str(shims_dir), str(other_venv), str(local_bin), "/usr/bin"]
+        )
+
+        # Shim mode MUST preserve real bugs (e.g. ~/.local/bin or /opt/homebrew/bin before shims)
+        bad_order = os.pathsep.join(
+            [
+                str(wrappers_bin),
+                str(local_bin),
+                "/opt/homebrew/bin",
+                str(shims_dir),
+                "/usr/bin",
+            ]
+        )
+        assert doc_mod._normalize_path_for_mise_doctor(
+            bad_order, shim_env, repo_root, home
+        ) == os.pathsep.join(
+            [str(local_bin), "/opt/homebrew/bin", str(shims_dir), "/usr/bin"]
+        )
+
+        # Activated mode (MISE_SHELL or __MISE_DIFF set): preserves installs/wrappers/venv, strips git-core
+        for active_env in (
+            {"MISE_DATA_DIR": str(data_dir), "MISE_SHELL": "zsh"},
+            {"MISE_DATA_DIR": str(data_dir), "__MISE_DIFF": "abc"},
+        ):
+            assert doc_mod._normalize_path_for_mise_doctor(
+                raw_path, active_env, repo_root, home
+            ) == os.pathsep.join(
+                [
+                    str(wrappers_bin),
+                    str(repo_venv),
+                    str(installs_dir / "hk" / "2.14.0" / "bin"),
+                    str(shims_dir),
+                    str(other_venv),
+                    str(local_bin),
+                    "/usr/bin",
+                ]
+            )
+
+        # check_mise_doctor_clean uses real repo_root passed explicitly
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("MISE_SHELL", raising=False)
+        monkeypatch.delenv("__MISE_DIFF", raising=False)
+        monkeypatch.setenv("MISE_DATA_DIR", str(data_dir))
+        monkeypatch.setenv("PATH", raw_path)
+        seen_env: dict[str, str] = {}
+
+        def fake_run(cmd, **kwargs):
+            seen_env.update(kwargs.get("env") or {})
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"errors": [], "warnings": []}), stderr=""
+            )
+
+        monkeypatch.setattr(doc_mod.subprocess, "run", fake_run)
+        errs, _ = doc_mod.check_mise_doctor_clean(repo_root)
+        assert errs == []
+        assert seen_env["PATH"] == os.pathsep.join(
+            [str(shims_dir), str(other_venv), str(local_bin), "/usr/bin"]
+        )

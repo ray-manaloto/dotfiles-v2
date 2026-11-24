@@ -23,8 +23,8 @@ stdout_path = "~/Library/Logs/tailscaled.log"
 stderr_path = "~/Library/Logs/tailscaled.err.log"
 
 [dotfiles]
-"~/.bash_profile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
+"~/.bash_profile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "append" }
 "~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
 "~/.config/dotfiles-v2/vm-env.sh" = { source = "assets/vm/vm-env.sh", mode = "symlink", main_checkout = true }
-"~/.zprofile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
+"~/.zprofile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "append" }
 "~/.zshrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
