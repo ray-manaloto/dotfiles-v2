@@ -83,7 +83,7 @@ vk_st, vk_det = check_container("pc-hub-valkey")
 rows.append({"service": "valkey", "state": vk_st, "bind_target": "searxng-net:6379", "exposed_http": False, "detail": vk_det})
 
 sx_st, sx_det = check_container("pc-hub-searxng")
-sxh_st, sxh_det = check_http("http://127.0.0.1:8888/", ok_codes=(200,))
+sxh_st, sxh_det = check_http("http://127.0.0.1:8888/healthz", ok_codes=(200,))
 rows.append({"service": "searxng", "state": "OK" if sx_st == "OK" and sxh_st == "OK" else "FAIL", "bind_target": "127.0.0.1:8888", "exposed_http": True, "detail": f"{sx_det}; {sxh_det}"})
 
 vb_st, vb_det = check_systemd("dev.mise.vercel-board.service")

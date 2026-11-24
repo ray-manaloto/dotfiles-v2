@@ -159,8 +159,12 @@ def test_render_env_systemd_and_launchd_plists() -> None:
             unit_name
         )
     assert (
-        "--port 8082 --base-path /agentsview --public-url https://hub-node.tailnet.ts.net/agentsview --require-auth"
+        "--port 8082 --base-path /agentsview --public-url https://hub-node.tailnet.ts.net --require-auth"
         in units["dev.mise.agentsview-hub.service"]
+    )
+    assert (
+        "--public-url https://hub-node.tailnet.ts.net/agentsview"
+        not in units["dev.mise.agentsview-hub.service"]
     )
     assert f"v{QMD_VERSION}" in units["dev.mise.qmd-hub.service"]
     assert (
@@ -475,3 +479,16 @@ def test_hub_up_script_invariants() -> None:
         'if [[ -x "$HOME/.local/bin/agentsview" ]]; then printf "%s/.local/bin/agentsview" "$HOME";'
         in up_text
     )
+
+
+def test_hub_status_and_agent_up_invariants() -> None:
+    status_text = (HUB_TASKS_DIR / "status").read_text(encoding="utf-8")
+    assert 'check_http("http://127.0.0.1:8888/healthz", ok_codes=(200,))' in status_text
+    assert 'check_http("http://127.0.0.1:8888/"' not in status_text
+
+    agent_up_text = (HUB_TASKS_DIR / "agent-up").read_text(encoding="utf-8")
+    assert "trap 'rm -rf \"${tmp_dir:-}\"; trap - RETURN' RETURN" in agent_up_text
+    assert "trap 'rm -f \"${plist_tmp:-}\"; trap - RETURN' RETURN" in agent_up_text
+    assert 'rm -rf "${tmp_dir}"' in agent_up_text
+    assert 'rm -f "${plist_tmp}"' in agent_up_text
+    assert agent_up_text.count("trap - RETURN") >= 4

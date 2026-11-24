@@ -368,7 +368,7 @@ def render_systemd_units(
             f"Environment=AGENTSVIEW_DATA_DIR={home_dir}/.agentsview",
             "Environment=AGENTSVIEW_DISABLE_UPDATE_CHECK=1",
             "Environment=AGENTSVIEW_TELEMETRY_ENABLED=0",
-            f"ExecStart={av_exec} serve --host 127.0.0.1 --port {av_port} --base-path /agentsview --public-url https://{ts_host}/agentsview --require-auth --no-browser --no-update-check",
+            f"ExecStart={av_exec} serve --host 127.0.0.1 --port {av_port} --base-path /agentsview --public-url https://{ts_host} --require-auth --no-browser --no-update-check",
             "Restart=on-failure",
             "RestartSec=5",
             "",

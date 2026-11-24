@@ -753,6 +753,8 @@ def test_smoke_commands_match_contract(
     cmd = runner.build_command(harness, "/b", model, skill_check=False, timeout=120)
     assert cmd == ["/b", *expected]
     assert "--bare" not in cmd
+    if harness == EnvSmokeHarness.HERMES:
+        assert "-t" not in cmd
     skill = runner.build_command(harness, "/b", model, skill_check=True, timeout=90)
     if harness == EnvSmokeHarness.AGY:
         assert "--dangerously-skip-permissions" in skill
@@ -769,6 +771,8 @@ def test_smoke_commands_match_contract(
         assert skill[idx + 1] == "16"
         r_idx = skill.index("--reasoning")
         assert skill[r_idx + 1] == "low"
+        t_idx = skill.index("-t")
+        assert skill[t_idx + 1] == "terminal,skills"
     if harness == EnvSmokeHarness.OPENCODE:
         assert "--auto" in skill
 

@@ -319,7 +319,7 @@ def build_command(
                 "--json",
             ]
         case EnvSmokeHarness.HERMES:
-            return [
+            cmd = [
                 binary,
                 "chat",
                 "-q",
@@ -338,6 +338,9 @@ def build_command(
                 "tool",
                 "--yolo",
             ]
+            if skill_check:
+                cmd.extend(["-t", "terminal,skills"])
+            return cmd
 
 
 # -------------------------------------------------------------------- analysis

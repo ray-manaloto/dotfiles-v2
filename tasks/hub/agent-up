@@ -75,7 +75,7 @@ install_darwin_agent_binary() {
 		return 0
 	fi
 	tmp_dir="$(mktemp -d)"
-	trap 'rm -rf "${tmp_dir}"' RETURN
+	trap 'rm -rf "${tmp_dir:-}"; trap - RETURN' RETURN
 	checksums="${tmp_dir}/checksums.txt"
 	curl -fsSLo "${checksums}" "https://github.com/henrygd/beszel/releases/download/v${beszel_ver}/beszel_${beszel_ver}_checksums.txt"
 	expected="$(awk '$2 == "beszel-agent_darwin_arm64.tar.gz" {print $1}' "${checksums}")"
@@ -88,6 +88,8 @@ install_darwin_agent_binary() {
 	tar -C "${tmp_dir}" -xzf "${tmp_dir}/agent.tar.gz"
 	mkdir -p "$(dirname "${dest}")"
 	install -m 0755 "${tmp_dir}/beszel-agent" "${dest}"
+	rm -rf "${tmp_dir}"
+	trap - RETURN
 }
 
 up_mac() {
@@ -144,7 +146,7 @@ up_vm() {
 	# shellcheck disable=SC2016
 	vm_home="$(tart exec "${vm_name}" /bin/bash -lc 'printf "%s" "$HOME"')"
 	plist_tmp="$(mktemp)"
-	trap 'rm -f "${plist_tmp}"' RETURN
+	trap 'rm -f "${plist_tmp:-}"; trap - RETURN' RETURN
 	"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' \
 		"${lib_dir}" render-launchd \
 		--agent-bin "${vm_home}/.local/bin/beszel-agent" \
@@ -182,6 +184,8 @@ VM_UP
 		launchctl kickstart -k "gui/${uid}/dev.mise.beszel-agent"
 	' <"${plist_tmp}"
 	echo "OK    vm beszel-agent (ALL_PROXY=socks5://127.0.0.1:1055)"
+	rm -f "${plist_tmp}"
+	trap - RETURN
 }
 
 case "${target}" in
