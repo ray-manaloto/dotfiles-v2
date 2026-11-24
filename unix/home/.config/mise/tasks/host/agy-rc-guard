@@ -108,7 +108,9 @@ rc = subprocess.run(
     timeout=10,
 )
 status_out = (rc.stdout or "") + "\n" + (rc.stderr or "")
-rc_running = "Daemon status: running" in status_out
+rc_running = rc.returncode == 0 and (
+    "Daemon state = running" in status_out or "Daemon status: running" in status_out
+)
 if not rc_running:
     issues.append("agy remote-control status reports not running")
 

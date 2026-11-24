@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Sync mise/jdx tool skills, mirror ~/.agents/skills into ~/.claude/skills and ~/.zcode/skills, wire ray-manaloto/skills marketplaces, and configure Hermes external_dirs"
+#MISE description="Sync mise/jdx tool skills, install agentsview skills, mirror ~/.agents/skills into ~/.claude/skills, retire ~/.zcode/skills mirrors, wire ray-manaloto/skills marketplaces, and configure Hermes external_dirs"
 set -euo pipefail
 
 # Never bake temporary Docker Phase 1b paths into image layers.
@@ -11,14 +11,12 @@ agents_dir="${HOME}/.agents/skills"
 claude_dir="${HOME}/.claude/skills"
 zcode_dir="${HOME}/.zcode/skills"
 
-# Ensure ~/.claude/skills and ~/.zcode/skills are real directories, never symlinks to ~/.agents/skills.
-for target_dir in "${claude_dir}" "${zcode_dir}"; do
-	if [[ -L ${target_dir} ]]; then
-		rm -f "${target_dir}"
-	fi
-done
+# Ensure ~/.claude/skills is a real directory, never a symlink to ~/.agents/skills.
+if [[ -L ${claude_dir} ]]; then
+	rm -f "${claude_dir}"
+fi
 
-mkdir -p "${agents_dir}" "${claude_dir}" "${zcode_dir}"
+mkdir -p "${agents_dir}" "${claude_dir}"
 
 # Clear any self-referential ../../.agents/skills/ loops left by prior symlinked dirs,
 # and unlink legacy pre-manifest ~/.agents/skills/<name> symlinks pointing into mise installs
@@ -80,13 +78,50 @@ PY
 
 mise skills sync --global --prune
 
+# Install the official agentsview skill for the cross-harness ~/.agents/skills root only.
+# Never pass `--harness claude`: that generates the MCP-only agentsview-search-conversations skill.
+if command -v agentsview >/dev/null 2>&1; then
+	av_skill="${agents_dir}/agentsview-finding-history"
+	if [[ -L ${av_skill} ]]; then
+		av_raw="$(readlink "${av_skill}" 2>/dev/null || true)"
+		av_res="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${av_skill}" 2>/dev/null || true)"
+		if [[ ${av_raw} == *"/.agents/skills/agentsview-finding-history"* || ${av_res} == *"/unix/home/.agents/skills/agentsview-finding-history"* || (! -e ${av_skill} && ${av_raw} == *"dotfiles-v2"*) ]]; then
+			rm -f "${av_skill}"
+		else
+			echo "ERROR: ${av_skill} is a custom symlink (${av_raw}); refusing to overwrite" >&2
+			exit 1
+		fi
+	elif [[ -d ${av_skill} && -f "${av_skill}/SKILL.md" ]] && ! grep -q "generated-by: agentsview" "${av_skill}/SKILL.md"; then
+		echo "ERROR: ${av_skill}/SKILL.md is not agentsview-generated; refusing to overwrite with --force" >&2
+		exit 1
+	fi
+	av_args=(skills install --harness agents --force)
+	if [[ -n ${AGENTSVIEW_SKILLS_SERVER:-} ]]; then
+		av_args+=(--server "${AGENTSVIEW_SKILLS_SERVER}")
+		if [[ -n ${AGENTSVIEW_SKILLS_SERVER_TOKEN_FILE:-} ]]; then
+			av_args+=(--server-token-file "${AGENTSVIEW_SKILLS_SERVER_TOKEN_FILE}")
+		fi
+	fi
+	if ! av_out="$(agentsview "${av_args[@]}" </dev/null 2>&1)"; then
+		printf '%s\n' "${av_out}" >&2
+		echo "ERROR: agentsview skills install --harness agents failed" >&2
+		exit 1
+	fi
+	if [[ ! -f "${av_skill}/SKILL.md" ]]; then
+		echo "ERROR: agentsview did not install ${av_skill}/SKILL.md" >&2
+		exit 1
+	fi
+fi
+
 python3 - "${agents_dir}" "${claude_dir}" "${zcode_dir}" <<'PY'
+import errno
 import os
 import sys
 from pathlib import Path
 
 agents_dir = Path(sys.argv[1])
-mirror_dirs = [Path(arg) for arg in sys.argv[2:]]
+claude_dir = Path(sys.argv[2])
+zcode_dir = Path(sys.argv[3])
 
 def is_skill_dir(entry: Path) -> bool:
     return (entry.is_dir() or entry.is_symlink()) and (entry / "SKILL.md").is_file()
@@ -97,7 +132,7 @@ def mirror_skills_dir(source_dir: Path, target_dir: Path) -> None:
     # Prune dangling relative links we own when a global tool skill is removed.
     for dst in sorted(target_dir.iterdir()):
         if dst.is_symlink() and not dst.exists():
-            if os.readlink(dst).startswith("../../.agents/skills/"):
+            if os.readlink(dst) == f"../../.agents/skills/{dst.name}":
                 dst.unlink()
     for entry in sorted(source_dir.iterdir()):
         if not is_skill_dir(entry):
@@ -115,8 +150,26 @@ def mirror_skills_dir(source_dir: Path, target_dir: Path) -> None:
             continue
         os.symlink(desired, dst)
 
-for mirror_dir in mirror_dirs:
-    mirror_skills_dir(agents_dir, mirror_dir)
+def retire_zcode_mirrors(source_dir: Path, target_dir: Path) -> None:
+    # zcode-runtime discovers ~/.agents/skills natively via setting.json skills.roots;
+    # remove only the legacy root symlink or same-name ../../.agents/skills/<name> links.
+    if target_dir.is_symlink():
+        if target_dir.resolve(strict=False) == source_dir.resolve(strict=False):
+            target_dir.unlink()
+        return
+    if not target_dir.is_dir():
+        return
+    for dst in sorted(target_dir.iterdir()):
+        if dst.is_symlink() and os.readlink(dst) == f"../../.agents/skills/{dst.name}":
+            dst.unlink()
+    try:
+        target_dir.rmdir()
+    except OSError as exc:
+        if exc.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
+            raise
+
+mirror_skills_dir(agents_dir, claude_dir)
+retire_zcode_mirrors(agents_dir, zcode_dir)
 PY
 
 # Wire ray-manaloto/skills plugin marketplace for Claude, Codex, and Antigravity when online.

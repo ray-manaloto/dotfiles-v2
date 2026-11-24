@@ -148,7 +148,6 @@ mode = "symlink-each"
 exclude = ["*"]
 
 [dotfile_groups.agents-skills.entries]
-"~/.agents/skills/agentsview-finding-history" = { source = "agentsview-finding-history", mode = "symlink", main_checkout = true }
 "~/.agents/skills/agy-session-ops" = { source = "agy-session-ops", mode = "symlink", main_checkout = true }
 "~/.agents/skills/apify-ultimate-scraper" = { source = "apify-ultimate-scraper", mode = "symlink", main_checkout = true }
 "~/.agents/skills/exa-search" = { source = "exa-search", mode = "symlink", main_checkout = true }
@@ -162,8 +161,8 @@ exclude = ["*"]
 "~/.agents/skills/vercel-board" = { source = "vercel-board", mode = "symlink", main_checkout = true }
 
 [dotfiles]
+"~/.agents/AGENTS.md" = { main_checkout = true }
 "~/.config/agent-secrets/env.sh" = { main_checkout = true }
-"~/.config/agents/AGENTS.md" = { main_checkout = true }
 "~/.config/dcg/config.toml" = { main_checkout = true }
 "~/.config/dcg/packs/mise-protect.yaml" = { main_checkout = true }
 "~/.config/fnox/config.headless.toml" = { main_checkout = true }
@@ -174,66 +173,75 @@ exclude = ["*"]
 "~/.config/fnox/shared.toml" = { main_checkout = true }
 "~/.config/git/config" = { main_checkout = true }
 "~/.config/git/ignore" = { main_checkout = true }
-"~/.config/opencode/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", main_checkout = true, depends = [
-  "~/.config/agents/AGENTS.md",
-] }
+"~/.config/opencode/AGENTS.md" = { main_checkout = true }
 "~/.config/opencode/opencode.json" = { main_checkout = true }
 "~/.config/pitchfork/config.toml" = { main_checkout = true }
 "~/.config/starship.toml" = { main_checkout = true }
 "~/.config/zsh/.zshenv" = { source = "~/.zshenv", main_checkout = true, depends = [
   "~/.zshenv",
 ] }
+"~/.claude/CLAUDE.md" = { main_checkout = true }
 "~/.claude/settings.json/dcg-hooks" = { source = "assets/claude/dcg-hooks.json", merge = true, permissions = "0600" }
 "~/.claude/settings.json/learn-hooks" = { source = "assets/claude/learn-hooks.json", merge = true, permissions = "0600" }
-"~/.codex/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", main_checkout = true, depends = [
-  "~/.config/agents/AGENTS.md",
+"~/.codex/AGENTS.md" = { source = "assets/agents/codex-AGENTS.md.tera", mode = "template", depends = [
+  "~/.agents/AGENTS.md",
 ] }
 "~/.codex/config.toml/shell-env-policy" = { source = "assets/codex/mcp-fnox-policy.toml", merge = true, permissions = "0600" }
 "~/.codex/hooks.json/dcg-hooks" = { source = "assets/codex/dcg-hooks.json", merge = true, permissions = "0600" }
 "~/.codex/hooks.json/learn-hooks" = { source = "assets/codex/learn-hooks.json", merge = true, permissions = "0600" }
-"~/.gemini/GEMINI.md" = { source = "~/.config/agents/AGENTS.md", main_checkout = true, depends = [
-  "~/.config/agents/AGENTS.md",
-] }
 "~/.gemini/antigravity-cli/settings.json/orchestrator-neon" = { source = "assets/gemini/settings-orchestrator.json", merge = true, permissions = "0600" }
-"~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
-"~/.gemini/config/skills" = { source = "~/.agents/skills", relative = true, main_checkout = true, depends = [
-  "agents-skills",
+"~/.gemini/config/AGENTS.md" = { source = "~/.agents/AGENTS.md", main_checkout = true, depends = [
+  "~/.agents/AGENTS.md",
 ] }
+"~/.gemini/config/hooks.json/dotfiles-v2" = { merge = true }
+"~/.hermes/SOUL.md/dotfiles-v2-global" = { block = '''
+{{ read_file(path="../../.agents/AGENTS.md") | trim }}
+
+## Hermes-Specific Instructions
+
+- Pick the live free Nous model from `~/.hermes/cache/nous_recommended_cache.json`
+  (`freeRecommendedModels[0]`, fallback `upstage/solar-mini4:free`) instead of
+  hardcoding a retired model ID.
+- Run headless checks as
+  `hermes chat -q "..." -m <model> --provider nous --reasoning none --max-turns 2 --format stream-json --source tool --yolo </dev/null`.
+- Skills are discovered from `~/.agents/skills` via `skills.external_dirs` in
+  `~/.hermes/config.yaml` (managed by `mise run hermes:skills-sync`).
+''', template = "tera" }
 "~/.gitconfig/gh-doctor" = { block = '''
 [hook "gh-doctor-pre-push"]
-	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE sh -c 'exec \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" doctor project'
+	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE sh -c 'exec \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" doctor project'
 	event = pre-push
 ''' }
 "~/.gitconfig/hk" = { block = '''
 [hook "hk-pre-commit"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run pre-commit --from-hook --staged
+	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run pre-commit --from-hook --staged
 	event = pre-commit
 [hook "hk-post-commit"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run post-commit --from-hook
+	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run post-commit --from-hook
 	event = post-commit
 [hook "hk-post-merge"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run post-merge --from-hook
+	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run post-merge --from-hook
 	event = post-merge
 [hook "hk-post-rewrite"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run post-rewrite --from-hook
+	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run post-rewrite --from-hook
 	event = post-rewrite
 [hook "hk-pre-merge-commit"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run pre-merge-commit --from-hook
+	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run pre-merge-commit --from-hook
 	event = pre-merge-commit
 [hook "hk-pre-push"]
-	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run pre-push --from-hook
+	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run pre-push --from-hook
 	event = pre-push
 [hook "hk-commit-msg"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run commit-msg --from-hook
+	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run commit-msg --from-hook
 	event = commit-msg
 [hook "hk-prepare-commit-msg"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || { test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\"; } || printf /usr/local/bin/mise)\" x hk -- hk run prepare-commit-msg --from-hook
+	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run prepare-commit-msg --from-hook
 	event = prepare-commit-msg
 ''' }
 "~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", main_checkout = true }
 "~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", main_checkout = true }
-"~/.zcode/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", main_checkout = true, depends = [
-  "~/.config/agents/AGENTS.md",
+"~/.zcode/AGENTS.md" = { source = "assets/agents/zcode-AGENTS.md.tera", mode = "template", depends = [
+  "~/.agents/AGENTS.md",
 ] }
 "~/.zcode/cli/setting.json" = { main_checkout = true }
 "~/.zshenv" = { main_checkout = true }
@@ -268,20 +276,51 @@ if [ -z "${CI:-}" ] && [ "${DOTFILES_ALLOW_WORKTREE_DOTFILES:-}" != "1" ] && com
   done
 fi
 if [ -L ~/.claude/skills ]; then rm -f ~/.claude/skills; fi
-mkdir -p ~/.agents/skills ~/.claude/skills ~/.zcode/skills
-if [ -d ~/.gemini/config/skills ] && [ ! -L ~/.gemini/config/skills ]; then
+mkdir -p ~/.agents/skills ~/.claude/skills
+# Retire legacy ~/.gemini/GEMINI.md symlinks (only recognized legacy links; never delete user regular files).
+if [ -L ~/.gemini/GEMINI.md ]; then
+  _gem_md_raw="$(readlink ~/.gemini/GEMINI.md 2>/dev/null || true)"
+  case "${_gem_md_raw}" in
+    *"/.agents/AGENTS.md"*|*"/AGENTS.md"*|*"dotfiles-v2"*|*"/.gemini/config/AGENTS.md"*)
+      rm -f ~/.gemini/GEMINI.md ;;
+  esac
+elif [ -e ~/.gemini/GEMINI.md ]; then
+  echo "WARN: ~/.gemini/GEMINI.md is a non-symlink file; merge custom notes into ~/.agents/AGENTS.md and remove manually" >&2
+fi
+# Retire the legacy ~/.gemini/config/skills mirror: agy 1.5.16 discovers ~/.agents/skills natively.
+if [ -L ~/.gemini/config/skills ]; then
+  _gem_sk_raw="$(readlink ~/.gemini/config/skills 2>/dev/null || true)"
+  case "${_gem_sk_raw}" in
+    *"/.agents/skills"*|"../../.agents/skills"*|*"dotfiles-v2"*)
+      rm -f ~/.gemini/config/skills ;;
+    *)
+      echo "WARN: leaving custom symlink ~/.gemini/config/skills -> ${_gem_sk_raw}" >&2 ;;
+  esac
+elif [ -d ~/.gemini/config/skills ]; then
   rm -f ~/.gemini/config/skills/.DS_Store
   for d in ~/.gemini/config/skills/*; do
     [ -e "$d" ] || [ -L "$d" ] || continue
     b="$(basename "$d")"
     if [ -d "$d" ] && [ ! -L "$d" ]; then rm -f "$d/.DS_Store"; fi
-    if [ -d "$d" ] && [ ! -L "$d" ] && [ -L "$d/SKILL.md" ] && [ "$(ls -A "$d" | wc -l)" -eq 1 ]; then
+    _is_legacy=0
+    if [ -L "$d" ]; then
+      _dtgt="$(readlink "$d" 2>/dev/null || true)"
+      case "${_dtgt}" in
+        *"/.agents/skills/"*|*"../../.agents/skills/"*|*"dotfiles-v2"*"/.agents/skills/"*|*"/mise/installs/"*) _is_legacy=1 ;;
+      esac
+    elif [ -d "$d" ] && [ -L "$d/SKILL.md" ] && [ "$(ls -A "$d" | wc -l)" -eq 1 ]; then
+      _stgt="$(readlink "$d/SKILL.md" 2>/dev/null || true)"
+      case "${_stgt}" in
+        *"/.agents/skills/"*|*"../../.agents/skills/"*|*"dotfiles-v2"*"/.agents/skills/"*|*"/mise/installs/"*) _is_legacy=1 ;;
+      esac
+    fi
+    if [ "${_is_legacy}" -eq 1 ]; then
       rm -rf "$d"
     elif [ ! -e ~/.agents/skills/"$b" ] && [ ! -L ~/.agents/skills/"$b" ]; then
       mv "$d" ~/.agents/skills/"$b"
     fi
   done
-  rmdir ~/.gemini/config/skills
+  rmdir ~/.gemini/config/skills 2>/dev/null || echo "WARN: ~/.gemini/config/skills still holds non-migrated entries; inspect manually" >&2
 fi
 '''
 
@@ -289,6 +328,9 @@ fi
 mode = "0700"
 
 [bootstrap.directories."~/.codex"]
+mode = "0700"
+
+[bootstrap.directories."~/.hermes"]
 mode = "0700"
 
 [bootstrap.directories."~/.config/board"]

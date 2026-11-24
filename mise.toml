@@ -345,9 +345,14 @@ def has_target(target_key: str) -> bool:
 for key in (
     "~/.agents/skills/vercel-board",
     "~/.claude/skills/vercel-board",
-    "~/.gemini/config/skills",
+    "~/.agents/AGENTS.md",
 ):
     assert has_target(key), f"Missing {key} across unix/home/.config/mise/config*.toml [dotfiles]/[dotfile_groups] and bootstrap:skills"
+assert "~/.gemini/config/skills" not in all_dotfiles, "Retired ~/.gemini/config/skills mirror must not be declared in [dotfiles]"
+assert (
+    "av_args=(skills install --harness agents --force)" in skills_task_txt
+    and 'agentsview "${av_args[@]}"' in skills_task_txt
+), "bootstrap:skills must install the official agentsview skill for ~/.agents"
 deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
 PY

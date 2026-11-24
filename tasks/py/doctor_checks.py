@@ -544,6 +544,7 @@ def check_host_option_a(
     # no-legacy-symlinks + orphan check (bounded depth across managed trees)
     scan_roots = (
         home / ".config" / "mise",
+        home / ".agents" / "AGENTS.md",
         home / ".config" / "agents",
         home / ".codex",
         home / ".local" / "bin",
@@ -554,7 +555,9 @@ def check_host_option_a(
         home / ".config" / "zsh",
         home / ".config" / "starship.toml",
         home / ".zshenv",
+        home / ".claude" / "CLAUDE.md",
         home / ".gemini" / "GEMINI.md",
+        home / ".gemini" / "config" / "AGENTS.md",
         home / ".gemini" / "config" / "hooks",
         home / ".gemini" / "config" / "rules",
         home / ".agents" / "skills",
@@ -1647,9 +1650,13 @@ def _check_dotfiles_parity(repo_root: Path, mise_dir: Path) -> list[str]:
             for target_key, dspec in dotfiles.items():
                 if not isinstance(target_key, str):
                     continue
-                declared_targets.add(target_key)
                 if not isinstance(dspec, dict) or "block" in dspec or "line" in dspec:
+                    declared_targets.add(target_key)
                     continue
+                if dspec.get("mode") == "absent":
+                    # `mode = "absent"` removes a target and cannot satisfy a source dependency.
+                    continue
+                declared_targets.add(target_key)
                 src = dspec.get("source")
                 if isinstance(src, str) and src:
                     if src.startswith("~/"):
@@ -2236,12 +2243,26 @@ def check_skills_6harness_parity(repo_root: Path) -> tuple[list[str], str]:
     agents_skills = home / ".agents" / "skills"
     gemini_skills = home / ".gemini" / "config" / "skills"
     claude_skills = home / ".claude" / "skills"
-    if not gemini_skills.is_symlink() or gemini_skills.resolve(
-        strict=False
-    ) != agents_skills.resolve(strict=False):
+    if gemini_skills.exists() or gemini_skills.is_symlink():
         errors.append(
-            f"skills-6harness-parity: ~/.gemini/config/skills ({gemini_skills.resolve(strict=False)}) must symlink to {agents_skills}"
+            f"skills-6harness-parity: legacy {gemini_skills} still present; agy reads {agents_skills} natively (run `mise run host:sync-gemini`)"
         )
+    if shutil.which("agentsview"):
+        av_skill = agents_skills / "agentsview-finding-history"
+        if not (av_skill / "SKILL.md").is_file() or av_skill.is_symlink():
+            errors.append(
+                "skills-6harness-parity: ~/.agents/skills/agentsview-finding-history must be a real agentsview-managed dir (run `mise run bootstrap:skills`)"
+            )
+        if not (claude_skills / "agentsview-finding-history").is_symlink():
+            errors.append(
+                "skills-6harness-parity: ~/.claude/skills/agentsview-finding-history must symlink to ../../.agents/skills/agentsview-finding-history"
+            )
+    for skill in required_skills:
+        host_req = agents_skills / skill
+        if not (host_req / "SKILL.md").is_file():
+            errors.append(
+                f"skills-6harness-parity: missing canonical host skill ~/.agents/skills/{skill}/SKILL.md (run `mise run bootstrap:skills`)"
+            )
     if agents_skills.is_dir():
         for skill_entry in sorted(agents_skills.iterdir()):
             if not (skill_entry / "SKILL.md").is_file():
@@ -2261,13 +2282,20 @@ def check_skills_6harness_parity(repo_root: Path) -> tuple[list[str], str]:
                     f"skills-6harness-parity: ~/.claude/skills/{skill_entry.name} missing/invalid against {skill_entry}"
                 )
     zcode_skills = home / ".zcode" / "skills"
-    if zcode_skills.is_dir():
-        for req in required_skills:
-            if not (
-                (zcode_skills / req).exists()
-                and ((zcode_skills / req / "SKILL.md").is_file())
+    if zcode_skills.is_symlink():
+        if zcode_skills.resolve(strict=False) == agents_skills.resolve(strict=False):
+            errors.append(
+                f"skills-6harness-parity: stale ~/.zcode/skills root symlink -> {agents_skills}; zcode reads ~/.agents/skills natively"
+            )
+    elif zcode_skills.is_dir():
+        for stale in sorted(zcode_skills.iterdir()):
+            if (
+                stale.is_symlink()
+                and os.readlink(stale) == f"../../.agents/skills/{stale.name}"
             ):
-                errors.append(f"skills-6harness-parity: ~/.zcode/skills/{req} missing")
+                errors.append(
+                    f"skills-6harness-parity: stale ~/.zcode/skills/{stale.name} mirror; zcode reads ~/.agents/skills natively"
+                )
     hermes_cfg = home / ".hermes" / "config.yaml"
     if hermes_cfg.is_file():
         htext = hermes_cfg.read_text(encoding="utf-8", errors="replace")

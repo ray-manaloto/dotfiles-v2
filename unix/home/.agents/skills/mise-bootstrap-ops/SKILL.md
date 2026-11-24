@@ -50,7 +50,9 @@ description: >-
   (`container:up`, `vm:up` with `#MISE secrets=["TAILSCALE_API_KEY"]`) resolve
   secrets natively; headless Linux/VM use `config.headless.toml` without Keychain.
 - Keep `0` global MCPs across harnesses (CLI+Skill first: `find-docs`, `exa-search`,
-  `firecrawl`, `apify-ultimate-scraper`, `agentsview-finding-history`, `toolchain-update-review`),
+  `firecrawl`, `apify-ultimate-scraper`, `toolchain-update-review`, plus the
+  official `agentsview-finding-history` installed by `bootstrap:skills` via
+  `agentsview skills install --harness agents --force`),
   preserve `NODE_EXTRA_CA_CERTS` under `fnox proxy run` for Node 26 CLIs, and on
   Env 2-4 guests use `env -u ALL_PROXY -u all_proxy HTTPS_PROXY=http://127.0.0.1:1055 NODE_USE_ENV_PROXY=1`.
 

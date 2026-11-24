@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-#MISE description="Sync or verify unix/home/.gemini/config/ hooks/rules/hooks.json and unix/home/.agents/skills/ across ~/.agents, ~/.claude, ~/.zcode, and ~/.gemini"
-#USAGE flag "--check" help="Verify local ~/.gemini/config/, ~/.agents/skills/, ~/.claude/skills/, and ~/.zcode/skills/ match repo without modifying files"
+#MISE description="Sync or verify unix/home/.gemini/config/ hooks/rules/hooks.json and unix/home/.agents/skills/ across ~/.agents and ~/.claude (retiring legacy ~/.gemini/config/skills and ~/.zcode/skills mirrors)"
+#USAGE flag "--check" help="Verify local ~/.gemini/config/, ~/.agents/skills/, and ~/.claude/skills/ match repo (and legacy mirrors are retired) without modifying files"
 set -euo pipefail
 
 check_mode="${usage_check:-false}"
 exec python3 - "${check_mode}" <<'PY'
+import errno
 import fnmatch
 import json
 import os
@@ -109,10 +110,12 @@ for rel in managed_rels:
 for key in (
     "~/.gemini/config/hooks.json/dotfiles-v2",
     "~/.gemini/antigravity-cli/settings.json/orchestrator-neon",
-    "~/.gemini/config/skills",
+    "~/.gemini/config/AGENTS.md",
 ):
     if key not in dotfiles_tbl:
         missing_dotfiles.append(key)
+if "~/.gemini/config/skills" in dotfiles_tbl:
+    missing_dotfiles.append("~/.gemini/config/skills (retired: remove from [dotfiles])")
 
 for sk in skill_names:
     if not _skill_registered(sk):
@@ -138,6 +141,24 @@ repo_hooks_path = src_cfg / "hooks.json"
 repo_hooks = json.loads(repo_hooks_path.read_text(encoding="utf-8"))
 host_hooks_path = host_cfg / "hooks.json"
 
+def _is_legacy_gemini_skill_target(raw_target: str, resolved_target: Path) -> bool:
+    markers = ("/.agents/skills/", "../../.agents/skills/", "/mise/installs/")
+    norm_raw = raw_target.replace("\\", "/")
+    norm_res = str(resolved_target).replace("\\", "/")
+    if any(m in norm_raw or m in norm_res for m in markers):
+        return True
+    agents_root = str(host_agents_skills.resolve(strict=False))
+    return norm_res == agents_root or norm_res.startswith(agents_root + "/")
+
+
+def _is_legacy_gemini_md_target(raw_target: str, resolved_target: Path) -> bool:
+    norm = f"{raw_target} {resolved_target}".replace("\\", "/")
+    return any(
+        tok in norm
+        for tok in ("/.agents/AGENTS.md", "/.gemini/config/AGENTS.md", "dotfiles-v2")
+    )
+
+
 if check_only:
     errors: list[str] = []
     for rel in managed_rels:
@@ -149,16 +170,56 @@ if check_only:
         if dst.resolve() not in allowed_srcs:
             errors.append(f"drifted symlink {dst} -> {dst.resolve()}")
 
+    legacy_gemini_md = host_home / ".gemini" / "GEMINI.md"
+    if legacy_gemini_md.is_symlink() and _is_legacy_gemini_md_target(
+        os.readlink(legacy_gemini_md), legacy_gemini_md.resolve(strict=False)
+    ):
+        errors.append(f"legacy symlink {legacy_gemini_md} still present")
+
     gemini_skills = host_cfg / "skills"
-    if not gemini_skills.is_symlink() or gemini_skills.resolve(strict=False) != host_agents_skills.resolve(strict=False):
-        errors.append(f"{gemini_skills} must symlink to {host_agents_skills}")
-    for mirror_dir in (host_claude_skills, host_zcode_skills):
-        if mirror_dir.is_symlink():
-            errors.append(f"{mirror_dir} must be a real directory, not a symlink")
+    if gemini_skills.is_symlink():
+        if _is_legacy_gemini_skill_target(
+            os.readlink(gemini_skills), gemini_skills.resolve(strict=False)
+        ):
+            errors.append(
+                f"legacy {gemini_skills} still present (agy discovers ~/.agents/skills natively)"
+            )
+    elif gemini_skills.is_dir():
+        for child in sorted(gemini_skills.iterdir()):
+            if child.name == ".DS_Store":
+                continue
+            if child.is_symlink() and _is_legacy_gemini_skill_target(
+                os.readlink(child), child.resolve(strict=False)
+            ):
+                errors.append(f"legacy {child} still present (agy discovers ~/.agents/skills natively)")
+            elif child.is_dir():
+                sub = [c.name for c in child.iterdir() if c.name != ".DS_Store"]
+                if (
+                    sub == ["SKILL.md"]
+                    and (child / "SKILL.md").is_symlink()
+                    and _is_legacy_gemini_skill_target(
+                        os.readlink(child / "SKILL.md"),
+                        (child / "SKILL.md").resolve(strict=False),
+                    )
+                ):
+                    errors.append(
+                        f"legacy {child} still present (agy discovers ~/.agents/skills natively)"
+                    )
+    if host_claude_skills.is_symlink():
+        errors.append(f"{host_claude_skills} must be a real directory, not a symlink")
+    if host_zcode_skills.is_symlink():
+        if host_zcode_skills.resolve(strict=False) == host_agents_skills.resolve(strict=False):
+            errors.append(
+                f"stale zcode skill root symlink {host_zcode_skills} (zcode reads ~/.agents/skills natively)"
+            )
+    elif host_zcode_skills.is_dir():
+        for stale in sorted(host_zcode_skills.iterdir()):
+            if stale.is_symlink() and os.readlink(stale) == f"../../.agents/skills/{stale.name}":
+                errors.append(f"stale zcode skill mirror {stale} (zcode reads ~/.agents/skills natively)")
 
     for sk in skill_names:
         allowed_skill_srcs = {(src_skills / sk).resolve(), (main_src_skills / sk).resolve()}
-        for root_dir in (host_agents_skills, host_claude_skills, host_zcode_skills):
+        for root_dir in (host_agents_skills, host_claude_skills):
             dst = root_dir / sk
             if not dst.is_symlink():
                 errors.append(f"missing or non-symlink skill dir {dst}")
@@ -203,43 +264,88 @@ for rel in managed_rels:
     linked += 1
 
 host_agents_skills.mkdir(parents=True, exist_ok=True)
-for mirror_dir in (host_claude_skills, host_zcode_skills):
-    if mirror_dir.is_symlink():
-        if mirror_dir.resolve(strict=False) == host_agents_skills.resolve(strict=False):
-            mirror_dir.unlink()
-        else:
-            raise RuntimeError(
-                f"Refusing to replace symlink {mirror_dir} -> {os.readlink(mirror_dir)}"
-            )
-    mirror_dir.mkdir(parents=True, exist_ok=True)
+if host_claude_skills.is_symlink():
+    if host_claude_skills.resolve(strict=False) == host_agents_skills.resolve(strict=False):
+        host_claude_skills.unlink()
+    else:
+        raise RuntimeError(
+            f"Refusing to replace symlink {host_claude_skills} -> {os.readlink(host_claude_skills)}"
+        )
+host_claude_skills.mkdir(parents=True, exist_ok=True)
 
+# Retire recognized legacy ~/.gemini/GEMINI.md symlinks without touching regular user files.
+legacy_gemini_md = host_home / ".gemini" / "GEMINI.md"
+if legacy_gemini_md.is_symlink() and _is_legacy_gemini_md_target(
+    os.readlink(legacy_gemini_md), legacy_gemini_md.resolve(strict=False)
+):
+    legacy_gemini_md.unlink()
+
+# Retire only recognized legacy ~/.gemini/config/skills mirrors (agy 1.5.16 reads ~/.agents/skills natively).
 gemini_skills = host_cfg / "skills"
 if gemini_skills.is_symlink():
-    if gemini_skills.resolve(strict=False) != host_agents_skills.resolve(strict=False):
+    if _is_legacy_gemini_skill_target(
+        os.readlink(gemini_skills), gemini_skills.resolve(strict=False)
+    ):
         gemini_skills.unlink()
-        os.symlink("../../.agents/skills", gemini_skills)
+    else:
+        raise RuntimeError(
+            f"Refusing to remove custom symlink {gemini_skills} -> {os.readlink(gemini_skills)}"
+        )
 elif gemini_skills.is_dir():
     non_legacy = []
-    for child in gemini_skills.iterdir():
+    for child in sorted(gemini_skills.iterdir()):
         if child.name == ".DS_Store":
+            child.unlink()
+            continue
+        if child.is_symlink() and _is_legacy_gemini_skill_target(
+            os.readlink(child), child.resolve(strict=False)
+        ):
+            child.unlink()
             continue
         if child.is_dir() and not child.is_symlink():
-            sub = [c.name for c in child.iterdir() if c.name != ".DS_Store"]
-            if sub == ["SKILL.md"] and (child / "SKILL.md").is_symlink():
+            ds = child / ".DS_Store"
+            if ds.is_file():
+                ds.unlink()
+            sub = [c.name for c in child.iterdir()]
+            if (
+                sub == ["SKILL.md"]
+                and (child / "SKILL.md").is_symlink()
+                and _is_legacy_gemini_skill_target(
+                    os.readlink(child / "SKILL.md"),
+                    (child / "SKILL.md").resolve(strict=False),
+                )
+            ):
+                shutil.rmtree(child)
                 continue
         non_legacy.append(child.name)
     if non_legacy:
         raise RuntimeError(
             f"Refusing to delete non-legacy entries in {gemini_skills}: {', '.join(sorted(non_legacy))}"
         )
-    shutil.rmtree(gemini_skills)
-    os.symlink("../../.agents/skills", gemini_skills)
+    try:
+        gemini_skills.rmdir()
+    except OSError as exc:
+        if exc.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
+            raise
 elif gemini_skills.exists():
-    gemini_skills.unlink()
-    os.symlink("../../.agents/skills", gemini_skills)
-else:
-    gemini_skills.parent.mkdir(parents=True, exist_ok=True)
-    os.symlink("../../.agents/skills", gemini_skills)
+    raise RuntimeError(f"Refusing to remove non-legacy file {gemini_skills}")
+
+# Retire ~/.zcode/skills mirrors created by earlier bootstrap:skills runs (zcode reads ~/.agents/skills).
+zcode_retired = 0
+if host_zcode_skills.is_symlink():
+    if host_zcode_skills.resolve(strict=False) == host_agents_skills.resolve(strict=False):
+        host_zcode_skills.unlink()
+        zcode_retired += 1
+elif host_zcode_skills.is_dir():
+    for stale in sorted(host_zcode_skills.iterdir()):
+        if stale.is_symlink() and os.readlink(stale) == f"../../.agents/skills/{stale.name}":
+            stale.unlink()
+            zcode_retired += 1
+    try:
+        host_zcode_skills.rmdir()
+    except OSError as exc:
+        if exc.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
+            raise
 
 def link_skill_dir(src: Path, dst: Path, *, raw_target: str | None = None) -> int:
     target = raw_target or str(src)
@@ -264,7 +370,6 @@ for sk in skill_names:
     src = (src_skills / sk).resolve()
     skills_linked += link_skill_dir(src, host_agents_skills / sk)
     skills_linked += link_skill_dir(src, host_claude_skills / sk, raw_target=f"../../.agents/skills/{sk}")
-    skills_linked += link_skill_dir(src, host_zcode_skills / sk, raw_target=f"../../.agents/skills/{sk}")
 
 host_cfg.mkdir(parents=True, exist_ok=True)
 host_hooks = {}
@@ -282,7 +387,8 @@ if hooks_changed or not host_hooks_path.is_file():
 
 print(
     f"Synced {len(managed_rels)} ~/.gemini/config file(s) ({linked} updated), "
-    f"{len(skill_names)} canonical skill dir(s) ({skills_linked} link(s) updated), "
+    f"{len(skill_names)} canonical skill dir(s) ({skills_linked} link(s) updated, "
+    f"{zcode_retired} legacy zcode mirror(s) retired), "
     f"and {len(repo_hooks)} hooks.json key(s) (changed={hooks_changed})"
 )
 PY

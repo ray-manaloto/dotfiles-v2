@@ -98,6 +98,7 @@ def _discover_skill_files() -> list[Path]:
                 candidates.append(skill_md)
 
     for extra_root in (
+        _home() / ".agents" / "skills",
         cfg_dir / "skills",
         gemini_dir / "skills",
         gemini_dir / "antigravity-cli" / "builtin" / "skills",

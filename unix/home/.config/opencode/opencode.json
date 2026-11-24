@@ -3,6 +3,7 @@
   "model": "opencode/deepseek-v4.1-flash-free",
   "share": "disabled",
   "update": "disable",
+  "instructions": ["~/.agents/AGENTS.md", "~/.config/opencode/AGENTS.md"],
   "compaction": {
     "background": false
   }

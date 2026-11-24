@@ -341,7 +341,40 @@ def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
     )
 
     if os.uname().sysname == "Darwin":
-        proc = subprocess.run(
+        # agy 1.5.16 prints `Daemon state = running`; older builds print `Daemon status: running`.
+        for status_line in ("Daemon state = running", "Daemon status: running"):
+            _make_stub(
+                bin_stub,
+                "agy",
+                'if [ "$1" = "remote-control" ] && [ "$2" = "status" ]; then echo "'
+                + status_line
+                + '"; exit 0; fi; exit 1',
+            )
+            proc = subprocess.run(
+                ["bash", str(guard_script)],
+                env={
+                    "HOME": str(fake_home),
+                    "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                    "usage_check": "true",
+                    "usage_json": "true",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert proc.returncode == 0, status_line + proc.stdout + proc.stderr
+            parsed = json.loads(proc.stdout)
+            assert parsed["token_ok"] is True
+            assert parsed["rc_running"] is True, status_line
+            assert parsed["issues"] == []
+
+        # Nonzero exit status from `agy remote-control status` fails even if text matches.
+        _make_stub(
+            bin_stub,
+            "agy",
+            'if [ "$1" = "remote-control" ] && [ "$2" = "status" ]; then echo "Daemon state = running"; exit 1; fi; exit 1',
+        )
+        nz_proc = subprocess.run(
             ["bash", str(guard_script)],
             env={
                 "HOME": str(fake_home),
@@ -353,11 +386,8 @@ def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
             text=True,
             check=False,
         )
-        assert proc.returncode == 0, proc.stdout + proc.stderr
-        parsed = json.loads(proc.stdout)
-        assert parsed["token_ok"] is True
-        assert parsed["rc_running"] is True
-        assert parsed["issues"] == []
+        assert nz_proc.returncode == 1
+        assert json.loads(nz_proc.stdout)["rc_running"] is False
 
         # #1269 stuck loaded LaunchAgent triggers launchctl kickstart -k (not stop/start)
         rc_log = tmp_path / "rc.log"
@@ -523,3 +553,187 @@ def test_env_enter_falls_back_to_docker_when_tailscale_ssh_unavailable(
     assert "/bin/zsh -lc" in vm_txt
     assert "exit 1" in shell_txt
     assert "exit 1" in vm_txt
+
+
+def test_sync_gemini_and_6harness_parity_retire_legacy_mirrors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tasks_py_loader import load_module
+
+    doc_mod = load_module("doctor_checks")
+    fx_repo = tmp_path / "fx_repo"
+    fx_mise = fx_repo / "unix" / "home" / ".config" / "mise"
+    fx_mise.mkdir(parents=True)
+    (fx_repo / "unix" / "home" / ".zshenv").write_text("# zshenv\n", encoding="utf-8")
+    fx_prog = fx_repo / "unix" / "home" / ".config" / "herdr-app"
+    fx_prog.mkdir(parents=True)
+    (fx_prog / "programs.json").write_text(
+        json.dumps(
+            {
+                "programs": {
+                    "antigravity": {"run": ["agy"]},
+                    "codex": {"run": ["codex", "--no-daemon"]},
+                    "opencode": {"run": ["opencode", "--standalone"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (fx_mise / "config.toml").write_text(
+        '[dotfiles]\n"~/.zshenv" = { main_checkout = true }\n'
+        '"~/.config/herdr-app/programs.json" = { main_checkout = true }\n'
+        '"~/.gemini/GEMINI.md" = { mode = "absent" }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    assert doc_mod.check_config_hygiene(fx_repo) == []
+
+    # An `absent` target must NOT satisfy another entry's `source` dependency.
+    (fx_mise / "config.toml").write_text(
+        '[dotfiles]\n"~/.zshenv" = { main_checkout = true }\n'
+        '"~/.config/herdr-app/programs.json" = { main_checkout = true }\n'
+        '"~/.gemini/GEMINI.md" = { mode = "absent" }\n'
+        '"~/.gemini/config/AGENTS.md" = { source = "~/.gemini/GEMINI.md" }\n',
+        encoding="utf-8",
+    )
+    absent_dep_errs = doc_mod.check_config_hygiene(fx_repo)
+    assert any("undeclared tilde source" in e for e in absent_dep_errs)
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".gemini" / "config" / "skills" / "pwf-status").mkdir(parents=True)
+    (
+        (fake_home / ".gemini" / "config" / "skills" / "pwf-status") / "SKILL.md"
+    ).symlink_to("../../.agents/skills/pwf-status/SKILL.md")
+    zcode_skills = fake_home / ".zcode" / "skills"
+    zcode_skills.mkdir(parents=True)
+    (zcode_skills / "pwf-status").symlink_to("../../.agents/skills/pwf-status")
+    (zcode_skills / "custom-alias").symlink_to("../../.agents/skills/vercel-board")
+    (zcode_skills / "custom-user-skill").mkdir()
+    (zcode_skills / "custom-user-skill" / "SKILL.md").write_text(
+        "# custom\n", encoding="utf-8"
+    )
+
+    test_path = f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/sbin:/sbin"
+    apply_proc = subprocess.run(
+        ["bash", str(TASKS_DIR / "host" / "sync-gemini")],
+        cwd=REPO_ROOT,
+        env={
+            "HOME": str(fake_home),
+            "PATH": test_path,
+            "usage_check": "false",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "legacy zcode mirror(s) retired" in apply_proc.stdout
+    assert not (fake_home / ".gemini" / "config" / "skills").exists()
+    assert not (zcode_skills / "pwf-status").is_symlink()
+    assert (zcode_skills / "custom-alias").is_symlink()
+    assert (zcode_skills / "custom-user-skill" / "SKILL.md").is_file()
+
+    check_proc = subprocess.run(
+        ["bash", str(TASKS_DIR / "host" / "sync-gemini")],
+        cwd=REPO_ROOT,
+        env={
+            "HOME": str(fake_home),
+            "PATH": test_path,
+            "usage_check": "true",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "OK:" in check_proc.stdout
+
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setattr(
+        doc_mod,
+        "_is_dotfiles_v2_mise_cutover",
+        lambda home, repo_root=None: (True, "ok"),
+    )
+    monkeypatch.setattr(
+        doc_mod.shutil,
+        "which",
+        lambda name: "/usr/local/bin/agentsview" if name == "agentsview" else None,
+    )
+
+    missing_av, _ = doc_mod.check_skills_6harness_parity(REPO_ROOT)
+    assert any("agentsview-finding-history must be a real" in e for e in missing_av)
+
+    av_dir = fake_home / ".agents" / "skills" / "agentsview-finding-history"
+    av_dir.mkdir(parents=True)
+    (av_dir / "SKILL.md").write_text("# agentsview\n", encoding="utf-8")
+    # Real Claude dir (not symlink) fails the agentsview symlink assertion.
+    claude_av_dir = fake_home / ".claude" / "skills" / "agentsview-finding-history"
+    claude_av_dir.mkdir(parents=True)
+    (claude_av_dir / "SKILL.md").write_text("# agentsview\n", encoding="utf-8")
+    bad_claude_errs, _ = doc_mod.check_skills_6harness_parity(REPO_ROOT)
+    assert any(
+        "~/.claude/skills/agentsview-finding-history must symlink" in e
+        for e in bad_claude_errs
+    )
+    (claude_av_dir / "SKILL.md").unlink()
+    claude_av_dir.rmdir()
+    claude_av_dir.symlink_to("../../.agents/skills/agentsview-finding-history")
+    clean_errs, _ = doc_mod.check_skills_6harness_parity(REPO_ROOT)
+    assert clean_errs == []
+
+    # Missing canonical required skill on host fails 6-harness parity.
+    saved_req = (fake_home / ".agents" / "skills" / "pwf-status").resolve()
+    (fake_home / ".agents" / "skills" / "pwf-status").unlink()
+    missing_req_errs, _ = doc_mod.check_skills_6harness_parity(REPO_ROOT)
+    assert any(
+        "missing canonical host skill ~/.agents/skills/pwf-status" in e
+        for e in missing_req_errs
+    )
+    (fake_home / ".agents" / "skills" / "pwf-status").symlink_to(saved_req)
+
+    # Reintroducing a legacy same-name ~/.zcode/skills mirror trips 6-harness parity.
+    (zcode_skills / "pwf-status").symlink_to("../../.agents/skills/pwf-status")
+    stale_errs, _ = doc_mod.check_skills_6harness_parity(REPO_ROOT)
+    assert any("stale ~/.zcode/skills/pwf-status" in e for e in stale_errs)
+    (zcode_skills / "pwf-status").unlink()
+
+    # Whole-directory ~/.zcode/skills symlink to ~/.agents/skills also fails.
+    (zcode_skills / "custom-user-skill" / "SKILL.md").unlink()
+    (zcode_skills / "custom-user-skill").rmdir()
+    (zcode_skills / "custom-alias").unlink()
+    zcode_skills.rmdir()
+    zcode_skills.symlink_to(fake_home / ".agents" / "skills")
+    root_zcode_errs, _ = doc_mod.check_skills_6harness_parity(REPO_ROOT)
+    assert any("stale ~/.zcode/skills root symlink" in e for e in root_zcode_errs)
+
+    # Git config [hook] blocks in unix/home/.config/mise/config.toml must parse cleanly without `;` comment truncation.
+    import tomllib
+
+    mise_cfg = tomllib.loads(
+        (REPO_ROOT / "unix" / "home" / ".config" / "mise" / "config.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    gc = tmp_path / "gitconfig"
+    gc.write_text(
+        mise_cfg["dotfiles"]["~/.gitconfig/gh-doctor"]["block"]
+        + "\n"
+        + mise_cfg["dotfiles"]["~/.gitconfig/hk"]["block"],
+        encoding="utf-8",
+    )
+    pre_commit_cmd = subprocess.check_output(
+        ["git", "config", "--file", str(gc), "--get", "hook.hk-pre-commit.command"],
+        text=True,
+    ).strip()
+    pre_push_cmd = subprocess.check_output(
+        [
+            "git",
+            "config",
+            "--file",
+            str(gc),
+            "--get",
+            "hook.gh-doctor-pre-push.command",
+        ],
+        text=True,
+    ).strip()
+    assert pre_commit_cmd.endswith("hk run pre-commit --from-hook --staged")
+    assert pre_push_cmd.endswith("doctor project'")

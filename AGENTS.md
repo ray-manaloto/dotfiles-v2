@@ -75,7 +75,13 @@ and C++26 workstation setup.
   `agy`, `opencode`, `zcode`), run `mise run board:up` (`pitchfork`-supervised
   `@vercel/board`), use CLI+Skill first with `0` global MCPs across harnesses
   (keeping `openwiki mcp` repo-local to `knowledge-base-v2`), keep canonical repo
-  skills under `unix/home/.agents/skills/` with `~/.gemini/config/skills -> ~/.agents/skills`,
+  skills under `unix/home/.agents/skills/` (discovered natively by `agy`, `codex`,
+  `opencode`, `zcode`, and Hermes `external_dirs`; no `~/.gemini/config/skills` or
+  `~/.zcode/skills` mirrors) and the shared rules in `unix/home/.agents/AGENTS.md`
+  (rendered per harness into `~/.gemini/config/AGENTS.md`, `~/.claude/CLAUDE.md`,
+  `~/.codex/AGENTS.md`, `~/.zcode/AGENTS.md`, OpenCode `instructions`, and a
+  `~/.hermes/SOUL.md` block), install the official `agentsview-finding-history`
+  skill via `agentsview skills install --harness agents`,
   and mirror `mise skills sync --global --prune` (`aube`, `communique`, `flint`,
   `fnox`, `hk-configure`, `hk-debug`, `pitchfork`, `usage`) into `~/.claude/skills/`
   via `bootstrap:skills`. Pass `NODE_EXTRA_CA_CERTS` (with `fnox proxy run`) for

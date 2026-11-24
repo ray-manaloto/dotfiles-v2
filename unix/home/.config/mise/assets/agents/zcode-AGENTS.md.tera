@@ -1,0 +1,13 @@
+{{ read_file(path="../../.agents/AGENTS.md") | trim }}
+
+## ZCode-Specific Instructions
+
+- Validate configuration with `zcode doctor --json` (expect
+  `configuration.ok == true`, `user.status == "loaded"`, empty `diagnostics`)
+  after any change to `~/.zcode/cli/setting.json`.
+- Keep `~/.zcode/cli/setting.json` managed by `dotfiles-v2`; its
+  `skills.roots` already include `~/.agents/skills`, so never create
+  `~/.zcode/skills/` mirrors.
+- Pass explicit `--model` and `--effort` on headless runs (for example
+  `zcode --prompt "..." --model account:zai-start-plan/GLM-5.3-Flash --effort low --json </dev/null`)
+  and treat provider codes `1113`/`1005` as quota exhaustion, not failures.

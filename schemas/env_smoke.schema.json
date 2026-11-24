@@ -1,0 +1,418 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/env_smoke.schema.json",
+  "title": "EnvSmokeModels",
+  "description": "Schema-first models, enums, and typed responses for quota-gated 6-harness AI CLI smoke tests (`env:smoke`).",
+  "$defs": {
+    "EnvSmokeHarness": {
+      "type": "string",
+      "description": "Smoke-tested native AI harness CLI.",
+      "enum": ["claude", "codex", "agy", "opencode", "zcode", "hermes"]
+    },
+    "EnvSmokeStatus": {
+      "type": "string",
+      "description": "Closed per-harness smoke status; only FAIL makes `env:smoke` exit non-zero.",
+      "enum": ["OK", "SKIP_QUOTA", "SKIP_RATE_LIMIT", "SKIP_MISSING", "FAIL"]
+    },
+    "EnvSmokeMode": {
+      "type": "string",
+      "description": "Run mode: `dry-run` (zero-token quota pre-flight only), `smoke` (one `Reply with exactly: OK` prompt), or `skill-check` (agentsview CLI-vs-MCP skill activation prompt).",
+      "enum": ["dry-run", "smoke", "skill-check"]
+    },
+    "EnvSmokeSkillVerdict": {
+      "type": "string",
+      "description": "Outcome of the `agentsview-finding-history` CLI-vs-MCP skill activation check.",
+      "enum": ["PASS", "FAIL_MCP_USED", "FAIL_NO_CLI"]
+    },
+    "EnvSmokeErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for env_smoke operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_COMMAND_FAILED",
+        "ERR_TIMEOUT",
+        "ERR_QUOTA_PROBE_FAILED",
+        "ERR_SKILL_CHECK_FAILED"
+      ]
+    },
+    "EnvSmokeReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for env_smoke operations.",
+      "enum": ["RET_OK", "RET_SKIPPED", "RET_DRY_RUN", "RET_MODEL_FALLBACK", "RET_PARTIAL"]
+    },
+    "EnvSmokeErrorEntry": {
+      "type": "object",
+      "description": "Typed env_smoke domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/EnvSmokeErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "EnvSmokeReturnEntry": {
+      "type": "object",
+      "description": "Typed env_smoke domain return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/EnvSmokeReturnCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "EnvSmokeCommandResult": {
+      "type": "object",
+      "description": "Captured result of one bounded harness subprocess run.",
+      "additionalProperties": false,
+      "required": ["exit_code", "stdout", "stderr", "duration_ms", "timed_out"],
+      "properties": {
+        "exit_code": {
+          "type": ["integer", "null"],
+          "description": "Process exit code (`null` when the binary could not be started)."
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timed_out": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EnvSmokeQuotaWindow": {
+      "type": "object",
+      "description": "One provider quota window projected from a zero-token account meter.",
+      "additionalProperties": false,
+      "required": ["label", "remaining_percent"],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "remaining_percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "reset": {
+          "type": ["string", "null"],
+          "description": "ISO-8601 reset time derived from the provider payload (never hardcoded).",
+          "default": null
+        },
+        "group": {
+          "type": ["string", "null"],
+          "description": "Provider pool, bucket, or model scope for this window.",
+          "default": null
+        }
+      }
+    },
+    "EnvSmokeQuotaReading": {
+      "type": "object",
+      "description": "Zero-token quota pre-flight reading and gate decision for one harness.",
+      "additionalProperties": false,
+      "required": ["available", "probe_ok", "checked_at"],
+      "properties": {
+        "available": {
+          "type": "boolean",
+          "description": "Whether the smoke prompt may run (quota or free tier available)."
+        },
+        "probe_ok": {
+          "type": "boolean",
+          "description": "Whether the quota meter itself answered with a parseable payload."
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvSmokeQuotaWindow"
+          },
+          "default": []
+        },
+        "reset": {
+          "type": ["string", "null"],
+          "description": "Earliest ISO-8601 reset among exhausted windows when unavailable.",
+          "default": null
+        },
+        "model": {
+          "type": ["string", "null"],
+          "description": "Model selected for the smoke prompt after quota evaluation.",
+          "default": null
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "checked_at": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ISO-8601 time the quota decision was evaluated against."
+        }
+      }
+    },
+    "EnvSmokeSkillCheck": {
+      "type": "object",
+      "description": "Detected tool calls for the agentsview-finding-history skill activation check.",
+      "additionalProperties": false,
+      "required": ["verdict"],
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/EnvSmokeSkillVerdict"
+        },
+        "cli_calls": {
+          "type": "array",
+          "description": "Shell commands invoking the `agentsview` CLI.",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "mcp_calls": {
+          "type": "array",
+          "description": "MCP tool call names or kinds observed in harness output.",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "EnvSmokeHarnessOutcome": {
+      "type": "object",
+      "description": "Per-harness quota gate plus smoke or skill-check result.",
+      "additionalProperties": false,
+      "required": ["harness", "status", "timestamp", "timestamp_unix_ns", "errors", "returns"],
+      "properties": {
+        "harness": {
+          "$ref": "#/$defs/EnvSmokeHarness"
+        },
+        "status": {
+          "$ref": "#/$defs/EnvSmokeStatus"
+        },
+        "binary": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "model": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "command": {
+          "type": "array",
+          "description": "Prompt command argv (empty in dry-run or when skipped).",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "quota": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnvSmokeQuotaReading"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "exit_code": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "output_excerpt": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "skill_check": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnvSmokeSkillCheck"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvSmokeErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvSmokeReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "EnvSmokeSummary": {
+      "type": "object",
+      "description": "Aggregate status counters across smoke-tested harnesses.",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "ok",
+        "skip_quota",
+        "skip_rate_limit",
+        "skip_missing",
+        "fail",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ok": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skip_quota": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skip_rate_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skip_missing": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fail": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvSmokeErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvSmokeReturnEntry"
+          },
+          "default": []
+        }
+      }
+    },
+    "EnvSmokeResponse": {
+      "type": "object",
+      "description": "Top-level typed response envelope for `mise run env:smoke`.",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "mode",
+        "rc",
+        "summary",
+        "outcomes",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "$ref": "#/$defs/EnvSmokeMode"
+        },
+        "rc": {
+          "type": "integer"
+        },
+        "summary": {
+          "$ref": "#/$defs/EnvSmokeSummary"
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvSmokeHarnessOutcome"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvSmokeErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvSmokeReturnEntry"
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

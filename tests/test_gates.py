@@ -112,6 +112,7 @@ def _clean_git_env() -> dict[str, str]:
             env.pop(key, None)
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["XDG_CONFIG_HOME"] = "/dev/null"
     env["HK"] = "0"
     return env
 

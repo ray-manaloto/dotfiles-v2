@@ -1,0 +1,13 @@
+{{ read_file(path="../../.agents/AGENTS.md") | trim }}
+
+## Codex-Specific Instructions
+
+- Always pass `--no-daemon` when launching Codex in watched Herdr tabs
+  (`["codex", "--no-daemon", ...]`) so each tab owns its process.
+- Keep `[shell_environment_policy]` `inherit = "all"` (managed via the
+  `~/.codex/config.toml/shell-env-policy` merge) so scoped `fnox proxy run`
+  environments reach tool subprocesses.
+- Plugin hooks must stay trusted: after plugin installs or upgrades, verify the
+  hook-trust registry matches live `hooks/list` hashes (`codex-hook-trust`
+  doctor check) instead of bypassing trust.
+- Skills are discovered natively from `~/.agents/skills/`.

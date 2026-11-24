@@ -2,7 +2,7 @@
 #MISE description="Verify live state, isolation, symlinks, tools, Claude Code, OpenCode, ZCode, Tailscale SSH, and project doctor across pc, mac, and vm"
 #USAGE flag "--target <target>" default="all" help="Environment to check: pc, mac, vm, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
-#USAGE flag "--smoke" help="Run live Claude Code, OpenCode, and ZCode prompt tests across requested targets"
+#USAGE flag "--smoke" help="Run live Claude Code, OpenCode, and ZCode prompt tests across requested targets plus the host quota-gated 6-harness smoke (`mise run env:smoke`)"
 set -euo pipefail
 
 target="${usage_target:-all}"
@@ -158,14 +158,16 @@ cver="$(claude --version </dev/null | awk '{print $1}')"
 claude doctor </dev/null 2>&1 | grep -Fq "Running: native"
 test -w /home/dev/.local/share/opencode
 test "$(readlink -f /home/dev/.config/opencode/opencode.json)" = "/workspace/unix/home/.config/opencode/opencode.json"
-test "$(readlink -f /home/dev/.config/opencode/AGENTS.md)" = "/workspace/unix/home/.config/agents/AGENTS.md"
+test "$(readlink -f /home/dev/.config/opencode/AGENTS.md)" = "/workspace/unix/home/.config/opencode/AGENTS.md"
+test "$(readlink -f /home/dev/.claude/CLAUDE.md)" = "/workspace/unix/home/.claude/CLAUDE.md"
+grep -Fq "## Codex-Specific Instructions" /home/dev/.codex/AGENTS.md
 ocpath="$(command -v opencode)"
 test "${ocpath}" = "/home/dev/.opencode/bin/opencode"
 ocver="$(opencode --version </dev/null | awk '{print $NF}')"
 [[ "${ocver}" == v2.* || "${ocver}" == 2.* ]]
 test -w /home/dev/.zcode
 test "$(readlink -f /home/dev/.zcode/cli/setting.json)" = "/workspace/unix/home/.zcode/cli/setting.json"
-test "$(readlink -f /home/dev/.zcode/AGENTS.md)" = "/workspace/unix/home/.config/agents/AGENTS.md"
+grep -Fq "## ZCode-Specific Instructions" /home/dev/.zcode/AGENTS.md
 zpath="$(command -v zcode)"
 test "${zpath}" = "/opt/mise/shims/zcode"
 test -s "${ZCODE_CREDENTIAL_SECRET_FILE:-}"
@@ -174,8 +176,11 @@ test "$(wc -c < "${ZCODE_CREDENTIAL_SECRET_FILE}")" -ge 32
 zver="$(zcode --version </dev/null | awk '$1 == "zcode-app-cli" {print $2}')"
 test -n "${zver}"
 zcode doctor --json </dev/null | python3 -c 'import json, sys; cfg = json.load(sys.stdin).get("configuration", {}); assert cfg.get("ok") is True and cfg.get("user", {}).get("status") == "loaded" and cfg.get("diagnostics") == []'
-test -L /home/dev/.gemini/config/skills
-test "$(readlink -f /home/dev/.gemini/config/skills)" = "/home/dev/.agents/skills"
+test ! -e /home/dev/.gemini/config/skills
+test ! -L /home/dev/.gemini/config/skills
+test "$(readlink -f /home/dev/.gemini/config/AGENTS.md)" = "/workspace/unix/home/.agents/AGENTS.md"
+test ! -e /home/dev/.gemini/GEMINI.md
+test ! -L /home/dev/.gemini/GEMINI.md
 python3 - <<'PY'
 import json
 import os
@@ -208,7 +213,6 @@ PY
 for _sk in agy-session-ops aube communique flint fnox herdr-roll hk-configure hk-debug mise-bootstrap-ops pitchfork post-task-learn pwf-status usage vercel-board; do
 	test -f "/home/dev/.agents/skills/${_sk}/SKILL.md"
 	test -f "/home/dev/.claude/skills/${_sk}/SKILL.md"
-	test -f "/home/dev/.gemini/config/skills/${_sk}/SKILL.md"
 done
 mise -C ~ doctor --json | python3 -c 'import json, sys; d = json.load(sys.stdin); assert not d.get("errors") and not d.get("warnings"), d'
 vb_status="unconfigured"
@@ -325,7 +329,7 @@ link_oc="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(
 want_oc="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/opencode/opencode.json")"
 test "${link_oc}" = "${want_oc}"
 link_oc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.config/opencode/AGENTS.md")"
-want_oc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/agents/AGENTS.md")"
+want_oc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/opencode/AGENTS.md")"
 test "${link_oc_agents}" = "${want_oc_agents}"
 miss="$(mise -C "${HOME}/dev/dotfiles-v2" ls --missing | grep -vc '^Tool[[:space:]]' || true)"
 test "${miss}" -eq 0
@@ -349,16 +353,16 @@ ocver="$(/bin/bash -lc 'opencode --version </dev/null' | awk '{print $NF}')"
 link_zc="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.zcode/cli/setting.json")"
 want_zc="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.zcode/cli/setting.json")"
 test "${link_zc}" = "${want_zc}"
-link_zc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/.zcode/AGENTS.md")"
-want_zc_agents="$(python3 -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "${HOME}/dev/dotfiles-v2/unix/home/.config/agents/AGENTS.md")"
-test "${link_zc_agents}" = "${want_zc_agents}"
+grep -Fq "## ZCode-Specific Instructions" "${HOME}/.zcode/AGENTS.md"
+grep -Fq "## Codex-Specific Instructions" "${HOME}/.codex/AGENTS.md"
 zpath="$(/bin/bash -lc 'command -v zcode')"
 test "${zpath}" = "${HOME}/.local/share/mise/shims/zcode"
 /bin/bash -lc 'test -s "${ZCODE_CREDENTIAL_SECRET_FILE:-}" && test "$(stat -f "%Lp" "${ZCODE_CREDENTIAL_SECRET_FILE}")" = "600" && test "$(wc -c < "${ZCODE_CREDENTIAL_SECRET_FILE}")" -ge 32'
 zver="$(/bin/bash -lc 'zcode --version </dev/null' | awk '$1 == "zcode-app-cli" {print $2}')"
 test -n "${zver}"
 /bin/bash -lc 'zcode doctor --json </dev/null' | jq -e '.configuration.ok == true and .configuration.user.status == "loaded" and (.configuration.diagnostics | length == 0)' >/dev/null
-test -L "${HOME}/.gemini/config/skills"
+test ! -e "${HOME}/.gemini/config/skills"
+test ! -L "${HOME}/.gemini/config/skills"
 python3 - <<'PY'
 import json
 import os
@@ -366,7 +370,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-assert os.path.realpath(os.path.expanduser("~/.gemini/config/skills")) == os.path.realpath(os.path.expanduser("~/.agents/skills")), "~/.gemini/config/skills must resolve to ~/.agents/skills"
+assert os.path.realpath(os.path.expanduser("~/.gemini/config/AGENTS.md")) == os.path.realpath(os.path.expanduser("~/dev/dotfiles-v2/unix/home/.agents/AGENTS.md")), "~/.gemini/config/AGENTS.md must resolve to unix/home/.agents/AGENTS.md"
+assert not os.path.lexists(os.path.expanduser("~/.gemini/GEMINI.md")), "legacy ~/.gemini/GEMINI.md must be absent"
 LEGACY_MCPS = {
     "mcp-jdx", "mise", "hk", "pitchfork", "usage-mise",
     "firecrawl", "exa", "exa-web", "context7", "apify",
@@ -392,7 +397,6 @@ PY
 for _sk in agy-session-ops aube communique flint fnox herdr-roll hk-configure hk-debug mise-bootstrap-ops pitchfork post-task-learn pwf-status usage vercel-board; do
   test -f "${HOME}/.agents/skills/${_sk}/SKILL.md"
   test -f "${HOME}/.claude/skills/${_sk}/SKILL.md"
-  test -f "${HOME}/.gemini/config/skills/${_sk}/SKILL.md"
 done
 vb_status="unconfigured"
 if [[ -r "${HOME}/.config/board/env.sh" ]]; then
@@ -494,6 +498,14 @@ all)
 	exit 1
 	;;
 esac
+
+if [[ ${smoke} == "true" ]]; then
+	if mise run env:smoke </dev/null; then
+		pass_row "host" "quota-gated 6-harness smoke (mise run env:smoke)"
+	else
+		fail_row "host" "quota-gated 6-harness smoke failed (mise run env:smoke)"
+	fi
+fi
 
 if [[ ${fail_count} -ne 0 ]]; then
 	echo "env:doctor: ${fail_count} target(s) failed" >&2

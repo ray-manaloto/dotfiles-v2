@@ -32,7 +32,9 @@ hosts, Linux containers, and macOS VMs.
   `opencode`, `zcode`) using CLI+Skill workflows (`ctx7`, `apify`, `firecrawl`,
   `webclaw`, `agentsview`, `exa-search`, `agent-browser`,
   `mise`/`hk`/`pitchfork`/`usage`), leaving `openwiki mcp` repo-local to
-  `knowledge-base-v2`. Preserve `NODE_EXTRA_CA_CERTS` under `fnox proxy run`
+  `knowledge-base-v2`. Global MCP count is 0: when activating
+  agentsview-finding-history, skip MCP tool calls and run the ## CLI fallback
+  commands directly. Preserve `NODE_EXTRA_CA_CERTS` under `fnox proxy run`
   for Node 26 CLI TLS, and on Env 2-4 guests use
   `env -u ALL_PROXY -u all_proxy HTTPS_PROXY=http://127.0.0.1:1055 NODE_USE_ENV_PROXY=1`.
   Prefer `mise`, `hk`, `fnox`, `aube`, and `jdx` ecosystem tools, native compiled
