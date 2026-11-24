@@ -36,13 +36,19 @@ def _configure_inventory_logging(
     read_only: bool,
 ) -> None:
     resolved = resolve_inventory_state_dir(state_dir)
-    level = logging.WARNING if (json_mode or read_only) else logging.INFO
+    logger_level = logging.WARNING if read_only else logging.INFO
     jsonl_path = None if read_only else resolved / "env-inventory.log.jsonl"
-    configure_logging(
+    logger = configure_logging(
         jsonl_path=jsonl_path,
-        level=level,
+        level=logger_level,
         logger_name="env_inventory",
     )
+    if json_mode:
+        for handler in logger.handlers:
+            if isinstance(handler, logging.StreamHandler) and not isinstance(
+                handler, logging.FileHandler
+            ):
+                handler.setLevel(logging.WARNING)
 
 
 def _build_app() -> cyclopts.App:

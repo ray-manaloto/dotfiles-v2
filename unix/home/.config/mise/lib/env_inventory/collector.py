@@ -77,6 +77,26 @@ SAFE_GENERIC_USERS = frozenset({"dev", "root", "admin", "nobody"})
 
 _USERS_PATH_RE = re.compile(r"/Users/[A-Za-z0-9._-]+")
 _HOME_PATH_RE = re.compile(r"/home/[A-Za-z0-9._-]+")
+_TS_NET_HOST_RE = re.compile(
+    r"\b[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\.ts\.net\b", re.IGNORECASE
+)
+_SECRET_TOKEN_RE = re.compile(
+    r"(?:"
+    r"\bgh[pousr]_[A-Za-z0-9_]{4,}\b"
+    r"|\bgithub_pat_[A-Za-z0-9_]{4,}\b"
+    r"|\bsk-[A-Za-z0-9_-]{6,}\b"
+    r"|\btskey-[A-Za-z0-9_-]{4,}\b"
+    r"|\bdp\.st\.[A-Za-z0-9_.-]{4,}\b"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{4,}\b"
+    r"|\bBearer\s+[A-Za-z0-9._~+/=-]{4,}"
+    r"|(?<=://)[^/\s:@\"']+?:[^/\s@\"']+?(?=@)"
+    r")"
+)
+
+_CONTAINER_ARCH_MAP = {
+    "amd64": "x86_64",
+    "arm64": "aarch64",
+}
 
 _VM_EXEC_WRAPPER_SH = (
     'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:'
@@ -85,14 +105,20 @@ _VM_EXEC_WRAPPER_SH = (
 )
 
 _SKILLS_PROBE_PY = (
-    "import json, os, pathlib; "
-    "d = pathlib.Path(os.path.expanduser(os.sys.argv[1])); "
+    "import json, os, pathlib\n"
+    "d = pathlib.Path(os.path.expanduser(os.sys.argv[1]))\n"
     "skills = sorted(e.name for e in os.scandir(d) "
-    'if not e.name.startswith(".")) if d.is_dir() else []; '
-    'm = d / ".mise-skills.json"; '
-    "links = sorted(json.loads(m.read_text(encoding='utf-8')).get('links', {}).keys()) "
-    "if m.is_file() else []; "
-    "print(json.dumps({'skills': skills, 'mise_skill_links': links}))"
+    'if not e.name.startswith(".")) if d.is_dir() else []\n'
+    "links = []\n"
+    'm = d / ".mise-skills.json"\n'
+    "try:\n"
+    "  raw = json.loads(m.read_text(encoding='utf-8')) if m.is_file() else {}\n"
+    "  links_obj = raw.get('links') if isinstance(raw, dict) else None\n"
+    "  if isinstance(links_obj, dict):\n"
+    "    links = sorted(str(k) for k in links_obj)\n"
+    "except (OSError, ValueError, TypeError):\n"
+    "  links = []\n"
+    "print(json.dumps({'skills': skills, 'mise_skill_links': links}))\n"
 )
 
 _LOG = get_logger("env_inventory.collector")
@@ -231,13 +257,23 @@ def _discover_local_hostnames(runner: CommandRunner) -> set[str]:
 
 
 def _discover_ssh_hostname(ssh_host: str, runner: CommandRunner) -> set[str]:
-    if not ssh_host or ssh_host.lower() in CANONICAL_HOSTNAMES:
-        # Still run `ssh -G` to check alias target hostname.
-        pass
-    rc, out, _ = runner(["ssh", "-G", ssh_host], 3.0, None)
-    if rc != 0:
-        return set()
     found: set[str] = set()
+    cleaned_alias = ssh_host.strip()
+    if (
+        cleaned_alias
+        and cleaned_alias.lower() not in CANONICAL_HOSTNAMES
+        and not _is_ip_literal(cleaned_alias)
+    ):
+        found.add(cleaned_alias)
+        if "." in cleaned_alias:
+            found.add(cleaned_alias.split(".", 1)[0])
+
+    if not cleaned_alias:
+        return found
+
+    rc, out, _ = runner(["ssh", "-G", cleaned_alias], 3.0, None)
+    if rc != 0:
+        return found
     for line in out.splitlines():
         if line.lower().startswith("hostname "):
             val = line.split(None, 1)[1].strip()
@@ -261,6 +297,50 @@ def _is_ip_literal(value: str) -> bool:
         except OSError:
             continue
     return False
+
+
+def _merge_privacy_ctx(
+    ctx: Mapping[str, Any],
+    *,
+    extra_homes: Iterable[str] = (),
+    extra_users: Iterable[str] = (),
+    extra_hostnames: Mapping[str, Iterable[str]] | None = None,
+) -> dict[str, Any]:
+    homes = set(ctx.get("homes", ()))
+    for h in extra_homes:
+        cleaned = str(h).strip().rstrip("/")
+        if cleaned:
+            homes.add(cleaned)
+
+    users = set(ctx.get("users", ()))
+    for u in extra_users:
+        cleaned = str(u).strip()
+        if (
+            cleaned
+            and cleaned.lower() not in SAFE_GENERIC_USERS
+            and cleaned.lower() not in CANONICAL_HOSTNAMES
+        ):
+            users.add(cleaned)
+
+    host_map = dict(ctx.get("host_map", {}))
+    if extra_hostnames:
+        for canonical, raw_names in extra_hostnames.items():
+            for raw in raw_names:
+                cleaned = str(raw).strip()
+                if (
+                    cleaned
+                    and cleaned.lower() not in CANONICAL_HOSTNAMES
+                    and not _is_ip_literal(cleaned)
+                ):
+                    host_map[cleaned] = canonical
+
+    return {
+        "homes": tuple(sorted(homes, key=len, reverse=True)),
+        "users": tuple(sorted(users, key=len, reverse=True)),
+        "host_map": dict(
+            sorted(host_map.items(), key=lambda kv: len(kv[0]), reverse=True)
+        ),
+    }
 
 
 def build_privacy_context(
@@ -291,11 +371,19 @@ def build_privacy_context(
         *extra_users,
     ):
         cleaned = str(u).strip()
-        if cleaned and cleaned not in SAFE_GENERIC_USERS:
+        if (
+            cleaned
+            and cleaned.lower() not in SAFE_GENERIC_USERS
+            and cleaned.lower() not in CANONICAL_HOSTNAMES
+        ):
             users.add(cleaned)
     try:
         cur_user = getpass.getuser().strip()
-        if cur_user and cur_user not in SAFE_GENERIC_USERS:
+        if (
+            cur_user
+            and cur_user.lower() not in SAFE_GENERIC_USERS
+            and cur_user.lower() not in CANONICAL_HOSTNAMES
+        ):
             users.add(cur_user)
     except (OSError, KeyError):  # fmt: skip
         pass
@@ -325,14 +413,23 @@ def build_privacy_context(
     }
 
 
+def _short_token_re(token: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])",
+        flags=re.IGNORECASE,
+    )
+
+
 def sanitize_text(text: str, ctx: Mapping[str, Any]) -> str:
-    """Strip `/Users/<user>`, `/home/<user>`, raw `$USER`, and private hostnames from *text*."""
+    """Strip `/Users/<user>`, `/home/<user>`, `.ts.net`, tokens, raw `$USER`, and private hostnames."""
     out = text
     for home_prefix in ctx.get("homes", ()):
         if home_prefix and home_prefix in out:
             out = out.replace(home_prefix, "~")
     out = _USERS_PATH_RE.sub("~", out)
     out = _HOME_PATH_RE.sub("~", out)
+    out = _SECRET_TOKEN_RE.sub("<redacted>", out)
+    out = _TS_NET_HOST_RE.sub("<tailnet-host>", out)
 
     host_map: Mapping[str, str] = ctx.get("host_map", {})
     for private_host, canonical in host_map.items():
@@ -341,23 +438,15 @@ def sanitize_text(text: str, ctx: Mapping[str, Any]) -> str:
         if len(private_host) > 4:
             out = re.sub(re.escape(private_host), canonical, out, flags=re.IGNORECASE)
         else:
-            out = re.sub(
-                rf"(?<![A-Za-z0-9_]){re.escape(private_host)}(?![A-Za-z0-9_])",
-                canonical,
-                out,
-            )
+            out = _short_token_re(private_host).sub(canonical, out)
 
     for user in ctx.get("users", ()):
-        if not user or user in SAFE_GENERIC_USERS:
+        if not user or user.lower() in SAFE_GENERIC_USERS:
             continue
         if len(user) >= 4:
-            out = out.replace(user, "<user>")
+            out = re.sub(re.escape(user), "<user>", out, flags=re.IGNORECASE)
         else:
-            out = re.sub(
-                rf"(?<![A-Za-z0-9_]){re.escape(user)}(?![A-Za-z0-9_])",
-                "<user>",
-                out,
-            )
+            out = _short_token_re(user).sub("<user>", out)
     return out
 
 
@@ -384,36 +473,42 @@ def sanitize_model[ModelT: BaseModel](model: ModelT, ctx: Mapping[str, Any]) -> 
 def validate_no_privacy_leaks(
     serialized_json: str, ctx: Mapping[str, Any]
 ) -> list[str]:
-    """Return privacy leak descriptions if serialized JSON still contains sensitive paths/names."""
+    """Return privacy leak descriptions if serialized JSON still contains sensitive paths/names/secrets."""
     leaks: list[str] = []
     if _USERS_PATH_RE.search(serialized_json):
         leaks.append("serialized JSON contains /Users/<user> path")
     if _HOME_PATH_RE.search(serialized_json):
         leaks.append("serialized JSON contains /home/<user> path")
+    if _TS_NET_HOST_RE.search(serialized_json):
+        leaks.append("serialized JSON contains .ts.net tailnet hostname")
+    if _SECRET_TOKEN_RE.search(serialized_json):
+        leaks.append("serialized JSON contains secret or credential token")
     for home_prefix in ctx.get("homes", ()):
         if home_prefix and home_prefix in serialized_json:
             leaks.append("serialized JSON contains local home directory prefix")
             break
     for user in ctx.get("users", ()):
-        if not user or user in SAFE_GENERIC_USERS:
+        if not user or user.lower() in SAFE_GENERIC_USERS:
             continue
         matched = (
-            user in serialized_json
+            bool(re.search(re.escape(user), serialized_json, flags=re.IGNORECASE))
             if len(user) >= 4
-            else bool(
-                re.search(
-                    rf"(?<![A-Za-z0-9_]){re.escape(user)}(?![A-Za-z0-9_])",
-                    serialized_json,
-                )
-            )
+            else bool(_short_token_re(user).search(serialized_json))
         )
         if matched:
             leaks.append("serialized JSON contains raw username")
             break
     for private_host in ctx.get("host_map", {}):
-        if len(private_host) <= 4:
+        if not private_host:
             continue
-        if re.search(re.escape(private_host), serialized_json, flags=re.IGNORECASE):
+        matched = (
+            bool(
+                re.search(re.escape(private_host), serialized_json, flags=re.IGNORECASE)
+            )
+            if len(private_host) > 4
+            else bool(_short_token_re(private_host).search(serialized_json))
+        )
+        if matched:
             leaks.append("serialized JSON contains private hostname")
             break
     return leaks
@@ -427,6 +522,29 @@ def _parse_json_output(raw: str) -> Any | None:
         return orjson.loads(stripped)
     except orjson.JSONDecodeError:
         return None
+
+
+def _record_probe_failure(
+    errors: list[InventoryErrorEntry],
+    label: str,
+    rc: int,
+    detail: str,
+) -> None:
+    cleaned = detail.strip()[:200] or f"rc={rc}"
+    if rc == 124:
+        errors.append(
+            InventoryErrorEntry(
+                code=InventoryErrorCode.ERR_TIMEOUT,
+                message=f"{label} timed out: {cleaned}",
+            )
+        )
+    else:
+        errors.append(
+            InventoryErrorEntry(
+                code=InventoryErrorCode.ERR_SUBPROCESS_FAILED,
+                message=f"{label} failed (rc={rc}): {cleaned}",
+            )
+        )
 
 
 def _read_local_skills(skills_dir: Path) -> tuple[list[str], list[str]]:
@@ -466,39 +584,48 @@ def _probe_mise(
         )
 
     doc_data = _parse_json_output(out_doc)
-    if not isinstance(doc_data, dict):
-        errors.append(
-            InventoryErrorEntry(
-                code=InventoryErrorCode.ERR_SUBPROCESS_FAILED,
-                message=f"mise doctor --json failed (rc={rc_doc}): {(err_doc or out_doc).strip()[:200]}",
-            )
-        )
-        return MiseInventory(
-            installed=True,
-            errors=[],
-            warnings=[],
-            tools=[],
-            skills=[],
-        )
+    version: str | None = None
+    activated: bool | None = None
+    build_target: str | None = None
+    config_files: list[str] = []
+    doc_errors: list[str] = []
+    doc_warnings: list[str] = []
 
-    build_info = doc_data.get("build_info")
-    build_target = (
-        str(build_info.get("target"))
-        if isinstance(build_info, dict) and build_info.get("target")
-        else None
-    )
-    config_files = [
-        str(x) for x in (doc_data.get("config_files") or []) if isinstance(x, str)
-    ]
-    doc_errors = [str(x) for x in (doc_data.get("errors") or [])]
-    doc_warnings = [str(x) for x in (doc_data.get("warnings") or [])]
+    if isinstance(doc_data, dict):
+        if doc_data.get("version") is not None:
+            version = str(doc_data["version"])
+        if isinstance(doc_data.get("activated"), bool):
+            activated = bool(doc_data["activated"])
+        build_info = doc_data.get("build_info")
+        if isinstance(build_info, dict) and build_info.get("target"):
+            build_target = str(build_info["target"])
+        config_files = [
+            str(x) for x in (doc_data.get("config_files") or []) if isinstance(x, str)
+        ]
+        doc_errors = [str(x) for x in (doc_data.get("errors") or [])]
+        doc_warnings = [str(x) for x in (doc_data.get("warnings") or [])]
+    else:
+        _record_probe_failure(
+            errors, "mise doctor --json", rc_doc, err_doc or out_doc or "invalid JSON"
+        )
 
     tools: list[MiseToolEntry] = []
     rc_ls, out_ls, err_ls = run_target(
         ["mise", "-C", target_home, "ls", "--global", "--installed", "--json"], 20.0
     )
     ls_data = _parse_json_output(out_ls) if rc_ls == 0 else None
-    if isinstance(ls_data, dict):
+    if rc_ls != 0:
+        _record_probe_failure(
+            errors, "mise ls --global --installed --json", rc_ls, err_ls or out_ls
+        )
+    elif not isinstance(ls_data, dict):
+        _record_probe_failure(
+            errors,
+            "mise ls --global --installed --json",
+            rc_ls,
+            "expected JSON object",
+        )
+    else:
         for tool_name, entries in ls_data.items():
             if not isinstance(entries, list):
                 continue
@@ -537,20 +664,19 @@ def _probe_mise(
                     )
                 )
         tools.sort(key=lambda t: (t.name, t.version, t.install_path or ""))
-    elif rc_ls != 0:
-        errors.append(
-            InventoryErrorEntry(
-                code=InventoryErrorCode.ERR_SUBPROCESS_FAILED,
-                message=f"mise ls --global --installed --json failed (rc={rc_ls}): {err_ls.strip()[:200]}",
-            )
-        )
 
     skills: list[MiseSkillEntry] = []
     rc_sk, out_sk, err_sk = run_target(
         ["mise", "-C", target_home, "skills", "ls", "--json"], 15.0
     )
     sk_data = _parse_json_output(out_sk) if rc_sk == 0 else None
-    if isinstance(sk_data, list):
+    if rc_sk != 0:
+        _record_probe_failure(errors, "mise skills ls --json", rc_sk, err_sk or out_sk)
+    elif not isinstance(sk_data, list):
+        _record_probe_failure(
+            errors, "mise skills ls --json", rc_sk, "expected JSON list"
+        )
+    else:
         for entry in sk_data:
             if not isinstance(entry, dict) or not entry.get("name"):
                 continue
@@ -567,24 +693,11 @@ def _probe_mise(
                 )
             )
         skills.sort(key=lambda s: (s.name, s.tool or ""))
-    elif rc_sk != 0:
-        errors.append(
-            InventoryErrorEntry(
-                code=InventoryErrorCode.ERR_SUBPROCESS_FAILED,
-                message=f"mise skills ls --json failed (rc={rc_sk}): {err_sk.strip()[:200]}",
-            )
-        )
 
     return MiseInventory(
         installed=True,
-        version=(
-            str(doc_data["version"]) if doc_data.get("version") is not None else None
-        ),
-        activated=(
-            bool(doc_data["activated"])
-            if isinstance(doc_data.get("activated"), bool)
-            else None
-        ),
+        version=version,
+        activated=activated,
         build_target=build_target,
         config_files=config_files,
         errors=doc_errors,
@@ -594,16 +707,80 @@ def _probe_mise(
     )
 
 
+def _normalize_container_arch(raw_arch: str | None) -> str | None:
+    if raw_arch is None:
+        return None
+    cleaned = raw_arch.strip()
+    if not cleaned:
+        return None
+    return _CONTAINER_ARCH_MAP.get(cleaned.lower(), cleaned)
+
+
+def _normalize_image_ref(ref: str) -> str:
+    cleaned = ref.strip()
+    for prefix in ("docker.io/library/", "index.docker.io/library/"):
+        if cleaned.startswith(prefix):
+            return cleaned[len(prefix) :]
+    return cleaned
+
+
+def _metadata_matches_inspected_image(
+    meta: Mapping[str, Any],
+    *,
+    image_tag: str,
+    repo_tags: list[str],
+    inspected_digests: set[str],
+) -> tuple[bool, str | None]:
+    raw_names = meta.get("image.name")
+    if isinstance(raw_names, str) and raw_names.strip():
+        meta_names = {
+            _normalize_image_ref(part) for part in raw_names.split(",") if part.strip()
+        }
+        want_names = {_normalize_image_ref(image_tag)} | {
+            _normalize_image_ref(t) for t in repo_tags if t
+        }
+        if meta_names and not (meta_names & want_names):
+            return (
+                False,
+                f"buildx metadata image.name {sorted(meta_names)} does not match {image_tag}",
+            )
+
+    meta_digests: set[str] = set()
+    for key in ("containerimage.digest", "containerimage.config.digest"):
+        val = meta.get(key)
+        if isinstance(val, str) and val.strip():
+            meta_digests.add(val.strip())
+    desc = meta.get("containerimage.descriptor")
+    if isinstance(desc, dict) and isinstance(desc.get("digest"), str):
+        d = desc["digest"].strip()
+        if d:
+            meta_digests.add(d)
+
+    if meta_digests and inspected_digests and not (meta_digests & inspected_digests):
+        return (
+            False,
+            "buildx metadata digest does not intersect inspected image digests",
+        )
+    return True, None
+
+
 def _probe_container_oci(
     target: InventoryTargetKind,
     image_tag: str,
     state_dir: Path,
     docker_base: list[str],
     runner: CommandRunner,
+    errors: list[InventoryErrorEntry],
+    returns: list[InventoryReturnEntry],
 ) -> ContainerOciMetadata:
-    rc_img, out_img, _ = runner(
+    rc_img, out_img, err_img = runner(
         [*docker_base, "image", "inspect", image_tag], 15.0, None
     )
+    if rc_img == 124:
+        _record_probe_failure(
+            errors, f"docker image inspect {image_tag}", rc_img, err_img or out_img
+        )
+
     inspected = False
     image_id: str | None = None
     image_digest: str | None = None
@@ -613,6 +790,7 @@ def _probe_container_oci(
     size_bytes: int | None = None
     created: str | None = None
     repo_digests: list[str] = []
+    repo_tags: list[str] = []
 
     parsed_img = _parse_json_output(out_img) if rc_img == 0 else None
     if isinstance(parsed_img, list) and parsed_img and isinstance(parsed_img[0], dict):
@@ -625,10 +803,11 @@ def _probe_container_oci(
                 image_digest = str(descriptor["digest"])
             if descriptor.get("mediaType") is not None:
                 descriptor_media_type = str(descriptor["mediaType"])
-        architecture = (
+        raw_arch = (
             str(item["Architecture"]) if item.get("Architecture") is not None else None
         )
-        os_name = str(item["Os"]) if item.get("Os") is not None else None
+        architecture = _normalize_container_arch(raw_arch)
+        os_name = str(item["Os"]).lower() if item.get("Os") is not None else None
         raw_size = item.get("Size")
         if (
             isinstance(raw_size, int)
@@ -640,6 +819,7 @@ def _probe_container_oci(
         repo_digests = sorted(
             str(x) for x in (item.get("RepoDigests") or []) if isinstance(x, str)
         )
+        repo_tags = [str(x) for x in (item.get("RepoTags") or []) if isinstance(x, str)]
 
     meta_file = state_dir / f"buildx-{target.value}.metadata.json"
     buildx_metadata_present = False
@@ -650,43 +830,69 @@ def _probe_container_oci(
     provenance_build_type: str | None = None
     provenance_materials: list[str] = []
 
-    if meta_file.is_file():
+    if inspected and meta_file.is_file():
         try:
             meta = orjson.loads(meta_file.read_bytes())
         except (OSError, orjson.JSONDecodeError):  # fmt: skip
             meta = None
         if isinstance(meta, dict):
-            buildx_metadata_present = True
-            buildx_metadata_path = str(meta_file)
-            if meta.get("buildx.build.ref") is not None:
-                buildx_build_ref = str(meta["buildx.build.ref"])
-            if image_digest is None and meta.get("containerimage.digest") is not None:
-                image_digest = str(meta["containerimage.digest"])
-            desc_meta = meta.get("containerimage.descriptor")
-            if isinstance(desc_meta, dict):
-                if image_digest is None and desc_meta.get("digest") is not None:
-                    image_digest = str(desc_meta["digest"])
-                if (
-                    descriptor_media_type is None
-                    and desc_meta.get("mediaType") is not None
-                ):
-                    descriptor_media_type = str(desc_meta["mediaType"])
-            prov = meta.get("buildx.build.provenance")
-            if isinstance(prov, dict) and prov:
-                provenance_present = True
-                if prov.get("buildType") is not None:
-                    provenance_build_type = str(prov["buildType"])
-                raw_materials = prov.get("materials") or []
-                if isinstance(raw_materials, list):
-                    provenance_materials = sorted(
-                        str(m["uri"])
-                        for m in raw_materials
-                        if isinstance(m, dict) and m.get("uri")
+            inspected_digests: set[str] = set()
+            if image_id:
+                inspected_digests.add(image_id)
+            if image_digest:
+                inspected_digests.add(image_digest)
+            for rd in repo_digests:
+                if "@" in rd:
+                    inspected_digests.add(rd.split("@", 1)[1].strip())
+
+            matches, mismatch_reason = _metadata_matches_inspected_image(
+                meta,
+                image_tag=image_tag,
+                repo_tags=repo_tags,
+                inspected_digests=inspected_digests,
+            )
+            if not matches:
+                returns.append(
+                    InventoryReturnEntry(
+                        code=InventoryReturnCode.RET_PARTIAL,
+                        message=f"ignored stale buildx metadata for {target.value}: {mismatch_reason}",
                     )
-                sbom_present = any(
-                    "buildkit-syft-scanner" in u or "sbom" in u.lower()
-                    for u in provenance_materials
                 )
+            else:
+                buildx_metadata_present = True
+                buildx_metadata_path = str(meta_file)
+                if meta.get("buildx.build.ref") is not None:
+                    buildx_build_ref = str(meta["buildx.build.ref"])
+                if (
+                    image_digest is None
+                    and meta.get("containerimage.digest") is not None
+                ):
+                    image_digest = str(meta["containerimage.digest"])
+                desc_meta = meta.get("containerimage.descriptor")
+                if isinstance(desc_meta, dict):
+                    if image_digest is None and desc_meta.get("digest") is not None:
+                        image_digest = str(desc_meta["digest"])
+                    if (
+                        descriptor_media_type is None
+                        and desc_meta.get("mediaType") is not None
+                    ):
+                        descriptor_media_type = str(desc_meta["mediaType"])
+                prov = meta.get("buildx.build.provenance")
+                if isinstance(prov, dict) and prov:
+                    provenance_present = True
+                    if prov.get("buildType") is not None:
+                        provenance_build_type = str(prov["buildType"])
+                    raw_materials = prov.get("materials") or []
+                    if isinstance(raw_materials, list):
+                        provenance_materials = sorted(
+                            str(m["uri"])
+                            for m in raw_materials
+                            if isinstance(m, dict) and m.get("uri")
+                        )
+                    sbom_present = any(
+                        "buildkit-syft-scanner" in u or "sbom" in u.lower()
+                        for u in provenance_materials
+                    )
 
     return ContainerOciMetadata(
         image_tag=image_tag,
@@ -717,37 +923,66 @@ def _first_nonempty_line(text: str) -> str | None:
     return None
 
 
+def _probe_version_cmd(
+    run_target: Callable[[list[str], float], tuple[int, str, str]],
+    exe: str,
+    errors: list[InventoryErrorEntry],
+    *,
+    join_lines: bool = False,
+) -> tuple[bool, str | None]:
+    rc, out, err = run_target([exe, "--version"], 15.0)
+    if rc == 127:
+        return False, None
+    if rc != 0:
+        _record_probe_failure(errors, f"{exe} --version", rc, err or out)
+        return False, None
+    if join_lines:
+        lines = [line.strip() for line in out.splitlines() if line.strip()]
+        if not lines:
+            return False, None
+        return True, " | ".join(lines)
+    ver = _first_nonempty_line(out)
+    return bool(ver), ver
+
+
 def _probe_harnesses(
     target: InventoryTargetKind,
     run_target: Callable[[list[str], float], tuple[int, str, str]],
     target_home: str,
+    errors: list[InventoryErrorEntry],
 ) -> HarnessesInventory:
     # 1. agy + ~/.agents/skills
-    rc_agy, out_agy, _ = run_target(["agy", "--version"], 15.0)
-    agy_installed = rc_agy == 0 and bool(_first_nonempty_line(out_agy))
-    agy_ver = _first_nonempty_line(out_agy) if agy_installed else None
+    agy_installed, agy_ver = _probe_version_cmd(run_target, "agy", errors)
 
     if target is InventoryTargetKind.HOST:
         skills_list, mise_skill_links = _read_local_skills(
             Path(target_home) / ".agents" / "skills"
         )
     else:
-        rc_sk, out_sk, _ = run_target(
+        rc_sk, out_sk, err_sk = run_target(
             ["python3", "-c", _SKILLS_PROBE_PY, f"{target_home}/.agents/skills"],
             10.0,
         )
-        sk_parsed = _parse_json_output(out_sk) if rc_sk == 0 else None
-        if isinstance(sk_parsed, dict):
-            skills_list = sorted(
-                str(x) for x in (sk_parsed.get("skills") or []) if isinstance(x, str)
-            )
-            mise_skill_links = sorted(
-                str(x)
-                for x in (sk_parsed.get("mise_skill_links") or [])
-                if isinstance(x, str)
-            )
-        else:
-            skills_list, mise_skill_links = [], []
+        skills_list, mise_skill_links = [], []
+        if rc_sk not in (0, 127):
+            _record_probe_failure(errors, "skills probe", rc_sk, err_sk or out_sk)
+        elif rc_sk == 0:
+            sk_parsed = _parse_json_output(out_sk)
+            if isinstance(sk_parsed, dict):
+                skills_list = sorted(
+                    str(x)
+                    for x in (sk_parsed.get("skills") or [])
+                    if isinstance(x, str)
+                )
+                mise_skill_links = sorted(
+                    str(x)
+                    for x in (sk_parsed.get("mise_skill_links") or [])
+                    if isinstance(x, str)
+                )
+            else:
+                _record_probe_failure(
+                    errors, "skills probe", rc_sk, "expected JSON object"
+                )
 
     agy_status = HarnessStatus(
         name="agy",
@@ -758,39 +993,54 @@ def _probe_harnesses(
     )
 
     # 2. claude
-    rc_cl, out_cl, _ = run_target(["claude", "--version"], 15.0)
-    cl_installed = rc_cl == 0 and bool(_first_nonempty_line(out_cl))
-    cl_ver = _first_nonempty_line(out_cl) if cl_installed else None
+    cl_installed, cl_ver = _probe_version_cmd(run_target, "claude", errors)
     cl_plugins: list[HarnessPluginEntry] = []
     if cl_installed:
-        rc_cp, out_cp, _ = run_target(["claude", "plugin", "list", "--json"], 15.0)
-        cp_parsed = _parse_json_output(out_cp) if rc_cp == 0 else None
-        if isinstance(cp_parsed, list):
-            for p in cp_parsed:
-                if not isinstance(p, dict) or not p.get("id"):
-                    continue
-                cl_plugins.append(
-                    HarnessPluginEntry(
-                        id=str(p["id"]),
-                        name=str(p["name"]) if p.get("name") is not None else None,
-                        version=(
-                            str(p["version"]) if p.get("version") is not None else None
-                        ),
-                        scope=str(p["scope"]) if p.get("scope") is not None else None,
-                        enabled=bool(p.get("enabled", False)),
-                        install_path=(
-                            str(p["installPath"])
-                            if p.get("installPath") is not None
-                            else None
-                        ),
-                        project_path=(
-                            str(p["projectPath"])
-                            if p.get("projectPath") is not None
-                            else None
-                        ),
-                    )
+        rc_cp, out_cp, err_cp = run_target(["claude", "plugin", "list", "--json"], 15.0)
+        if rc_cp != 0:
+            _record_probe_failure(
+                errors, "claude plugin list --json", rc_cp, err_cp or out_cp
+            )
+        else:
+            cp_parsed = _parse_json_output(out_cp)
+            if not isinstance(cp_parsed, list):
+                _record_probe_failure(
+                    errors, "claude plugin list --json", rc_cp, "expected JSON list"
                 )
-            cl_plugins.sort(key=lambda e: (e.id, e.scope or "", e.project_path or ""))
+            else:
+                for p in cp_parsed:
+                    if not isinstance(p, dict) or not p.get("id"):
+                        continue
+                    cl_plugins.append(
+                        HarnessPluginEntry(
+                            id=str(p["id"]),
+                            name=(
+                                str(p["name"]) if p.get("name") is not None else None
+                            ),
+                            version=(
+                                str(p["version"])
+                                if p.get("version") is not None
+                                else None
+                            ),
+                            scope=(
+                                str(p["scope"]) if p.get("scope") is not None else None
+                            ),
+                            enabled=bool(p.get("enabled", False)),
+                            install_path=(
+                                str(p["installPath"])
+                                if p.get("installPath") is not None
+                                else None
+                            ),
+                            project_path=(
+                                str(p["projectPath"])
+                                if p.get("projectPath") is not None
+                                else None
+                            ),
+                        )
+                    )
+                cl_plugins.sort(
+                    key=lambda e: (e.id, e.scope or "", e.project_path or "")
+                )
     claude_status = HarnessStatus(
         name="claude",
         installed=cl_installed,
@@ -799,96 +1049,118 @@ def _probe_harnesses(
     )
 
     # 3. codex
-    rc_cx, out_cx, _ = run_target(["codex", "--version"], 15.0)
-    cx_installed = rc_cx == 0 and bool(_first_nonempty_line(out_cx))
-    cx_ver = _first_nonempty_line(out_cx) if cx_installed else None
+    cx_installed, cx_ver = _probe_version_cmd(run_target, "codex", errors)
     cx_plugins: list[HarnessPluginEntry] = []
     cx_mcps: list[HarnessMcpEntry] = []
     if cx_installed:
-        rc_cxp, out_cxp, _ = run_target(["codex", "plugin", "list", "--json"], 15.0)
-        cxp_parsed = _parse_json_output(out_cxp) if rc_cxp == 0 else None
-        if isinstance(cxp_parsed, dict):
-            for p in cxp_parsed.get("installed") or []:
-                if not isinstance(p, dict):
-                    continue
-                pid = str(p.get("pluginId") or p.get("name") or "").strip()
-                if not pid:
-                    continue
-                src = p.get("source")
-                install_path = (
-                    str(src["path"])
-                    if isinstance(src, dict) and src.get("path") is not None
-                    else None
+        rc_cxp, out_cxp, err_cxp = run_target(
+            ["codex", "plugin", "list", "--json"], 15.0
+        )
+        if rc_cxp != 0:
+            _record_probe_failure(
+                errors, "codex plugin list --json", rc_cxp, err_cxp or out_cxp
+            )
+        else:
+            cxp_parsed = _parse_json_output(out_cxp)
+            if not isinstance(cxp_parsed, dict):
+                _record_probe_failure(
+                    errors, "codex plugin list --json", rc_cxp, "expected JSON object"
                 )
-                cx_plugins.append(
-                    HarnessPluginEntry(
-                        id=pid,
-                        name=str(p["name"]) if p.get("name") is not None else None,
-                        version=(
-                            str(p["version"]) if p.get("version") is not None else None
-                        ),
-                        marketplace=(
-                            str(p["marketplaceName"])
-                            if p.get("marketplaceName") is not None
-                            else None
-                        ),
-                        enabled=bool(p.get("enabled", False)),
-                        installed=(
-                            bool(p["installed"])
-                            if isinstance(p.get("installed"), bool)
-                            else None
-                        ),
-                        install_path=install_path,
+            else:
+                for p in cxp_parsed.get("installed") or []:
+                    if not isinstance(p, dict):
+                        continue
+                    pid = str(p.get("pluginId") or p.get("name") or "").strip()
+                    if not pid:
+                        continue
+                    src = p.get("source")
+                    install_path = (
+                        str(src["path"])
+                        if isinstance(src, dict) and src.get("path") is not None
+                        else None
                     )
-                )
-            cx_plugins.sort(key=lambda e: (e.id, e.version or ""))
+                    cx_plugins.append(
+                        HarnessPluginEntry(
+                            id=pid,
+                            name=(
+                                str(p["name"]) if p.get("name") is not None else None
+                            ),
+                            version=(
+                                str(p["version"])
+                                if p.get("version") is not None
+                                else None
+                            ),
+                            marketplace=(
+                                str(p["marketplaceName"])
+                                if p.get("marketplaceName") is not None
+                                else None
+                            ),
+                            enabled=bool(p.get("enabled", False)),
+                            installed=(
+                                bool(p["installed"])
+                                if isinstance(p.get("installed"), bool)
+                                else None
+                            ),
+                            install_path=install_path,
+                        )
+                    )
+                cx_plugins.sort(key=lambda e: (e.id, e.version or ""))
 
-        rc_cxm, out_cxm, _ = run_target(["codex", "mcp", "list", "--json"], 15.0)
-        cxm_parsed = _parse_json_output(out_cxm) if rc_cxm == 0 else None
-        if isinstance(cxm_parsed, list):
-            for m in cxm_parsed:
-                if not isinstance(m, dict) or not m.get("name"):
-                    continue
-                tr = m.get("transport")
-                tr_dict = tr if isinstance(tr, dict) else {}
-                env_vars = sorted(
-                    str(v)
-                    for v in (tr_dict.get("env_vars") or [])
-                    if isinstance(v, str)
+        rc_cxm, out_cxm, err_cxm = run_target(["codex", "mcp", "list", "--json"], 15.0)
+        if rc_cxm != 0:
+            _record_probe_failure(
+                errors, "codex mcp list --json", rc_cxm, err_cxm or out_cxm
+            )
+        else:
+            cxm_parsed = _parse_json_output(out_cxm)
+            if not isinstance(cxm_parsed, list):
+                _record_probe_failure(
+                    errors, "codex mcp list --json", rc_cxm, "expected JSON list"
                 )
-                cx_mcps.append(
-                    HarnessMcpEntry(
-                        name=str(m["name"]),
-                        enabled=bool(m.get("enabled", False)),
-                        disabled_reason=(
-                            str(m["disabled_reason"])
-                            if m.get("disabled_reason") is not None
-                            else None
-                        ),
-                        transport_type=(
-                            str(tr_dict["type"])
-                            if tr_dict.get("type") is not None
-                            else None
-                        ),
-                        command=(
-                            str(tr_dict["command"])
-                            if tr_dict.get("command") is not None
-                            else None
-                        ),
-                        url=(
-                            str(tr_dict["url"])
-                            if tr_dict.get("url") is not None
-                            else None
-                        ),
-                        auth_status=(
-                            str(m["auth_status"])
-                            if m.get("auth_status") is not None
-                            else None
-                        ),
-                        env_vars=env_vars,
+            else:
+                for m in cxm_parsed:
+                    if not isinstance(m, dict) or not m.get("name"):
+                        continue
+                    tr = m.get("transport")
+                    tr_dict = tr if isinstance(tr, dict) else {}
+                    env_vars = sorted(
+                        str(v)
+                        for v in (tr_dict.get("env_vars") or [])
+                        if isinstance(v, str)
                     )
-                )
-            cx_mcps.sort(key=lambda e: e.name)
+                    cx_mcps.append(
+                        HarnessMcpEntry(
+                            name=str(m["name"]),
+                            enabled=bool(m.get("enabled", False)),
+                            disabled_reason=(
+                                str(m["disabled_reason"])
+                                if m.get("disabled_reason") is not None
+                                else None
+                            ),
+                            transport_type=(
+                                str(tr_dict["type"])
+                                if tr_dict.get("type") is not None
+                                else None
+                            ),
+                            command=(
+                                str(tr_dict["command"])
+                                if tr_dict.get("command") is not None
+                                else None
+                            ),
+                            url=(
+                                str(tr_dict["url"])
+                                if tr_dict.get("url") is not None
+                                else None
+                            ),
+                            auth_status=(
+                                str(m["auth_status"])
+                                if m.get("auth_status") is not None
+                                else None
+                            ),
+                            env_vars=env_vars,
+                        )
+                    )
+                cx_mcps.sort(key=lambda e: e.name)
 
     codex_status = HarnessStatus(
         name="codex",
@@ -899,9 +1171,7 @@ def _probe_harnesses(
     )
 
     # 4. opencode
-    rc_oc, out_oc, _ = run_target(["opencode", "--version"], 15.0)
-    oc_installed = rc_oc == 0 and bool(_first_nonempty_line(out_oc))
-    oc_ver = _first_nonempty_line(out_oc) if oc_installed else None
+    oc_installed, oc_ver = _probe_version_cmd(run_target, "opencode", errors)
     opencode_status = HarnessStatus(
         name="opencode",
         installed=oc_installed,
@@ -909,13 +1179,13 @@ def _probe_harnesses(
     )
 
     # 5. zcode (graceful optional probe)
-    rc_zc, out_zc, _ = run_target(["zcode", "--version"], 15.0)
-    zc_lines = [line.strip() for line in out_zc.splitlines() if line.strip()]
-    zc_installed = rc_zc == 0 and bool(zc_lines)
+    zc_installed, zc_ver = _probe_version_cmd(
+        run_target, "zcode", errors, join_lines=True
+    )
     zcode_status = HarnessStatus(
         name="zcode",
         installed=zc_installed,
-        version=" | ".join(zc_lines) if zc_installed else None,
+        version=zc_ver,
     )
 
     return HarnessesInventory(
@@ -937,7 +1207,7 @@ def _empty_harnesses() -> HarnessesInventory:
     )
 
 
-def collect_target_inventory(
+def _collect_target_inventory_with_discovered(
     target: InventoryTargetKind,
     *,
     ssh_host: str = "pc",
@@ -946,8 +1216,7 @@ def collect_target_inventory(
     repo_root: Path | None = None,
     runner: CommandRunner | None = None,
     privacy_ctx: Mapping[str, Any] | None = None,
-) -> TargetInventory:
-    """Collect, sanitize, and validate inventory for a single canonical *target*."""
+) -> tuple[TargetInventory, tuple[str, ...], tuple[str, ...]]:
     active_runner = default_run_command if runner is None else runner
     resolved_state = resolve_inventory_state_dir(state_dir)
     ts, ns = now_ns_pair()
@@ -978,7 +1247,7 @@ def collect_target_inventory(
             return active_runner(cmd, timeout, cmd_env)
 
         mise_inv = _probe_mise(run_host, target_home, errors)
-        harnesses = _probe_harnesses(target, run_host, target_home)
+        harnesses = _probe_harnesses(target, run_host, target_home, errors)
         returns.append(
             InventoryReturnEntry(
                 code=(
@@ -997,9 +1266,15 @@ def collect_target_inventory(
             else ["env", "-u", "DOCKER_HOST", "docker", "--context", "desktop-linux"]
         )
         container_meta = _probe_container_oci(
-            target, image_tag, resolved_state, docker_base, active_runner
+            target,
+            image_tag,
+            resolved_state,
+            docker_base,
+            active_runner,
+            errors,
+            returns,
         )
-        arch = container_meta.architecture
+        arch = _normalize_container_arch(container_meta.architecture)
         os_name = container_meta.os
 
         rc_insp, out_insp, err_insp = active_runner(
@@ -1038,10 +1313,10 @@ def collect_target_inventory(
                 parts = out_un.strip().split()
                 if len(parts) >= 2:
                     os_name = parts[0].lower()
-                    arch = parts[1]
+                    arch = _normalize_container_arch(parts[1])
 
             mise_inv = _probe_mise(run_container, target_home, errors)
-            harnesses = _probe_harnesses(target, run_container, target_home)
+            harnesses = _probe_harnesses(target, run_container, target_home, errors)
             returns.append(
                 InventoryReturnEntry(
                     code=(
@@ -1054,12 +1329,20 @@ def collect_target_inventory(
             )
         else:
             detail = (err_insp or out_insp).strip() or "container not running"
-            errors.append(
-                InventoryErrorEntry(
-                    code=InventoryErrorCode.ERR_TARGET_UNREACHABLE,
-                    message=f"{target.value} container {CONTAINER_NAME} unavailable: {detail[:200]}",
+            if rc_insp == 124:
+                _record_probe_failure(
+                    errors,
+                    f"{target.value} container {CONTAINER_NAME} inspect",
+                    rc_insp,
+                    detail,
                 )
-            )
+            else:
+                errors.append(
+                    InventoryErrorEntry(
+                        code=InventoryErrorCode.ERR_TARGET_UNREACHABLE,
+                        message=f"{target.value} container {CONTAINER_NAME} unavailable: {detail[:200]}",
+                    )
+                )
             returns.append(
                 InventoryReturnEntry(
                     code=(
@@ -1115,7 +1398,7 @@ def collect_target_inventory(
                     arch = parts[1]
 
             mise_inv = _probe_mise(run_vm, target_home, errors)
-            harnesses = _probe_harnesses(target, run_vm, target_home)
+            harnesses = _probe_harnesses(target, run_vm, target_home, errors)
             returns.append(
                 InventoryReturnEntry(
                     code=(
@@ -1127,12 +1410,17 @@ def collect_target_inventory(
                 )
             )
         else:
-            errors.append(
-                InventoryErrorEntry(
-                    code=InventoryErrorCode.ERR_TARGET_UNREACHABLE,
-                    message=f"Tart VM {VM_NAME} unreachable: {err_vm.strip()[:200] or 'not running'}",
+            if rc_vm == 124:
+                _record_probe_failure(
+                    errors, f"Tart VM {VM_NAME}", rc_vm, err_vm or "timed out"
                 )
-            )
+            else:
+                errors.append(
+                    InventoryErrorEntry(
+                        code=InventoryErrorCode.ERR_TARGET_UNREACHABLE,
+                        message=f"Tart VM {VM_NAME} unreachable: {err_vm.strip()[:200] or 'not running'}",
+                    )
+                )
             returns.append(
                 InventoryReturnEntry(
                     code=InventoryReturnCode.RET_SKIPPED,
@@ -1140,7 +1428,7 @@ def collect_target_inventory(
                 )
             )
 
-    ctx = (
+    base_ctx = (
         build_privacy_context(
             ssh_host=ssh_host,
             runner=active_runner,
@@ -1150,25 +1438,11 @@ def collect_target_inventory(
         if privacy_ctx is None
         else privacy_ctx
     )
-    if extra_homes or extra_users:
-        ctx = {
-            "homes": tuple(
-                sorted(
-                    set(ctx.get("homes", ())) | set(extra_homes),
-                    key=len,
-                    reverse=True,
-                )
-            ),
-            "users": tuple(
-                sorted(
-                    set(ctx.get("users", ()))
-                    | {u for u in extra_users if u not in SAFE_GENERIC_USERS},
-                    key=len,
-                    reverse=True,
-                )
-            ),
-            "host_map": dict(ctx.get("host_map", {})),
-        }
+    merged_ctx = _merge_privacy_ctx(
+        base_ctx,
+        extra_homes=extra_homes,
+        extra_users=extra_users,
+    )
 
     raw_model = TargetInventory(
         schema_version=1,
@@ -1184,7 +1458,30 @@ def collect_target_inventory(
         errors=errors,
         returns=returns,
     )
-    return sanitize_model(raw_model, ctx)
+    return sanitize_model(raw_model, merged_ctx), tuple(extra_homes), tuple(extra_users)
+
+
+def collect_target_inventory(
+    target: InventoryTargetKind,
+    *,
+    ssh_host: str = "pc",
+    image_tag: str = DEFAULT_IMAGE_TAG,
+    state_dir: Path | None = None,
+    repo_root: Path | None = None,
+    runner: CommandRunner | None = None,
+    privacy_ctx: Mapping[str, Any] | None = None,
+) -> TargetInventory:
+    """Collect, sanitize, and validate inventory for a single canonical *target*."""
+    inv, _, _ = _collect_target_inventory_with_discovered(
+        target,
+        ssh_host=ssh_host,
+        image_tag=image_tag,
+        state_dir=state_dir,
+        repo_root=repo_root,
+        runner=runner,
+        privacy_ctx=privacy_ctx,
+    )
+    return inv
 
 
 def _write_bytes_atomic(path: Path, payload: bytes) -> None:
@@ -1254,7 +1551,7 @@ def collect_inventory(
                 command="env:inventory",
                 rc=2,
                 summary=EnvInventorySummary(
-                    requested_target=requested_target,
+                    requested_target=norm_target or "<empty>",
                     targets_collected=0,
                     targets_reachable=0,
                     timestamp=ts,
@@ -1271,9 +1568,9 @@ def collect_inventory(
 
     if len(selected) > 1:
         with ThreadPoolExecutor(max_workers=len(selected)) as pool:
-            inventories = list(
+            results = list(
                 pool.map(
-                    lambda tgt: collect_target_inventory(
+                    lambda tgt: _collect_target_inventory_with_discovered(
                         tgt,
                         ssh_host=ssh_host,
                         image_tag=image_tag,
@@ -1286,8 +1583,8 @@ def collect_inventory(
                 )
             )
     else:
-        inventories = [
-            collect_target_inventory(
+        results = [
+            _collect_target_inventory_with_discovered(
                 selected[0],
                 ssh_host=ssh_host,
                 image_tag=image_tag,
@@ -1297,6 +1594,22 @@ def collect_inventory(
                 privacy_ctx=ctx,
             )
         ]
+
+    discovered_homes: list[str] = []
+    discovered_users: list[str] = []
+    raw_inventories: list[TargetInventory] = []
+    for inv, homes_found, users_found in results:
+        raw_inventories.append(inv)
+        discovered_homes.extend(homes_found)
+        discovered_users.extend(users_found)
+
+    if discovered_homes or discovered_users:
+        ctx = _merge_privacy_ctx(
+            ctx,
+            extra_homes=discovered_homes,
+            extra_users=discovered_users,
+        )
+    inventories = [sanitize_model(inv, ctx) for inv in raw_inventories]
 
     should_write = write_repo or (out_dir is not None)
     target_out_dir = (
@@ -1318,8 +1631,8 @@ def collect_inventory(
         rc = 1
 
     if should_write:
-        # Validate every target payload BEFORE writing to disk.
-        pending_writes: list[tuple[Path, bytes]] = []
+        pending_writes: list[tuple[Path, bytes, str]] = []
+        leak_detected = False
         for inv in inventories:
             pretty_bytes = (
                 orjson.dumps(
@@ -1337,54 +1650,51 @@ def collect_inventory(
                     )
                 )
                 rc = 1
+                leak_detected = True
                 break
             dest = target_out_dir / f"latest.{inv.target.value}.json"
-            pending_writes.append((dest, pretty_bytes))
-
-        if not any(e.code is InventoryErrorCode.ERR_PRIVACY_LEAK for e in top_errors):
             try:
-                for dest, payload in pending_writes:
-                    _write_bytes_atomic(dest, payload)
-                    try:
-                        rel_dest = dest.relative_to(resolved_repo).as_posix()
-                    except ValueError:
-                        rel_dest = sanitize_text(str(dest), ctx)
-                    written_files.append(rel_dest)
+                rel_dest = dest.relative_to(resolved_repo).as_posix()
+            except ValueError:
+                rel_dest = sanitize_text(str(dest), ctx)
+            pending_writes.append((dest, pretty_bytes, rel_dest))
 
-                history_file = resolved_state / "history.jsonl"
-                history_record = sanitize_model(
-                    InventoryHistoryRunRecord(
-                        schema_version=1,
-                        requested_target=norm_target,
-                        targets=inventories,
-                        written_files=written_files,
-                        timestamp=ts,
-                        timestamp_unix_ns=ns,
-                        errors=top_errors,
-                        returns=[
-                            InventoryReturnEntry(
-                                code=InventoryReturnCode.RET_WRITTEN,
-                                message=f"wrote {len(written_files)} inventory file(s)",
-                            )
-                        ],
-                    ),
-                    ctx,
-                )
-                history_line = (
-                    orjson.dumps(history_record.model_dump(mode="json")) + b"\n"
-                )
-                hist_leaks = validate_no_privacy_leaks(
-                    history_line.decode("utf-8"), ctx
-                )
-                if hist_leaks:
-                    top_errors.append(
-                        InventoryErrorEntry(
-                            code=InventoryErrorCode.ERR_PRIVACY_LEAK,
-                            message=f"Refusing to append history.jsonl: {'; '.join(hist_leaks)}",
+        if not leak_detected:
+            planned_files = [rel_dest for _, _, rel_dest in pending_writes]
+            history_file = resolved_state / "history.jsonl"
+            history_record = sanitize_model(
+                InventoryHistoryRunRecord(
+                    schema_version=1,
+                    requested_target=norm_target,
+                    targets=inventories,
+                    written_files=planned_files,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=top_errors,
+                    returns=[
+                        InventoryReturnEntry(
+                            code=InventoryReturnCode.RET_WRITTEN,
+                            message=f"wrote {len(planned_files)} inventory file(s)",
                         )
+                    ],
+                ),
+                ctx,
+            )
+            history_line = orjson.dumps(history_record.model_dump(mode="json")) + b"\n"
+            hist_leaks = validate_no_privacy_leaks(history_line.decode("utf-8"), ctx)
+            if hist_leaks:
+                top_errors.append(
+                    InventoryErrorEntry(
+                        code=InventoryErrorCode.ERR_PRIVACY_LEAK,
+                        message=f"Refusing to append history.jsonl: {'; '.join(hist_leaks)}",
                     )
-                    rc = 1
-                else:
+                )
+                rc = 1
+            else:
+                try:
+                    for dest, payload, rel_dest in pending_writes:
+                        _write_bytes_atomic(dest, payload)
+                        written_files.append(rel_dest)
                     _append_jsonl_locked(history_file, history_line)
                     history_path_str = sanitize_text(str(history_file), ctx)
                     top_returns.append(
@@ -1393,14 +1703,14 @@ def collect_inventory(
                             message=f"wrote {len(written_files)} file(s) and appended history.jsonl",
                         )
                     )
-            except (OSError, Timeout, ValidationError) as exc:  # fmt: skip
-                top_errors.append(
-                    InventoryErrorEntry(
-                        code=InventoryErrorCode.ERR_IO_FAILURE,
-                        message=f"Failed writing inventory artifacts: {exc}",
+                except (OSError, Timeout, ValidationError) as exc:  # fmt: skip
+                    top_errors.append(
+                        InventoryErrorEntry(
+                            code=InventoryErrorCode.ERR_IO_FAILURE,
+                            message=f"Failed writing inventory artifacts: {exc}",
+                        )
                     )
-                )
-                rc = 1
+                    rc = 1
 
     if not top_returns:
         top_returns.append(
