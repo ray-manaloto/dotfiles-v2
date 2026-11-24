@@ -7,7 +7,7 @@
       "run": ["codex-hc", "--no-daemon"]
     },
     "opencode": {
-      "run": ["opencode-wrapper"]
+      "run": ["opencode-hc"]
     }
   }
 }

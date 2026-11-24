@@ -37,13 +37,14 @@ fi
 # 5. Stale standalone binaries in ~/.local/bin/{uv,uvx,hermes,hermes-acp,hermes-agent}
 # 6. Dead symlinks in ~/.config/opencode/skills/ and ~/.claude/debug/latest
 # 7. Unmanaged ~/.config/opencode/opencode.jsonc (backup before removal)
-# 8. Untracked unix/home/.config/mise/config.local.toml (only when fnox check --all --strict passes with CLOUDFLARE_ACCOUNT_ID)
+# 8. Untracked unix/home/.config/mise/config.local.toml (only when migrated-env-only + fnox check --all --strict passes with CLOUDFLARE_ACCOUNT_ID)
 python3 - "${apply}" "${home_dir}" "${wrappers_dir}" "${plugins_dir}" "${fnox_cfg}" <<'PY'
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -54,24 +55,78 @@ plugins_dir = Path(sys.argv[4])
 fnox_cfg = Path(sys.argv[5])
 
 mise_dir = home / ".config" / "mise"
+state_dir = Path(os.environ.get("MISE_STATE_DIR", str(home / ".local" / "state" / "mise")))
 resolved_mise_dir = mise_dir.resolve(strict=False)
+ts_tag = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+
+def _load_ignored_prefixes() -> tuple[Path, ...]:
+    miserc = mise_dir / "miserc.toml"
+    if not miserc.is_file():
+        return ()
+    try:
+        data = tomllib.loads(miserc.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return ()
+    raw = data.get("ignored_config_paths")
+    if not isinstance(raw, list):
+        return ()
+    out: list[Path] = []
+    for entry in raw:
+        if isinstance(entry, str) and entry.strip():
+            out.append(Path(entry).expanduser().resolve(strict=False))
+    return tuple(out)
+
+
+def _is_ignored(path: Path, ignored_prefixes: tuple[Path, ...]) -> bool:
+    resolved = path.resolve(strict=False)
+    return any(resolved == prefix or prefix in resolved.parents for prefix in ignored_prefixes)
+
+
+def _collect_tools_from_toml(cfg_path: Path, used_tools: set[str], declared_wrappers: set[str] | None = None) -> None:
+    if not cfg_path.is_file():
+        return
+    try:
+        data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return
+    if declared_wrappers is not None:
+        wrappers = data.get("wrappers")
+        if isinstance(wrappers, dict):
+            declared_wrappers.update(str(k) for k in wrappers.keys())
+    tools = data.get("tools")
+    if isinstance(tools, dict):
+        for tool_name in tools.keys():
+            used_tools.add(str(tool_name))
 
 
 def load_declared_wrappers_and_plugins() -> tuple[set[str], set[str]]:
     declared_wrappers: set[str] = set()
     used_tools: set[str] = set()
-    for cfg_name in ("config.toml", "config.macos.toml", "config.linux.toml"):
-        cfg_path = mise_dir / cfg_name
-        if not cfg_path.is_file():
-            continue
-        data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-        wrappers = data.get("wrappers")
-        if isinstance(wrappers, dict):
-            declared_wrappers.update(str(k) for k in wrappers.keys())
-        tools = data.get("tools")
-        if isinstance(tools, dict):
-            for tool_name in tools.keys():
-                used_tools.add(str(tool_name))
+    for cfg_name in (
+        "config.toml",
+        "config.macos.toml",
+        "config.linux.toml",
+        "config.vm.toml",
+        "config.container.toml",
+    ):
+        _collect_tools_from_toml(mise_dir / cfg_name, used_tools, declared_wrappers)
+    conf_d = mise_dir / "conf.d"
+    if conf_d.is_dir():
+        for fragment in sorted(conf_d.rglob("*.toml")):
+            _collect_tools_from_toml(fragment, used_tools, declared_wrappers)
+
+    ignored_prefixes = _load_ignored_prefixes()
+    tracked_dir = state_dir / "tracked-configs"
+    if tracked_dir.is_dir():
+        for link in sorted(tracked_dir.iterdir()):
+            try:
+                target = link.resolve(strict=True)
+            except OSError:
+                continue
+            if not target.is_file() or _is_ignored(target, ignored_prefixes):
+                continue
+            _collect_tools_from_toml(target, used_tools)
     return declared_wrappers, used_tools
 
 
@@ -89,11 +144,14 @@ if wrappers_dir.is_dir():
             print(f"WOULD REMOVE orphan wrapper: {entry}")
 
 # 3. Stale unconfigured mise plugins + orphaned plugin dirs
-configured_plugin_tokens = set()
+configured_plugin_tokens: set[str] = set()
 for tool in used_tools:
     configured_plugin_tokens.add(tool)
     if ":" in tool:
-        configured_plugin_tokens.add(tool.split(":", 1)[1].replace("/", "-"))
+        backend, rest = tool.split(":", 1)
+        configured_plugin_tokens.add(rest.replace("/", "-"))
+        configured_plugin_tokens.add(f"{backend}-{rest}".replace("/", "-"))
+        configured_plugin_tokens.add(rest.split("/")[-1])
 
 try:
     registered_plugins = [
@@ -174,16 +232,29 @@ for tool_bin in ("uv", "uvx"):
             print(f"WOULD REMOVE stale standalone binary: {candidate} (managed: {managed_bin})")
 
 managed_hermes = home / ".local" / "share" / "hermes-cli.noindex" / "bin" / "hermes"
+legacy_hermes_marker = "/.hermes/hermes-agent/"
 if managed_hermes.is_file():
     for hermes_bin in ("hermes", "hermes-acp", "hermes-agent"):
         candidate = local_bin / hermes_bin
         if not (candidate.exists() or candidate.is_symlink()):
             continue
+        is_legacy_hermes = False
+        if candidate.is_symlink():
+            raw_link = os.readlink(candidate)
+            resolved_link = str(candidate.resolve(strict=False))
+            is_legacy_hermes = legacy_hermes_marker in raw_link or legacy_hermes_marker in resolved_link
+        elif candidate.is_file() and candidate.stat().st_size <= 4096:
+            try:
+                is_legacy_hermes = legacy_hermes_marker in candidate.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                is_legacy_hermes = False
+        if not is_legacy_hermes:
+            continue
         if apply:
             candidate.unlink()
-            print(f"REMOVED stale standalone binary: {candidate} (managed: {managed_hermes})")
+            print(f"REMOVED stale legacy hermes shim: {candidate} (managed: {managed_hermes})")
         else:
-            print(f"WOULD REMOVE stale standalone binary: {candidate} (managed: {managed_hermes})")
+            print(f"WOULD REMOVE stale legacy hermes shim: {candidate} (managed: {managed_hermes})")
 
 # 6. Dead symlinks in ~/.config/opencode/skills/ and ~/.claude/debug/latest
 dead_candidates: list[Path] = []
@@ -203,25 +274,39 @@ for dead in dead_candidates:
     else:
         print(f"WOULD REMOVE dead symlink: {dead}")
 
-# 7. Unmanaged ~/.config/opencode/opencode.jsonc (back up before removing)
+# 7. Unmanaged ~/.config/opencode/opencode.jsonc (backup before removing; never overwrite existing backup)
 oc_dir = home / ".config" / "opencode"
 oc_json = oc_dir / "opencode.json"
 oc_jsonc = oc_dir / "opencode.jsonc"
-oc_bak = oc_dir / "opencode.jsonc.bak.pre-cleanup"
 if oc_jsonc.is_file() and not oc_jsonc.is_symlink() and oc_json.exists():
+    oc_bak = oc_dir / "opencode.jsonc.bak.pre-cleanup"
+    if oc_bak.exists():
+        mtime_tag = int(oc_jsonc.stat().st_mtime)
+        oc_bak = oc_dir / f"opencode.jsonc.bak.{mtime_tag}"
+        if oc_bak.exists():
+            oc_bak = oc_dir / f"opencode.jsonc.bak.{mtime_tag}.{ts_tag}"
     if apply:
-        if not oc_bak.exists():
-            shutil.copy2(oc_jsonc, oc_bak)
+        shutil.copy2(oc_jsonc, oc_bak)
         oc_jsonc.unlink()
         print(f"BACKED UP & REMOVED unmanaged {oc_jsonc} -> {oc_bak}")
     else:
         print(f"WOULD BACK UP & REMOVE unmanaged {oc_jsonc} -> {oc_bak}")
 
-# 8. Untracked unix/home/.config/mise/config.local.toml (only if fnox check --all --strict passes with CLOUDFLARE_ACCOUNT_ID)
+# 8. Untracked unix/home/.config/mise/config.local.toml (only if inside git worktree, untracked, migrated-env-only, and fnox strict passes)
 config_local = resolved_mise_dir / "config.local.toml"
 if config_local.is_file():
-    is_tracked = (
+    in_worktree = (
         subprocess.run(
+            ["git", "-C", str(resolved_mise_dir), "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
+    is_tracked = (
+        in_worktree
+        and subprocess.run(
             ["git", "-C", str(resolved_mise_dir), "ls-files", "--error-unmatch", "config.local.toml"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -229,6 +314,18 @@ if config_local.is_file():
         ).returncode
         == 0
     )
+    only_migrated_env = False
+    try:
+        local_data = tomllib.loads(config_local.read_text(encoding="utf-8"))
+        local_env = local_data.get("env")
+        only_migrated_env = (
+            set(local_data.keys()) <= {"env"}
+            and isinstance(local_env, dict)
+            and set(local_env.keys()) <= {"CLOUDFLARE_ACCOUNT_ID", "CF_ACCOUNT_ID"}
+        )
+    except (OSError, tomllib.TOMLDecodeError):
+        only_migrated_env = False
+
     has_cf_id = False
     if fnox_cfg.is_file():
         try:
@@ -248,12 +345,17 @@ if config_local.is_file():
             ).returncode
             == 0
         )
-    if not is_tracked and has_cf_id and fnox_ok:
+    backup_dir = home / ".local" / "state" / "dotfiles-v2"
+    backup_path = backup_dir / f"config.local.toml.bak.{ts_tag}"
+    if in_worktree and not is_tracked and only_migrated_env and has_cf_id and fnox_ok:
         if apply:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(config_local, backup_path)
+            os.chmod(backup_path, 0o600)
             config_local.unlink()
-            print(f"REMOVED untracked {config_local} (fnox check --all --strict passed with CLOUDFLARE_ACCOUNT_ID)")
+            print(f"BACKED UP & REMOVED untracked {config_local} -> {backup_path}")
         else:
-            print(f"WOULD REMOVE untracked {config_local} (fnox check --all --strict passed with CLOUDFLARE_ACCOUNT_ID)")
-    elif not is_tracked:
-        print(f"SKIP  {config_local}: fnox strict check or CLOUDFLARE_ACCOUNT_ID not verified")
+            print(f"WOULD BACK UP & REMOVE untracked {config_local} -> {backup_path}")
+    elif in_worktree and not is_tracked:
+        print(f"SKIP  {config_local}: migrated-env-only={only_migrated_env}, has_cf_id={has_cf_id}, fnox_ok={fnox_ok}")
 PY

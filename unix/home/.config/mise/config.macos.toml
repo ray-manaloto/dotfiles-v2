@@ -58,7 +58,5 @@ path = [
 	event = prepare-commit-msg
 ''' }
 "~/.local/bin/agy-hc" = { mode = "symlink", main_checkout = true }
-"~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink", main_checkout = true }
 "~/.local/bin/codex-hc" = { mode = "symlink", main_checkout = true }
-"~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink", main_checkout = true }
 "~/.zshenv" = { mode = "symlink", main_checkout = true }

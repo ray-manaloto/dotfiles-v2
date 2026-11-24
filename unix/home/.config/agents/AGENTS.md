@@ -90,6 +90,7 @@ as `tab-name (id)`.
 Use `fnox --non-interactive proxy run -- <cmd>` when a command requires managed
 provider authentication (`fnox exec`, `fnox get`, and `fnox export` are disabled
 for agents, and avoid `fnox set` on a Doppler provider). Manage Doppler entries
+<!-- agnix-disable-next-line CDX-AG-002 -->
 only through the `secret` mise tasks (`pbpaste | mise run secret:set` or the
 corresponding `secret` subcommands `set --replace`, `delete` with owner
 approval, `list`, and `doctor`).

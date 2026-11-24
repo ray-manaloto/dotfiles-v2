@@ -16,10 +16,11 @@ resolve_real_opencode() {
 	local -a path_dirs=()
 	local dir
 	IFS=':' read -ra path_dirs <<<"${PATH:-}"
-	for dir in "${path_dirs[@]}"; do
+	for dir in ${path_dirs[@]+"${path_dirs[@]}"}; do
+		dir="${dir%/}"
 		[[ -n ${dir} ]] || continue
 		case "${dir}" in
-		*/command-wrappers/bin | "${self_dir}") continue ;;
+		*/command-wrappers/bin | */mise/shims | "${self_dir}") continue ;;
 		esac
 		if [[ -x "${dir}/opencode" ]]; then
 			printf '%s\n' "${dir}/opencode"
@@ -40,15 +41,13 @@ args=("$@")
 i=0
 while ((i < ${#args[@]})); do
 	arg="${args[i]}"
-	case "${arg}" in
-	--standalone | --server | --server=*)
-		exec "${real_opencode}" "$@"
-		;;
-	esac
-	if ((end_of_opts == 0)) && [[ -z ${first_pos} ]]; then
+	if ((end_of_opts == 0)); then
 		case "${arg}" in
 		--)
 			end_of_opts=1
+			;;
+		--standalone | --server | --server=*)
+			exec "${real_opencode}" "$@"
 			;;
 		-h | --help | -v | --version | --wizard | --completions=*)
 			has_passthrough_flag=1
@@ -57,15 +56,18 @@ while ((i < ${#args[@]})); do
 			has_passthrough_flag=1
 			i=$((i + 1))
 			;;
-		--session | -s | --prompt | --log-level)
+		--session | -s | --prompt | --log-level | --model | -m | --file | -f | --agent | --format | --title)
 			i=$((i + 1))
 			;;
-		--session=* | --prompt=* | --log-level=* | --print-logs | --auto | --continue | -c) ;;
 		-*) ;;
 		*)
-			first_pos="${arg}"
+			if [[ -z ${first_pos} ]]; then
+				first_pos="${arg}"
+			fi
 			;;
 		esac
+	elif [[ -z ${first_pos} ]]; then
+		first_pos="${arg}"
 	fi
 	i=$((i + 1))
 done

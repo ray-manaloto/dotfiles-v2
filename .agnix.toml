@@ -5,8 +5,3 @@ tools = ["antigravity", "claude-code", "codex", "opencode"]
 [[overrides]]
 paths = ["unix/home/.config/opencode/opencode.json"]
 disabled_rules = ["OC-CFG-022"]
-
-# False positive on `mise run secret:set` task name (betterleaks still scans AGENTS.md).
-[[overrides]]
-paths = ["unix/home/.config/agents/AGENTS.md"]
-disabled_rules = ["CDX-AG-002"]

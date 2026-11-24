@@ -207,7 +207,10 @@ command = "{{env.HOME}}/.local/bin/vb"
 ] }
 "~/.codex/config.toml/mcp-jdx" = { source = "../../.codex/mcp-jdx.toml", merge = true, permissions = "0600" }
 "~/.gemini/config/skills" = { source = "~/.agents/skills", mode = "symlink", relative = true, main_checkout = true }
+"~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink", main_checkout = true }
+"~/.local/bin/opencode-hc" = { mode = "symlink", main_checkout = true }
 "~/.local/bin/opencode-wrapper" = { mode = "symlink", main_checkout = true }
+"~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", mode = "symlink", main_checkout = true }
 "~/.zcode/AGENTS.md" = { source = "~/.config/agents/AGENTS.md", mode = "symlink", main_checkout = true, depends = [
   "~/.config/agents/AGENTS.md",
 ] }

@@ -6,7 +6,7 @@ path=("${(@)path:#$HOME/.gemini/antigravity-cli/bin}")
 path=("${(@)path:#/usr/local/Homebrew/*}")
 path=("${(@)path:#/usr/local/opt/*}")
 _inherited=("${(@)path[1,${path[(i)(/usr/bin|/bin|/usr/sbin|/sbin)]}-1]}")
-path=("$XDG_DATA_HOME/mise/shims" "$HOME/.local/bin" /usr/local/share/mise/shims
+path=("$HOME/.local/bin" "$XDG_DATA_HOME/mise/shims" /usr/local/share/mise/shims
 	/opt/homebrew/bin /opt/homebrew/sbin /usr/bin /bin /usr/sbin /sbin $path
 	"$HOME/.docker/bin"
 	"$HOME/.opencode/bin"

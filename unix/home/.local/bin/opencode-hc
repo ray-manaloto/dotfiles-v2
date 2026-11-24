@@ -1,0 +1,8 @@
+#!/bin/sh
+# OpenCode CLI for herdr tabs and `hc run`, which start programs without a shell, so PATH has no mise wrappers dir.
+# Runs the [wrappers.opencode] shim by path (falling back to opencode-wrapper), starting opencode under fnox proxy run.
+wrapper="$HOME/.local/share/mise/command-wrappers/bin/opencode"
+if [ -x "$wrapper" ]; then
+	exec "$wrapper" "$@"
+fi
+exec "$HOME/.local/bin/opencode-wrapper" "$@"

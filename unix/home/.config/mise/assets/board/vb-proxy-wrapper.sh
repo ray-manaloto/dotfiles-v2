@@ -20,16 +20,21 @@ if [[ -z ${bin} || ! -x ${bin} ]]; then
 	if [[ -x ${direct} ]]; then
 		bin="${direct}"
 	else
-		for match in "${data_dir}/installs/npm-vercel-board"/*/node_modules/.bin/"${cmd}"; do
-			if [[ -x ${match} ]]; then
-				bin="${match}"
-				break
-			fi
-		done
-		if [[ -z ${bin} || ! -x ${bin} ]]; then
+		latest_match="$(
+			for match in "${data_dir}/installs/npm-vercel-board"/*/node_modules/.bin/"${cmd}"; do
+				[[ -x ${match} ]] && printf '%s\n' "${match}"
+			done | sort -V | tail -n 1 || true
+		)"
+		if [[ -n ${latest_match} && -x ${latest_match} ]]; then
+			bin="${latest_match}"
+		else
 			bin="${data_dir}/shims/${cmd}"
 		fi
 	fi
+fi
+if [[ -z ${bin} || ! -x ${bin} ]]; then
+	echo "vb-proxy-wrapper: executable '${cmd}' not found (install npm:@vercel/board via mise)" >&2
+	exit 127
 fi
 
 orig_board_url="${BOARD_URL-}"
