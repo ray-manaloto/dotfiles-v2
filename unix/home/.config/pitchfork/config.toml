@@ -1,5 +1,8 @@
 #:schema https://pitchfork.jdx.dev/schema.json
 
+[settings]
+general.mise = true
+
 [daemons.vercel-board]
 run = "mise -C ~ run board:serve"
 mise = true

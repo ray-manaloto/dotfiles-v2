@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Sync mise/jdx tool skills, mirror ~/.agents/skills into ~/.claude/skills, and wire Hermes external_dirs"
+#MISE description="Sync mise/jdx tool skills, mirror ~/.agents/skills into ~/.claude/skills and ~/.zcode/skills, wire ray-manaloto/skills marketplaces, and configure Hermes external_dirs"
 set -euo pipefail
 
 # Never bake temporary Docker Phase 1b paths into image layers.
@@ -9,15 +9,18 @@ fi
 
 agents_dir="${HOME}/.agents/skills"
 claude_dir="${HOME}/.claude/skills"
+zcode_dir="${HOME}/.zcode/skills"
 
-# Ensure ~/.claude/skills is a real directory, never a symlink to ~/.agents/skills.
-if [[ -L ${claude_dir} ]]; then
-	rm -f "${claude_dir}"
-fi
+# Ensure ~/.claude/skills and ~/.zcode/skills are real directories, never symlinks to ~/.agents/skills.
+for target_dir in "${claude_dir}" "${zcode_dir}"; do
+	if [[ -L ${target_dir} ]]; then
+		rm -f "${target_dir}"
+	fi
+done
 
-mkdir -p "${agents_dir}" "${claude_dir}"
+mkdir -p "${agents_dir}" "${claude_dir}" "${zcode_dir}"
 
-# Clear any self-referential ../../.agents/skills/ loops left by prior symlinked claude dirs,
+# Clear any self-referential ../../.agents/skills/ loops left by prior symlinked dirs,
 # and unlink legacy pre-manifest ~/.agents/skills/<name> symlinks pointing into mise installs
 # so `mise skills sync --global --prune` cleanly adopts them and writes .mise-skills.json.
 python3 - "${agents_dir}" "${MISE_DATA_DIR:-${HOME}/.local/share/mise}/installs" <<'PY'
@@ -77,42 +80,141 @@ PY
 
 mise skills sync --global --prune
 
-python3 - "${agents_dir}" "${claude_dir}" <<'PY'
+python3 - "${agents_dir}" "${claude_dir}" "${zcode_dir}" <<'PY'
 import os
 import sys
 from pathlib import Path
 
 agents_dir = Path(sys.argv[1])
-claude_dir = Path(sys.argv[2])
-
-if claude_dir.resolve() == agents_dir.resolve():
-    sys.exit(0)
+mirror_dirs = [Path(arg) for arg in sys.argv[2:]]
 
 def is_skill_dir(entry: Path) -> bool:
     return (entry.is_dir() or entry.is_symlink()) and (entry / "SKILL.md").is_file()
 
-# Prune dangling relative links we own in ~/.claude/skills when a global tool skill is removed.
-for dst in sorted(claude_dir.iterdir()):
-    if dst.is_symlink() and not dst.exists():
-        if os.readlink(dst).startswith("../../.agents/skills/"):
+def mirror_skills_dir(source_dir: Path, target_dir: Path) -> None:
+    if target_dir.resolve() == source_dir.resolve():
+        return
+    # Prune dangling relative links we own when a global tool skill is removed.
+    for dst in sorted(target_dir.iterdir()):
+        if dst.is_symlink() and not dst.exists():
+            if os.readlink(dst).startswith("../../.agents/skills/"):
+                dst.unlink()
+    for entry in sorted(source_dir.iterdir()):
+        if not is_skill_dir(entry):
+            continue
+        dst = target_dir / entry.name
+        desired = f"../../.agents/skills/{entry.name}"
+        if dst.is_symlink():
+            if os.readlink(dst) == desired:
+                continue
+            if dst.exists() or not os.readlink(dst).startswith("../../.agents/skills/"):
+                continue
             dst.unlink()
+        elif dst.exists():
+            # Leave real directories (for example local plugin skills) untouched.
+            continue
+        os.symlink(desired, dst)
 
-for entry in sorted(agents_dir.iterdir()):
-    if not is_skill_dir(entry):
-        continue
-    dst = claude_dir / entry.name
-    desired = f"../../.agents/skills/{entry.name}"
-    if dst.is_symlink():
-        if os.readlink(dst) == desired:
-            continue
-        if dst.exists() or not os.readlink(dst).startswith("../../.agents/skills/"):
-            continue
-        dst.unlink()
-    elif dst.exists():
-        # Leave real directories (for example local plugin skills) untouched.
-        continue
-    os.symlink(desired, dst)
+for mirror_dir in mirror_dirs:
+    mirror_skills_dir(agents_dir, mirror_dir)
 PY
+
+# Wire ray-manaloto/skills plugin marketplace for Claude, Codex, and Antigravity when online.
+if [[ ${MISE_OFFLINE:-0} != "1" && ${MISE_OFFLINE:-false} != "true" && ${CI:-false} != "true" ]]; then
+	if command -v claude >/dev/null 2>&1; then
+		km_file="${HOME}/.claude/plugins/known_marketplaces.json"
+		has_claude_mp=0
+		if [[ -s ${km_file} ]] && grep -q '"ray-manaloto-skills"' "${km_file}" 2>/dev/null; then
+			has_claude_mp=1
+		fi
+		if [[ ${has_claude_mp} -eq 0 ]]; then
+			claude plugin marketplace add ray-manaloto/skills </dev/null >/dev/null 2>&1 || echo "WARN: claude plugin marketplace add ray-manaloto/skills skipped/failed" >&2
+		fi
+		claude_plugins_json="$(claude plugin list --json </dev/null 2>/dev/null || echo '[]')"
+		for cp in "skills@ray-manaloto-skills" "fleet-agents@ray-manaloto-skills"; do
+			if ! python3 - "${claude_plugins_json}" "${cp}" <<'PY'
+import json
+import sys
+
+raw, want = sys.argv[1], sys.argv[2]
+try:
+    rows = json.loads(raw)
+except json.JSONDecodeError:
+    rows = []
+found = any(
+    isinstance(row, dict) and (row.get("id") == want or row.get("name") == want)
+    for row in (rows if isinstance(rows, list) else [])
+)
+sys.exit(0 if found else 1)
+PY
+			then
+				claude plugin install "${cp}" </dev/null >/dev/null 2>&1 || echo "WARN: claude plugin install ${cp} skipped/failed" >&2
+			fi
+		done
+	fi
+
+	if command -v codex >/dev/null 2>&1; then
+		codex_mp_json="$(codex plugin marketplace list --json </dev/null 2>/dev/null || echo '{}')"
+		if ! python3 - "${codex_mp_json}" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    data = {}
+mps = data.get("marketplaces", []) if isinstance(data, dict) else []
+found = any(
+    isinstance(m, dict) and (m.get("name") == "ray-manaloto-skills" or "ray-manaloto/skills" in str(m.get("marketplaceSource", "")))
+    for m in mps
+)
+sys.exit(0 if found else 1)
+PY
+		then
+			codex plugin marketplace add ray-manaloto/skills </dev/null >/dev/null 2>&1 || echo "WARN: codex plugin marketplace add ray-manaloto/skills skipped/failed" >&2
+		fi
+		codex_plugins_json="$(codex plugin list --json </dev/null 2>/dev/null || echo '{}')"
+		if ! python3 - "${codex_plugins_json}" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    data = {}
+for mp in (data.get("marketplaces") or []) if isinstance(data, dict) else []:
+    if isinstance(mp, dict) and mp.get("name") == "ray-manaloto-skills":
+        for p in mp.get("plugins") or []:
+            if isinstance(p, dict) and p.get("name") == "skills" and p.get("installed"):
+                sys.exit(0)
+sys.exit(1)
+PY
+		then
+			codex plugin add skills@ray-manaloto-skills </dev/null >/dev/null 2>&1 || echo "WARN: codex plugin add skills@ray-manaloto-skills skipped/failed" >&2
+		fi
+	fi
+
+	if command -v agy >/dev/null 2>&1; then
+		agy_plugins_json="$(agy plugin list --json </dev/null 2>/dev/null || echo '[]')"
+		if ! python3 - "${agy_plugins_json}" <<'PY'
+import json
+import sys
+
+try:
+    rows = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    rows = []
+found = any(
+    isinstance(row, dict) and (row.get("name") == "skills" or "ray-manaloto/skills" in str(row.get("source", "")))
+    for row in (rows if isinstance(rows, list) else [])
+)
+sys.exit(0 if found else 1)
+PY
+		then
+			agy plugin install https://github.com/ray-manaloto/skills </dev/null >/dev/null 2>&1 || echo "WARN: agy plugin install ray-manaloto/skills skipped/failed" >&2
+		fi
+	fi
+fi
 
 hermes_sync="$(cd "$(dirname "$0")/.." && pwd)/hermes/skills-sync"
 if [[ -x ${hermes_sync} ]]; then

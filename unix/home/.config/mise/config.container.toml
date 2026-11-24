@@ -1,11 +1,15 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # Ubuntu 26.10 non-privileged container environment (`MISE_ENV=container`).
 
+[tools]
+tailscale = { version = "1.104.7", os = ["linux"] }
+
 [bootstrap.packages]
 "apt:ca-certificates" = "20260816ubuntu0.26.10.2"
 "apt:curl" = "8.20.0-2ubuntu11.1"
 "apt:git" = "1:2.55.0-1ubuntu1.1"
 "apt:libatomic1" = "16.2.0-3ubuntu1"
+"apt:zsh" = "5.9-8ubuntu3"
 
 [bootstrap.groups.dev]
 gid = 1000
@@ -14,7 +18,7 @@ gid = 1000
 uid = 1000
 group = "dev"
 home = "/home/dev"
-shell = "/bin/bash"
+shell = "/usr/bin/zsh"
 create_home = true
 
 [bootstrap.directories."/opt/mise"]
@@ -32,10 +36,30 @@ owner = "dev"
 group = "dev"
 mode = "0755"
 
+[bootstrap.directories."/home/dev/.cache"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.cache/aube"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
+[bootstrap.directories."/home/dev/.cache/uv"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
 [bootstrap.directories."/home/dev/.claude"]
 owner = "dev"
 group = "dev"
 mode = "0755"
+
+[bootstrap.directories."/home/dev/.codex"]
+owner = "dev"
+group = "dev"
+mode = "0700"
 
 [bootstrap.directories."/home/dev/.config/board"]
 owner = "dev"
@@ -51,6 +75,16 @@ mode = "0755"
 owner = "dev"
 group = "dev"
 mode = "0755"
+
+[bootstrap.directories."/home/dev/.gemini"]
+owner = "dev"
+group = "dev"
+mode = "0755"
+
+[bootstrap.directories."/home/dev/.gemini/antigravity-cli"]
+owner = "dev"
+group = "dev"
+mode = "0700"
 
 [bootstrap.directories."/home/dev/.local"]
 owner = "dev"
@@ -72,10 +106,30 @@ owner = "dev"
 group = "dev"
 mode = "0755"
 
+[bootstrap.directories."/home/dev/.local/share/zoxide"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
 [bootstrap.directories."/home/dev/.local/state"]
 owner = "dev"
 group = "dev"
 mode = "0755"
+
+[bootstrap.directories."/home/dev/.local/state/agy-learn"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
+[bootstrap.directories."/home/dev/.local/state/opencode"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
+[bootstrap.directories."/home/dev/.local/state/shell"]
+owner = "dev"
+group = "dev"
+mode = "0700"
 
 [bootstrap.directories."/home/dev/.local/state/tailscale"]
 owner = "dev"
@@ -124,6 +178,11 @@ id = "dotfiles-v2"
 block = """
 . /etc/profile.d/dotfiles-v2-env.sh
 . /etc/profile.d/agent-secrets.sh"""
+
+[bootstrap.files."/etc/zsh/zshenv"]
+id = "dotfiles-v2"
+block = """
+emulate sh -c '. /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-secrets.sh'"""
 
 [dotfiles]
 "~/.bashrc/dotfiles-v2" = { line = ". /etc/profile.d/dotfiles-v2-env.sh && . /etc/profile.d/agent-secrets.sh", position = "prepend" }

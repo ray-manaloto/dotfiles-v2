@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#MISE description="Install native herdr-core (hc) CLI idempotently"
+set -euo pipefail
+
+mkdir -p "${HOME}/.local/bin"
+if [[ ! -x "${HOME}/.local/bin/hc" ]]; then
+	if [[ ${MISE_OFFLINE:-0} == "1" || ${MISE_OFFLINE:-} == "true" ]]; then
+		echo "SKIP  bootstrap:herdr-core: ~/.local/bin/hc absent in offline mode"
+		exit 0
+	fi
+	script="$(mktemp)"
+	trap 'rm -f "${script}"' EXIT
+	curl -fsSLo "${script}" https://releases.herdr.dev/core/install.sh
+	PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" sh "${script}" </dev/null
+fi
+if [[ -x "${HOME}/.local/bin/hc" ]]; then
+	"${HOME}/.local/bin/hc" --version </dev/null
+fi

@@ -2,4 +2,4 @@
 # Loaded automatically on Linux via miserc.toml (auto_env = true).
 
 [bootstrap.user]
-login_shell = "/bin/bash"
+login_shell = "zsh"

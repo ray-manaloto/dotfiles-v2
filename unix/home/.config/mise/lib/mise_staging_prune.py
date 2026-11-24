@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 import subprocess
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 _STAGING_DIR_RE = re.compile(r".+-[a-z2-7]{8}")
 
@@ -108,6 +110,67 @@ def _collect_ps_cmdlines() -> tuple[list[str] | None, str | None]:
     return lines, None
 
 
+def _add_path_variants(raw: str, home: Path, out: set[str]) -> None:
+    """Record raw, tilde-expanded, normalized, and realpath variants of a string."""
+    if not raw:
+        return
+    out.add(raw)
+    expanded = os.path.join(str(home), raw[2:]) if raw.startswith("~/") else raw
+    out.add(expanded)
+    if expanded.startswith("/"):
+        out.add(os.path.normpath(expanded))
+        out.add(os.path.realpath(expanded))
+
+
+def _extract_plist_strings(obj: object, home: Path, out: set[str]) -> None:
+    """Recursively collect string and path tokens from a parsed LaunchAgent plist."""
+    if isinstance(obj, str):
+        _add_path_variants(obj, home, out)
+        if "/" in obj and ":" in obj:
+            for part in obj.split(":"):
+                if "/" in part:
+                    _add_path_variants(part, home, out)
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _extract_plist_strings(k, home, out)
+            _extract_plist_strings(v, home, out)
+        return
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            _extract_plist_strings(item, home, out)
+
+
+def _collect_launchagent_refs(home: Path) -> tuple[set[str] | None, str | None]:
+    """Collect string/path references from `~/Library/LaunchAgents/*.plist` (fail closed on error)."""
+    agents_dir = home / "Library" / "LaunchAgents"
+    if not os.path.lexists(agents_dir):
+        return set(), None
+    if agents_dir.is_symlink() and not agents_dir.exists():
+        return set(), None
+    if not agents_dir.is_dir():
+        return None, f"LaunchAgents path is not a directory: {agents_dir}"
+    try:
+        with os.scandir(agents_dir) as it:
+            entries = sorted(it, key=lambda e: e.name)
+    except OSError as exc:
+        return None, f"failed to scan {agents_dir}: {exc}"
+
+    refs: set[str] = set()
+    for entry in entries:
+        if not entry.name.endswith(".plist"):
+            continue
+        try:
+            if entry.is_symlink() and not os.path.exists(entry.path):
+                continue
+            with open(entry.path, "rb") as fh:
+                payload = plistlib.load(fh)
+        except (OSError, plistlib.InvalidFileException, ExpatError, ValueError) as exc:
+            return None, f"failed to parse LaunchAgent plist {entry.path}: {exc}"
+        _extract_plist_strings(payload, home, refs)
+    return refs, None
+
+
 def find_orphaned_mise_staging_dirs(
     installs_dir: Path, home: Path
 ) -> tuple[list[Path], list[str]]:
@@ -152,6 +215,9 @@ def find_orphaned_mise_staging_dirs(
     ps_lines, ps_err = _collect_ps_cmdlines()
     if ps_lines is None:
         return [], [f"staging-dir-check-failed: {ps_err}"]
+    launch_refs, la_err = _collect_launchagent_refs(home)
+    if launch_refs is None:
+        return [], [f"staging-dir-check-failed: {la_err}"]
     symlink_pairs, sym_err = _collect_installs_symlink_targets(installs_dir)
     if symlink_pairs is None:
         return [], [f"staging-dir-check-failed: {sym_err}"]
@@ -184,6 +250,11 @@ def find_orphaned_mise_staging_dirs(
         if any(
             cand_real in line or cand_str in line or cand_norm in line
             for line in ps_lines
+        ):
+            continue
+        if any(
+            cand_real in ref or cand_str in ref or cand_norm in ref
+            for ref in launch_refs
         ):
             continue
         orphans.append(cand)

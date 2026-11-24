@@ -70,26 +70,31 @@ for link in sorted(tracked_dir.iterdir()):
             print(f"WOULD UNTRACK ignored config: {link.name} -> {target}")
 PY
 
-# 1. mise prune --configs, mise prune, and mise reshim --force
+# 1. mise prune --configs, mise prune (enabled + disabled backends), cache prune, and mise reshim --force
 if [[ ${apply} == "true" ]]; then
 	mise -C "${home_dir}" prune --configs --yes
 	mise -C "${home_dir}" prune --yes
+	MISE_ENABLE_BACKENDS="" mise -C "${home_dir}" prune --yes
+	mise -C "${home_dir}" cache prune
 	mise -C "${home_dir}" reshim --force
 else
 	mise -C "${home_dir}" prune --configs --dry-run
 	mise -C "${home_dir}" prune --dry-run
+	MISE_ENABLE_BACKENDS="" mise -C "${home_dir}" prune --dry-run
+	mise -C "${home_dir}" cache prune --dry-run
 	echo "DRY-RUN: would run \`mise -C \"${home_dir}\" reshim --force\`"
 fi
 
 # 2. Orphaned command-wrappers/bin/* not declared in [wrappers.*]
 # 3. Stale unconfigured mise plugins and orphaned dirs in ~/.local/share/mise/plugins/
-# 3c. Inactive orphaned <tool>-<8-char> mise staging/install dirs
+# 3c. Inactive orphaned <tool>-<8-char> mise staging/install dirs (with LaunchAgents protection)
+# 3d. Disabled backend data directories (`conda-packages`, `dotnet-root`) when unused
 # 4. Retired stopped pitchfork entries
 # 5. Stale standalone binaries in ~/.local/bin/{uv,uvx,hermes,hermes-acp,hermes-agent}
 # 6. Dead symlinks in ~/.config/opencode/skills/ and ~/.claude/debug/latest
 # 7. Unmanaged ~/.config/opencode/opencode.jsonc (backup before removal)
 # 8. Untracked unix/home/.config/mise/config.local.toml (only when migrated-env-only + fnox check --all --strict passes with CLOUDFLARE_ACCOUNT_ID)
-python3 - "${apply}" "${home_dir}" "${wrappers_dir}" "${plugins_dir}" "${fnox_cfg}" "${installs_dir}" "${lib_dir}" <<'PY'
+python3 - "${apply}" "${home_dir}" "${wrappers_dir}" "${plugins_dir}" "${fnox_cfg}" "${installs_dir}" "${lib_dir}" "${data_dir}" <<'PY'
 import json
 import os
 import re
@@ -107,10 +112,15 @@ plugins_dir = Path(sys.argv[4])
 fnox_cfg = Path(sys.argv[5])
 installs_dir = Path(sys.argv[6])
 lib_dir = sys.argv[7]
+data_dir = Path(sys.argv[8])
 if lib_dir not in sys.path:
     sys.path.insert(0, lib_dir)
 
-from mise_staging_prune import find_orphaned_mise_staging_dirs
+from mise_staging_prune import (
+    _collect_launchagent_refs,
+    _collect_ps_cmdlines,
+    find_orphaned_mise_staging_dirs,
+)
 
 mise_dir = home / ".config" / "mise"
 state_dir = Path(os.environ.get("MISE_STATE_DIR", str(home / ".local" / "state" / "mise")))
@@ -312,6 +322,61 @@ else:
             print(f"REMOVED orphaned staging dir: {staging_dir}")
         else:
             print(f"WOULD REMOVE orphaned staging dir: {staging_dir}")
+
+# 3d. Disabled backend data directories (`conda-packages`, `dotnet-root`) when disabled and unreferenced
+def _load_enabled_backends() -> set[str] | None:
+    cfg_path = mise_dir / "config.toml"
+    if not cfg_path.is_file():
+        return None
+    try:
+        cfg_data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    settings_tbl = cfg_data.get("settings")
+    if not isinstance(settings_tbl, dict):
+        return None
+    enabled = settings_tbl.get("enable_backends")
+    if not isinstance(enabled, list):
+        return None
+    return {str(item) for item in enabled if isinstance(item, str)}
+
+
+enabled_backends = _load_enabled_backends()
+if enabled_backends is not None:
+    disabled_candidates = [
+        (backend, data_dir / subdir)
+        for backend, subdir in (("conda", "conda-packages"), ("dotnet", "dotnet-root"))
+        if backend not in enabled_backends and (data_dir / subdir).exists()
+    ]
+    if disabled_candidates:
+        ps_lines, ps_err = _collect_ps_cmdlines()
+        launch_refs, la_err = _collect_launchagent_refs(home)
+        if ps_lines is None or launch_refs is None:
+            reason = ps_err or la_err or "probe error"
+            print(f"SKIP  disabled-backend data dir prune: {reason}")
+        else:
+            install_names = (
+                [e.name.lower() for e in installs_dir.iterdir()]
+                if installs_dir.is_dir()
+                else []
+            )
+            for backend, target_dir in disabled_candidates:
+                if any(name.startswith((f"{backend}-", f"{backend}:")) for name in install_names):
+                    continue
+                target_str = str(target_dir)
+                target_real = os.path.realpath(target_dir)
+                if any(target_str in line or target_real in line for line in ps_lines):
+                    continue
+                if any(target_str in ref or target_real in ref for ref in launch_refs):
+                    continue
+                if apply:
+                    if target_dir.is_symlink() or target_dir.is_file():
+                        target_dir.unlink()
+                    else:
+                        shutil.rmtree(target_dir)
+                    print(f"REMOVED disabled-backend data dir: {target_dir}")
+                else:
+                    print(f"WOULD REMOVE disabled-backend data dir: {target_dir}")
 
 # 4. Retired stopped pitchfork entries
 if shutil.which("pitchfork"):

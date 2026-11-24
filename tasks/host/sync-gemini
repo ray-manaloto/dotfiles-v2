@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-#MISE description="Sync or verify unix/home/.gemini/config/ hooks/rules/hooks.json and unix/home/.agents/skills/ across ~/.agents, ~/.claude, and ~/.gemini"
-#USAGE flag "--check" help="Verify local ~/.gemini/config/, ~/.agents/skills/, and ~/.claude/skills/ match repo without modifying files"
+#MISE description="Sync or verify unix/home/.gemini/config/ hooks/rules/hooks.json and unix/home/.agents/skills/ across ~/.agents, ~/.claude, ~/.zcode, and ~/.gemini"
+#USAGE flag "--check" help="Verify local ~/.gemini/config/, ~/.agents/skills/, ~/.claude/skills/, and ~/.zcode/skills/ match repo without modifying files"
 set -euo pipefail
 
 check_mode="${usage_check:-false}"
 exec python3 - "${check_mode}" <<'PY'
+import fnmatch
 import json
 import os
 import shutil
@@ -37,9 +38,14 @@ main_src_cfg = main_root / "unix" / "home" / ".gemini" / "config"
 src_skills = repo_root / "unix" / "home" / ".agents" / "skills"
 main_src_skills = main_root / "unix" / "home" / ".agents" / "skills"
 
-mise_cfg_path = repo_root / "unix" / "home" / ".config" / "mise" / "config.toml"
+mise_dir = repo_root / "unix" / "home" / ".config" / "mise"
+mise_cfg_path = mise_dir / "config.toml"
+mise_macos_path = mise_dir / "config.macos.toml"
 parsed = tomllib.loads(mise_cfg_path.read_text(encoding="utf-8"))
+parsed_macos = tomllib.loads(mise_macos_path.read_text(encoding="utf-8")) if mise_macos_path.is_file() else {}
 dotfiles_tbl = parsed.get("dotfiles", {})
+macos_dotfiles_tbl = parsed_macos.get("dotfiles", {})
+groups_tbl = parsed.get("dotfile_groups", {})
 
 managed_rels: list[str] = []
 for sub in ("hooks", "rules"):
@@ -49,7 +55,7 @@ for sub in ("hooks", "rules"):
     for p in sorted(base.rglob("*")):
         if not p.is_file():
             continue
-        if "__pycache__" in p.parts or p.suffix == ".pyc" or p.name == ".DS_Store":
+        if "__pycache__" in p.parts or p.suffix == ".pyc" or p.name in {".DS_Store", "ruff.toml"}:
             continue
         managed_rels.append(p.relative_to(src_cfg).as_posix())
 
@@ -59,28 +65,65 @@ if src_skills.is_dir():
         if entry.is_dir() and (entry / "SKILL.md").is_file():
             skill_names.append(entry.name)
 
+def _group_covers_symlink_each(group_name: str, expected_root: str, expected_target: str, rel_subpath: str) -> bool:
+    grp = groups_tbl.get(group_name)
+    if not isinstance(grp, dict):
+        return False
+    if grp.get("root") != expected_root or grp.get("target") != expected_target:
+        return False
+    if grp.get("mode", "symlink-each") != "symlink-each":
+        return False
+    excludes = grp.get("exclude") or []
+    return not any(
+        fnmatch.fnmatch(rel_subpath, pat) or fnmatch.fnmatch(Path(rel_subpath).name, pat)
+        for pat in excludes
+        if isinstance(pat, str)
+    )
+
+def _skill_registered(sk: str) -> bool:
+    key = f"~/.agents/skills/{sk}"
+    if key in dotfiles_tbl:
+        return True
+    grp = groups_tbl.get("agents-skills")
+    if not isinstance(grp, dict):
+        return False
+    entries = grp.get("entries")
+    if isinstance(entries, dict):
+        spec = entries.get(key)
+        return isinstance(spec, dict) and spec.get("mode") == "symlink"
+    return grp.get("root") == ".agents/skills" and grp.get("target") == "~/.agents/skills"
+
 missing_dotfiles: list[str] = []
 for rel in managed_rels:
     key = f"~/.gemini/config/{rel}"
-    if key not in dotfiles_tbl:
-        missing_dotfiles.append(key)
+    if key in dotfiles_tbl:
+        continue
+    sub, _, rest = rel.partition("/")
+    if sub == "hooks" and _group_covers_symlink_each("gemini-hooks", ".gemini/config/hooks", "~/.gemini/config/hooks", rest):
+        continue
+    if sub == "rules" and _group_covers_symlink_each("gemini-rules", ".gemini/config/rules", "~/.gemini/config/rules", rest):
+        continue
+    missing_dotfiles.append(key)
+
 for key in (
     "~/.gemini/config/hooks.json/dotfiles-v2",
+    "~/.gemini/config/mcp_config.json/mcp-jdx",
+    "~/.gemini/antigravity-cli/settings.json/orchestrator-neon",
     "~/.gemini/config/skills",
-    "~/.claude.json/mcp-jdx",
     "~/.codex/config.toml/mcp-jdx",
 ):
     if key not in dotfiles_tbl:
         missing_dotfiles.append(key)
+if "~/.claude.json/mcp-jdx" not in dotfiles_tbl and "~/.claude.json/mcp-jdx" not in macos_dotfiles_tbl:
+    missing_dotfiles.append("~/.claude.json/mcp-jdx (config.toml or config.macos.toml)")
+
 for sk in skill_names:
-    for prefix in ("~/.agents/skills", "~/.claude/skills"):
-        key = f"{prefix}/{sk}"
-        if key not in dotfiles_tbl:
-            missing_dotfiles.append(key)
+    if not _skill_registered(sk):
+        missing_dotfiles.append(f"~/.agents/skills/{sk}")
 
 if missing_dotfiles:
     print(
-        "Unregistered entries in unix/home/.config/mise/config.toml [dotfiles]: "
+        "Unregistered entries in unix/home/.config/mise/config*.toml ([dotfiles]/[dotfile_groups]): "
         + ", ".join(missing_dotfiles),
         file=sys.stderr,
     )
@@ -93,6 +136,7 @@ host_home = Path.home()
 host_cfg = host_home / ".gemini" / "config"
 host_agents_skills = host_home / ".agents" / "skills"
 host_claude_skills = host_home / ".claude" / "skills"
+host_zcode_skills = host_home / ".zcode" / "skills"
 repo_hooks_path = src_cfg / "hooks.json"
 repo_hooks = json.loads(repo_hooks_path.read_text(encoding="utf-8"))
 host_hooks_path = host_cfg / "hooks.json"
@@ -111,12 +155,13 @@ if check_only:
     gemini_skills = host_cfg / "skills"
     if not gemini_skills.is_symlink() or gemini_skills.resolve(strict=False) != host_agents_skills.resolve(strict=False):
         errors.append(f"{gemini_skills} must symlink to {host_agents_skills}")
-    if host_claude_skills.is_symlink():
-        errors.append(f"{host_claude_skills} must be a real directory, not a symlink")
+    for mirror_dir in (host_claude_skills, host_zcode_skills):
+        if mirror_dir.is_symlink():
+            errors.append(f"{mirror_dir} must be a real directory, not a symlink")
 
     for sk in skill_names:
         allowed_skill_srcs = {(src_skills / sk).resolve(), (main_src_skills / sk).resolve()}
-        for root_dir in (host_agents_skills, host_claude_skills):
+        for root_dir in (host_agents_skills, host_claude_skills, host_zcode_skills):
             dst = root_dir / sk
             if not dst.is_symlink():
                 errors.append(f"missing or non-symlink skill dir {dst}")
@@ -161,14 +206,16 @@ for rel in managed_rels:
     linked += 1
 
 host_agents_skills.mkdir(parents=True, exist_ok=True)
-if host_claude_skills.is_symlink():
-    if host_claude_skills.resolve(strict=False) == host_agents_skills.resolve(strict=False):
-        host_claude_skills.unlink()
-    else:
-        raise RuntimeError(
-            f"Refusing to replace symlink {host_claude_skills} -> {os.readlink(host_claude_skills)}"
-        )
-host_claude_skills.mkdir(parents=True, exist_ok=True)
+for mirror_dir in (host_claude_skills, host_zcode_skills):
+    if mirror_dir.is_symlink():
+        if mirror_dir.resolve(strict=False) == host_agents_skills.resolve(strict=False):
+            mirror_dir.unlink()
+        else:
+            raise RuntimeError(
+                f"Refusing to replace symlink {mirror_dir} -> {os.readlink(mirror_dir)}"
+            )
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+
 gemini_skills = host_cfg / "skills"
 if gemini_skills.is_symlink():
     if gemini_skills.resolve(strict=False) != host_agents_skills.resolve(strict=False):
@@ -220,6 +267,7 @@ for sk in skill_names:
     src = (src_skills / sk).resolve()
     skills_linked += link_skill_dir(src, host_agents_skills / sk)
     skills_linked += link_skill_dir(src, host_claude_skills / sk, raw_target=f"../../.agents/skills/{sk}")
+    skills_linked += link_skill_dir(src, host_zcode_skills / sk, raw_target=f"../../.agents/skills/{sk}")
 
 host_cfg.mkdir(parents=True, exist_ok=True)
 host_hooks = {}

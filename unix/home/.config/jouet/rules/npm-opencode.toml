@@ -1,0 +1,58 @@
+#:schema https://jouet.jdx.dev/schema/rules.json
+# OpenCode v2 CLI is installed only by its native installer (~/.opencode/bin/opencode;
+# mise disable_tools blocks npm opencode packages, and this rule blocks direct global npm/pnpm/bun/yarn installs).
+
+[[rule]]
+name = "npm-opencode"
+why = "OpenCode is native-install only; a global package-manager install puts a duplicate copy into mise's node."
+mode = "deny"
+author = "dotfiles-v2, for the owner"
+created = "2026-11-24"
+message = "OpenCode CLI is installed only by its native installer (`~/.opencode/bin/opencode`, via `mise run bootstrap:opencode`). A global npm, pnpm, bun, or yarn install of opencode-ai, @opencode/cli, or @opencode-ai/cli duplicates it inside mise's node and is not allowed."
+suggest = "opencode --version"
+
+[[rule.match]]
+command = "npm"
+text = ["^(install|i|add|is[n]tall|update|up|upgrade|link)$", "^(-[A-Za-z]*g[A-Za-z]*|--global(=true)?|--location=global)$", "^(opencode-ai|@opencode/cli|@opencode-ai/cli)(@.*)?$"]
+
+[[rule.match]]
+command = ["pnpm", "bun"]
+text = ["^(add|install|i|update|up)$", "^(-[A-Za-z]*g[A-Za-z]*|--global(=true)?)$", "^(opencode-ai|@opencode/cli|@opencode-ai/cli)(@.*)?$"]
+
+[[rule.match]]
+command = ["yarn global add", "yarn global upgrade"]
+args = [
+  "opencode-ai",
+  "opencode-ai@*",
+  "@opencode/cli",
+  "@opencode/cli@*",
+  "@opencode-ai/cli",
+  "@opencode-ai/cli@*",
+]
+
+[rule.examples]
+fires = [
+  "npm install --global opencode-ai",
+  "npm i -g @opencode/cli@latest",
+  "cd /tmp/x && npm install -g @opencode-ai/cli",
+  "mise exec -- npm install --location=global opencode-ai",
+  "pnpm add -g opencode-ai",
+  "bun add --global @opencode-ai/cli",
+  "npm -g install @opencode/cli",
+  "pnpm -g add opencode-ai@2",
+  "npm install -fg opencode-ai",
+  "npm install --global=true @opencode-ai/cli",
+  "yarn global add opencode-ai",
+  "yarn global add @opencode/cli",
+]
+quiet = [
+  "npm install opencode-ai",
+  "npm install --location=project @opencode-ai/cli",
+  "npm install global opencode-ai",
+  "npm install --global=false opencode-ai",
+  "npm uninstall -g opencode-ai",
+  "npm install -g @opencode-ai/sdk",
+  "npm uninstall --global @opencode-ai/cli",
+  "npm view opencode-ai version",
+  "opencode --version",
+]

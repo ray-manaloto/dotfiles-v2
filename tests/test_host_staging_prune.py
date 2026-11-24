@@ -334,3 +334,142 @@ printf '%s\\n' '/bin/zsh -i' '{fx["proc_dir"]}/agentsview serve'
         fx["hadolint_hashed"],
     ):
         assert kept.is_dir()
+
+
+def test_find_orphaned_staging_dirs_launchagents_and_fail_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import plistlib
+
+    doc_mod = load_module("doctor_checks")
+    fx = _setup_mise_fixture(tmp_path)
+    agents_dir = fx["home"] / "Library" / "LaunchAgents"
+    agents_dir.mkdir(parents=True)
+
+    la_protected = fx["installs_dir"] / "customla-abcdefgh"
+    la_protected.mkdir()
+    (la_protected / ".mise-install.toml").write_text("", encoding="utf-8")
+
+    plist_path = agents_dir / "dev.test.agent.plist"
+    with open(plist_path, "wb") as fh:
+        plistlib.dump(
+            {
+                "Label": "dev.test.agent",
+                "ProgramArguments": [f"{la_protected}/bin/agent", "--serve"],
+            },
+            fh,
+        )
+
+    ls_payload = json.dumps(_fake_ls_payload(fx))
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(
+        doc_mod.subprocess,
+        "run",
+        lambda cmd, **_kw: (
+            subprocess.CompletedProcess(cmd, 0, stdout=ls_payload, stderr="")
+            if "ls" in cmd and "--installed" in cmd
+            else subprocess.CompletedProcess(cmd, 0, stdout="/bin/zsh -i\n", stderr="")
+        ),
+    )
+
+    orphans, probe_errs = doc_mod.find_orphaned_mise_staging_dirs(
+        fx["installs_dir"], fx["home"]
+    )
+    assert probe_errs == []
+    assert la_protected not in orphans
+    assert fx["orphan_dir"] in orphans
+
+    # Corrupt plist must fail closed so nothing is flagged for deletion.
+    (agents_dir / "broken.plist").write_text("not-a-valid-plist", encoding="utf-8")
+    orphans_bad, bad_errs = doc_mod.find_orphaned_mise_staging_dirs(
+        fx["installs_dir"], fx["home"]
+    )
+    assert orphans_bad == []
+    assert any("staging-dir-check-failed:" in e for e in bad_errs)
+
+
+def test_host_prune_disabled_backend_cache_and_conda_dotnet_dirs(
+    tmp_path: Path,
+) -> None:
+    fx = _setup_mise_fixture(tmp_path)
+    mise_dir = fx["home"] / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[settings]\nenable_backends = ["core", "aqua", "github", "npm", "packslip"]\n',
+        encoding="utf-8",
+    )
+    conda_pkg_dir = fx["data_dir"] / "conda-packages"
+    dotnet_root_dir = fx["data_dir"] / "dotnet-root"
+    conda_pkg_dir.mkdir()
+    dotnet_root_dir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_file = tmp_path / "mise-calls.log"
+    ls_json_file = tmp_path / "ls.json"
+    ls_json_file.write_text(json.dumps(_fake_ls_payload(fx)), encoding="utf-8")
+
+    _write_exec(
+        bin_dir / "mise",
+        f"""#!/bin/sh
+printf 'ENABLE_BACKENDS=%s ARGS=%s\\n' "${{MISE_ENABLE_BACKENDS-<unset>}}" "$*" >> "{log_file}"
+case " $* " in
+  *" ls --installed --json "*)
+    cat "{ls_json_file}"
+    ;;
+  *" plugins ls "*)
+    exit 0
+    ;;
+  *" doctor --json "*)
+    printf '{{}}'
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+""",
+    )
+    _write_exec(bin_dir / "ps", "#!/bin/sh\nprintf '%s\\n' '/bin/zsh -i'\n")
+
+    sys_py_dir = str(Path(shutil.which("python3") or sys.executable).parent)
+    base_env = {
+        "PATH": f"{bin_dir}:{sys_py_dir}:/usr/bin:/bin",
+        "HOME": str(fx["home"]),
+        "MISE_DATA_DIR": str(fx["data_dir"]),
+        "MISE_STATE_DIR": str(fx["state_dir"]),
+    }
+    prune_script = (
+        _repo_root() / "unix" / "home" / ".config" / "mise" / "tasks" / "host" / "prune"
+    )
+
+    dry = subprocess.run(
+        ["bash", str(prune_script)],
+        env={**base_env, "usage_apply": "false"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert dry.returncode == 0, dry.stderr
+    assert f"WOULD REMOVE disabled-backend data dir: {conda_pkg_dir}" in dry.stdout
+    assert f"WOULD REMOVE disabled-backend data dir: {dotnet_root_dir}" in dry.stdout
+    assert conda_pkg_dir.is_dir() and dotnet_root_dir.is_dir()
+
+    applied = subprocess.run(
+        ["bash", str(prune_script)],
+        env={**base_env, "usage_apply": "true"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert applied.returncode == 0, applied.stderr
+    assert f"REMOVED disabled-backend data dir: {conda_pkg_dir}" in applied.stdout
+    assert f"REMOVED disabled-backend data dir: {dotnet_root_dir}" in applied.stdout
+    assert not conda_pkg_dir.exists()
+    assert not dotnet_root_dir.exists()
+
+    calls = log_file.read_text(encoding="utf-8")
+    assert "ENABLE_BACKENDS= ARGS=-C " in calls
+    assert " prune --dry-run" in calls
+    assert " prune --yes" in calls
+    assert " cache prune --dry-run" in calls
+    assert " cache prune\n" in calls

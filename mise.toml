@@ -16,8 +16,6 @@ private_user = "{{ env.USER | default(value='') }}"
 [settings]
 exec_auto_install = false
 experimental = true
-lockfile = true
-lockfile_platforms = ["linux-arm64", "linux-x64", "macos-arm64"]
 python.uv_venv_auto = "source"
 
 [deps.uv]
@@ -323,11 +321,23 @@ def has_target(target_key: str) -> bool:
     if target_key.startswith("~/.agents/skills/"):
         name = target_key.rsplit("/", 1)[-1]
         for grp in all_groups:
+            entries = grp.get("entries")
+            if grp.get("target") == "~/.agents/skills" and (
+                (isinstance(entries, dict) and target_key in entries)
+                or (
+                    "*" not in (grp.get("exclude") or [])
+                    and (mise_dir.parent.parent / ".agents" / "skills" / name / "SKILL.md").is_file()
+                )
+            ):
+                return True
             if name in (grp.get("items") or []) and "~/.agents/skills" in str(grp.get("dest_dir") or ""):
                 return True
     if target_key.startswith("~/.claude/skills/"):
         name = target_key.rsplit("/", 1)[-1]
         for grp in all_groups:
+            entries = grp.get("entries")
+            if grp.get("target") == "~/.claude/skills" and isinstance(entries, dict) and target_key in entries:
+                return True
             if name in (grp.get("items") or []) and "~/.claude/skills" in str(grp.get("dest_dir") or ""):
                 return True
         if '"../../.agents/skills/' in skills_task_txt and (mise_dir.parent.parent / ".agents" / "skills" / name / "SKILL.md").is_file():

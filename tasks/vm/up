@@ -193,12 +193,12 @@ export PATH="${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.loca
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 export MISE_LOCKED=1
 export MISE_YES=1
-/usr/local/bin/mise -E vm,macos bootstrap \
+/usr/local/bin/mise -E macos,vm bootstrap \
   --from "${REPO_URL}" \
   --from-dir "${HOME}/dev/dotfiles-v2" \
   --config-dir unix/home/.config/mise \
   --force-dotfiles --yes
-/usr/local/bin/mise -E vm,macos -C "${HOME}" run host:prune --apply
+/usr/local/bin/mise -E macos,vm -C "${HOME}" run host:prune --apply
 /usr/local/bin/mise -C "${HOME}/dev/dotfiles-v2" deps uv
 GUEST
 

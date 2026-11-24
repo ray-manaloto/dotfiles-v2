@@ -4,6 +4,8 @@
 auto_env = true
 
 ignored_config_paths = [
+  "~/dev/github/jdx",
+  "~/dev/github/risu729",
   "~/dev/github/ray-manaloto/dotfiles",
   "~/dev/github/ray-manaloto/dotfiles-legacy",
   "~/dev/github/ray-manaloto/dotfiles.worktrees",

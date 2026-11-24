@@ -1,5 +1,7 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # Loaded automatically on macOS via miserc.toml (auto_env = true).
+# Host-only settings (`programs.json`, `agy-hc`, `codex-hc`, `HERMES_TUI_DIR`) are
+# deselected/unset on the Tart VM by config.vm.toml + 90-mise.zsh.
 
 [env]
 HERMES_TUI_DIR = "{{ env.HOME }}/.local/share/hermes-cli.noindex/tui"
@@ -8,55 +10,36 @@ HOMEBREW_PREFIX = "{{ system_brew_prefix }}"
 [env._]
 path = [
   "~/.config/mise/apple-bin",
-  "~/.local/share/hermes-cli.noindex/bin",
   "$HOMEBREW_PREFIX/opt/llvm/bin",
   "$HOMEBREW_PREFIX/opt/lldb/bin",
   "$HOMEBREW_PREFIX/opt/make/libexec/gnubin",
-  "/Applications/Orca.app/Contents/Resources/bin",
 ]
 
+[bootstrap.packages]
+"brew-cask:herdr-app" = { os = "macos/arm64", adopt = true, appdir = "/Applications" }
+
+[dotfile_groups.macos-host]
+root = "."
+target = "~"
+mode = "symlink-each"
+exclude = ["*"]
+
+[dotfile_groups.macos-host.entries]
+"~/.config/herdr-app/programs.json" = { source = ".config/herdr-app/programs.json", mode = "symlink", main_checkout = true }
+"~/.local/bin/agy-hc" = { source = ".local/bin/agy-hc", mode = "symlink", main_checkout = true }
+"~/.local/bin/codex-hc" = { source = ".local/bin/codex-hc", mode = "symlink", main_checkout = true }
+
 [dotfiles]
-"~/.config/herdr-app/programs.json" = { mode = "symlink", main_checkout = true }
-"~/.config/zsh/.zprofile" = { mode = "symlink", main_checkout = true }
-"~/.config/zsh/.zshenv" = { source = "~/.zshenv", mode = "symlink", main_checkout = true, depends = [
-  "~/.zshenv",
-] }
-"~/.config/zsh/.zshrc" = { mode = "symlink", main_checkout = true }
-"~/.config/zsh/.zshrc.d/10-zsh.zsh" = { mode = "symlink", main_checkout = true }
-"~/.config/zsh/.zshrc.d/60-agent-tools.zsh" = { mode = "symlink", main_checkout = true }
-"~/.config/zsh/.zshrc.d/90-mise.zsh" = { mode = "symlink", main_checkout = true }
-"~/.config/zsh/path.zsh" = { mode = "symlink", main_checkout = true }
-"~/.gitconfig/gh-doctor" = { block = '''
-[hook "gh-doctor-pre-push"]
-	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE sh -c 'exec \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" doctor project'
-	event = pre-push
-''' }
-"~/.gitconfig/hk" = { block = '''
-[hook "hk-pre-commit"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" x hk -- hk run pre-commit --from-hook --staged
-	event = pre-commit
-[hook "hk-post-commit"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" x hk -- hk run post-commit --from-hook
-	event = post-commit
-[hook "hk-post-merge"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" x hk -- hk run post-merge --from-hook
-	event = post-merge
-[hook "hk-post-rewrite"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" x hk -- hk run post-rewrite --from-hook
-	event = post-rewrite
-[hook "hk-pre-merge-commit"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" x hk -- hk run pre-merge-commit --from-hook
-	event = pre-merge-commit
-[hook "hk-pre-push"]
-	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" x hk -- hk run pre-push --from-hook
-	event = pre-push
-[hook "hk-commit-msg"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" x hk -- hk run commit-msg --from-hook
-	event = commit-msg
-[hook "hk-prepare-commit-msg"]
-	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || printf %s/.local/bin/mise \"$HOME\")\" x hk -- hk run prepare-commit-msg --from-hook
-	event = prepare-commit-msg
-''' }
-"~/.local/bin/agy-hc" = { mode = "symlink", main_checkout = true }
-"~/.local/bin/codex-hc" = { mode = "symlink", main_checkout = true }
-"~/.zshenv" = { mode = "symlink", main_checkout = true }
+"~/.claude.json/mcp-jdx" = { source = "../../.claude.mcp-jdx.json", merge = true, permissions = "0600" }
+
+[shell_alias]
+df-pc = "mise -C ~ run env:enter pc"
+df-mac = "mise -C ~ run env:enter mac"
+df-vm = "mise -C ~ run env:enter vm"
+df-pc-exec = "mise -C ~ run env:enter --exec pc"
+df-mac-exec = "mise -C ~ run env:enter --exec mac"
+df-vm-exec = "mise -C ~ run env:enter --exec vm"
+kb-pc = "mise -C ~ run env:enter -p kb-v2 pc"
+kb-mac = "mise -C ~ run env:enter -p kb-v2 mac"
+cpp-pc = "mise -C ~ run env:enter -p cpp-core pc"
+cpp-mac = "mise -C ~ run env:enter -p cpp-core mac"

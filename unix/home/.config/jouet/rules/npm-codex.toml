@@ -1,0 +1,51 @@
+#:schema https://jouet.jdx.dev/schema/rules.json
+# Codex CLI is installed only by its native standalone installer (~/.local/bin/codex;
+# mise disable_tools blocks npm:@openai/codex, and this rule blocks direct global npm/pnpm/bun/yarn installs).
+
+[[rule]]
+name = "npm-codex"
+why = "Codex CLI is native-install only; a global package-manager install puts a duplicate copy into mise's node."
+mode = "deny"
+author = "dotfiles-v2, for the owner"
+created = "2026-11-24"
+message = "Codex CLI is installed only by its native standalone installer (`~/.local/bin/codex`). A global npm, pnpm, bun, or yarn install of @openai/codex duplicates it inside mise's node and is not allowed. Use `codex` on PATH; install @openai/codex-sdk locally in a project without -g."
+suggest = "codex --version"
+
+[[rule.match]]
+command = "npm"
+text = ["^(install|i|add|is[n]tall|update|up|upgrade|link)$", "^(-[A-Za-z]*g[A-Za-z]*|--global(=true)?|--location=global)$", "^@openai/codex(@.*)?$"]
+
+[[rule.match]]
+command = ["pnpm", "bun"]
+text = ["^(add|install|i|update|up)$", "^(-[A-Za-z]*g[A-Za-z]*|--global(=true)?)$", "^@openai/codex(@.*)?$"]
+
+[[rule.match]]
+command = ["yarn global add", "yarn global upgrade"]
+args = ["@openai/codex", "@openai/codex@*"]
+
+[rule.examples]
+fires = [
+  "npm install --global @openai/codex",
+  "npm i -g @openai/codex@latest",
+  "cd /tmp/x && npm install -g @openai/codex",
+  "mise exec -- npm install --location=global @openai/codex",
+  "pnpm add -g @openai/codex",
+  "bun add --global @openai/codex",
+  "npm -g install @openai/codex",
+  "pnpm -g add @openai/codex@0.172.0",
+  "npm install -fg @openai/codex",
+  "npm install --global=true @openai/codex",
+  "yarn global add @openai/codex",
+]
+quiet = [
+  "npm install @openai/codex",
+  "npm install --location=project @openai/codex",
+  "npm install global @openai/codex",
+  "npm install --location=project global @openai/codex",
+  "npm install --global=false @openai/codex",
+  "npm uninstall -g @openai/codex",
+  "npm install -g @openai/codex-sdk",
+  "npm uninstall --global @openai/codex",
+  "npm view @openai/codex version",
+  "codex --version",
+]

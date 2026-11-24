@@ -6,7 +6,10 @@ export MISE_DATA_DIR=/opt/mise
 export MISE_CACHE_DIR=/opt/mise/cache
 export MISE_ENV=container
 export MISE_YES=1
-export MISE_TRUSTED_CONFIG_PATHS=/workspace:/home/dev/.config/mise
+export MISE_TRUSTED_CONFIG_PATHS="${DOTFILES_V2_ROOT:+${DOTFILES_V2_ROOT}:}/workspace:/home/dev/.config/mise"
+if [ -n "${BASH_VERSION:-}" ]; then
+	export HISTFILE=/home/dev/.local/state/shell/bash_history
+fi
 _df_prepend_path() {
 	_df_new="$1"
 	_df_old=":${PATH}:"

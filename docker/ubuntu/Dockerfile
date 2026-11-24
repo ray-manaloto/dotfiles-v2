@@ -3,6 +3,7 @@ FROM ghcr.io/jdx/mise:2026.11.13@sha256:06a4e5b507ac24d0279d6d2fc1f0849cb54fd0c1
 FROM ubuntu:26.10@sha256:c4ca31b6e93261c5dd773826f789738a49e414ca04fc094b1ccd0f91e07329a2
 
 ARG DOTFILES_APT_CACHE=""
+ARG DOTFILES_V2_ROOT=/workspace
 ARG TARGETARCH
 
 # ZCODE_CREDENTIAL_SECRET_FILE is a path inside a runtime volume, not a secret value.
@@ -12,11 +13,12 @@ ENV container=docker \
     HOME=/home/dev \
     CLAUDE_CONFIG_DIR=/home/dev/.claude \
     ZCODE_CREDENTIAL_SECRET_FILE=/home/dev/.zcode/v2/credential-secret \
+    DOTFILES_V2_ROOT=${DOTFILES_V2_ROOT} \
     MISE_DATA_DIR=/opt/mise \
     MISE_CACHE_DIR=/opt/mise/cache \
     MISE_ENV=container \
     MISE_YES=1 \
-    MISE_TRUSTED_CONFIG_PATHS=/workspace:/home/dev/.config/mise \
+    MISE_TRUSTED_CONFIG_PATHS=${DOTFILES_V2_ROOT}:/workspace:/home/dev/.config/mise \
     PATH=/opt/mise/shims:/home/dev/.opencode/bin:/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -55,12 +57,12 @@ USER 1000:1000
 COPY --chown=1000:1000 unix/home/.config/mise/ /tmp/phase1b/
 
 RUN --mount=type=cache,id=mise-downloads-${TARGETARCH},target=/opt/mise/cache,uid=1000,gid=1000 \
-    chmod 0644 /tmp/phase1b/mise.lock \
+    chmod 0644 /tmp/phase1b/mise*.lock \
     && chmod +x /tmp/phase1b/tasks/bootstrap/* \
     && export MISE_CONFIG_DIR=/tmp/phase1b MISE_TRUSTED_CONFIG_PATHS=/tmp/phase1b \
     && mise -E container,linux install --locked \
     && mise -E container,linux run bootstrap \
-    && ln -s /workspace/unix/home/.config/mise /home/dev/.config/mise \
+    && ln -s "${DOTFILES_V2_ROOT}/unix/home/.config/mise" /home/dev/.config/mise \
     && rm -rf /tmp/phase1b
 
 WORKDIR /workspace

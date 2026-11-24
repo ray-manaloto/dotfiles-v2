@@ -30,9 +30,6 @@ version = "0.39.1"
 backend = "aqua:docker/buildx"
 specifiers = ["0.39.1"]
 
-[tools."aqua:docker/buildx".options]
-"vars.bin" = "docker-buildx"
-
 [tools."aqua:docker/buildx"."platforms.macos-arm64"]
 checksum = "sha256:7a7f10602f0826d36b046e8db012b4cbfaa4ba56f9d2a5d374fe5bb7ae864fc4"
 checksum_source = "mise-versions"
@@ -335,6 +332,29 @@ checksum_source = "mise-versions"
 url = "https://github.com/junegunn/fzf/releases/download/v0.75.0/fzf-0.75.0-darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/junegunn/fzf/releases/assets/720590797"
 
+[[tools.ghalint]]
+version = "1.6.0"
+backend = "aqua:suzuki-shunsuke/ghalint"
+specifiers = ["1.6.0"]
+
+[tools.ghalint."platforms.linux-arm64"]
+checksum = "sha256:f9d8e20a75c934d21ee6ab1967eb79fa125237ef5633c6bfd03b27999c6a6cda"
+url = "https://github.com/suzuki-shunsuke/ghalint/releases/download/v1.6.0/ghalint_1.6.0_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/694554152"
+provenance = "cosign"
+
+[tools.ghalint."platforms.linux-x64"]
+checksum = "sha256:eda1af79c1a4a31c2de5831cd1333ad582fa6fa72015f8e9c1c4525d550c1d35"
+url = "https://github.com/suzuki-shunsuke/ghalint/releases/download/v1.6.0/ghalint_1.6.0_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/694554144"
+provenance = "cosign"
+
+[tools.ghalint."platforms.macos-arm64"]
+checksum = "sha256:427acb85cb6cdda8828bf46643825b47cb46e6d2d5d3fa4f60b7bdfee194d2c7"
+url = "https://github.com/suzuki-shunsuke/ghalint/releases/download/v1.6.0/ghalint_1.6.0_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/694554130"
+provenance = "cosign"
+
 [[tools.github-cli]]
 version = "2.105.0"
 backend = "aqua:cli/cli"
@@ -605,6 +625,29 @@ url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-macos-arm64"
 url_api = "https://api.github.com/repos/jqlang/jq/releases/assets/453012783"
 provenance = "github-attestations"
 
+[[tools.kingfisher]]
+version = "2.20.0"
+backend = "github:mongodb/kingfisher"
+specifiers = ["2.20.0"]
+
+[tools.kingfisher."platforms.linux-arm64"]
+checksum = "sha256:245c34ee00caf24bffe9fed54a23bcb617fe95a0755ff881ef7d2c869f9d4ad7"
+url = "https://github.com/mongodb/kingfisher/releases/download/v2.20.0/kingfisher-linux-arm64.tgz"
+url_api = "https://api.github.com/repos/mongodb/kingfisher/releases/assets/777444095"
+provenance = "github-attestations"
+
+[tools.kingfisher."platforms.linux-x64"]
+checksum = "sha256:825a5e89cdf6c0d52e85bf029061f76ad6ba7cc6e55406c6eb9f68572ee6b774"
+url = "https://github.com/mongodb/kingfisher/releases/download/v2.20.0/kingfisher-linux-x64.tgz"
+url_api = "https://api.github.com/repos/mongodb/kingfisher/releases/assets/777443918"
+provenance = "github-attestations"
+
+[tools.kingfisher."platforms.macos-arm64"]
+checksum = "sha256:eade605f6c4ae091aeb06e186b9d3d802b4c4a222956f661991f2b16d6655ab3"
+url = "https://github.com/mongodb/kingfisher/releases/download/v2.20.0/kingfisher-darwin-arm64.tgz"
+url_api = "https://api.github.com/repos/mongodb/kingfisher/releases/assets/777444280"
+provenance = "github-attestations"
+
 [[tools.lychee]]
 version = "0.24.2"
 backend = "aqua:lycheeverse/lychee"
@@ -698,6 +741,15 @@ allow_builds = '["better-sqlite3"]'
 [tools."npm:openwiki".provenance]
 repository = "github.com/langchain-ai/openwiki"
 
+[[tools."npm:renovate"]]
+version = "44.260.2"
+aube = { path = "locks/npm-renovate/44.260.2~aa673d8d", digest = "sha256:f116a27aa8bcf9b425a2b1ee37b651d24118302408980aba07400a46e31eb62b" }
+backend = "npm:renovate"
+specifiers = ["44.260.2"]
+
+[tools."npm:renovate".options]
+trust_policy_excludes = '["@yarnpkg/libzip@3.2.2"]'
+
 [[tools."npm:skills"]]
 version = "1.9.0"
 aube = { path = "locks/npm-skills/1.9.0", digest = "sha256:7986f7572c57b5b5ca6407f53294cd4f7cda8fa5c8b052c82b24cc2a492c01ac" }
@@ -709,6 +761,29 @@ version = "3.18.2-48"
 aube = { path = "locks/npm-zcode-app-cli/3.18.2-48", digest = "sha256:6acc4b9bd2bf4371d5983a878f9943e71fa80c8efabb27062c8369c216ea483d" }
 backend = "npm:zcode-app-cli"
 specifiers = ["3.18.2-48"]
+
+[[tools.osv-scanner]]
+version = "2.7.1"
+backend = "aqua:google/osv-scanner"
+specifiers = ["2.7.1"]
+
+[tools.osv-scanner."platforms.linux-arm64"]
+checksum = "sha256:983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81"
+checksum_source = "mise-versions"
+url = "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_arm64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/726165576"
+
+[tools.osv-scanner."platforms.linux-x64"]
+checksum = "sha256:fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8"
+checksum_source = "mise-versions"
+url = "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_amd64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/726165286"
+
+[tools.osv-scanner."platforms.macos-arm64"]
+checksum = "sha256:b22c02877a811c8f78956e8643efa554932b7378f590d13f8e97d4e9448a29f3"
+checksum_source = "mise-versions"
+url = "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_darwin_arm64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/726165290"
 
 [[tools.oxfmt]]
 version = "0.80.0"
@@ -738,6 +813,29 @@ checksum = "sha256:70a54889a9ddda5368a8e304154a396ebcfeb3acb28bdf94281b1efe7b6b6
 url = "https://github.com/grafana/flint/releases/download/v0.22.15/flint-aarch64-apple-darwin.tar.gz"
 signer = "sigstore-oidc:https://github.com/grafana/flint/.github/workflows/release.yml"
 repository_ids = { repository = "1157902094" }
+
+[[tools.pinact]]
+version = "5.0.2"
+backend = "aqua:suzuki-shunsuke/pinact"
+specifiers = ["5.0.2"]
+
+[tools.pinact."platforms.linux-arm64"]
+checksum = "sha256:326e27f5b3b5fca21e6a169b2785ba2023df3dd9ee82dd0f4e438cb1220b68d7"
+url = "https://github.com/suzuki-shunsuke/pinact/releases/download/v5.0.2/pinact_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/suzuki-shunsuke/pinact/releases/assets/675205656"
+provenance = "github-attestations"
+
+[tools.pinact."platforms.linux-x64"]
+checksum = "sha256:7f003d8f51e984c2264d2009d430e3e0e87ae404a0e2dc2a9a277b0f731bf5b7"
+url = "https://github.com/suzuki-shunsuke/pinact/releases/download/v5.0.2/pinact_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/suzuki-shunsuke/pinact/releases/assets/675205650"
+provenance = "github-attestations"
+
+[tools.pinact."platforms.macos-arm64"]
+checksum = "sha256:9b9545d53376654005daaee5ab736d579887205ca3df99925c8fe8358c6e7fdb"
+url = "https://github.com/suzuki-shunsuke/pinact/releases/download/v5.0.2/pinact_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/suzuki-shunsuke/pinact/releases/assets/675205643"
+provenance = "github-attestations"
 
 [[tools.pitchfork]]
 version = "2.36.0"
@@ -795,6 +893,12 @@ checksum = "sha256:52bb314bf0d48928fc15126ccce42aa199275e29018bef112a04ae8acdcaa
 url = "https://github.com/pnpm/pnpm/releases/download/v12.23.0/pnpm-darwin-arm64.tar.gz"
 url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/779077158"
 provenance = "github-attestations"
+
+[[tools.prettier]]
+version = "3.10.1"
+aube = { path = "locks/prettier/3.10.1", digest = "sha256:2d1e8d35e9c42e9df167e305f2f8d5fc6fa8ab982cf1070a7e5148d73b5c5534" }
+backend = "npm:prettier"
+specifiers = ["3.10.1"]
 
 [[tools.python]]
 version = "3.15.2"
@@ -1000,19 +1104,6 @@ url = "https://github.com/anchore/syft/releases/download/v1.57.2/syft_1.57.2_dar
 url_api = "https://api.github.com/repos/anchore/syft/releases/assets/756262237"
 provenance = "cosign"
 
-[[tools.tailscale]]
-version = "1.104.7"
-backend = "aqua:tailscale/tailscale"
-specifiers = ["1.104.7"]
-
-[tools.tailscale."platforms.linux-arm64"]
-checksum = "sha256:d6bed2720310b328b861f943d7b4016c5358a9bad60575eb51e8143b79068484"
-url = "https://pkgs.tailscale.com/stable/tailscale_1.104.7_arm64.tgz"
-
-[tools.tailscale."platforms.linux-x64"]
-checksum = "sha256:e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c"
-url = "https://pkgs.tailscale.com/stable/tailscale_1.104.7_amd64.tgz"
-
 [[tools.tart]]
 version = "2.42.0"
 backend = "aqua:openai/tart"
@@ -1137,6 +1228,29 @@ provenance = "github-attestations"
 checksum = "sha256:5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca"
 url = "https://github.com/astral-sh/uv/releases/download/0.13.9/uv-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/758513631"
+provenance = "github-attestations"
+
+[[tools.yt-dlp]]
+version = "2026.11.23"
+backend = "github:yt-dlp/yt-dlp"
+specifiers = ["2026.11.23"]
+
+[tools.yt-dlp."platforms.linux-arm64"]
+checksum = "sha256:e80b05e7e7ae5e2b7ff480937b51699c733563bfa5c185a19dfceadc4e6191bf"
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp_linux_aarch64.zip"
+url_api = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/assets/784995131"
+provenance = "github-attestations"
+
+[tools.yt-dlp."platforms.linux-x64"]
+checksum = "sha256:cc4a3aa98fb438a1dac04a6fb006fe57acbeed00fc12db9ec84e3036dbbe6ccb"
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp_linux.zip"
+url_api = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/assets/784995104"
+provenance = "github-attestations"
+
+[tools.yt-dlp."platforms.macos-arm64"]
+checksum = "sha256:43fc87fc581f64b48c366ce20b9cacb9c2949cc1ac4b9eca56fe25ac52dbb63b"
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp_macos.zip"
+url_api = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/assets/784995181"
 provenance = "github-attestations"
 
 [[tools.zizmor]]

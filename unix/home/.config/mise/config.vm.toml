@@ -1,6 +1,19 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # Tart macOS VM environment (`MISE_ENV=vm`): native brew:tailscale bottle + non-root launchd tailscaled.
 
+[env]
+HERMES_TUI_DIR = false
+
+[bootstrap]
+# Exclude macos-host group (programs.json, agy-hc, codex-hc) inside VM.
+dotfile_groups = [
+  "gemini-hooks",
+  "gemini-rules",
+  "zsh",
+  "jouet-rules",
+  "agents-skills",
+]
+
 [bootstrap.packages]
 "brew:tailscale" = "latest"
 
@@ -25,6 +38,7 @@ stderr_path = "~/Library/Logs/tailscaled.err.log"
 [dotfiles]
 "~/.bash_profile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "append" }
 "~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
-"~/.config/dotfiles-v2/vm-env.sh" = { source = "assets/vm/vm-env.sh", mode = "symlink", main_checkout = true }
-"~/.zprofile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "append" }
-"~/.zshrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/vm-env.sh" ] && . "${HOME}/.config/dotfiles-v2/vm-env.sh"', position = "prepend" }
+"~/.config/dotfiles-v2/vm-env.sh" = { source = "assets/vm/vm-env.sh", main_checkout = true }
+"~/.config/herdr-app/programs.json" = { enabled = false }
+"~/.local/bin/agy-hc" = { enabled = false }
+"~/.local/bin/codex-hc" = { enabled = false }

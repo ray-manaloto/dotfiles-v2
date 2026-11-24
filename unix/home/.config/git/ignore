@@ -1,0 +1,4 @@
+# Global gitignore (read natively by git from ~/.config/git/ignore unless overridden by core.excludesFile).
+.DS_Store
+mise.local.toml
+mise.*.local.toml

@@ -1,0 +1,342 @@
+# Canonical tracked catalog of modern `mise`, `jdx`, bootstrap, and AI-harness reference repositories.
+# Maintain this file as the single reviewed source of truth in `dotfiles-v2`; queue OpenWiki additions to `knowledge-base-lead-agy`.
+
+[meta]
+version = 1
+owner = "dotfiles-v2"
+last_reviewed = "2026-11-24"
+
+[[references]]
+repo = "risu729/dotfiles"
+url = "https://github.com/risu729/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "Primary mise bootstrap, [dotfile_groups], [shell_alias], CI convergence/audit workflows, and Renovate pinning model."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "risu729-shared-config"
+
+[[references]]
+repo = "risu729/hk-config"
+url = "https://github.com/risu729/hk-config"
+category = "jdx-ecosystem"
+why_tracked = "Upstream preset model for ray-manaloto/hk-config."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "risu729-shared-config"
+
+[[references]]
+repo = "risu729/renovate-config"
+url = "https://github.com/risu729/renovate-config"
+category = "jdx-ecosystem"
+why_tracked = "Upstream Renovate shareable preset for minimumReleaseAge, jdxcode/mise grouping, and schema JSONata managers."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "risu729-shared-config"
+
+[[references]]
+repo = "risu729/skills"
+url = "https://github.com/risu729/skills"
+category = "ai-harnesses"
+why_tracked = "Upstream skills-only marketplace mirrored by ray-manaloto/skills."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "jdx.dev/posts/2026-09-07-dotfiles-that-save-themselves"
+url = "https://jdx.dev/posts/2026-09-07-dotfiles-that-save-themselves/"
+category = "mise-bootstrap"
+why_tracked = "Canonical mise dotfiles, history-watch, and self-healing dotfile patterns."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "jdx-dotfiles-post"
+
+[[references]]
+repo = "jdx/mise"
+url = "https://github.com/jdx/mise"
+category = "jdx-ecosystem"
+why_tracked = "Core toolchain manager, mise bootstrap, [dotfile_groups], lockfiles, packslip, and skills auto_sync."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "mise-mise"
+
+[[references]]
+repo = "jdx/hk"
+url = "https://github.com/jdx/hk"
+category = "jdx-ecosystem"
+why_tracked = "Pkl-driven git hooks and native compiled linters/checkers."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "hk-hk"
+
+[[references]]
+repo = "jdx/fnox"
+url = "https://github.com/jdx/fnox"
+category = "jdx-ecosystem"
+why_tracked = "Age/Doppler secret proxy, placeholder injection, daemon cache, and local audit log."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "fnox-fnox"
+
+[[references]]
+repo = "jdx/pitchfork"
+url = "https://github.com/jdx/pitchfork"
+category = "jdx-ecosystem"
+why_tracked = "Supervisor for @vercel/board and project/global daemons."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "pitchfork-pitchfork"
+
+[[references]]
+repo = "jdx/jouet"
+url = "https://github.com/jdx/jouet"
+category = "jdx-ecosystem"
+why_tracked = "Command-guard TOML/Luau rules blocking unmanaged global npm/pnpm/bun/yarn harness installs."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "jouet-docs"
+
+[[references]]
+repo = "jdx/usage"
+url = "https://github.com/jdx/usage"
+category = "jdx-ecosystem"
+why_tracked = "#USAGE task linting and shell completions."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "usage-usage"
+
+[[references]]
+repo = "jdx/packslip"
+url = "https://github.com/jdx/packslip"
+category = "jdx-ecosystem"
+why_tracked = "Pinned provenance-verified standalone binary installs (mise on macOS VM and pc)."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "packslip-packslip"
+
+[[references]]
+repo = "aubepkg/aube"
+url = "https://github.com/aubepkg/aube"
+category = "jdx-ecosystem"
+why_tracked = "Deterministic npm package manager and trustPolicy lock directories under locks/."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "aube"
+
+[[references]]
+repo = "jdx/renovate-config"
+url = "https://github.com/jdx/renovate-config"
+category = "jdx-ecosystem"
+why_tracked = "Upstream 7-day release age and mise preset reference."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "lukehsiao/dotfiles"
+url = "https://github.com/lukehsiao/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "Omarchy contributor patterns, mise conf.d, and Claude skills/settings."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "lukehsiao-dotfiles"
+
+[[references]]
+repo = "xdanger/dotfiles"
+url = "https://github.com/xdanger/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "macOS launchd mise PATH helper, Codex personal marketplace, and gitconfig baseline."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "xdanger-dotfiles"
+
+[[references]]
+repo = "omacom/omarchy"
+url = "https://github.com/omacom/omarchy"
+category = "containers-ci"
+why_tracked = "Remote Linux host (pc) OS base and /etc/mise/conf.d conflict patterns."
+last_reviewed = "2026-11-24"
+kb_indexed = true
+kb_workspace = "omarchy"
+
+[[references]]
+repo = "roalcantara/dots"
+url = "https://github.com/roalcantara/dots"
+category = "mise-bootstrap"
+why_tracked = "Mac + Ubuntu mise bootstrap -E container --force-dotfiles --skip user, conf.d splits, and dpkg noninteractive pre-packages."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "chancez/dotfiles"
+url = "https://github.com/chancez/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "Docker cache-warmer layer, miserc.toml, mise dot status --missing in CI, and aube lockfiles."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "TechDufus/dotfiles"
+url = "https://github.com/TechDufus/dotfiles"
+category = "containers-ci"
+why_tracked = "3x bootstrap convergence CI gate, interactive shell smoke checks, and Codex config.toml merge."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "himkt/config"
+url = "https://github.com/himkt/config"
+category = "containers-ci"
+why_tracked = "macOS/Ubuntu CI matrix, minimum_release_age soak, and Renovate mise grouping."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "nettlesh/dotfiles"
+url = "https://github.com/nettlesh/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "min_version hard/soft pins, HK_MISE=1, final hook missing checks, and skills auto-sync."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "guitsaru/dotfiles"
+url = "https://github.com/guitsaru/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "pre-dotfiles linked-worktree guard pattern."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "david-driscoll/dotfiles"
+url = "https://github.com/david-driscoll/dotfiles"
+category = "secrets-tailscale"
+why_tracked = "[secrets.fnox], history-watch, skills auto-sync, and per-OS config variants."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "iainsimmons/dotfiles"
+url = "https://github.com/iainsimmons/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "minimum_release_age, [bootstrap.secrets], copy mode for app-rewritten configs, and per-machine MISE_ENV."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "mikeastock/dotfiles"
+url = "https://github.com/mikeastock/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "Omarchy mise environment (-E omarchy) and pre-dotfiles cleanup."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "h-wb/dotfiles"
+url = "https://github.com/h-wb/dotfiles"
+category = "secrets-tailscale"
+why_tracked = "Strict file permissions (0600/0700) and fnox secret templates."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "ahstn/dotfiles"
+url = "https://github.com/ahstn/dotfiles"
+category = "secrets-tailscale"
+why_tracked = "[bootstrap.secrets], fnox, and Tailscale mise tasks."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "WeixuanZ/dotfiles"
+url = "https://github.com/WeixuanZ/dotfiles"
+category = "secrets-tailscale"
+why_tracked = "Secrets and Tailscale automation patterns."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "Xevion/dotfiles"
+url = "https://github.com/Xevion/dotfiles"
+category = "secrets-tailscale"
+why_tracked = "Doppler + age secret management."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "wagov-dtt/devcontainer-base"
+url = "https://github.com/wagov-dtt/devcontainer-base"
+category = "containers-ci"
+why_tracked = "Root apt packages -> non-root user bootstrap split in containers."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "shepherdjerred/monorepo"
+url = "https://github.com/shepherdjerred/monorepo"
+category = "containers-ci"
+why_tracked = "Modern mise container/CI orchestration patterns."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "statox/claude-devcontainer"
+url = "https://github.com/statox/claude-devcontainer"
+category = "ai-harnesses"
+why_tracked = "Containerized Claude Code auth/volume isolation."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "klab365/klab-pytest-toolkit"
+url = "https://github.com/klab365/klab-pytest-toolkit"
+category = "containers-ci"
+why_tracked = "Modern mise + Python CI testing patterns."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "naa0yama/rotel"
+url = "https://github.com/naa0yama/rotel"
+category = "containers-ci"
+why_tracked = "Modern mise toolchain & container build patterns."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "lepinkainen/dotfiles"
+url = "https://github.com/lepinkainen/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "Cross-platform mise bootstrap configuration."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "rios0rios0/dotfiles"
+url = "https://github.com/rios0rios0/dotfiles"
+category = "secrets-tailscale"
+why_tracked = "Dotfiles secrets and developer environment setup."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "divaltor/.dotfiles"
+url = "https://github.com/divaltor/.dotfiles"
+category = "secrets-tailscale"
+why_tracked = "Dotfiles secrets and shell setup."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "jkp/dotfiles"
+url = "https://github.com/jkp/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "mise + hk dotfiles integration baseline."
+last_reviewed = "2026-11-24"
+kb_indexed = false
+
+[[references]]
+repo = "shunk031/dotfiles"
+url = "https://github.com/shunk031/dotfiles"
+category = "mise-bootstrap"
+why_tracked = "Automated dotfiles bootstrap and CI verification."
+last_reviewed = "2026-11-24"
+kb_indexed = false

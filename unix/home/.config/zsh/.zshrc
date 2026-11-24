@@ -1,4 +1,5 @@
 # Linked by mise into the checkout and read through $ZDOTDIR (set in ~/.zshenv).
+[[ ${VSCODE_RESOLVING_ENVIRONMENT:-} == 1 ]] && return
 for _dotfiles_rc in "${ZDOTDIR:-$HOME/.config/zsh}/.zshrc.d"/*.zsh(N); do
 	source "$_dotfiles_rc"
 done

@@ -454,6 +454,38 @@ def test_env_enter_falls_back_to_docker_when_tailscale_ssh_unavailable(
     assert "/workspace-kb" in logged
     assert "exit 1" in logged  # fails closed when workspace dir missing
 
+    # --exec bypasses Tailscale SSH probe even if ssh succeeds, and aliases (df/kb/cpp) resolve cleanly
+    _make_stub(bin_stub, "ssh", "echo SHOULD_NOT_PROBE_SSH >&2; exit 0")
+    exec_log = tmp_path / "exec-calls.log"
+    _make_stub(
+        bin_stub,
+        "docker",
+        f'printf "%s\\n" "$*" >> "{exec_log}"; exit 0',
+    )
+    for alias_proj, want_dir in (
+        ("df", "/workspace"),
+        ("kb", "/workspace-kb"),
+        ("cpp", "/workspace-cpp"),
+    ):
+        p_alias = subprocess.run(
+            ["bash", str(MISE_TASKS_DIR / "env" / "enter")],
+            env={
+                "HOME": str(tmp_path),
+                "PATH": f"{bin_stub}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "usage_target": "mac",
+                "usage_project": alias_proj,
+                "usage_exec": "true",
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "falling back" not in p_alias.stderr
+        assert "SHOULD_NOT_PROBE_SSH" not in p_alias.stderr
+        alias_logged = exec_log.read_text(encoding="utf-8").splitlines()[-1]
+        assert want_dir in alias_logged
+        assert "exec zsh -il" in alias_logged
+
     # container/shell & vm/shell fail closed if workspace dir does not exist
     shell_txt = (TASKS_DIR / "container" / "shell").read_text(encoding="utf-8")
     vm_txt = (TASKS_DIR / "vm" / "shell").read_text(encoding="utf-8")

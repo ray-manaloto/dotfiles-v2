@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #MISE description="Enter pc, mac, or vm project workspace via Tailscale SSH with automatic docker/tart exec fallback"
 #USAGE arg "<target>" help="Target environment: pc, mac, or vm"
-#USAGE flag "-p --project <project>" default="dotfiles-v2" help="Project workspace: dotfiles-v2, kb-v2, or cpp-core"
+#USAGE flag "-p --project <project>" default="dotfiles-v2" help="Project workspace: dotfiles-v2, kb-v2, or cpp-core (aliases: df, kb, cpp)"
 #USAGE flag "-c --cmd <cmd>" help="Optional command to execute instead of an interactive shell"
+#USAGE flag "--exec" help="Force direct docker exec / tart exec instead of Tailscale SSH"
 set -euo pipefail
 
 target="${usage_target:-}"
 project="${usage_project:-dotfiles-v2}"
 cmd="${usage_cmd:-}"
+force_exec="${usage_exec:-false}"
 container_name="dotfiles-v2"
 vm_name="dotfiles-v2-macos"
 ssh_host_pc="${DOTFILES_PC_SSH_HOST:-pc}"
@@ -52,21 +54,21 @@ resolve_project_cd() {
 	local proj="$1"
 	# shellcheck disable=SC2016
 	case "${proj}" in
-	dotfiles-v2)
+	df | dotfiles | dotfiles-v2)
 		if [[ ${is_container} == "true" ]]; then
 			printf '%s' 'proj_dir=/workspace; [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing project dir /workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		else
 			printf '%s' 'proj_dir="$HOME/dev/dotfiles-v2"; [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing project dir ${proj_dir}" >&2; exit 1; }; cd "${proj_dir}"'
 		fi
 		;;
-	kb-v2 | knowledge-base-v2)
+	kb | kb-v2 | knowledge-base | knowledge-base-v2)
 		if [[ ${is_container} == "true" ]]; then
 			printf '%s' 'proj_dir="$(for d in /workspace-kb "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing kb-v2 workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		else
 			printf '%s' 'proj_dir="$(for d in "$HOME/dev/kb-v2" "$HOME/dev/knowledge-base-v2"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing kb-v2 workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		fi
 		;;
-	cpp-core)
+	cpp | cpp-core)
 		if [[ ${is_container} == "true" ]]; then
 			printf '%s' 'proj_dir="$(for d in /workspace-cpp "$HOME/dev/cpp-core"; do [ -d "$d" ] && { printf %s "$d"; break; }; done)"; [ -n "${proj_dir}" ] && [ -d "${proj_dir}" ] || { printf "%s\n" "env:enter: missing cpp-core workspace" >&2; exit 1; }; cd "${proj_dir}"'
 		else
@@ -74,7 +76,7 @@ resolve_project_cd() {
 		fi
 		;;
 	*)
-		echo "unknown project '${proj}' (expected dotfiles-v2, kb-v2, or cpp-core)" >&2
+		echo "unknown project '${proj}' (expected df/dotfiles-v2, kb/kb-v2, or cpp/cpp-core)" >&2
 		exit 1
 		;;
 	esac
@@ -86,7 +88,7 @@ if [[ ${is_container} == "true" ]]; then
 	if [[ -n ${cmd} ]]; then
 		inner_script="$(printf '%s && %s' "${proj_cd}" "${cmd}")"
 	else
-		inner_script="$(printf '%s && exec bash -il' "${proj_cd}")"
+		inner_script="$(printf '%s && if command -v zsh >/dev/null 2>&1; then exec zsh -il; else exec bash -il; fi' "${proj_cd}")"
 	fi
 else
 	if [[ -n ${cmd} ]]; then
@@ -96,18 +98,19 @@ else
 	fi
 fi
 
-ssh_dest="$(resolve_ts_dest "${ts_name}")"
-if ssh -n -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" true </dev/null >/dev/null 2>&1; then
-	if [[ -n ${cmd} ]]; then
+if [[ ${force_exec} != "true" ]]; then
+	ssh_dest="$(resolve_ts_dest "${ts_name}")"
+	if ssh -n -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" true </dev/null >/dev/null 2>&1; then
+		if [[ -n ${cmd} ]]; then
+			exec ssh -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
+		fi
+		if [[ -t 0 && -t 1 ]]; then
+			exec ssh -t -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
+		fi
 		exec ssh -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
 	fi
-	if [[ -t 0 && -t 1 ]]; then
-		exec ssh -t -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
-	fi
-	exec ssh -o StrictHostKeyChecking=accept-new "${ssh_user}@${ssh_dest}" "${inner_script}"
+	printf 'env:enter: Tailscale SSH unavailable for %s (%s); falling back to direct runtime exec\n' "${target}" "${ssh_dest}" >&2
 fi
-
-printf 'env:enter: Tailscale SSH unavailable for %s (%s); falling back to direct runtime exec\n' "${target}" "${ssh_dest}" >&2
 
 if [[ ${target} == "pc" ]]; then
 	tty_flags=(-i)

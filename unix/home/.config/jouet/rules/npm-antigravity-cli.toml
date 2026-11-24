@@ -1,0 +1,50 @@
+#:schema https://jouet.jdx.dev/schema/rules.json
+# Antigravity CLI (agy) is installed only by its native installer (~/.local/bin/agy;
+# mise disable_tools blocks npm:antigravity-cli, and this rule blocks direct global npm/pnpm/bun/yarn installs).
+
+[[rule]]
+name = "npm-antigravity-cli"
+why = "Antigravity CLI is native-install only; a global package-manager install puts a duplicate copy into mise's node."
+mode = "deny"
+author = "dotfiles-v2, for the owner"
+created = "2026-11-24"
+message = "Antigravity CLI (`agy`) is installed only by its native installer (`~/.local/bin/agy`). A global npm, pnpm, bun, or yarn install of antigravity-cli duplicates it inside mise's node and is not allowed. Use `agy` on PATH."
+suggest = "agy --version"
+
+[[rule.match]]
+command = "npm"
+text = ["^(install|i|add|is[n]tall|update|up|upgrade|link)$", "^(-[A-Za-z]*g[A-Za-z]*|--global(=true)?|--location=global)$", "^antigravity-cli(@.*)?$"]
+
+[[rule.match]]
+command = ["pnpm", "bun"]
+text = ["^(add|install|i|update|up)$", "^(-[A-Za-z]*g[A-Za-z]*|--global(=true)?)$", "^antigravity-cli(@.*)?$"]
+
+[[rule.match]]
+command = ["yarn global add", "yarn global upgrade"]
+args = ["antigravity-cli", "antigravity-cli@*"]
+
+[rule.examples]
+fires = [
+  "npm install --global antigravity-cli",
+  "npm i -g antigravity-cli@latest",
+  "cd /tmp/x && npm install -g antigravity-cli",
+  "mise exec -- npm install --location=global antigravity-cli",
+  "pnpm add -g antigravity-cli",
+  "bun add --global antigravity-cli",
+  "npm -g install antigravity-cli",
+  "pnpm -g add antigravity-cli@1",
+  "npm install -fg antigravity-cli",
+  "npm install --global=true antigravity-cli",
+  "yarn global add antigravity-cli",
+]
+quiet = [
+  "npm install antigravity-cli",
+  "npm install --location=project antigravity-cli",
+  "npm install global antigravity-cli",
+  "npm install --global=false antigravity-cli",
+  "npm uninstall -g antigravity-cli",
+  "npm install -g antigravity-cli-extras",
+  "npm uninstall --global antigravity-cli",
+  "npm view antigravity-cli version",
+  "agy --version",
+]
