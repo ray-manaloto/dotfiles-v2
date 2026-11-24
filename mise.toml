@@ -1,7 +1,7 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # ref: https://mise.jdx.dev/configuration.html
 
-min_version = "2026.11.12"
+min_version = "2026.11.13"
 
 # User/global developer tools live in unix/home/.config/mise/config.toml so
 # this project config never duplicates project-scoped .agents/.claude skills.
@@ -11,13 +11,13 @@ PYTEST_XDIST_AUTO_NUM_WORKERS = "4"
 
 [vars]
 private_home = "{{ env.HOME }}"
-private_user = "{{ env.USER }}"
+private_user = "{{ env.USER | default(value='') }}"
 
 [settings]
 exec_auto_install = false
 experimental = true
 lockfile = true
-lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64"]
+lockfile_platforms = ["linux-arm64", "linux-x64", "macos-arm64"]
 python.uv_venv_auto = "source"
 
 [deps.uv]
@@ -70,13 +70,64 @@ hint = "Ensure every schema declares Draft 2020-12, additionalProperties: false,
 
 [doctor.checks.mise-lock-integrity]
 description = "unix/home/.config/mise/mise.lock and locks/ match config.toml across all platforms"
-run = "python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity"
+run = 'python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity && MISE_OFFLINE=1 MISE_CONFIG_DIR="$PWD/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global'
 hint = "Run `MISE_CONFIG_DIR=$PWD/unix/home/.config/mise mise lock` and ensure 0644 lockfile permissions."
 
 [doctor.checks.host-option-a]
-description = "Option A host parity, no-legacy-symlinks, roll-ownership, and dotfiles status (pre-cutover aware)"
-run = "python3 -I -B tasks/py/doctor_checks.py host-option-a"
+description = "Strict Option A host parity, no-legacy-symlinks, roll-ownership, and dotfiles status"
+run = "python3 -I -B tasks/py/doctor_checks.py host-option-a --strict-host"
 hint = "Complete Issue #9 Option A host cutover (~/.config/mise -> dotfiles-v2/unix/home/.config/mise) and sync dotfiles."
+
+[doctor.checks.mise-doctor-clean]
+description = "Global mise doctor --json reports 0 errors and 0 warnings"
+run = "python3 -I -B tasks/py/doctor_checks.py mise-doctor-clean"
+hint = "Inspect `mise -C ~ doctor --json` and eliminate any errors or PATH-ordering warnings."
+
+[doctor.checks.host-hygiene]
+description = "Host shims, command-wrappers, mise plugins, pitchfork daemons, vb, local bins, opencode.jsonc, config.local.toml, and skills parity are clean"
+run = "python3 -I -B tasks/py/doctor_checks.py host-hygiene"
+hint = "Run `mise run host:prune --apply` and `mise run bootstrap:skills` to clear stale host residue."
+
+[doctor.checks.cli-wrappers-smoke]
+description = "Active CLI wrappers for opencode, codex, and agy pass subcommand help smoke tests without proxy warnings"
+run = "python3 -I -B tasks/py/doctor_checks.py cli-wrappers-smoke"
+hint = "Ensure [wrappers.*] and ~/.local/bin/opencode-wrapper match Wave 1B/1C wrapper contracts."
+
+[doctor.checks.uv-env-integrity]
+description = "uv lockfile, environment packages, and locked dry-run sync pass offline checks"
+depends = "py-deps-fresh"
+run = "uv lock --check --offline && uv pip check && uv sync --locked --offline --dry-run"
+hint = "Run `mise deps uv` and `uv lock` to reconcile pyproject.toml, uv.lock, and .venv."
+
+[doctor.checks.jouet-rules]
+description = "All jouet rules and committed repository rules pass their fires/quiet examples"
+run = "python3 -I -B tasks/py/doctor_checks.py jouet-rules"
+hint = "Run `jouet rule test --all` and fix failing rule patterns or examples."
+
+[doctor.checks.usage-lint]
+description = "All #USAGE task specifications pass `usage lint -W -q`"
+run = "python3 -I -B tasks/py/doctor_checks.py usage-lint"
+hint = "Run `usage lint -W -q <task-file>` and fix any warnings or syntax errors."
+
+[doctor.checks.pitchfork-config]
+description = "Committed pitchfork config parses cleanly via `pitchfork daemons --json`"
+run = "python3 -I -B tasks/py/doctor_checks.py pitchfork-config"
+hint = "Validate `unix/home/.config/pitchfork/config.toml` with `pitchfork daemons --json`."
+
+[doctor.checks.dockerignore-secret-guard]
+description = ".dockerignore excludes *.local.*, __pycache__, *.pyc, and .DS_Store from Docker build context"
+run = "python3 -I -B tasks/py/doctor_checks.py dockerignore-secret-guard"
+hint = "Ensure `.dockerignore` re-excludes `**/*.local.*`, `**/__pycache__`, `**/__pycache__/**`, `**/*.pyc`, and `**/.DS_Store` after `!unix/home/.config/mise/**`."
+
+[doctor.checks.mise-version-parity]
+description = "Pinned MISE_VER and min_version match across Dockerfile, tasks/vm/up, env:doctor, configs, and docs"
+run = "python3 -I -B tasks/py/doctor_checks.py mise-version-parity"
+hint = "Keep mise version pins synchronized across Dockerfile, tasks/vm/up, tasks/env/doctor, mise.toml, config.toml, AGENTS.md, and SKILL.md."
+
+[doctor.checks.config-hygiene]
+description = "mise configs and programs.json pass canonical registry, prerelease, wrapper, and [dotfiles] traversal hygiene checks"
+run = "python3 -I -B tasks/py/doctor_checks.py config-hygiene"
+hint = "Check `unix/home/.config/mise/config*.toml` and `unix/home/.config/herdr-app/programs.json` against Tier 1/2 hygiene rules."
 
 [doctor.checks.no-repo-skills]
 description = "No duplicated repo-level .agents or .claude skill directories"
@@ -89,9 +140,9 @@ run = 'test -f .mode && test "$(tr -d "[:space:]" < .mode)" = "autonomous"'
 hint = "Commit 'autonomous' in .mode at repository root."
 
 [doctor.checks.hk-validate]
-description = "hk.pkl configuration evaluates cleanly"
-run = "hk validate"
-hint = "Run 'hk validate' to inspect hk.pkl errors."
+description = "hk.pkl configuration evaluates cleanly with zero warnings"
+run = "hk validate --json --deny-warnings"
+hint = "Run 'hk validate --json --deny-warnings' to inspect hk.pkl errors or warnings."
 
 [doctor.checks.mise-task-validate]
 description = "All mise tasks validate cleanly"

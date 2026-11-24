@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,7 @@ TASK_CMD_RE = re.compile(
     r"|hc\s+send)\b|(?:^|[\s/])ship\.py\s+(?:commit|merge|cleanup)\b)"
 )
 WORKTREE_RM_RE = re.compile(
-    r"\bmise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+worktree:rm\s+([a-z0-9][a-z0-9_-]*)"
+    r"\bmise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+worktree:rm\b([^\n;&|]*)"
 )
 SHIP_CLOSEOUT_RE = re.compile(r"(?:^|[\s/])ship\.py\s+(merge|cleanup)\b")
 USER_REQUEST_RE = re.compile(r"<USER_REQUEST>([\s\S]*?)</USER_REQUEST>")
@@ -128,13 +129,13 @@ def _shared_reviews_path() -> Path:
     return _shared_state_dir() / "reviews.jsonl"
 
 
-def _read_shared_reviews(
+def _read_shared_review_details(
     reviews_path: Path | None = None,
-) -> dict[str, tuple[str, str, int]]:
+) -> dict[str, dict[str, Any]]:
     path = reviews_path or _shared_reviews_path()
     if not path.is_file():
         return {}
-    latest: dict[str, tuple[str, str, int]] = {}
+    latest: dict[str, dict[str, Any]] = {}
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -167,9 +168,55 @@ def _read_shared_reviews(
             key = raw_key
         ns_val = ts_ns if isinstance(ts_ns, int) and not isinstance(ts_ns, bool) else 0
         prev = latest.get(key)
-        if prev is None or ns_val >= prev[2]:
-            latest[key] = (sha, outcome, ns_val)
+        prev_ns = prev.get("_ns", -1) if prev is not None else -1
+        if prev is None or ns_val >= prev_ns:
+            entry = dict(rec)
+            entry["_key"] = key
+            entry["_ns"] = ns_val
+            latest[key] = entry
     return latest
+
+
+def _read_shared_reviews(
+    reviews_path: Path | None = None,
+) -> dict[str, tuple[str, str, int]]:
+    details = _read_shared_review_details(reviews_path)
+    return {
+        key: (str(rec["plan_sha256"]), str(rec["outcome"]), int(rec["_ns"]))
+        for key, rec in details.items()
+    }
+
+
+def _slug_matches_plan_key(slug: str, plan_key: str) -> bool:
+    parts = Path(plan_key).parts
+    suffix = f"-{slug}"
+    return any(part == slug or part.endswith(suffix) for part in parts)
+
+
+def _worktree_slug_cleared_in_reviews(
+    slug: str,
+    review_details: dict[str, dict[str, Any]],
+    learned_plans: dict[str, str],
+    owing_learn: dict[str, str],
+) -> bool:
+    valid_outcomes = ("proposed", "no_new_proposals", "applied")
+    suffix = f"-{slug}"
+    for key, rec in review_details.items():
+        if rec.get("outcome") not in valid_outcomes:
+            continue
+        if rec.get("worktree_slug") == slug:
+            return True
+        plan_id = rec.get("plan_id")
+        if isinstance(plan_id, str) and (plan_id == slug or plan_id.endswith(suffix)):
+            return True
+        if _slug_matches_plan_key(slug, key):
+            return True
+    for key in learned_plans:
+        if key in owing_learn:
+            continue
+        if _slug_matches_plan_key(slug, key):
+            return True
+    return False
 
 
 def _append_shared_review(
@@ -773,6 +820,26 @@ def _plan_sha256(plan_path: Path) -> str | None:
         return None
 
 
+def _extract_worktree_rm_slug(command: str) -> str | None:
+    match = WORKTREE_RM_RE.search(command)
+    if not match:
+        return None
+    tail = match.group(1).strip()
+    if not tail:
+        return None
+    try:
+        tokens = shlex.split(tail)
+    except ValueError:
+        tokens = tail.split()
+    for token in tokens:
+        if token.startswith("-"):
+            continue
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", token):
+            return token
+        return None
+    return None
+
+
 def _analyze_slice(
     lines: list[str],
     last_user_input: str,
@@ -814,6 +881,7 @@ def _analyze_slice(
     full_records = _load_full_records(transcript_path, expected_types)
 
     last_learn_idx = -1
+    saw_learn_cmd = False
     last_work_idx = -1
     has_task_work = False
     touched_plans: list[Path] = []
@@ -905,19 +973,23 @@ def _analyze_slice(
                 if cmd:
                     if LEARN_CMD_RE.search(cmd):
                         last_learn_idx = idx
-                    if TASK_CMD_RE.search(cmd):
-                        has_task_work = True
+                        saw_learn_cmd = True
+                    wt_slug = _extract_worktree_rm_slug(cmd)
+                    if wt_slug:
+                        closed_worktree_slug = wt_slug
                         last_work_idx = idx
-                    wt_match = WORKTREE_RM_RE.search(cmd)
-                    if wt_match:
-                        closed_worktree_slug = wt_match.group(1)
+                        cmd_without_wt = WORKTREE_RM_RE.sub("", cmd)
+                        if TASK_CMD_RE.search(cmd_without_wt):
+                            has_task_work = True
+                    elif TASK_CMD_RE.search(cmd):
+                        has_task_work = True
                         last_work_idx = idx
                     ship_match = SHIP_CLOSEOUT_RE.search(cmd)
                     if ship_match:
                         ship_closeout = ship_match.group(1)
                         last_work_idx = idx
 
-    already_learned = last_learn_idx > last_work_idx
+    already_learned = (last_learn_idx > last_work_idx) or saw_learn_cmd
     is_zero_error_learn_apply_docs_only = (
         bool(edited_work_paths)
         and all(_is_learn_doc_path(p) for p in edited_work_paths)
@@ -1254,11 +1326,15 @@ def _run_hook(payload: dict[str, Any]) -> dict[str, Any]:
     _write_state(state_path, len(lines), learned_plans, None, owing_learn)
 
     if closed_worktree_slug:
-        reason = (
-            f"Automated post-task /learn check: worktree PWF task '{closed_worktree_slug}' finished. "
-            + BASE_TRIGGER_SUFFIX
-        )
-        return {"decision": "continue", "reason": reason}
+        review_details = _read_shared_review_details()
+        if not _worktree_slug_cleared_in_reviews(
+            closed_worktree_slug, review_details, learned_plans, owing_learn
+        ):
+            reason = (
+                f"Automated post-task /learn check: worktree PWF task '{closed_worktree_slug}' finished. "
+                + BASE_TRIGGER_SUFFIX
+            )
+            return {"decision": "continue", "reason": reason}
 
     if ship_closeout:
         reason = (
@@ -2684,6 +2760,108 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
                 f"case 23 unrecorded learn CLI cmd must NOT clear hard gate: {res23_cont}"
             )
             checks.append("learn_cmd_without_review_does_not_bypass_hard_gate")
+
+            # 24. WORKTREE_RM_RE handles --force before/after slug and same-turn learn:record-review -> worktree:rm does not double-trigger
+            assert _extract_worktree_rm_slug("mise run worktree:rm --force feat-a") == "feat-a"
+            assert _extract_worktree_rm_slug("mise -C /tmp/r run worktree:rm -f feat_b --force") == "feat_b"
+            t24 = root / "t24.jsonl"
+            art24 = root / "art24"
+            art24.mkdir()
+            _write_jsonl(
+                t24,
+                [
+                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Finish wt</USER_REQUEST>"},
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {"name": "edit_file", "args": {"Path": str(ws1 / "src.py")}},
+                            {
+                                "name": "run_command",
+                                "args": {
+                                    "CommandLine": "mise run learn:record-review --plan-key /tmp/x/task_plan.md --plan-sha256 abc --outcome no_new_proposals --survivor-count 0 --worktree-slug feat-a"
+                                },
+                            },
+                            {
+                                "name": "run_command",
+                                "args": {"CommandLine": "mise run worktree:rm --force feat-a"},
+                            },
+                        ],
+                    },
+                ],
+            )
+            res24 = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t24),
+                    "artifactDirectoryPath": str(art24),
+                    "cwd": str(ws1),
+                }
+            )
+            assert res24 == {}, f"case 24 same-turn learn -> worktree:rm must not double-trigger: {res24}"
+            checks.append("same_turn_learn_then_worktree_rm_no_double_trigger")
+
+            # 25. Cross-turn worktree:rm is suppressed when shared reviews.jsonl cleared the slug, and still fires when unreviewed
+            t25a = root / "t25a.jsonl"
+            art25a = root / "art25a"
+            art25a.mkdir()
+            _write_jsonl(
+                t25a,
+                [
+                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Remove worktree</USER_REQUEST>"},
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "run_command",
+                                "args": {"CommandLine": "mise run worktree:rm --force rev21"},
+                            }
+                        ],
+                    },
+                ],
+            )
+            res25a = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t25a),
+                    "artifactDirectoryPath": str(art25a),
+                    "cwd": str(ws1),
+                }
+            )
+            assert res25a == {}, f"case 25a cleared shared review must suppress worktree:rm trigger: {res25a}"
+
+            t25b = root / "t25b.jsonl"
+            art25b = root / "art25b"
+            art25b.mkdir()
+            _write_jsonl(
+                t25b,
+                [
+                    {"type": "USER_INPUT", "content": "<USER_REQUEST>Remove unreviewed</USER_REQUEST>"},
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "tool_calls": [
+                            {
+                                "name": "run_command",
+                                "args": {"CommandLine": "mise run worktree:rm --force unreviewed-slug"},
+                            }
+                        ],
+                    },
+                ],
+            )
+            res25b = _run_hook(
+                {
+                    "terminationReason": "NO_TOOL_CALL",
+                    "fullyIdle": True,
+                    "transcriptPath": str(t25b),
+                    "artifactDirectoryPath": str(art25b),
+                    "cwd": str(ws1),
+                }
+            )
+            assert res25b.get("decision") == "continue" and "unreviewed-slug" in res25b.get("reason", ""), (
+                f"case 25b unreviewed worktree:rm must trigger: {res25b}"
+            )
+            checks.append("cross_turn_worktree_rm_respects_shared_reviews")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)

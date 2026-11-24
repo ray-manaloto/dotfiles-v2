@@ -1,7 +1,9 @@
-amends "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.1.0/presets.pkl"
+amends "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.2.0/presets.pkl"
 
-import "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.1.0/helpers.pkl"
-import "package://github.com/jdx/hk/releases/download/v2.13.0/hk@2.13.0#/Builtins.pkl"
+import "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.2.0/helpers.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.14.0/hk@2.14.0#/Builtins.pkl"
+
+recheck_after_fix = true
 
 // Exclude lockfiles only from formatting/content/secret/hygiene steps so integrity & gate steps still run.
 local const lockfileExcludes =
@@ -116,6 +118,10 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
   ["ryl-format"] = (Builtins.ryl_format) {
     exclude = (Builtins.ryl_format.exclude ?? List()) + lockfileExcludes
   }
+  ["uv-lock-check"] = new Step {
+    glob = List("pyproject.toml", "uv.lock")
+    check = "uv lock --check --offline"
+  }
   ["py-deps"] = new Step {
     glob = List("pyproject.toml", "uv.lock")
     check = "mise deps uv --explain"
@@ -168,7 +174,46 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
         "unix/home/.config/mise/mise.lock",
         "unix/home/.config/mise/locks/**",
       )
-    check = "python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity"
+    check =
+      #"python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity && MISE_OFFLINE=1 MISE_CONFIG_DIR="$PWD/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global"#
+  }
+  ["usage-lint"] = new Step {
+    glob = List("tasks/**", "unix/home/.config/mise/tasks/**")
+    check =
+      #"rc=0; for f in {{ files }}; do if [ -f "$f" ] && grep -q '^#USAGE ' "$f"; then usage lint -W -q "$f" || rc=1; fi; done; exit $rc"#
+  }
+  ["jouet-rules"] = new Step {
+    glob = List("unix/home/.config/jouet/rules/**/*.toml")
+    check = "jouet rule test --all"
+  }
+  ["pitchfork-config"] = new Step {
+    glob = List("pitchfork.toml", "unix/home/.config/pitchfork/config.toml")
+    check = "python3 -I -B tasks/py/doctor_checks.py pitchfork-config"
+  }
+  ["dockerignore-secret-guard"] = new Step {
+    glob = List(".dockerignore", "docker/**")
+    check = "python3 -I -B tasks/py/doctor_checks.py dockerignore-secret-guard"
+  }
+  ["mise-version-parity"] = new Step {
+    glob =
+      List(
+        "mise.toml",
+        "unix/home/.config/mise/config.toml",
+        "docker/ubuntu/Dockerfile",
+        "tasks/vm/up",
+        "tasks/env/doctor",
+        "AGENTS.md",
+        "unix/home/.agents/skills/mise-bootstrap-ops/SKILL.md",
+      )
+    check = "python3 -I -B tasks/py/doctor_checks.py mise-version-parity"
+  }
+  ["config-hygiene"] = new Step {
+    glob =
+      List(
+        "unix/home/.config/mise/config*.toml",
+        "unix/home/.config/herdr-app/programs.json",
+      )
+    check = "python3 -I -B tasks/py/doctor_checks.py config-hygiene"
   }
   ["private-paths"] = new Step {
     check = "mise run privacy:scan -- {{ files }}"
@@ -217,9 +262,13 @@ hooks {
         exclusive = true
         check = "mise run privacy:scan --outgoing"
       }
+      ["betterleaks-commits"] = (Builtins.betterleaks) {
+        scan = "commits"
+      }
       ["no-core-worktree"] = (fastSteps["no-core-worktree"] as Step) {
         exclusive = true
       }
+      ["uv-lock-check"] = fastSteps["uv-lock-check"]
       ["py-deps"] = fastSteps["py-deps"]
       ["codegen-check"] = fastSteps["codegen-check"]
       ["schema-first-ast"] = fastSteps["schema-first-ast"]
@@ -230,7 +279,7 @@ hooks {
   ["post-merge"] {
     steps {
       ["host-option-a"] {
-        check = "python3 -I -B tasks/py/doctor_checks.py host-option-a"
+        check = "python3 -I -B tasks/py/doctor_checks.py host-option-a --strict-host"
       }
     }
   }

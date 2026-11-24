@@ -13,21 +13,27 @@ if [[ ! ${slug} =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
 fi
 
 root="$(git rev-parse --show-toplevel)"
-wt_dir="$(dirname "${root}")/dotfiles-v2-${slug}"
+common_dir="$(git -C "${root}" rev-parse --git-common-dir)"
+if [[ ${common_dir} != /* ]]; then
+	common_dir="${root}/${common_dir}"
+fi
+main_root="$(cd "$(dirname "${common_dir}")" && pwd -P)"
+repo_name="$(basename "${main_root}")"
+wt_dir="$(dirname "${main_root}")/${repo_name}-${slug}"
 branch="wt/${slug}"
 
 if [[ -d ${wt_dir} ]]; then
 	if [[ ${force} == "true" ]]; then
-		git worktree remove --force "${wt_dir}"
+		git -C "${main_root}" worktree remove --force "${wt_dir}"
 	else
-		git worktree remove "${wt_dir}"
+		git -C "${main_root}" worktree remove "${wt_dir}"
 	fi
 fi
 
-if git show-ref --verify --quiet "refs/heads/${branch}"; then
+if git -C "${main_root}" show-ref --verify --quiet "refs/heads/${branch}"; then
 	if [[ ${force} == "true" ]]; then
-		git branch -D "${branch}"
+		git -C "${main_root}" branch -D "${branch}"
 	else
-		git branch -d "${branch}"
+		git -C "${main_root}" branch -d "${branch}"
 	fi
 fi

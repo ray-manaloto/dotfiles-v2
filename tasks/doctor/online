@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+#MISE description="Run online security, outdated, secret, and CLI configuration audits"
+#USAGE flag "--verbose" help="Print raw JSON payloads from underlying checks"
+set -euo pipefail
+
+verbose="${usage_verbose:-false}"
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+fail_count=0
+
+run_outdated_check() {
+	local label="$1"
+	shift
+	local out_file err_file rc=0
+	out_file="$(mktemp)"
+	err_file="$(mktemp)"
+	if ! mise "$@" >"${out_file}" 2>"${err_file}"; then
+		rc=$?
+	fi
+	local err_text out_text
+	err_text="$(cat "${err_file}")"
+	out_text="$(cat "${out_file}")"
+	rm -f "${out_file}" "${err_file}"
+
+	if [[ ${rc} -ne 0 ]]; then
+		printf 'FAIL  %s: exited %d\n' "${label}" "${rc}" >&2
+		[[ -n ${err_text} ]] && printf '%s\n' "${err_text}" >&2
+		fail_count=$((fail_count + 1))
+		return
+	fi
+	if [[ -n ${err_text} ]]; then
+		printf 'FAIL  %s: unexpected stderr warnings:\n%s\n' "${label}" "${err_text}" >&2
+		fail_count=$((fail_count + 1))
+		return
+	fi
+	if ! python3 -I -B -c 'import json, sys; data = json.loads(sys.argv[1]); assert isinstance(data, dict)' "${out_text}" 2>/dev/null; then
+		printf 'FAIL  %s: invalid JSON stdout\n' "${label}" >&2
+		fail_count=$((fail_count + 1))
+		return
+	fi
+	if [[ ${verbose} == "true" ]]; then
+		printf '%s\n' "${out_text}"
+	fi
+	printf 'PASS  %s (0 stderr warnings)\n' "${label}"
+}
+
+run_outdated_check "mise-outdated-repo" -C "${repo_root}" outdated -b --json
+run_outdated_check "mise-outdated-global" -C "${HOME}" outdated -b --json --global
+
+# mise -C ~ audit --json: fail ONLY on fixable advisories; log unpatched CVEs as advisory.
+audit_file="$(mktemp)"
+audit_err="$(mktemp)"
+audit_rc=0
+if ! mise -C "${HOME}" audit --json >"${audit_file}" 2>"${audit_err}"; then
+	audit_rc=$?
+fi
+if [[ ! -s ${audit_file} ]]; then
+	printf 'FAIL  mise-audit: empty output (rc=%d): %s\n' "${audit_rc}" "$(cat "${audit_err}")" >&2
+	fail_count=$((fail_count + 1))
+else
+	if [[ ${verbose} == "true" ]]; then
+		cat "${audit_file}"
+	fi
+	if ! python3 -I -B "${repo_root}/tasks/py/doctor_checks.py" mise-audit-fixable --json-file "${audit_file}"; then
+		fail_count=$((fail_count + 1))
+	fi
+fi
+rm -f "${audit_file}" "${audit_err}"
+
+# uv audit: fail on fixable/active vulnerabilities; ignore unpatched until fixed.
+uv_file="$(mktemp)"
+uv_err="$(mktemp)"
+uv_rc=0
+if ! uv --directory "${repo_root}" audit --locked --preview-features audit-command,json-output --output-format json >"${uv_file}" 2>"${uv_err}"; then
+	uv_rc=$?
+fi
+if [[ ${verbose} == "true" && -s ${uv_file} ]]; then
+	cat "${uv_file}"
+fi
+if ! python3 -I -B - "${uv_file}" "${uv_rc}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload_path = Path(sys.argv[1])
+rc = int(sys.argv[2])
+raw = payload_path.read_text(encoding="utf-8") if payload_path.is_file() else ""
+if not raw.strip():
+    sys.stderr.write(f"FAIL  uv-audit: empty JSON output (rc={rc})\n")
+    raise SystemExit(1)
+data = json.loads(raw)
+vulns = data.get("vulnerabilities") or []
+fixable = []
+advisory = []
+for v in vulns:
+    if not isinstance(v, dict):
+        continue
+    fix_vers = v.get("fix_versions") or v.get("fixed") or []
+    vid = v.get("id") or "unknown"
+    pkg = v.get("name") or v.get("package") or "unknown"
+    ver = v.get("version") or ""
+    if fix_vers:
+        fixable.append(f"{pkg}@{ver} {vid} (fixed in {', '.join(map(str, fix_vers))})")
+    else:
+        advisory.append(f"{pkg}@{ver} {vid} (no upstream fix yet)")
+for item in advisory:
+    sys.stdout.write(f"ADVISORY  uv-audit: {item}\n")
+if fixable:
+    for item in fixable:
+        sys.stderr.write(f"FAIL  uv-audit: fixable {item}\n")
+    raise SystemExit(1)
+if rc != 0 and not vulns:
+    sys.stderr.write(f"FAIL  uv-audit: exited {rc}\n")
+    raise SystemExit(1)
+sys.stdout.write("PASS  uv-audit (0 fixable advisories)\n")
+PY
+then
+	fail_count=$((fail_count + 1))
+fi
+rm -f "${uv_file}" "${uv_err}"
+
+# fnox doctor + strict per-profile check
+if ! mise -C "${repo_root}" run secret:doctor; then
+	fail_count=$((fail_count + 1))
+fi
+
+# zcode doctor --json
+if command -v zcode >/dev/null 2>&1; then
+	zcode_out="$(ZCODE_CLI_SETTINGS_FILE="${repo_root}/unix/home/.zcode/cli/setting.json" zcode doctor --json </dev/null)"
+	if [[ ${verbose} == "true" ]]; then
+		printf '%s\n' "${zcode_out}"
+	fi
+	if ! python3 -I -B - "${zcode_out}" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+cfg = data.get("configuration", {})
+assert cfg.get("ok") is True, cfg
+assert cfg.get("user", {}).get("status") == "loaded", cfg
+assert cfg.get("diagnostics") == [], cfg
+sys.stdout.write("PASS  zcode-doctor\n")
+PY
+	then
+		fail_count=$((fail_count + 1))
+	fi
+else
+	printf 'SKIP  zcode-doctor (zcode not installed)\n'
+fi
+
+if [[ ${fail_count} -ne 0 ]]; then
+	printf 'doctor:online: %d check(s) failed\n' "${fail_count}" >&2
+	exit 1
+fi
+printf 'doctor:online: all checks passed\n'
