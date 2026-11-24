@@ -61,10 +61,10 @@
     `OpenCodeAdapter` session-ID resolution for `opencode --standalone` tabs
     without `-s` (`PLAN_ID` / worktree slug: `herdr-roll-opencode-sid`;
     shipped on `main` at `3be8af`).
-  - [ ] [#7](https://github.com/ray-manaloto/dotfiles-v2/issues/7) Live
+  - [x] [#7](https://github.com/ray-manaloto/dotfiles-v2/issues/7) Live
     `--apply` verification across `claude`, `hermes`, `zcode`, and full
     reboot/wave flows (`PLAN_ID` / worktree slug: `herdr-roll-live-verify`;
-    blocked by `#4`, `#5`).
+    completed in `62f57c6` / `aaa5c4d`).
   - [x] [#8](https://github.com/ray-manaloto/dotfiles-v2/issues/8) Add
     nanosecond-timestamped verification evidence, process `lstart`/hook-load
     proof to `roll:verify`, and dialog triage docs (`PLAN_ID` / worktree slug:
