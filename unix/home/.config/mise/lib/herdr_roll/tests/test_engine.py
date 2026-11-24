@@ -493,6 +493,38 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(runs[-1]["outcomes"][0]["result"], "skipped-busy")
             self.assertEqual(runs[-1]["outcomes"][0]["notes"], ["status=paused"])
 
+        # If terminal transitions to idle by the post-timeout readiness check, recover cleanly.
+        rec_calls = {"n": 0}
+
+        def refresh_to_idle(_addr: str) -> None:
+            rec_calls["n"] += 1
+            fake_client.info["t8"] = {
+                "status": {
+                    "state": "working" if rec_calls["n"] == 1 else "idle",
+                    "app": "antigravity",
+                }
+            }
+
+        fake_client.info["t8"] = {"status": {"state": "working", "app": "antigravity"}}
+        fake_client.refresh_terminal.side_effect = refresh_to_idle
+        with (
+            mock.patch("herdr_roll.engine.assert_same_tab"),
+            mock.patch("herdr_roll.engine._wait_for_exit"),
+            mock.patch("herdr_roll.engine.git_status_porcelain", return_value=""),
+            mock.patch("herdr_roll.engine.hc_read", return_value="ready"),
+            mock.patch("herdr_roll.engine.hc_send", return_value=True),
+            mock.patch("herdr_roll.engine.adaptive_poll", return_value=None),
+            mock.patch("herdr_roll.engine.verify_target", return_value=(300, "t8")),
+        ):
+            recovered = engine.restart_one(
+                (space, tab, term),
+                timing=Timing(busy_wait=5.0, settle=1.0),
+                run_dir=None,
+                apply=True,
+                live=fake_client,
+            )
+        self.assertEqual(recovered.result, "ok")
+
     def test_cmd_restart_close_self_on_ok_only_on_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_root = Path(tmp) / "state"

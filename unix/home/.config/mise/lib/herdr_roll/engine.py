@@ -581,6 +581,10 @@ def _wait_until_ready_for_stop(
     else:
         idle_ok = probe()
     if not idle_ok:
+        if timing.busy_wait > 0 and _is_terminal_ready_for_stop(
+            client, term, adapter, timing
+        ):
+            return
         client.refresh_terminal(term.address)
         jobs = client.active_jobs(
             term.address, term.kind, HARNESS_BINARIES, confirm_delay=0.0

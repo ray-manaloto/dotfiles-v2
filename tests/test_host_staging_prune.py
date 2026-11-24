@@ -189,6 +189,44 @@ def test_find_orphaned_staging_dirs_fails_closed_on_probe_errors(
     assert orphans2 == []
     assert any("ps -axo args=" in e for e in probe_errs2)
 
+    # Top-level os.scandir failure must fail closed with probe error.
+    orig_scandir = os.scandir
+
+    def scandir_top_fail(path: str | os.PathLike[str]):
+        if os.fspath(path) == str(fx["installs_dir"]):
+            raise PermissionError("top scandir denied")
+        return orig_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir_top_fail)
+    orphans3, probe_errs3 = doc_mod.find_orphaned_mise_staging_dirs(
+        fx["installs_dir"], fx["home"]
+    )
+    assert orphans3 == []
+    assert any("top scandir denied" in e for e in probe_errs3)
+
+    # Child tool-dir os.scandir failure during symlink scan must fail closed.
+    monkeypatch.setattr(
+        doc_mod.subprocess,
+        "run",
+        lambda cmd, **_kw: (
+            subprocess.CompletedProcess(cmd, 0, stdout=ls_payload, stderr="")
+            if "ls" in cmd and "--installed" in cmd
+            else subprocess.CompletedProcess(cmd, 0, stdout="/bin/zsh -i\n", stderr="")
+        ),
+    )
+
+    def scandir_child_fail(path: str | os.PathLike[str]):
+        if os.fspath(path) == str(fx["installs_dir"] / "age"):
+            raise PermissionError("child scandir denied")
+        return orig_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir_child_fail)
+    orphans4, probe_errs4 = doc_mod.find_orphaned_mise_staging_dirs(
+        fx["installs_dir"], fx["home"]
+    )
+    assert orphans4 == []
+    assert any("child scandir denied" in e for e in probe_errs4)
+
 
 def test_host_prune_dry_run_apply_and_fail_closed(tmp_path: Path) -> None:
     fx = _setup_mise_fixture(tmp_path)
@@ -259,6 +297,24 @@ printf '%s\\n' '/bin/zsh -i' '{fx["proc_dir"]}/agentsview serve'
     assert fail_ps.returncode == 0, fail_ps.stderr
     assert "SKIP  staging-dir prune:" in fail_ps.stdout
     assert fx["orphan_dir"].is_dir()
+
+    # Fail closed when a child tool dir under installs/ cannot be scanned under --apply.
+    if os.geteuid() != 0:
+        age_dir = fx["installs_dir"] / "age"
+        age_dir.chmod(0o000)
+        try:
+            scandir_prune = subprocess.run(
+                ["bash", str(prune_script)],
+                env={**base_env, "usage_apply": "true"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            age_dir.chmod(0o755)
+        assert scandir_prune.returncode == 0, scandir_prune.stderr
+        assert "SKIP  staging-dir prune:" in scandir_prune.stdout
+        assert fx["orphan_dir"].is_dir()
 
     applied = subprocess.run(
         ["bash", str(prune_script)],

@@ -3,6 +3,8 @@
 #USAGE flag "--apply" help="Execute host prune and cleanup (default: dry-run preview)"
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
 apply="${usage_apply:-false}"
 home_dir="${HOME}"
 data_dir="${MISE_DATA_DIR:-${home_dir}/.local/share/mise}"
@@ -87,7 +89,7 @@ fi
 # 6. Dead symlinks in ~/.config/opencode/skills/ and ~/.claude/debug/latest
 # 7. Unmanaged ~/.config/opencode/opencode.jsonc (backup before removal)
 # 8. Untracked unix/home/.config/mise/config.local.toml (only when migrated-env-only + fnox check --all --strict passes with CLOUDFLARE_ACCOUNT_ID)
-python3 - "${apply}" "${home_dir}" "${wrappers_dir}" "${plugins_dir}" "${fnox_cfg}" "${installs_dir}" <<'PY'
+python3 - "${apply}" "${home_dir}" "${wrappers_dir}" "${plugins_dir}" "${fnox_cfg}" "${installs_dir}" "${lib_dir}" <<'PY'
 import json
 import os
 import re
@@ -104,6 +106,11 @@ wrappers_dir = Path(sys.argv[3])
 plugins_dir = Path(sys.argv[4])
 fnox_cfg = Path(sys.argv[5])
 installs_dir = Path(sys.argv[6])
+lib_dir = sys.argv[7]
+if lib_dir not in sys.path:
+    sys.path.insert(0, lib_dir)
+
+from mise_staging_prune import find_orphaned_mise_staging_dirs
 
 mise_dir = home / ".config" / "mise"
 state_dir = Path(os.environ.get("MISE_STATE_DIR", str(home / ".local" / "state" / "mise")))
@@ -294,145 +301,10 @@ if apply and uninstalled_mismatch:
     subprocess.run(["mise", "-C", str(home), "reshim", "--force"], check=False)
 
 # 3c. Inactive orphaned <tool>-<8-char> mise staging/install dirs
-_STAGING_DIR_RE = re.compile(r".+-[a-z2-7]{8}")
-
-
-def _collect_installs_symlink_targets(root_dir: Path) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    try:
-        with os.scandir(root_dir) as top_it:
-            top_entries = list(top_it)
-    except OSError:
-        return pairs
-    root_real = os.path.realpath(root_dir)
-    for entry in top_entries:
-        try:
-            if entry.is_symlink():
-                pairs.append((root_real, os.path.realpath(entry.path)))
-                continue
-            if not entry.is_dir(follow_symlinks=False):
-                continue
-            parent_real = os.path.realpath(entry.path)
-            with os.scandir(entry.path) as sub_it:
-                for sub in sub_it:
-                    if sub.is_symlink():
-                        pairs.append((parent_real, os.path.realpath(sub.path)))
-        except OSError:
-            continue
-    return pairs
-
-
-def _find_orphaned_staging_dirs(root_dir: Path) -> tuple[list[Path], str | None]:
-    if not root_dir.is_dir():
-        return [], None
-    candidates: list[Path] = []
-    try:
-        with os.scandir(root_dir) as it:
-            entries = sorted(it, key=lambda e: e.name)
-    except OSError as exc:
-        return [], f"failed to scan {root_dir}: {exc}"
-    for entry in entries:
-        try:
-            if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
-                continue
-        except OSError:
-            continue
-        if not _STAGING_DIR_RE.fullmatch(entry.name):
-            continue
-        cand = Path(entry.path)
-        if os.path.lexists(cand / ".mise.backend.toml"):
-            continue
-        candidates.append(cand)
-    if not candidates:
-        return [], None
-
-    try:
-        ls_proc = subprocess.run(
-            ["mise", "-C", str(home), "ls", "--installed", "--json"],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return [], f"mise ls --installed --json failed: {exc}"
-    if ls_proc.returncode != 0:
-        detail = ls_proc.stderr.strip() or ls_proc.stdout.strip() or f"rc={ls_proc.returncode}"
-        return [], f"mise ls --installed --json exited {ls_proc.returncode}: {detail}"
-    try:
-        ls_data = json.loads(ls_proc.stdout)
-    except json.JSONDecodeError as exc:
-        return [], f"mise ls --installed --json returned invalid JSON: {exc}"
-    if not isinstance(ls_data, dict):
-        return [], f"mise ls --installed --json returned {type(ls_data).__name__}, expected object"
-
-    ls_refs: set[str] = set()
-    for rows in ls_data.values():
-        if not isinstance(rows, list):
-            continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            for key in ("install_path", "symlinked_to"):
-                val = row.get(key)
-                if isinstance(val, str) and val:
-                    ls_refs.add(val)
-                    ls_refs.add(os.path.normpath(val))
-                    ls_refs.add(os.path.realpath(val))
-
-    try:
-        ps_proc = subprocess.run(
-            ["ps", "-axo", "args="],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return [], f"ps -axo args= failed: {exc}"
-    if ps_proc.returncode != 0:
-        return [], f"ps -axo args= exited {ps_proc.returncode}"
-    ps_lines = [line for line in ps_proc.stdout.splitlines() if line.strip()]
-    if not ps_lines:
-        return [], "ps -axo args= returned empty process list"
-
-    symlink_pairs = _collect_installs_symlink_targets(root_dir)
-    orphans: list[Path] = []
-    for cand in candidates:
-        cand_str = str(cand)
-        cand_norm = os.path.normpath(cand_str)
-        cand_real = os.path.realpath(cand)
-        real_prefix = f"{cand_real}{os.sep}"
-        norm_prefix = f"{cand_norm}{os.sep}"
-        str_prefix = f"{cand_str}{os.sep}"
-
-        if any(
-            parent_real != cand_real
-            and (target_real == cand_real or target_real.startswith(real_prefix))
-            for parent_real, target_real in symlink_pairs
-        ):
-            continue
-        if (
-            cand_str in ls_refs
-            or cand_norm in ls_refs
-            or cand_real in ls_refs
-            or any(ref.startswith((real_prefix, norm_prefix, str_prefix)) for ref in ls_refs)
-        ):
-            continue
-        if any(
-            cand_real in line or cand_str in line or cand_norm in line
-            for line in ps_lines
-        ):
-            continue
-        orphans.append(cand)
-    return orphans, None
-
-
-orphaned_staging_dirs, staging_err = _find_orphaned_staging_dirs(installs_dir)
-if staging_err:
-    print(f"SKIP  staging-dir prune: {staging_err}")
+orphaned_staging_dirs, staging_errs = find_orphaned_mise_staging_dirs(installs_dir, home)
+if staging_errs:
+    for staging_err in staging_errs:
+        print(f"SKIP  staging-dir prune: {staging_err}")
 else:
     for staging_dir in orphaned_staging_dirs:
         if apply:
