@@ -10,7 +10,7 @@ if [[ ! -x "${HOME}/.local/bin/hc" ]]; then
 	fi
 	script="$(mktemp)"
 	trap 'rm -f "${script}"' EXIT
-	curl -fsSLo "${script}" https://releases.herdr.dev/core/install.sh
+	curl -fsSLo "${script}" --retry 3 --retry-delay 2 --retry-all-errors https://releases.herdr.dev/core/install.sh
 	PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" sh "${script}" </dev/null
 fi
 if [[ -x "${HOME}/.local/bin/hc" ]]; then

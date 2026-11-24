@@ -465,6 +465,22 @@ if managed_hermes.is_file():
         else:
             print(f"WOULD REMOVE stale legacy hermes shim: {candidate} (managed: {managed_hermes})")
 
+if local_bin.is_dir():
+    for entry in sorted(local_bin.iterdir()):
+        if not (entry.is_symlink() and not entry.exists()):
+            continue
+        try:
+            raw_link = os.readlink(entry)
+        except OSError:
+            continue
+        if "/unix/home/" not in raw_link:
+            continue
+        if apply:
+            entry.unlink()
+            print(f"REMOVED dangling dotfiles symlink: {entry} -> {raw_link}")
+        else:
+            print(f"WOULD REMOVE dangling dotfiles symlink: {entry} -> {raw_link}")
+
 # 6. Dead symlinks in ~/.config/opencode/skills/ and ~/.claude/debug/latest
 dead_candidates: list[Path] = []
 oc_skills = home / ".config" / "opencode" / "skills"

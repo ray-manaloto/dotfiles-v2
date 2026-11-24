@@ -72,6 +72,10 @@ def _backup(path: Path) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(backup_dir, 0o700)
     dst = backup_dir / f"{path.name}.{ts_tag}.bak"
+    idx = 1
+    while dst.exists():
+        dst = backup_dir / f"{path.name}.{ts_tag}.{idx}.bak"
+        idx += 1
     shutil.copy2(path, dst)
     os.chmod(dst, 0o600)
     return dst
@@ -109,7 +113,20 @@ def _prune_json_dict_keys(path: Path, container_keys: tuple[str, ...], names: fr
 
 _prune_json_dict_keys(home / ".gemini" / "config" / "mcp_config.json", ("mcpServers",), LEGACY_MCP_NAMES, "gemini-mcp")
 _prune_json_dict_keys(home / ".gemini" / "config" / "config.json", ("plugins", "enabledPlugins"), LEGACY_AGY_PLUGINS, "gemini-plugin")
-_prune_json_dict_keys(home / ".claude.json", ("mcpServers",), LEGACY_MCP_NAMES, "claude-mcp")
+
+claude_candidates = [home / ".claude.json"]
+claude_cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+if claude_cfg_dir:
+    claude_candidates.append(Path(claude_cfg_dir).expanduser() / ".claude.json")
+claude_candidates.append(home / ".claude" / ".claude.json")
+
+seen_claude_paths: set[Path] = set()
+for claude_path in claude_candidates:
+    resolved_claude = claude_path.resolve(strict=False)
+    if resolved_claude in seen_claude_paths:
+        continue
+    seen_claude_paths.add(resolved_claude)
+    _prune_json_dict_keys(claude_path, ("mcpServers",), LEGACY_MCP_NAMES, "claude-mcp")
 
 codex_cfg = home / ".codex" / "config.toml"
 if codex_cfg.is_file():

@@ -39,6 +39,7 @@ bootstrap_phase2() {
 			--config-dir unix/home/.config/mise \
 			--only dotfiles,tools,task \
 			--force-dotfiles --yes
+		mise -E container,linux -C "${HOME}" run host:prune-mcps --apply
 		MISE_YES=1 mise -C /workspace deps uv
 	' bash "${repo_url}"
 }

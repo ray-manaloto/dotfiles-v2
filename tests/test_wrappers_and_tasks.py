@@ -300,6 +300,165 @@ def test_host_prune_mcps_audits_and_prunes_preserving_backups(tmp_path: Path) ->
     assert len(backups) == 4
 
 
+def test_host_prune_mcps_handles_claude_config_dir_and_dedup(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    claude_dir = fake_home / ".claude"
+    custom_dir = tmp_path / "custom-claude"
+    claude_dir.mkdir(parents=True)
+    custom_dir.mkdir(parents=True)
+
+    home_claude = fake_home / ".claude.json"
+    home_claude.write_text(
+        json.dumps({"mcpServers": {"exa": {}, "keep-home": {}}}), encoding="utf-8"
+    )
+    dir_claude = claude_dir / ".claude.json"
+    dir_claude.write_text(
+        json.dumps({"mcpServers": {"firecrawl": {}, "keep-dir": {}}}), encoding="utf-8"
+    )
+    custom_claude = custom_dir / ".claude.json"
+    custom_claude.write_text(
+        json.dumps({"mcpServers": {"context7": {}, "keep-custom": {}}}),
+        encoding="utf-8",
+    )
+
+    task = MISE_TASKS_DIR / "host" / "prune-mcps"
+    chk = subprocess.run(
+        ["bash", str(task)],
+        env={
+            "HOME": str(fake_home),
+            "CLAUDE_CONFIG_DIR": str(custom_dir),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "usage_check": "true",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert f"FOUND claude-mcp {home_claude}: mcpServers.exa" in chk.stdout
+    assert f"FOUND claude-mcp {custom_claude}: mcpServers.context7" in chk.stdout
+    assert f"FOUND claude-mcp {dir_claude}: mcpServers.firecrawl" in chk.stdout
+
+    app = subprocess.run(
+        ["bash", str(task)],
+        env={
+            "HOME": str(fake_home),
+            "CLAUDE_CONFIG_DIR": str(custom_dir),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "usage_apply": "true",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert app.stdout.count("PRUNED claude-mcp") == 3
+    assert json.loads(home_claude.read_text()) == {"mcpServers": {"keep-home": {}}}
+    assert json.loads(custom_claude.read_text()) == {"mcpServers": {"keep-custom": {}}}
+    assert json.loads(dir_claude.read_text()) == {"mcpServers": {"keep-dir": {}}}
+    backups = list(
+        (fake_home / ".local" / "state" / "dotfiles-v2" / "backups").glob("*.bak")
+    )
+    assert len(backups) == 3
+
+    # Deduplicate when CLAUDE_CONFIG_DIR == ~/.claude and ~/.claude/.claude.json symlinks to ~/.claude.json.
+    dedup_home = tmp_path / "dedup-home"
+    (dedup_home / ".claude").mkdir(parents=True)
+    dedup_root = dedup_home / ".claude.json"
+    dedup_root.write_text(
+        json.dumps({"mcpServers": {"exa": {}, "keep": {}}}), encoding="utf-8"
+    )
+    (dedup_home / ".claude" / ".claude.json").symlink_to(dedup_root)
+
+    dedup_chk = subprocess.run(
+        ["bash", str(task)],
+        env={
+            "HOME": str(dedup_home),
+            "CLAUDE_CONFIG_DIR": str(dedup_home / ".claude"),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "usage_check": "true",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert dedup_chk.stdout.count("FOUND claude-mcp") == 1
+
+    dedup_app = subprocess.run(
+        ["bash", str(task)],
+        env={
+            "HOME": str(dedup_home),
+            "CLAUDE_CONFIG_DIR": str(dedup_home / ".claude"),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "usage_apply": "true",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert dedup_app.stdout.count("PRUNED claude-mcp") == 1
+    assert json.loads(dedup_root.read_text()) == {"mcpServers": {"keep": {}}}
+    dedup_backups = list(
+        (dedup_home / ".local" / "state" / "dotfiles-v2" / "backups").glob("*.bak")
+    )
+    assert len(dedup_backups) == 1
+
+
+def test_host_prune_removes_dangling_unix_home_symlinks_in_local_bin(
+    tmp_path: Path,
+) -> None:
+    bin_stub = tmp_path / "bin"
+    bin_stub.mkdir()
+    fake_home = tmp_path / "home"
+    local_bin = fake_home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+
+    valid_target = tmp_path / "repo" / "unix" / "home" / ".local" / "bin" / "keep-tool"
+    valid_target.parent.mkdir(parents=True)
+    valid_target.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    valid_link = local_bin / "keep-tool"
+    valid_link.symlink_to(valid_target)
+
+    dangling_dotfiles = local_bin / "agy-hc"
+    dangling_dotfiles.symlink_to(
+        tmp_path / "repo" / "unix" / "home" / ".local" / "bin" / "agy-hc"
+    )
+
+    dangling_custom = local_bin / "custom-missing"
+    dangling_custom.symlink_to(tmp_path / "other" / "bin" / "custom-missing")
+
+    _make_stub(bin_stub, "mise", 'if [ "$1" = "registry" ]; then exit 0; fi; exit 0')
+    prune_task = MISE_TASKS_DIR / "host" / "prune"
+    env = {
+        "HOME": str(fake_home),
+        "MISE_DATA_DIR": str(tmp_path / "mise_data"),
+        "PATH": f"{bin_stub}:{Path(sys.executable).parent}:/usr/bin:/bin:/usr/sbin:/sbin",
+    }
+
+    dry = subprocess.run(
+        ["bash", str(prune_task)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert f"WOULD REMOVE dangling dotfiles symlink: {dangling_dotfiles}" in dry.stdout
+    assert str(dangling_custom) not in dry.stdout
+    assert str(valid_link) not in dry.stdout
+    assert dangling_dotfiles.is_symlink()
+
+    app = subprocess.run(
+        ["bash", str(prune_task)],
+        env={**env, "usage_apply": "true"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert f"REMOVED dangling dotfiles symlink: {dangling_dotfiles}" in app.stdout
+    assert not dangling_dotfiles.is_symlink()
+    assert valid_link.is_symlink() and valid_link.exists()
+    assert dangling_custom.is_symlink() and not dangling_custom.exists()
+
+
 def test_agy_rc_guard_check_and_never_runs_serve_help(tmp_path: Path) -> None:
     guard_script = MISE_TASKS_DIR / "host" / "agy-rc-guard"
     txt = guard_script.read_text(encoding="utf-8")
