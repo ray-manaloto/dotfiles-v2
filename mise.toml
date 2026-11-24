@@ -317,6 +317,7 @@ hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, mcp-jdx, bootstra
 
 [doctor.checks.herdr-roll]
 description = "Clean-room herdr_roll engine tests and executable roll:* tasks pass validation"
+depends = "py-deps-fresh"
 run = '''
 for task in snapshot restart stop start verify self; do
   test -x "unix/home/.config/mise/tasks/roll/$task"

@@ -481,15 +481,22 @@ def check_host_option_a(
         for row in tasks_list
         if isinstance(row, dict)
     }
+    allowed_repo_prefixes = {
+        repo_root.resolve(strict=False).as_posix().rstrip("/") + "/",
+        _main_checkout_root(repo_root).resolve(strict=False).as_posix().rstrip("/")
+        + "/",
+    }
     for sub in ("snapshot", "restart", "stop", "start", "verify", "self"):
         tname = f"roll:{sub}"
         src = task_sources.get(tname, "")
         resolved_src = (
             Path(src).expanduser().resolve(strict=False).as_posix() if src else ""
         )
-        if "dotfiles-v2" not in resolved_src or "/tasks/roll/" not in resolved_src:
+        if "/unix/home/.config/mise/tasks/roll/" not in resolved_src or not any(
+            resolved_src.startswith(prefix) for prefix in allowed_repo_prefixes
+        ):
             errors.append(
-                f"roll-ownership: global task `{tname}` source {src!r} does not resolve inside dotfiles-v2/unix/home/.config/mise/tasks/roll/"
+                f"roll-ownership: global task `{tname}` source {src!r} does not resolve inside repo unix/home/.config/mise/tasks/roll/"
             )
 
     # host-dotfiles-status (`mise dot status --json`)

@@ -1139,3 +1139,98 @@ def test_strip_git_core_from_path_preserves_real_ordering(monkeypatch) -> None:
     errs, _ = doc_mod.check_mise_doctor_clean()
     assert errs == []
     assert seen_env["PATH"] == f"{shims}{os.pathsep}/opt/homebrew/bin"
+
+
+def test_guest_shim_first_path_herdr_roll_dep_and_workspace_roll_ownership(
+    monkeypatch,
+) -> None:
+    import tomllib
+
+    repo_root, doc_mod = _load_doctor_checks()
+
+    dockerfile = (repo_root / "docker" / "ubuntu" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert "PATH=/opt/mise/shims:/home/dev/.opencode/bin:/home/dev/.local/bin:" in (
+        dockerfile
+    )
+
+    c_env = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "assets"
+        / "container"
+        / "dotfiles-v2-env.sh"
+    ).read_text(encoding="utf-8")
+    assert (
+        "for _df_p in /home/dev/.local/bin /home/dev/.opencode/bin /opt/mise/shims;"
+        in (c_env)
+    )
+
+    vm_env = (
+        repo_root / "unix" / "home" / ".config" / "mise" / "assets" / "vm" / "vm-env.sh"
+    ).read_text(encoding="utf-8")
+    assert (
+        'for _df_p in /opt/homebrew/sbin /opt/homebrew/bin /usr/local/bin "${HOME}/.local/bin" "${HOME}/.opencode/bin" "${HOME}/.local/share/mise/shims";'
+        in vm_env
+    )
+
+    env_doctor = (repo_root / "tasks" / "env" / "doctor").read_text(encoding="utf-8")
+    assert (
+        'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"'
+        in env_doctor
+    )
+
+    mise_toml = tomllib.loads((repo_root / "mise.toml").read_text(encoding="utf-8"))
+    assert mise_toml["doctor"]["checks"]["herdr-roll"].get("depends") == "py-deps-fresh"
+
+    monkeypatch.delenv("CI", raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        fake_repo = root / "workspace"
+        home = root / "home"
+        (fake_repo / "unix" / "home" / ".config" / "mise" / "tasks" / "roll").mkdir(
+            parents=True
+        )
+        (fake_repo / "unix" / "home" / ".config" / "mise" / "config.toml").write_text(
+            "[tools]\n", encoding="utf-8"
+        )
+        for sub in ("snapshot", "restart", "stop", "start", "verify", "self"):
+            (
+                fake_repo
+                / "unix"
+                / "home"
+                / ".config"
+                / "mise"
+                / "tasks"
+                / "roll"
+                / sub
+            ).write_text("#!/bin/sh\n", encoding="utf-8")
+        mise_link = home / ".config" / "mise"
+        mise_link.parent.mkdir(parents=True)
+        mise_link.symlink_to(fake_repo / "unix" / "home" / ".config" / "mise")
+        monkeypatch.setenv("HOME", str(home))
+
+        tasks_payload = [
+            {
+                "name": f"roll:{sub}",
+                "source": str(home / ".config" / "mise" / "tasks" / "roll" / sub),
+            }
+            for sub in ("snapshot", "restart", "stop", "start", "verify", "self")
+        ]
+
+        def fake_check_output(cmd, **kwargs):
+            if "ls" in cmd:
+                return "{}"
+            if "tasks" in cmd:
+                return json.dumps(tasks_payload)
+            if "dot" in cmd:
+                return "{}"
+            return ""
+
+        monkeypatch.setattr(doc_mod.subprocess, "check_output", fake_check_output)
+        errs, _ = doc_mod.check_host_option_a(fake_repo, strict_host=True)
+        assert not [e for e in errs if e.startswith("roll-ownership:")], errs

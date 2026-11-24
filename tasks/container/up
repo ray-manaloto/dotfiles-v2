@@ -136,6 +136,7 @@ run_phase2_bootstrap() {
 			--config-dir unix/home/.config/mise \
 			--only dotfiles,tools,task \
 			--force-dotfiles --yes
+		MISE_YES=1 mise -C /workspace deps uv
 	' bash "${repo_url}"
 }
 

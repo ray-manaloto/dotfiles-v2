@@ -20,7 +20,7 @@ _df_prepend_path() {
 	_df_old="${_df_old%:}"
 	PATH="${_df_new}${_df_old:+:${_df_old}}"
 }
-for _df_p in /opt/mise/shims /home/dev/.opencode/bin /home/dev/.local/bin; do
+for _df_p in /home/dev/.local/bin /home/dev/.opencode/bin /opt/mise/shims; do
 	_df_prepend_path "${_df_p}"
 done
 unset _df_p _df_new _df_old

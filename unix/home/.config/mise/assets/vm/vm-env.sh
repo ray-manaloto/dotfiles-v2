@@ -12,7 +12,7 @@ _df_prepend_path() {
 	_df_old="${_df_old%:}"
 	PATH="${_df_new}${_df_old:+:${_df_old}}"
 }
-for _df_p in /opt/homebrew/sbin /opt/homebrew/bin /usr/local/bin "${HOME}/.local/share/mise/shims" "${HOME}/.opencode/bin" "${HOME}/.local/bin"; do
+for _df_p in /opt/homebrew/sbin /opt/homebrew/bin /usr/local/bin "${HOME}/.local/bin" "${HOME}/.opencode/bin" "${HOME}/.local/share/mise/shims"; do
 	_df_prepend_path "${_df_p}"
 done
 unset _df_p _df_new _df_old

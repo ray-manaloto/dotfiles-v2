@@ -35,7 +35,7 @@ fi
 ref="$(resolve_ref)"
 
 tart exec -i "${VM_NAME}" env REF="${ref}" REPO_URL="${REPO_URL}" /bin/bash -euo pipefail <<'GUEST'
-export PATH="/opt/homebrew/sbin:/opt/homebrew/bin:/usr/local/bin:${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:${PATH}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
 git -C "${HOME}/dev/dotfiles-v2" fetch -q origin "${REF}"
 git -C "${HOME}/dev/dotfiles-v2" checkout -q -B "${REF}" "origin/${REF}"
 if [[ -e "${HOME}/.config/mise" && ! -L "${HOME}/.config/mise" ]]; then
@@ -49,4 +49,5 @@ export MISE_YES=1
   --from-dir "${HOME}/dev/dotfiles-v2" \
   --config-dir unix/home/.config/mise \
   --force-dotfiles --yes
+/usr/local/bin/mise -C "${HOME}/dev/dotfiles-v2" deps uv
 GUEST

@@ -135,7 +135,9 @@ check_container() {
 		return
 	fi
 
-	if ! "${dcmd[@]}" exec -w /workspace "${name}" mise doctor project >/dev/null; then
+	local doctor_out
+	if ! doctor_out="$("${dcmd[@]}" exec -w /workspace "${name}" mise doctor project 2>&1)"; then
+		printf '%s\n' "${doctor_out}" >&2
 		fail_row "${label}" "mise doctor project failed"
 		return
 	fi
@@ -301,7 +303,7 @@ check_vm() {
 
 	if ! out="$(
 		tart exec -i "${vm_name}" env SMOKE="${smoke}" ZCODE_SMOKE_MODEL="${ZCODE_SMOKE_MODEL:-}" /bin/bash -euo pipefail <<'GUEST'
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.local/share/mise/shims:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
 sm="$(uname -sm)"
 test "${sm}" = "Darwin arm64"

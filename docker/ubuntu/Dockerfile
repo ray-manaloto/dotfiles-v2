@@ -17,7 +17,7 @@ ENV container=docker \
     MISE_ENV=container \
     MISE_YES=1 \
     MISE_TRUSTED_CONFIG_PATHS=/workspace:/home/dev/.config/mise \
-    PATH=/home/dev/.local/bin:/home/dev/.opencode/bin:/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/opt/mise/shims:/home/dev/.opencode/bin:/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
