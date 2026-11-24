@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+#MISE description="Idempotently deploy and start pc Hub (Compose Caddy+Beszel+SearXNG+Valkey+socket-proxy, systemd board/agentsview/qmd, CLI-only codebase-memory-mcp, tailscale serve)"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--caddy-port <port>" default="8880" help="Loopback HTTP port for Caddy front door on pc"
+#USAGE flag "--beszel-email <email>" help="Optional initial Beszel user email matching Tailscale-User-Login"
+#USAGE flag "--mac-ssh <dest>" help="Optional Mac SSH destination for pc agentsview [[remote_hosts]] pull sync"
+#USAGE flag "--skip-systemd" help="Skip systemd --user unit installation/reload on pc"
+#USAGE flag "--dry-run" help="Validate configs and print planned remote steps without mutating pc"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+caddy_port="${usage_caddy_port:-8880}"
+beszel_email="${usage_beszel_email:-}"
+mac_ssh="${usage_mac_ssh:-}"
+skip_systemd="${usage_skip_systemd:-false}"
+dry_run="${usage_dry_run:-false}"
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} != /* ]]; then
+			common_dir="${repo_root}/${common_dir}"
+		fi
+		common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+if [[ ! -x ${venv_py} ]]; then
+	echo "hub:up: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+
+"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" validate --repo "${repo_root}"
+
+if [[ ${dry_run} == "true" ]]; then
+	printf 'DRY-RUN hub:up host=%s caddy_port=%s skip_systemd=%s\n' "${host}" "${caddy_port}" "${skip_systemd}"
+	printf '  1. Stage docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} to ~/.local/state/pc-hub/stack on %s\n' "${host}"
+	printf '  2. Ensure runtime secrets, @tobilu/qmd@2.9.0, agentsview, and CLI-only codebase-memory-mcp 0.12.1 on %s\n' "${host}"
+	printf '  3. Run docker compose up -d --remove-orphans (beszel 0.21.2, caddy 2.11.9-alpine, docker-socket-proxy POST=0, searxng, valkey)\n'
+	printf '  4. Install/enable systemd --user units (vercel-board, agentsview-hub, qmd-hub) and tailscale serve --bg http://127.0.0.1:%s\n' "${caddy_port}"
+	exit 0
+fi
+
+remote_home="$(ssh -o BatchMode=yes "${host}" 'printf "%s" "$HOME"')"
+ts_host="$(ssh -o BatchMode=yes "${host}" 'tailscale status --json | jq -er ".Self.DNSName // empty | sub(\"\\\\.$\"; \"\")"')"
+if [[ -z ${ts_host} ]]; then
+	echo "hub:up: failed to resolve Tailscale DNSName on ${host}" >&2
+	exit 1
+fi
+
+state_dir="${remote_home}/.local/state/pc-hub"
+stack_dir="${state_dir}/stack"
+
+ssh -o BatchMode=yes "${host}" "mkdir -p '${stack_dir}/searxng' '${state_dir}/beszel_data' '${state_dir}/beszel_agent_data' '${remote_home}/.config/board' '${remote_home}/.config/agentsview' '${remote_home}/.local/bin' '${remote_home}/.agentsview' && chmod 0700 '${state_dir}' '${remote_home}/.config/board' '${remote_home}/.config/agentsview'"
+tar -C "${repo_root}/docker/pc-hub" -cf - compose.yaml Caddyfile searxng/settings.yml | ssh -o BatchMode=yes "${host}" "tar -C '${stack_dir}' -xf -"
+
+# Mint/preserve runtime tokens and Beszel ed25519 keypair on pc (never leaves pc except explicit client sync).
+ssh -o BatchMode=yes "${host}" env STATE_DIR="${state_dir}" REMOTE_HOME="${remote_home}" /bin/bash -euo pipefail <<'REMOTE_SECRETS'
+umask 077
+secrets_file="${STATE_DIR}/hub-secrets.env"
+touch "${secrets_file}"
+chmod 0600 "${secrets_file}"
+
+ensure_hex_secret() {
+	local key="$1" bytes="$2" val
+	val="$(grep -E "^${key}=" "${secrets_file}" | head -n 1 | cut -d= -f2- || true)"
+	if [[ -z ${val} ]]; then
+		val="$(python3 -c 'import secrets, sys; print(secrets.token_hex(int(sys.argv[1])))' "${bytes}")"
+		printf '%s=%s\n' "${key}" "${val}" >>"${secrets_file}"
+	fi
+}
+
+ensure_hex_secret "BESZEL_TOKEN" 24
+ensure_hex_secret "SEARXNG_SECRET" 32
+
+key_priv="${STATE_DIR}/beszel-agent.key"
+key_pub="${STATE_DIR}/beszel-agent.pub"
+if [[ ! -s ${key_priv} || ! -s ${key_pub} ]]; then
+	rm -f "${key_priv}" "${key_pub}"
+	ssh-keygen -t ed25519 -N "" -C "beszel-pc-hub" -f "${key_priv}" >/dev/null
+	chmod 0600 "${key_priv}"
+	chmod 0644 "${key_pub}"
+fi
+
+if [[ ! -s "${REMOTE_HOME}/.config/board/agent-token" ]]; then
+	python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_hex(32))' >"${REMOTE_HOME}/.config/board/agent-token"
+	chmod 0600 "${REMOTE_HOME}/.config/board/agent-token"
+fi
+if [[ ! -s "${REMOTE_HOME}/.config/agentsview/server-token" ]]; then
+	python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))' >"${REMOTE_HOME}/.config/agentsview/server-token"
+	chmod 0600 "${REMOTE_HOME}/.config/agentsview/server-token"
+fi
+REMOTE_SECRETS
+
+beszel_token="$(ssh -o BatchMode=yes "${host}" "grep -E '^BESZEL_TOKEN=' '${state_dir}/hub-secrets.env' | head -n 1 | cut -d= -f2-")"
+searxng_secret="$(ssh -o BatchMode=yes "${host}" "grep -E '^SEARXNG_SECRET=' '${state_dir}/hub-secrets.env' | head -n 1 | cut -d= -f2-")"
+beszel_pub="$(ssh -o BatchMode=yes "${host}" "awk '{print \$1\" \"\$2}' '${state_dir}/beszel-agent.pub'")"
+
+"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' \
+	"${lib_dir}" render-env \
+	--ts-host "${ts_host}" \
+	--state-dir "${state_dir}" \
+	--beszel-public-key "${beszel_pub}" \
+	--beszel-token "${beszel_token}" \
+	--searxng-secret "${searxng_secret}" \
+	--beszel-user-email "${beszel_email}" \
+	--caddy-port "${caddy_port}" |
+	ssh -o BatchMode=yes "${host}" "umask 077 && cat >'${state_dir}/.env'"
+
+# Install/verify CLI-only codebase-memory-mcp 0.12.1 (zero HTTP exposure) + @tobilu/qmd 2.9.0 + agentsview on pc.
+ssh -o BatchMode=yes "${host}" env REMOTE_HOME="${remote_home}" MAC_SSH="${mac_ssh}" /bin/bash -euo pipefail <<'REMOTE_BINS'
+cbm_ver="0.12.1"
+cbm_sha="8453015145f072c1b9b019cbdd02cea8cc6f18cc5e116036dd20992631c638c7"
+cbm_bin="${REMOTE_HOME}/.local/bin/codebase-memory-mcp"
+if [[ ! -x ${cbm_bin} ]] || ! "${cbm_bin}" --version 2>/dev/null | grep -Fq "${cbm_ver}"; then
+	tmp_dir="$(mktemp -d)"
+	trap 'rm -rf "${tmp_dir}"' EXIT
+	curl -fsSLo "${tmp_dir}/cbm.tar.gz" "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${cbm_ver}/codebase-memory-mcp-linux-amd64.tar.gz"
+	printf '%s  %s\n' "${cbm_sha}" "${tmp_dir}/cbm.tar.gz" | sha256sum -c - >/dev/null
+	tar -C "${tmp_dir}" -xzf "${tmp_dir}/cbm.tar.gz"
+	found_bin="$(find "${tmp_dir}" -type f -name codebase-memory-mcp | head -n 1)"
+	install -m 0755 "${found_bin}" "${cbm_bin}"
+fi
+
+qmd_prefix="${REMOTE_HOME}/.local/share/pc-hub/qmd"
+qmd_bin="${qmd_prefix}/node_modules/.bin/qmd"
+if [[ ! -x ${qmd_bin} ]] || ! "${qmd_bin}" --version 2>/dev/null | grep -Fq "2.9.0"; then
+	mkdir -p "${qmd_prefix}"
+	npm install --no-audit --no-fund --prefix "${qmd_prefix}" "@tobilu/qmd@2.9.0" >/dev/null
+fi
+ln -sfn "${qmd_bin}" "${REMOTE_HOME}/.local/bin/qmd"
+
+if ! command -v agentsview >/dev/null 2>&1 && [[ ! -x "${REMOTE_HOME}/.local/share/mise/shims/agentsview" ]]; then
+	MISE_YES=1 mise -C "${REMOTE_HOME}" install "github:kenn-io/agentsview@0.48.0" >/dev/null
+fi
+if ! command -v vb >/dev/null 2>&1 && [[ ! -x "${REMOTE_HOME}/.local/share/mise/shims/vb" ]]; then
+	MISE_YES=1 mise -C "${REMOTE_HOME}" install "npm:@vercel/board@0.56.1" >/dev/null
+fi
+
+av_tok="$(tr -d '\r\n' <"${REMOTE_HOME}/.config/agentsview/server-token")"
+python3 - "${REMOTE_HOME}/.agentsview/config.toml" "${av_tok}" "${MAC_SSH:-}" <<'PY'
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1])
+token = sys.argv[2]
+mac_ssh = sys.argv[3].strip()
+lines = cfg_path.read_text(encoding="utf-8").splitlines() if cfg_path.is_file() else []
+out = [line for line in lines if not line.startswith(("auth_token", "require_auth", "host "))]
+out.insert(0, f'auth_token = "{token}"')
+out.insert(1, "require_auth = true")
+text = "\n".join(out).rstrip() + "\n"
+if mac_ssh and f'destination = "{mac_ssh}"' not in text:
+    text += (
+        "\n[[remote_hosts]]\n"
+        'host = "mac"\n'
+        'transport = "ssh"\n'
+        f'destination = "{mac_ssh}"\n'
+        'interval = "5m"\n'
+    )
+cfg_path.write_text(text, encoding="utf-8")
+cfg_path.chmod(0o600)
+PY
+REMOTE_BINS
+
+ssh -o BatchMode=yes "${host}" "docker compose -f '${stack_dir}/compose.yaml' --env-file '${state_dir}/.env' up -d --remove-orphans"
+
+if [[ ${skip_systemd} != "true" ]]; then
+	node_bin="$(ssh -o BatchMode=yes "${host}" 'command -v node || command -v /usr/bin/node')"
+	av_bin="$(ssh -o BatchMode=yes "${host}" 'command -v agentsview || printf "%s/.local/share/mise/shims/agentsview" "$HOME"')"
+	qmd_bin="${remote_home}/.local/bin/qmd"
+	board_mjs="${remote_home}/.config/mise/assets/board/server.mjs"
+	if ! ssh -o BatchMode=yes "${host}" "test -f '${board_mjs}'"; then
+		board_mjs="${state_dir}/board/server.mjs"
+		ssh -o BatchMode=yes "${host}" "mkdir -p '${state_dir}/board'"
+		tar -C "${repo_root}/unix/home/.config/mise/assets/board" -cf - server.mjs | ssh -o BatchMode=yes "${host}" "tar -C '${state_dir}/board' -xf -"
+	fi
+	units_dir_tmp="$(mktemp -d)"
+	trap 'rm -rf "${units_dir_tmp}"' EXIT
+	"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' \
+		"${lib_dir}" render-systemd \
+		--home-dir "${remote_home}" \
+		--ts-host "${ts_host}" \
+		--node-bin "${node_bin}" \
+		--agentsview-bin "${av_bin}" \
+		--qmd-bin "${qmd_bin}" \
+		--board-server-mjs "${board_mjs}" \
+		--out-dir "${units_dir_tmp}"
+	ssh -o BatchMode=yes "${host}" "mkdir -p '${remote_home}/.config/systemd/user'"
+	tar -C "${units_dir_tmp}" -cf - . | ssh -o BatchMode=yes "${host}" "tar -C '${remote_home}/.config/systemd/user' -xf -"
+	ssh -o BatchMode=yes "${host}" 'systemctl --user daemon-reload && systemctl --user enable --now dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service && systemctl --user restart dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service'
+fi
+
+if ! ssh -o BatchMode=yes "${host}" "tailscale serve --bg 'http://127.0.0.1:${caddy_port}'" >/dev/null 2>&1; then
+	echo "hub:up: tailscale serve failed; run once on ${host}: sudo tailscale set --operator=\$(whoami)" >&2
+	exit 1
+fi
+
+printf 'pc Hub up: https://%s\n' "${ts_host}"
+printf '  Board UI/API: https://%s/ (API /api/board)\n' "${ts_host}"
+printf '  Beszel Hub:   https://%s/beszel/\n' "${ts_host}"
+printf '  AgentsView:   https://%s/agentsview/\n' "${ts_host}"
+printf '  SearXNG:      https://%s/searxng/\n' "${ts_host}"
+printf '  QMD HTTP:     https://%s/qmd/\n' "${ts_host}"
+printf '  CBM CLI-only: ssh %s codebase-memory-mcp cli --help\n' "${host}"

@@ -108,6 +108,9 @@ XDG_STATE_HOME = "{{ xdg_state_home }}"
 # before reloading updated config.toml for its final auto_sync_skills pass.
 postinstall = [{ task = "bootstrap:skills" }, { task = "host:harden-bins" }]
 
+[wrappers.agentsview]
+command = "{{env.HOME}}/.local/bin/agentsview"
+
 [wrappers.board]
 command = "{{env.HOME}}/.local/bin/board"
 
@@ -238,6 +241,7 @@ exclude = ["*"]
 	command = test \"${HK:-1}\" = \"0\" || \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" x hk -- hk run prepare-commit-msg --from-hook
 	event = prepare-commit-msg
 ''' }
+"~/.local/bin/agentsview" = { source = "assets/agentsview/agentsview-wrapper.sh", main_checkout = true }
 "~/.local/bin/board" = { source = "assets/board/vb-proxy-wrapper.sh", main_checkout = true }
 "~/.local/bin/vb" = { source = "assets/board/vb-proxy-wrapper.sh", main_checkout = true }
 "~/.zcode/AGENTS.md" = { source = "assets/agents/zcode-AGENTS.md.tera", mode = "template", depends = [
@@ -331,6 +335,9 @@ mode = "0700"
 mode = "0700"
 
 [bootstrap.directories."~/.hermes"]
+mode = "0700"
+
+[bootstrap.directories."~/.config/agentsview"]
 mode = "0700"
 
 [bootstrap.directories."~/.config/board"]

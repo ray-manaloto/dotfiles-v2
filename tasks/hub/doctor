@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#MISE description="Verify pc Hub security invariants, zero OTel collectors, zero codebase-memory-mcp HTTP exposure, and Beszel/Caddy auth routing"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--offline" help="Run offline committed config/Caddy/Compose invariant checks only"
+#USAGE flag "--json" help="Emit JSON output"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+offline="${usage_offline:-false}"
+json_out="${usage_json:-false}"
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} != /* ]]; then
+			common_dir="${repo_root}/${common_dir}"
+		fi
+		common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+if [[ ! -x ${venv_py} ]]; then
+	echo "hub:doctor: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+
+if [[ ${offline} == "true" ]]; then
+	args=(validate --repo "${repo_root}")
+	[[ ${json_out} == "true" ]] && args+=(--json)
+	exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"
+fi
+
+rc=0
+"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" validate --repo "${repo_root}" >/dev/null || rc=$?
+
+# Verify live pc invariants: zero OTel containers, zero codebase-memory-mcp HTTP routes/ports, Beszel Caddy auth split.
+live_check="$(
+	ssh -o BatchMode=yes -o ConnectTimeout=5 "${host}" /bin/bash -euo pipefail <<'REMOTE_DOC'
+python3 - <<'PY'
+import json
+import subprocess
+import urllib.error
+import urllib.request
+
+errs = []
+ps_out = subprocess.check_output(["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"], text=True)
+for line in ps_out.splitlines():
+    low = line.lower()
+    for bad in ("alloy", "otelcol", "opentelemetry", "grafana", "victoriametrics", "tempo", "loki", "codebase-memory-mcp"):
+        if bad in low:
+            errs.append(f"forbidden running container: {line}")
+
+# Confirm /beszel/ rejects requests missing Tailscale-User-Login (401), while /beszel/api/beszel/agent-connect is NOT blocked by 401.
+try:
+    urllib.request.urlopen("http://127.0.0.1:8880/beszel/", timeout=3)
+    errs.append("Caddy /beszel/ unexpectedly allowed request without Tailscale-User-Login")
+except urllib.error.HTTPError as exc:
+    if exc.code != 401:
+        errs.append(f"Caddy /beszel/ expected 401 without header, got {exc.code}")
+except Exception as exc:
+    errs.append(f"Caddy /beszel/ probe failed: {exc}")
+
+try:
+    urllib.request.urlopen("http://127.0.0.1:8880/beszel/api/beszel/agent-connect", timeout=3)
+except urllib.error.HTTPError as exc:
+    if exc.code == 401:
+        errs.append("Caddy /beszel/api/beszel/agent-connect blocked with 401 (must exclude agent-connect from header auth)")
+except Exception as exc:
+    errs.append(f"Caddy /beszel/api/beszel/agent-connect probe failed: {exc}")
+
+ts_srv = subprocess.run(["tailscale", "serve", "status", "--json"], capture_output=True, text=True, check=False)
+if ts_srv.returncode != 0 or "8880" not in ts_srv.stdout:
+    errs.append("tailscale serve is missing 127.0.0.1:8880 front-door mapping")
+
+print(json.dumps({"ok": not errs, "errors": errs}))
+PY
+REMOTE_DOC
+)"
+
+live_ok="$(printf '%s' "${live_check}" | jq -r '.ok')"
+if [[ ${live_ok} != "true" ]]; then
+	rc=1
+fi
+
+if [[ ${json_out} == "true" ]]; then
+	printf '%s\n' "${live_check}"
+else
+	if [[ ${rc} -eq 0 ]]; then
+		echo "PASS  hub:doctor (${host}: Caddy auth split, zero OTel, zero CBM HTTP exposure verified)"
+	else
+		printf 'FAIL  hub:doctor: %s\n' "${live_check}" >&2
+	fi
+fi
+exit "${rc}"

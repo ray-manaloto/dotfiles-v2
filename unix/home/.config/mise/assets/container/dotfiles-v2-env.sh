@@ -33,3 +33,7 @@ if [ -r "${HOME}/.config/board/env.sh" ]; then
 	# shellcheck source=/dev/null
 	. "${HOME}/.config/board/env.sh"
 fi
+if [ -r "${HOME}/.config/agentsview/env.sh" ]; then
+	# shellcheck source=/dev/null
+	. "${HOME}/.config/agentsview/env.sh"
+fi

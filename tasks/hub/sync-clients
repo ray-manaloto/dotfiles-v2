@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+#MISE description="Sync pc Hub agentsview (and optional board) client env/token files across host, pc, mac, and vm"
+#USAGE flag "--target <target>" default="all" help="Environment to sync: host, pc, mac, vm, or all"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--include-board" help="Also sync pc Hub BOARD_URL + 0600 agent-token to targets"
+#USAGE flag "--dry-run" help="Print planned client env sync targets without modifying them"
+set -euo pipefail
+
+target="${usage_target:-all}"
+host="${usage_host:-pc}"
+include_board="${usage_include_board:-false}"
+dry_run="${usage_dry_run:-false}"
+container_name="dotfiles-v2"
+vm_name="dotfiles-v2-macos"
+
+if [[ ${dry_run} == "true" ]]; then
+	printf 'DRY-RUN hub:sync-clients target=%s host=%s include_board=%s\n' "${target}" "${host}" "${include_board}"
+	exit 0
+fi
+
+ts_host="$(ssh -o BatchMode=yes "${host}" 'tailscale status --json | jq -er ".Self.DNSName // empty | sub(\"\\\\.$\"; \"\")"')"
+if [[ -z ${ts_host} ]]; then
+	echo "hub:sync-clients: failed to resolve Tailscale DNSName on ${host}" >&2
+	exit 1
+fi
+av_url="https://${ts_host}/agentsview"
+av_token="$(ssh -o BatchMode=yes "${host}" 'tr -d "\r\n" <"$HOME/.config/agentsview/server-token"')"
+
+board_url="https://${ts_host}/api/board"
+board_token=""
+if [[ ${include_board} == "true" ]]; then
+	board_token="$(ssh -o BatchMode=yes "${host}" 'tr -d "\r\n" <"$HOME/.config/board/agent-token"')"
+fi
+
+sync_local_host() {
+	(
+		umask 077
+		mkdir -p "${HOME}/.config/agentsview"
+		chmod 0700 "${HOME}/.config/agentsview"
+		printf '%s\n' "${av_token}" >"${HOME}/.config/agentsview/server-token"
+		chmod 0600 "${HOME}/.config/agentsview/server-token"
+		cat >"${HOME}/.config/agentsview/env.sh" <<EOF
+# shellcheck shell=sh
+export AGENTSVIEW_SERVER="${av_url}"
+export AGENTSVIEW_SERVER_TOKEN_FILE="\${HOME}/.config/agentsview/server-token"
+export AGENTSVIEW_SKILLS_SERVER="${av_url}"
+export AGENTSVIEW_SKILLS_SERVER_TOKEN_FILE="\${HOME}/.config/agentsview/server-token"
+export AGENTSVIEW_NO_DAEMON=1
+EOF
+		chmod 0600 "${HOME}/.config/agentsview/env.sh"
+		if [[ ${include_board} == "true" ]]; then
+			mkdir -p "${HOME}/.config/board"
+			chmod 0700 "${HOME}/.config/board"
+			printf '%s\n' "${board_token}" >"${HOME}/.config/board/agent-token"
+			chmod 0600 "${HOME}/.config/board/agent-token"
+			cat >"${HOME}/.config/board/env.sh" <<EOF
+# shellcheck shell=sh
+export BOARD_URL="${board_url}"
+if [ -r "\${HOME}/.config/board/agent-token" ]; then
+	BOARD_TOKEN="\$(tr -d '\r\n' <"\${HOME}/.config/board/agent-token")"
+	export BOARD_TOKEN
+fi
+EOF
+			chmod 0600 "${HOME}/.config/board/env.sh"
+		fi
+	)
+	echo "OK    host (${av_url})"
+}
+
+sync_container() {
+	local label="$1"
+	shift
+	local -a dcmd=("$@")
+	local running
+	running="$("${dcmd[@]}" container inspect --format '{{.State.Running}}' "${container_name}" 2>/dev/null || echo false)"
+	if [[ ${running} != "true" ]]; then
+		echo "SKIP  ${label} (container ${container_name} is not running)"
+		return 0
+	fi
+	# shellcheck disable=SC2016
+	printf '%s\n' "${av_token}" | "${dcmd[@]}" exec -i "${container_name}" env AV_URL="${av_url}" /bin/bash -euo pipefail -c '
+		umask 077
+		mkdir -p "${HOME}/.config/agentsview"
+		chmod 0700 "${HOME}/.config/agentsview"
+		cat >"${HOME}/.config/agentsview/server-token"
+		chmod 0600 "${HOME}/.config/agentsview/server-token"
+		cat >"${HOME}/.config/agentsview/env.sh" <<EOF
+# shellcheck shell=sh
+export AGENTSVIEW_SERVER="${AV_URL}"
+export AGENTSVIEW_SERVER_TOKEN_FILE="\${HOME}/.config/agentsview/server-token"
+export AGENTSVIEW_SKILLS_SERVER="${AV_URL}"
+export AGENTSVIEW_SKILLS_SERVER_TOKEN_FILE="\${HOME}/.config/agentsview/server-token"
+export AGENTSVIEW_NO_DAEMON=1
+EOF
+		chmod 0600 "${HOME}/.config/agentsview/env.sh"
+	'
+	if [[ ${include_board} == "true" ]]; then
+		# shellcheck disable=SC2016
+		printf '%s\n' "${board_token}" | "${dcmd[@]}" exec -i "${container_name}" env BOARD_URL="${board_url}" /bin/bash -euo pipefail -c '
+			umask 077
+			mkdir -p "${HOME}/.config/board"
+			chmod 0700 "${HOME}/.config/board"
+			cat >"${HOME}/.config/board/agent-token"
+			chmod 0600 "${HOME}/.config/board/agent-token"
+			cat >"${HOME}/.config/board/env.sh" <<EOF
+# shellcheck shell=sh
+export BOARD_URL="${BOARD_URL}"
+if [ -r "\${HOME}/.config/board/agent-token" ]; then
+	BOARD_TOKEN="\$(tr -d "\r\n" <"\${HOME}/.config/board/agent-token")"
+	export BOARD_TOKEN
+fi
+EOF
+			chmod 0600 "${HOME}/.config/board/env.sh"
+		'
+	fi
+	echo "OK    ${label} (${av_url})"
+}
+
+sync_vm() {
+	if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+		echo "SKIP  vm (requires macOS with tart)"
+		return 0
+	fi
+	if ! tart exec "${vm_name}" true >/dev/null 2>&1; then
+		echo "SKIP  vm (Tart VM ${vm_name} is not running)"
+		return 0
+	fi
+	# shellcheck disable=SC2016
+	printf '%s\n' "${av_token}" | tart exec -i "${vm_name}" env AV_URL="${av_url}" /bin/bash -euo pipefail -c '
+		umask 077
+		mkdir -p "${HOME}/.config/agentsview"
+		chmod 0700 "${HOME}/.config/agentsview"
+		cat >"${HOME}/.config/agentsview/server-token"
+		chmod 0600 "${HOME}/.config/agentsview/server-token"
+		cat >"${HOME}/.config/agentsview/env.sh" <<EOF
+# shellcheck shell=sh
+export AGENTSVIEW_SERVER="${AV_URL}"
+export AGENTSVIEW_SERVER_TOKEN_FILE="\${HOME}/.config/agentsview/server-token"
+export AGENTSVIEW_SKILLS_SERVER="${AV_URL}"
+export AGENTSVIEW_SKILLS_SERVER_TOKEN_FILE="\${HOME}/.config/agentsview/server-token"
+export AGENTSVIEW_NO_DAEMON=1
+EOF
+		chmod 0600 "${HOME}/.config/agentsview/env.sh"
+	'
+	echo "OK    vm (${av_url})"
+}
+
+case "${target}" in
+host) sync_local_host ;;
+pc) sync_container "pc" env "DOCKER_HOST=ssh://${host}" docker ;;
+mac) sync_container "mac" env -u DOCKER_HOST docker --context desktop-linux ;;
+vm) sync_vm ;;
+all)
+	sync_local_host
+	sync_container "pc" env "DOCKER_HOST=ssh://${host}" docker
+	sync_container "mac" env -u DOCKER_HOST docker --context desktop-linux
+	sync_vm
+	;;
+*)
+	echo "unknown target '${target}' (expected host, pc, mac, vm, or all)" >&2
+	exit 1
+	;;
+esac

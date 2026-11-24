@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/pc_hub.schema.json",
+  "title": "PcHubModels",
+  "description": "Schema-first models, enums, and typed responses for the pc Hub stack, host-only beszel-agent, and agentsview pc offload.",
+  "$defs": {
+    "PcHubServiceName": {
+      "type": "string",
+      "description": "Logical service or binary managed by the pc Hub lifecycle.",
+      "enum": [
+        "caddy",
+        "beszel",
+        "beszel-agent",
+        "docker-socket-proxy",
+        "valkey",
+        "searxng",
+        "vercel-board",
+        "agentsview-hub",
+        "qmd",
+        "codebase-memory-mcp",
+        "tailscale-serve"
+      ]
+    },
+    "PcHubTarget": {
+      "type": "string",
+      "description": "Host or VM target eligible for beszel-agent or client env sync (never dev containers for beszel-agent).",
+      "enum": ["host", "pc", "mac", "vm", "all"]
+    },
+    "PcHubCheckState": {
+      "type": "string",
+      "description": "Closed status for a single hub service or invariant check.",
+      "enum": ["OK", "WARN", "FAIL", "SKIPPED"]
+    },
+    "PcHubErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for pc_hub operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_VALIDATION_FAILED",
+        "ERR_SSH_FAILED",
+        "ERR_COMPOSE_FAILED",
+        "ERR_TAILSCALE_UNAVAILABLE",
+        "ERR_CHECKSUM_MISMATCH",
+        "ERR_CONTAINER_FORBIDDEN"
+      ]
+    },
+    "PcHubReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for pc_hub operations.",
+      "enum": ["RET_OK", "RET_DRY_RUN", "RET_NOOP", "RET_PARTIAL", "RET_SKIPPED"]
+    },
+    "PcHubErrorEntry": {
+      "type": "object",
+      "description": "Typed pc_hub domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/PcHubErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "PcHubReturnEntry": {
+      "type": "object",
+      "description": "Typed pc_hub domain return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/PcHubReturnCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "PcHubServiceStatus": {
+      "type": "object",
+      "description": "Health and exposure status for one pc Hub service or tool.",
+      "additionalProperties": false,
+      "required": ["service", "state", "bind_target", "exposed_http"],
+      "properties": {
+        "service": {
+          "$ref": "#/$defs/PcHubServiceName"
+        },
+        "state": {
+          "$ref": "#/$defs/PcHubCheckState"
+        },
+        "bind_target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exposed_http": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "PcHubPortMap": {
+      "type": "object",
+      "description": "Loopback port allocation table avoiding pc occupied ports (8080, 8081, 44589, 3142).",
+      "additionalProperties": false,
+      "required": [
+        "caddy",
+        "beszel",
+        "beszel_agent",
+        "docker_socket_proxy",
+        "searxng",
+        "vercel_board",
+        "agentsview_hub",
+        "qmd"
+      ],
+      "properties": {
+        "caddy": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "beszel": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "beszel_agent": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "docker_socket_proxy": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "searxng": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "vercel_board": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "agentsview_hub": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "qmd": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+      }
+    },
+    "PcHubValidationOutcome": {
+      "type": "object",
+      "description": "Offline validation outcome for docker/pc-hub, docker/mac-agent, and Caddyfile invariants.",
+      "additionalProperties": false,
+      "required": [
+        "ok",
+        "checked_files",
+        "violations",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "checked_files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "violations": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "timestamp": { "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp" },
+        "timestamp_unix_ns": { "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs" },
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PcHubErrorEntry" },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PcHubReturnEntry" },
+          "default": []
+        }
+      }
+    },
+    "PcHubStatusResponse": {
+      "type": "object",
+      "description": "Typed status/doctor response for pc Hub services and security invariants.",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "rc",
+        "dry_run",
+        "ssh_host",
+        "tailscale_host",
+        "ports",
+        "services",
+        "violations",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "rc": { "type": "integer", "minimum": 0 },
+        "dry_run": { "type": "boolean" },
+        "ssh_host": { "type": "string", "minLength": 1 },
+        "tailscale_host": { "type": ["string", "null"], "default": null },
+        "ports": { "$ref": "#/$defs/PcHubPortMap" },
+        "services": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PcHubServiceStatus" },
+          "default": []
+        },
+        "violations": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "timestamp": { "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp" },
+        "timestamp_unix_ns": { "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs" },
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PcHubErrorEntry" },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PcHubReturnEntry" },
+          "default": []
+        }
+      }
+    },
+    "AgentsViewOffloadOutcome": {
+      "type": "object",
+      "description": "Typed outcome for Mac agentsview-native offload and client routing sync.",
+      "additionalProperties": false,
+      "required": [
+        "ok",
+        "dry_run",
+        "server_url",
+        "launchagent_disabled",
+        "skills_refreshed",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "dry_run": { "type": "boolean" },
+        "server_url": { "type": "string", "minLength": 1 },
+        "launchagent_disabled": { "type": "boolean" },
+        "skills_refreshed": { "type": "boolean" },
+        "timestamp": { "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp" },
+        "timestamp_unix_ns": { "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs" },
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PcHubErrorEntry" },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PcHubReturnEntry" },
+          "default": []
+        }
+      }
+    }
+  }
+}

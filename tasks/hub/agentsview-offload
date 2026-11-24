@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#MISE description="Offload Mac agentsview SQLite/indexer/web load onto pc Hub while preserving agentsview CLI and skill-check"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--server-url <url>" help="Override AgentsView Hub URL (default: https://<pc-ts-host>/agentsview)"
+#USAGE flag "--apply" help="Write ~/.config/agentsview/{server-token,env.sh}, disable Mac LaunchAgent, and refresh skills"
+#USAGE flag "--no-refresh-skills" help="Skip refreshing agentsview-finding-history skill after offload"
+#USAGE flag "--json" help="Emit AgentsViewOffloadOutcome JSON"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+server_url="${usage_server_url:-}"
+apply="${usage_apply:-false}"
+no_refresh="${usage_no_refresh_skills:-false}"
+json_out="${usage_json:-false}"
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} != /* ]]; then
+			common_dir="${repo_root}/${common_dir}"
+		fi
+		common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+if [[ ! -x ${venv_py} ]]; then
+	echo "hub:agentsview-offload: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+
+tok_args=()
+if [[ -z ${server_url} ]]; then
+	if [[ ${apply} == "true" ]]; then
+		ts_host="$(ssh -o BatchMode=yes "${host}" 'tailscale status --json | jq -er ".Self.DNSName // empty | sub(\"\\\\.$\"; \"\")"')"
+		server_url="https://${ts_host}/agentsview"
+		tok="$(ssh -o BatchMode=yes "${host}" 'tr -d "\r\n" <"$HOME/.config/agentsview/server-token"')"
+		tok_args=(--token "${tok}")
+	else
+		server_url="https://${host}.tailnet.invalid/agentsview"
+	fi
+fi
+
+args=(
+	agentsview-offload
+	--server-url "${server_url}"
+	--bootstrap-skills-task "${repo_root}/unix/home/.config/mise/tasks/bootstrap/skills"
+)
+if ((${#tok_args[@]} > 0)); then
+	args+=("${tok_args[@]}")
+fi
+[[ ${apply} == "true" ]] && args+=(--apply)
+[[ ${no_refresh} == "true" ]] && args+=(--no-refresh-skills)
+[[ ${json_out} == "true" ]] && args+=(--json)
+
+exec "${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}" "${args[@]}"

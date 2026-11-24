@@ -3,3 +3,6 @@
 if [[ -r "${HOME}/.config/board/env.sh" ]]; then
 	. "${HOME}/.config/board/env.sh"
 fi
+if [[ -r "${HOME}/.config/agentsview/env.sh" ]]; then
+	. "${HOME}/.config/agentsview/env.sh"
+fi

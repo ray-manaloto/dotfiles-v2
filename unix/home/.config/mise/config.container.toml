@@ -61,6 +61,11 @@ owner = "dev"
 group = "dev"
 mode = "0700"
 
+[bootstrap.directories."/home/dev/.config/agentsview"]
+owner = "dev"
+group = "dev"
+mode = "0700"
+
 [bootstrap.directories."/home/dev/.config/board"]
 owner = "dev"
 group = "dev"

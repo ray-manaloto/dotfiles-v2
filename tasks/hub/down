@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#MISE description="Stop pc Hub Compose stack and user systemd services (and optionally disable tailscale serve)"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--unserve" help="Also disable tailscale serve HTTPS proxy on pc"
+#USAGE flag "--dry-run" help="Print planned stop commands without executing them"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+unserve="${usage_unserve:-false}"
+dry_run="${usage_dry_run:-false}"
+
+if [[ ${dry_run} == "true" ]]; then
+	printf 'DRY-RUN hub:down host=%s unserve=%s\n' "${host}" "${unserve}"
+	exit 0
+fi
+
+remote_home="$(ssh -o BatchMode=yes "${host}" 'printf "%s" "$HOME"')"
+state_dir="${remote_home}/.local/state/pc-hub"
+
+ssh -o BatchMode=yes "${host}" 'systemctl --user stop dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service 2>/dev/null || true'
+ssh -o BatchMode=yes "${host}" "if [ -f '${state_dir}/stack/compose.yaml' ]; then docker compose -f '${state_dir}/stack/compose.yaml' --env-file '${state_dir}/.env' down; fi"
+
+if [[ ${unserve} == "true" ]]; then
+	ssh -o BatchMode=yes "${host}" 'tailscale serve --https=443 off || true'
+fi

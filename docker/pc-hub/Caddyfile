@@ -1,0 +1,87 @@
+{
+	admin off
+	auto_https off
+}
+
+http://:{$PC_HUB_CADDY_PORT:8880} {
+	bind 127.0.0.1
+	encode gzip zstd
+
+	handle /healthz {
+		header Content-Type application/json
+		header Cache-Control no-store
+		respond `{"ok":true}` 200
+	}
+
+	# Beszel v0.21.2 Hub: exclude /api/beszel/agent-connect* from Tailscale-User-Login auth
+	# so WebSocket agent connections (token + ed25519 signature) succeed cleanly.
+	handle_path /beszel* {
+		request_body {
+			max_size 10MB
+		}
+		@beszel_need_ts_auth {
+			not path /api/beszel/agent-connect*
+			not header Tailscale-User-Login *@*
+		}
+
+		handle /api/beszel/agent-connect* {
+			reverse_proxy 127.0.0.1:8090 {
+				header_up -Tailscale-User-Login
+				transport http {
+					read_timeout 360s
+				}
+			}
+		}
+
+		handle @beszel_need_ts_auth {
+			respond "Tailscale-User-Login header required" 401
+		}
+
+		handle {
+			reverse_proxy 127.0.0.1:8090 {
+				transport http {
+					read_timeout 360s
+				}
+			}
+		}
+	}
+
+	# AgentsView server (API uses Bearer token auth; browser UI uses Tailscale identity).
+	handle /agentsview* {
+		@av_need_ts_auth {
+			not header Tailscale-User-Login *@*
+			not header Authorization Bearer*
+		}
+		respond @av_need_ts_auth "Authentication required" 401
+		reverse_proxy 127.0.0.1:8082
+	}
+
+	# SearXNG search engine with JSON format enabled.
+	handle_path /searxng* {
+		@sx_need_ts_auth {
+			not header Tailscale-User-Login *@*
+		}
+		respond @sx_need_ts_auth "Tailscale-User-Login header required" 401
+		reverse_proxy 127.0.0.1:8888 {
+			header_up X-Script-Name /searxng
+		}
+	}
+
+	# @tobilu/qmd v2.9.0 HTTP API (/query, /metadata, /health, /mcp) behind Tailscale auth.
+	handle_path /qmd* {
+		@qmd_need_ts_auth {
+			not header Tailscale-User-Login *@*
+		}
+		respond @qmd_need_ts_auth "Tailscale-User-Login header required" 401
+		reverse_proxy 127.0.0.1:8181 {
+			header_up Host 127.0.0.1:8181
+			header_up -Origin
+		}
+	}
+
+	# @vercel/board Web Inspector (/) and API (/api/board).
+	# Note: codebase-memory-mcp has ZERO Caddy / HTTP exposure (SSH CLI only).
+	handle {
+		reverse_proxy 127.0.0.1:4100
+	}
+}

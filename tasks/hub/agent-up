@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+#MISE description="Install/start host-only beszel-agent + docker-socket-proxy on mac/pc/vm (never inside dev containers)"
+#USAGE flag "--target <target>" default="mac" help="Target environment: mac, pc, vm, or all"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--hub-url <url>" help="Override Beszel Hub URL (default: https://<pc-ts-host>/beszel)"
+#USAGE flag "--public-key <key>" help="Beszel SSH public key (default: read from pc state)"
+#USAGE flag "--token-file <path>" help="Beszel agent token file path"
+#USAGE flag "--dry-run" help="Print planned agent actions without modifying host or VM"
+set -euo pipefail
+
+if [[ ${container:-} == "docker" ]]; then
+	echo "hub:agent-up: REFUSED inside dev container (beszel-agent must stay 0 MB in dev containers)" >&2
+	exit 1
+fi
+
+target="${usage_target:-mac}"
+host="${usage_host:-pc}"
+hub_url="${usage_hub_url:-}"
+public_key="${usage_public_key:-}"
+token_file="${usage_token_file:-${HOME}/.config/beszel/agent-token}"
+dry_run="${usage_dry_run:-false}"
+beszel_ver="0.21.2"
+vm_name="dotfiles-v2-macos"
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} != /* ]]; then
+			common_dir="${repo_root}/${common_dir}"
+		fi
+		common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+if [[ ! -x ${venv_py} ]]; then
+	echo "hub:agent-up: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+
+if [[ ${dry_run} == "true" ]]; then
+	printf 'DRY-RUN hub:agent-up target=%s host=%s beszel=%s\n' "${target}" "${host}" "${beszel_ver}"
+	printf '  - mac: brew install macmon + docker-socket-proxy (POST=0,CONTAINERS=1) + beszel-agent %s LaunchAgent (GPU_COLLECTOR=macmon)\n' "${beszel_ver}"
+	printf '  - pc:  handled by docker/pc-hub/compose.yaml (docker-socket-proxy + beszel-agent)\n'
+	printf '  - vm:  optional beszel-agent %s LaunchAgent with ALL_PROXY=socks5://127.0.0.1:1055\n' "${beszel_ver}"
+	exit 0
+fi
+
+resolve_hub_credentials() {
+	if [[ -z ${hub_url} ]]; then
+		local ts_host
+		ts_host="$(ssh -o BatchMode=yes "${host}" 'tailscale status --json | jq -er ".Self.DNSName // empty | sub(\"\\\\.$\"; \"\")"')"
+		hub_url="https://${ts_host}/beszel"
+	fi
+	if [[ -z ${public_key} ]]; then
+		public_key="$(ssh -o BatchMode=yes "${host}" 'awk "{print \$1\" \"\$2}" "$HOME/.local/state/pc-hub/beszel-agent.pub"')"
+	fi
+	if [[ ! -s ${token_file} ]]; then
+		mkdir -p "$(dirname "${token_file}")"
+		chmod 0700 "$(dirname "${token_file}")"
+		ssh -o BatchMode=yes "${host}" 'grep -E "^BESZEL_TOKEN=" "$HOME/.local/state/pc-hub/hub-secrets.env" | head -n 1 | cut -d= -f2-' >"${token_file}"
+		chmod 0600 "${token_file}"
+	fi
+}
+
+install_darwin_agent_binary() {
+	local dest="$1" tmp_dir checksums expected
+	if [[ -x ${dest} ]] && "${dest}" -v 2>/dev/null | grep -Fq "${beszel_ver}"; then
+		return 0
+	fi
+	tmp_dir="$(mktemp -d)"
+	trap 'rm -rf "${tmp_dir}"' RETURN
+	checksums="${tmp_dir}/checksums.txt"
+	curl -fsSLo "${checksums}" "https://github.com/henrygd/beszel/releases/download/v${beszel_ver}/beszel_${beszel_ver}_checksums.txt"
+	expected="$(awk '$2 == "beszel-agent_darwin_arm64.tar.gz" {print $1}' "${checksums}")"
+	if [[ -z ${expected} ]]; then
+		echo "hub:agent-up: missing checksum for beszel-agent_darwin_arm64.tar.gz" >&2
+		return 1
+	fi
+	curl -fsSLo "${tmp_dir}/agent.tar.gz" "https://github.com/henrygd/beszel/releases/download/v${beszel_ver}/beszel-agent_darwin_arm64.tar.gz"
+	printf '%s  %s\n' "${expected}" "${tmp_dir}/agent.tar.gz" | shasum -a 256 -c - >/dev/null
+	tar -C "${tmp_dir}" -xzf "${tmp_dir}/agent.tar.gz"
+	mkdir -p "$(dirname "${dest}")"
+	install -m 0755 "${tmp_dir}/beszel-agent" "${dest}"
+}
+
+up_mac() {
+	if [[ "$(uname -s)" != "Darwin" ]]; then
+		echo "hub:agent-up: target=mac requires macOS host" >&2
+		exit 1
+	fi
+	resolve_hub_credentials
+	if ! command -v macmon >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
+		brew install macmon </dev/null
+	fi
+	local agent_bin="${HOME}/.local/bin/beszel-agent"
+	install_darwin_agent_binary "${agent_bin}"
+
+	# Start read-only docker-socket-proxy on Docker Desktop (POST=0, CONTAINERS=1).
+	env -u DOCKER_HOST docker --context desktop-linux compose -f "${repo_root}/docker/mac-agent/compose.yaml" up -d --remove-orphans
+
+	local plist="${HOME}/Library/LaunchAgents/dev.mise.beszel-agent.plist"
+	mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs"
+	"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' \
+		"${lib_dir}" render-launchd \
+		--agent-bin "${agent_bin}" \
+		--hub-url "${hub_url}" \
+		--public-key "${public_key}" \
+		--token-file "${token_file}" \
+		--log-dir "${HOME}/Library/Logs" \
+		--mac-host >"${plist}"
+	chmod 0644 "${plist}"
+	local uid
+	uid="$(id -u)"
+	launchctl bootout "gui/${uid}/dev.mise.beszel-agent" >/dev/null 2>&1 || true
+	launchctl bootstrap "gui/${uid}" "${plist}"
+	launchctl kickstart -k "gui/${uid}/dev.mise.beszel-agent"
+	echo "OK    mac beszel-agent (GPU_COLLECTOR=macmon, docker-socket-proxy POST=0)"
+}
+
+up_pc() {
+	mise -C "${repo_root}" run hub:up --host "${host}" --skip-systemd
+	echo "OK    pc beszel-agent (Compose docker-socket-proxy POST=0)"
+}
+
+up_vm() {
+	if [[ "$(uname -s)" != "Darwin" ]] || ! command -v tart >/dev/null 2>&1; then
+		echo "hub:agent-up: target=vm requires macOS with tart" >&2
+		exit 1
+	fi
+	if ! tart exec "${vm_name}" true >/dev/null 2>&1; then
+		echo "SKIP  vm (Tart VM ${vm_name} is not running)"
+		return 0
+	fi
+	resolve_hub_credentials
+	local tok_val vm_home plist_tmp
+	tok_val="$(tr -d '\r\n' <"${token_file}")"
+	# shellcheck disable=SC2016
+	vm_home="$(tart exec "${vm_name}" /bin/bash -lc 'printf "%s" "$HOME"')"
+	plist_tmp="$(mktemp)"
+	trap 'rm -f "${plist_tmp}"' RETURN
+	"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' \
+		"${lib_dir}" render-launchd \
+		--agent-bin "${vm_home}/.local/bin/beszel-agent" \
+		--hub-url "${hub_url}" \
+		--public-key "${public_key}" \
+		--token-file "${vm_home}/.config/beszel/agent-token" \
+		--log-dir "${vm_home}/Library/Logs" \
+		--vm-socks-proxy "socks5://127.0.0.1:1055" \
+		--no-mac-host >"${plist_tmp}"
+
+	tart exec -i "${vm_name}" env BESZEL_VER="${beszel_ver}" BESZEL_TOK="${tok_val}" /bin/bash -euo pipefail <<'VM_UP'
+umask 077
+mkdir -p "${HOME}/.local/bin" "${HOME}/.config/beszel" "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs"
+printf '%s\n' "${BESZEL_TOK}" >"${HOME}/.config/beszel/agent-token"
+chmod 0600 "${HOME}/.config/beszel/agent-token"
+if [[ ! -x "${HOME}/.local/bin/beszel-agent" ]] || ! "${HOME}/.local/bin/beszel-agent" -v 2>/dev/null | grep -Fq "${BESZEL_VER}"; then
+	tmp_dir="$(mktemp -d)"
+	trap 'rm -rf "${tmp_dir}"' EXIT
+	curl -fsSLo "${tmp_dir}/checksums.txt" "https://github.com/henrygd/beszel/releases/download/v${BESZEL_VER}/beszel_${BESZEL_VER}_checksums.txt"
+	expected="$(awk '$2 == "beszel-agent_darwin_arm64.tar.gz" {print $1}' "${tmp_dir}/checksums.txt")"
+	curl -fsSLo "${tmp_dir}/agent.tar.gz" "https://github.com/henrygd/beszel/releases/download/v${BESZEL_VER}/beszel-agent_darwin_arm64.tar.gz"
+	printf '%s  %s\n' "${expected}" "${tmp_dir}/agent.tar.gz" | shasum -a 256 -c - >/dev/null
+	tar -C "${tmp_dir}" -xzf "${tmp_dir}/agent.tar.gz"
+	install -m 0755 "${tmp_dir}/beszel-agent" "${HOME}/.local/bin/beszel-agent"
+fi
+VM_UP
+	# shellcheck disable=SC2016
+	tart exec -i "${vm_name}" env VM_HOME="${vm_home}" /bin/bash -euo pipefail -c '
+		plist="${VM_HOME}/Library/LaunchAgents/dev.mise.beszel-agent.plist"
+		cat >"${plist}"
+		chmod 0644 "${plist}"
+		uid="$(id -u)"
+		launchctl bootout "gui/${uid}/dev.mise.beszel-agent" >/dev/null 2>&1 || true
+		launchctl bootstrap "gui/${uid}" "${plist}"
+		launchctl kickstart -k "gui/${uid}/dev.mise.beszel-agent"
+	' <"${plist_tmp}"
+	echo "OK    vm beszel-agent (ALL_PROXY=socks5://127.0.0.1:1055)"
+}
+
+case "${target}" in
+mac) up_mac ;;
+pc) up_pc ;;
+vm) up_vm ;;
+all)
+	up_pc
+	up_mac
+	up_vm
+	;;
+*)
+	echo "unknown target '${target}' (expected mac, pc, vm, or all)" >&2
+	exit 1
+	;;
+esac

@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+
+name: mac-beszel-agent-proxy
+
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:3.4@sha256:027f9fa5ee70be5836eeaa10ce889d7a83f34a8db16a7f412818b92997e0beab
+    container_name: mac-hub-docker-socket-proxy
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:2375:2375
+    environment:
+      POST: '0'
+      CONTAINERS: '1'
+      EVENTS: '1'
+      IMAGES: '1'
+      INFO: '1'
+      PING: '1'
+      VERSION: '1'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

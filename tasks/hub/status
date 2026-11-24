@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+#MISE description="Show live pc Hub Compose, Caddy, systemd, CLI-only CBM, and tailscale serve status"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--json" help="Emit schema-validated PcHubStatusResponse JSON"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+json_out="${usage_json:-false}"
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} != /* ]]; then
+			common_dir="${repo_root}/${common_dir}"
+		fi
+		common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+if [[ ! -x ${venv_py} ]]; then
+	echo "hub:status: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+
+probe_json="$(
+	ssh -o BatchMode=yes -o ConnectTimeout=5 "${host}" /bin/bash -euo pipefail <<'REMOTE_PROBE'
+python3 - <<'PY'
+import json
+import shutil
+import subprocess
+import urllib.error
+import urllib.request
+
+def check_http(url: str, *, ok_codes=(200, 302, 401)) -> tuple[str, str]:
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return ("OK" if resp.status in ok_codes else "WARN"), f"http={resp.status}"
+    except urllib.error.HTTPError as exc:
+        return ("OK" if exc.code in ok_codes else "WARN"), f"http={exc.code}"
+    except Exception as exc:
+        return "FAIL", str(exc)
+
+def check_systemd(unit: str) -> tuple[str, str]:
+    rc = subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit], check=False).returncode
+    return ("OK" if rc == 0 else "FAIL"), ("active" if rc == 0 else f"rc={rc}")
+
+def check_container(name: str) -> tuple[str, str]:
+    out = subprocess.run(["docker", "container", "inspect", "--format", "{{.State.Status}}", name], capture_output=True, text=True, check=False)
+    st = out.stdout.strip()
+    return ("OK" if out.returncode == 0 and st == "running" else "FAIL"), (st or out.stderr.strip() or "missing")
+
+ts_host = ""
+try:
+    ts_raw = subprocess.check_output(["tailscale", "status", "--json"], text=True, timeout=5)
+    ts_host = (json.loads(ts_raw).get("Self", {}).get("DNSName") or "").rstrip(".")
+except Exception:
+    pass
+
+rows = []
+c_st, c_det = check_container("pc-hub-caddy")
+h_st, h_det = check_http("http://127.0.0.1:8880/healthz", ok_codes=(200,))
+rows.append({"service": "caddy", "state": "OK" if c_st == "OK" and h_st == "OK" else "FAIL", "bind_target": "127.0.0.1:8880", "exposed_http": True, "detail": f"{c_det}; {h_det}"})
+
+b_st, b_det = check_container("pc-hub-beszel")
+bh_st, bh_det = check_http("http://127.0.0.1:8090/api/health", ok_codes=(200,))
+rows.append({"service": "beszel", "state": "OK" if b_st == "OK" and bh_st == "OK" else "FAIL", "bind_target": "127.0.0.1:8090", "exposed_http": True, "detail": f"{b_det}; {bh_det}"})
+
+sp_st, sp_det = check_container("pc-hub-docker-socket-proxy")
+rows.append({"service": "docker-socket-proxy", "state": sp_st, "bind_target": "127.0.0.1:2375", "exposed_http": False, "detail": sp_det})
+
+agent_st, agent_det = check_container("pc-hub-beszel-agent")
+rows.append({"service": "beszel-agent", "state": agent_st, "bind_target": "127.0.0.1:45876", "exposed_http": False, "detail": agent_det})
+
+vk_st, vk_det = check_container("pc-hub-valkey")
+rows.append({"service": "valkey", "state": vk_st, "bind_target": "searxng-net:6379", "exposed_http": False, "detail": vk_det})
+
+sx_st, sx_det = check_container("pc-hub-searxng")
+sxh_st, sxh_det = check_http("http://127.0.0.1:8888/", ok_codes=(200,))
+rows.append({"service": "searxng", "state": "OK" if sx_st == "OK" and sxh_st == "OK" else "FAIL", "bind_target": "127.0.0.1:8888", "exposed_http": True, "detail": f"{sx_det}; {sxh_det}"})
+
+vb_st, vb_det = check_systemd("dev.mise.vercel-board.service")
+rows.append({"service": "vercel-board", "state": vb_st, "bind_target": "127.0.0.1:4100", "exposed_http": True, "detail": vb_det})
+
+av_st, av_det = check_systemd("dev.mise.agentsview-hub.service")
+rows.append({"service": "agentsview-hub", "state": av_st, "bind_target": "127.0.0.1:8082", "exposed_http": True, "detail": av_det})
+
+qmd_st, qmd_det = check_systemd("dev.mise.qmd-hub.service")
+rows.append({"service": "qmd", "state": qmd_st, "bind_target": "127.0.0.1:8181", "exposed_http": True, "detail": qmd_det})
+
+cbm_path = shutil.which("codebase-memory-mcp") or ""
+if not cbm_path:
+    cand = subprocess.run(["bash", "-lc", 'test -x "$HOME/.local/bin/codebase-memory-mcp" && printf %s "$HOME/.local/bin/codebase-memory-mcp"'], capture_output=True, text=True, check=False)
+    cbm_path = cand.stdout.strip()
+rows.append({"service": "codebase-memory-mcp", "state": "OK" if cbm_path else "FAIL", "bind_target": "cli-only", "exposed_http": False, "detail": cbm_path or "missing"})
+
+ts_srv = subprocess.run(["tailscale", "serve", "status", "--json"], capture_output=True, text=True, check=False)
+has_8880 = "8880" in ts_srv.stdout
+rows.append({"service": "tailscale-serve", "state": "OK" if ts_srv.returncode == 0 and has_8880 else "FAIL", "bind_target": f"https://{ts_host}" if ts_host else "tailscale", "exposed_http": True, "detail": "8880 configured" if has_8880 else "missing 8880"})
+
+print(json.dumps({"ts_host": ts_host, "rows": rows}))
+PY
+REMOTE_PROBE
+)"
+
+ts_host="$(printf '%s' "${probe_json}" | jq -r '.ts_host // empty')"
+rows_json="$(printf '%s' "${probe_json}" | jq -c '.rows')"
+
+out_json="$("${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' \
+	"${lib_dir}" build-status \
+	--command "hub:status" \
+	--ssh-host "${host}" \
+	--tailscale-host "${ts_host}" \
+	--repo "${repo_root}" \
+	--rows-json "${rows_json}")" || rc=$?
+rc="${rc:-0}"
+
+if [[ ${json_out} == "true" ]]; then
+	printf '%s\n' "${out_json}"
+else
+	printf 'pc Hub (%s | https://%s):\n' "${host}" "${ts_host:-unknown}"
+	printf '%s\n' "${out_json}" | jq -r '.services[] | "  [\(.state)] \(.service) (\(.bind_target), http=\(.exposed_http)) \(.detail // "")"'
+fi
+exit "${rc}"

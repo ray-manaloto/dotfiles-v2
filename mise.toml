@@ -398,6 +398,12 @@ description = "Antigravity CLI Remote Control guard and LaunchAgent health pass 
 run = "python3 -I -B tasks/py/doctor_checks.py agy-rc-health"
 hint = "Inspect or heal Remote Control via `mise run host:agy-rc-guard`."
 
+[doctor.checks.pc-hub-config]
+description = "pc Hub Compose, Caddyfile, SearXNG, mac-agent, and zero-OTel/zero-CBM-HTTP invariants pass offline validation"
+depends = "py-deps-fresh"
+run = "mise run hub:doctor --offline"
+hint = "Inspect docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} and docker/mac-agent/compose.yaml with `mise run hub:doctor --offline`."
+
 [doctor.checks.skills-6harness-parity]
 description = "Canonical ~/.agents/skills parity across Codex, OpenCode, AGY, Claude, ZCode, and Hermes"
 run = "python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"

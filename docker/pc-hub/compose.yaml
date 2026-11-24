@@ -1,0 +1,129 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
+
+name: pc-hub
+
+services:
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    container_name: pc-hub-caddy
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PC_HUB_CADDY_PORT: ${PC_HUB_CADDY_PORT:-8880}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      beszel:
+        condition: service_healthy
+      searxng:
+        condition: service_started
+    healthcheck:
+      test: [CMD-SHELL, 'wget -qO- http://127.0.0.1:${PC_HUB_CADDY_PORT:-8880}/healthz >/dev/null || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  beszel:
+    image: henrygd/beszel:0.21.2@sha256:b0be90bd4aee2993fde763032a5098ce4386fba43cfe5031ec017b8d9e8c97a2
+    container_name: pc-hub-beszel
+    restart: unless-stopped
+    network_mode: host
+    command: [serve, --http=127.0.0.1:8090]
+    environment:
+      APP_URL: https://${PC_HUB_TS_HOST:-pc-hub.invalid}/beszel
+      TRUSTED_AUTH_HEADER: Tailscale-User-Login
+      TRUSTED_PROXY_IPS: 127.0.0.1
+      DISABLE_PASSWORD_AUTH: ${BESZEL_DISABLE_PASSWORD_AUTH:-true}
+      USER_EMAIL: ${BESZEL_USER_EMAIL:-}
+    volumes:
+      - ${PC_HUB_STATE_DIR:-./state}/beszel_data:/beszel_data
+    healthcheck:
+      test: [CMD, /beszel, health, --url, http://127.0.0.1:8090]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:3.4@sha256:027f9fa5ee70be5836eeaa10ce889d7a83f34a8db16a7f412818b92997e0beab
+    container_name: pc-hub-docker-socket-proxy
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:2375:2375
+    environment:
+      POST: '0'
+      CONTAINERS: '1'
+      EVENTS: '1'
+      IMAGES: '1'
+      INFO: '1'
+      PING: '1'
+      VERSION: '1'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  beszel-agent:
+    image: henrygd/beszel-agent:0.21.2@sha256:343254226ae57a5cc6f8c23c755b1464730aba2abc7043116a2e222711ec6e1a
+    container_name: pc-hub-beszel-agent
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+      beszel:
+        condition: service_healthy
+    environment:
+      LISTEN: 127.0.0.1:45876
+      DOCKER_HOST: tcp://127.0.0.1:2375
+      HUB_URL: ${BESZEL_AGENT_HUB_URL:-http://127.0.0.1:8090}
+      KEY: ${BESZEL_PUBLIC_KEY:-}
+      TOKEN: ${BESZEL_TOKEN:-}
+    volumes:
+      - ${PC_HUB_STATE_DIR:-./state}/beszel_agent_data:/var/lib/beszel-agent
+
+  valkey:
+    image: valkey/valkey:8.1.4-alpine@sha256:e706d1213aaba6896c162bb6a3a9e1894e1a435f28f8f856d14fab2e10aa098b
+    container_name: pc-hub-valkey
+    restart: unless-stopped
+    networks:
+      - searxng-net
+    command: [valkey-server, --save, '300', '1', --save, '60', '1000', --loglevel, warning]
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: [CMD-SHELL, 'valkey-cli ping | grep -q PONG']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  searxng:
+    image: searxng/searxng:2026.11.23-a7163d091@sha256:a7fc607aa6723f5a8982105bcc5ffba4d1b9fc7c6922a31a88d6e4cba49ef12a
+    container_name: pc-hub-searxng
+    restart: unless-stopped
+    networks:
+      - searxng-net
+    ports:
+      - 127.0.0.1:8888:8080
+    depends_on:
+      valkey:
+        condition: service_healthy
+    environment:
+      SEARXNG_BASE_URL: https://${PC_HUB_TS_HOST:-pc-hub.invalid}/searxng/
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-dev-placeholder-change-on-up}
+      SEARXNG_VALKEY_URL: valkey://valkey:6379/0
+      FORCE_OWNERSHIP: 'false'
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng_cache:/var/cache/searxng
+
+networks:
+  searxng-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  valkey_data:
+  searxng_cache:
