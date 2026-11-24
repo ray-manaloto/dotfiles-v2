@@ -46,6 +46,11 @@ BLOCKQUOTE_RE = re.compile(r"^ ? ? ?>")
 MALFORMED_PHASE_RE = re.compile(r"^ ? ? ?### Phase([0-9:]|-[0-9])")
 PHASE_HEADING_RE = re.compile(r"^ ? ? ?### Phase([ \t]|$)")
 ANY_HEADING_RE = re.compile(r"^ ? ? ?(###|##|#)([ \t]|$)")
+ERROR_HEADING_RE = re.compile(r"^(#{1,3})\s+Errors\s+Encountered\b", re.IGNORECASE)
+ANY_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+")
+ERROR_PLACEHOLDER_CELLS = frozenset(
+    {"", "-", "—", "none", "(none)", "none yet", "no errors", "n/a", "na", "nil"}
+)
 STATUS_TOKEN_RE = re.compile(
     r"\*\*Status:\*\*[ \t]+(pending|in_progress|complete)(?![A-Za-z0-9_])"
     r"|\[(pending|in_progress|complete)\]"
@@ -601,11 +606,94 @@ def _shared_reviews_path() -> Path:
     return base / "agy-learn" / "reviews.jsonl"
 
 
-def _read_shared_reviews(reviews_path: Path | None = None) -> dict[str, tuple[str, str, int]]:
+def _count_plan_errors(text: str) -> int:
+    in_section = False
+    err_heading_level = 0
+    fence_char = ""
+    fence_len = 0
+    count = 0
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        fence_match = FENCE_RE.match(line)
+        if fence_match:
+            marker_run, rest = fence_match.group(1), fence_match.group(2)
+            marker = marker_run[0]
+            if not fence_char:
+                if not (marker == "`" and "`" in rest):
+                    fence_char = marker
+                    fence_len = len(marker_run)
+                    continue
+            elif (
+                marker == fence_char
+                and len(marker_run) >= fence_len
+                and rest.strip(" \t") == ""
+            ):
+                fence_char = ""
+                fence_len = 0
+                continue
+        if fence_char:
+            continue
+        stripped = line.strip()
+        err_match = ERROR_HEADING_RE.match(stripped)
+        if err_match:
+            in_section = True
+            err_heading_level = len(err_match.group(1))
+            continue
+        if in_section:
+            heading_match = ANY_MD_HEADING_RE.match(stripped)
+            if heading_match and len(heading_match.group(1)) <= err_heading_level:
+                break
+        if not in_section or not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        if all(re.fullmatch(r":?-{1,}:?", c or "-") for c in cells):
+            continue
+        first_norm = cells[0].lower().rstrip(".")
+        if first_norm in {"error", "issue", "errors"}:
+            continue
+        if first_norm in ERROR_PLACEHOLDER_CELLS or all(
+            c.lower().rstrip(".") in ERROR_PLACEHOLDER_CELLS for c in cells
+        ):
+            continue
+        count += 1
+    return count
+
+
+def _is_bare_plan_key(raw_key: str) -> bool:
+    stripped = raw_key.strip()
+    if not stripped:
+        return False
+    return "/" not in stripped and "\\" not in stripped and not stripped.endswith("task_plan.md")
+
+
+def _normalize_review_plan_key(raw_key: str, repo_root_raw: Any = None) -> str:
+    stripped = raw_key.strip()
+    if _is_bare_plan_key(stripped):
+        return stripped
+    expanded = Path(os.path.expanduser(stripped))
+    if expanded.is_absolute():
+        try:
+            return str(expanded.resolve(strict=False))
+        except OSError:
+            return stripped
+    if isinstance(repo_root_raw, str) and repo_root_raw.strip():
+        try:
+            base = Path(os.path.expanduser(repo_root_raw.strip()))
+            return str((base / expanded).resolve(strict=False))
+        except OSError:
+            return stripped
+    return expanded.as_posix()
+
+
+def _read_shared_review_details(
+    reviews_path: Path | None = None,
+) -> dict[str, dict[str, Any]]:
     path = reviews_path or _shared_reviews_path()
     if not path.is_file():
         return {}
-    latest: dict[str, tuple[str, str, int]] = {}
+    latest: dict[str, dict[str, Any]] = {}
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -625,22 +713,56 @@ def _read_shared_reviews(reviews_path: Path | None = None) -> dict[str, tuple[st
         ts_ns = rec.get("timestamp_unix_ns", 0)
         if not (
             isinstance(raw_key, str)
-            and raw_key
+            and raw_key.strip()
             and isinstance(sha, str)
             and sha
             and isinstance(outcome, str)
             and outcome
         ):
             continue
-        try:
-            key = str(Path(os.path.expanduser(raw_key)).resolve(strict=False))
-        except OSError:
-            key = raw_key
+        key = _normalize_review_plan_key(raw_key, rec.get("repo_root"))
         ns_val = ts_ns if isinstance(ts_ns, int) and not isinstance(ts_ns, bool) else 0
+        raw_err = rec.get("error_count", 0)
+        err_count = (
+            raw_err if isinstance(raw_err, int) and not isinstance(raw_err, bool) else 0
+        )
         prev = latest.get(key)
-        if prev is None or ns_val >= prev[2]:
-            latest[key] = (sha, outcome, ns_val)
+        prev_ns = prev.get("_ns", -1) if prev is not None else -1
+        if prev is None or ns_val >= prev_ns:
+            entry = dict(rec)
+            entry["_key"] = key
+            entry["_ns"] = ns_val
+            entry["_error_count"] = err_count
+            latest[key] = entry
     return latest
+
+
+def _read_shared_reviews(reviews_path: Path | None = None) -> dict[str, tuple[str, str, int]]:
+    details = _read_shared_review_details(reviews_path)
+    return {
+        key: (str(rec["plan_sha256"]), str(rec["outcome"]), int(rec["_ns"]))
+        for key, rec in details.items()
+    }
+
+
+def _lookup_shared_review_for_plan(
+    shared_details: dict[str, dict[str, Any]],
+    plan_path: Path,
+    plan_key: str,
+    digest: str,
+) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    direct = shared_details.get(plan_key)
+    if direct is not None:
+        candidates.append(direct)
+    if plan_path.parent.parent.name == ".planning":
+        rel_key = f".planning/{plan_path.parent.name}/{plan_path.name}"
+        rel_rec = shared_details.get(rel_key)
+        if rel_rec is not None and rel_rec.get("plan_sha256") == digest:
+            candidates.append(rel_rec)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda rec: int(rec.get("_ns", 0)))
 
 
 def _check_worktree_rm(
@@ -684,25 +806,47 @@ def _check_worktree_rm(
                             ):
                                 pending_keys.add(item["plan_key"])
 
-    shared_reviews = _read_shared_reviews()
+    shared_details = _read_shared_review_details()
     valid_outcomes = ("proposed", "no_new_proposals", "applied")
 
     for plan_path in plans:
         try:
             plan_key = str(plan_path.resolve())
-            digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+            plan_bytes = plan_path.read_bytes()
+            digest = hashlib.sha256(plan_bytes).hexdigest()
         except OSError:
             continue
-        shared = shared_reviews.get(plan_key)
-        if shared is not None and shared[0] == digest and shared[1] == "owing_learn":
+        logged_error_rows = _count_plan_errors(
+            plan_bytes.decode("utf-8", errors="replace")
+        )
+        shared_rec = _lookup_shared_review_for_plan(
+            shared_details, plan_path, plan_key, digest
+        )
+        if (
+            shared_rec is not None
+            and shared_rec.get("plan_sha256") == digest
+            and shared_rec.get("outcome") == "owing_learn"
+        ):
             return _deny(
                 f"PWF/learn guard: completed plan '{slug}' is marked `owing_learn` "
                 "(retry-exhausted `/learn` review). Run `/learn` and record a review "
                 "before removing its worktree."
             )
-        shared_ok = (
-            shared is not None and shared[0] == digest and shared[1] in valid_outcomes
+        shared_outcome_ok = (
+            shared_rec is not None
+            and shared_rec.get("plan_sha256") == digest
+            and shared_rec.get("outcome") in valid_outcomes
         )
+        if shared_outcome_ok and shared_rec is not None:
+            recorded_error_count = int(shared_rec.get("_error_count", 0))
+            if logged_error_rows > recorded_error_count:
+                return _deny(
+                    f"PWF/learn guard: completed plan '{slug}' logged {logged_error_rows} error row(s) "
+                    f"under `## Errors Encountered`, exceeding recorded review error_count={recorded_error_count}. "
+                    "Re-run `/learn` and record a matching review (`--error-count`, substantive `--notes`, "
+                    "and `--plan-error-ref` or proposals) before removing its worktree."
+                )
+        shared_ok = shared_outcome_ok
         if not shared_ok and (
             owing_plans.get(plan_key) == digest or plan_key in pending_keys
         ):
@@ -1501,6 +1645,70 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
             )
             os.environ.pop("PLAN_ID", None)
             checks.append("main_docs_roadmap_bypass_with_stale_complete_env_plan_id")
+
+            # 18. Errors Encountered row-count cross-check blocks undercounted reviews
+            wt_err18 = root / "pwf-repo-err18"
+            wt_err18_dir = wt_err18 / ".planning" / "2026-11-23-err18"
+            wt_err18_dir.mkdir(parents=True)
+            wt_err18_plan = wt_err18_dir / "task_plan.md"
+            wt_err18_plan.write_text(
+                "# Err18\n\n### Phase 1: Do\n**Status:** complete\n\n"
+                "## Errors Encountered\n| Error | Resolution |\n|---|---|\n"
+                "| None yet | - |\n| Bug 1 | Fixed 1 |\n| Bug 2 | Fixed 2 |\n\n"
+                "```markdown\n| Fake error in fence | Ignored |\n```\n",
+                encoding="utf-8",
+            )
+            assert _count_plan_errors(wt_err18_plan.read_text(encoding="utf-8")) == 2
+            err18_sha = hashlib.sha256(wt_err18_plan.read_bytes()).hexdigest()
+            reviews_path16.write_text(
+                json.dumps(
+                    {
+                        "plan_key": str(wt_err18_plan.resolve()),
+                        "plan_sha256": err18_sha,
+                        "error_count": 1,
+                        "outcome": "no_new_proposals",
+                        "timestamp_unix_ns": 300,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            res18a = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm err18"},
+                    },
+                }
+            )
+            assert res18a.get("decision") == "deny", (
+                f"case 18a undercounted error_count must deny: {res18a}"
+            )
+            with reviews_path16.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "plan_key": str(wt_err18_plan.resolve()),
+                            "plan_sha256": err18_sha,
+                            "error_count": 2,
+                            "outcome": "no_new_proposals",
+                            "timestamp_unix_ns": 400,
+                        }
+                    )
+                    + "\n"
+                )
+            res18b = _run_hook(
+                {
+                    "cwd": str(pwf_repo),
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": "mise run worktree:rm err18"},
+                    },
+                }
+            )
+            assert res18b == _allow(), f"case 18b matching error_count should allow: {res18b}"
+            checks.append("worktree_rm_errors_encountered_cross_check")
 
         if hooks_json_path is not None:
             _check_hooks_json(hooks_json_path)

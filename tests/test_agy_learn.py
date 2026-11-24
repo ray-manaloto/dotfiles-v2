@@ -29,6 +29,8 @@ from agy_learn.cli import main as agy_learn_cli_main
 from dotfiles_py import NANOSECOND_TIMESTAMP_RE
 from dotfiles_py.generated import (
     EnforcementTier,
+    HealFindingKind,
+    HealSeverity,
     InteractiveQuestionsHookState,
     LearnErrorCode,
     LearnProposal,
@@ -110,25 +112,343 @@ def test_record_review_requires_provenance_and_accepts_zero_survivors(
     assert missing_prov.rc == 1
     assert missing_prov.errors[0].code is LearnErrorCode.ERR_MISSING_PROVENANCE
 
-    zero_ok = record_review(
+    zero_clean = record_review(
+        plan_key="/tmp/plan/task_plan.md",
+        plan_sha256="abc123",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(transcript_step="transcript.jsonl#L42"),
+        state_dir=state_dir,
+    )
+    assert zero_clean.rc == 0
+    assert zero_clean.review is not None
+    assert zero_clean.review.survivor_count == 0
+    assert NANOSECOND_TIMESTAMP_RE.fullmatch(zero_clean.timestamp)
+    assert zero_clean.returns[0].code is LearnReturnCode.RET_NO_NEW_PROPOSALS
+
+    zero_with_err_justified = record_review(
         plan_key="/tmp/plan/task_plan.md",
         plan_sha256="abc123",
         outcome=ReviewVerdict.NO_NEW_PROPOSALS,
         error_count=1,
         survivor_count=0,
-        provenance=ProvenanceRef(transcript_step="transcript.jsonl#L42"),
+        provenance=ProvenanceRef(
+            transcript_step="transcript.jsonl#L42",
+            plan_error_ref="Errors Encountered row 1: transient timeout",
+        ),
+        notes="Row 1 transient timeout was already handled by existing retry backoff; zero new rules needed.",
         state_dir=state_dir,
     )
-    assert zero_ok.rc == 0
-    assert zero_ok.review is not None
-    assert zero_ok.review.survivor_count == 0
-    assert NANOSECOND_TIMESTAMP_RE.fullmatch(zero_ok.timestamp)
-    assert zero_ok.returns[0].code is LearnReturnCode.RET_NO_NEW_PROPOSALS
+    assert zero_with_err_justified.rc == 0
+    assert zero_with_err_justified.review is not None
+    assert zero_with_err_justified.review.error_count == 1
+    assert zero_with_err_justified.review.survivor_count == 0
 
     rows, errs = read_reviews(state_dir)
     assert errs == []
-    assert len(rows) == 1
+    assert len(rows) == 2
     assert rows[0].outcome is ReviewVerdict.NO_NEW_PROPOSALS
+
+
+def test_record_review_canonicalizes_plan_key_and_rejects_bare_slugs(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "agy-learn"
+    repo_dir = tmp_path / "repo-wt"
+    plan_file = repo_dir / ".planning" / "2026-11-23-feat" / "task_plan.md"
+    plan_file.parent.mkdir(parents=True)
+    plan_file.write_text("# Task Plan: #17 Feat\n", encoding="utf-8")
+    resolved_plan = str(plan_file.resolve())
+
+    # 1. Bare non-path slug without --plan-path fails closed
+    bare_err = record_review(
+        plan_key="2026-11-23-feat",
+        plan_sha256="sha1",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L1"),
+        state_dir=state_dir,
+    )
+    assert bare_err.rc == 1
+    assert bare_err.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # 2. Bare slug via CLI without --plan-path also returns rc=1 ERR_INVALID_INPUT
+    cli_rc = agy_learn_cli_main(
+        [
+            "record-review",
+            "--plan-key",
+            "2026-11-23-feat",
+            "--plan-sha256",
+            "sha1",
+            "--outcome",
+            "no_new_proposals",
+            "--transcript-step",
+            "t.jsonl#L1",
+            "--state-dir",
+            str(state_dir),
+        ]
+    )
+    assert cli_rc == 1
+
+    # 3. Bare matching slug or relative path canonicalizes against --plan-path
+    from_bare_with_path = record_review(
+        plan_key="2026-11-23-feat",
+        plan_sha256="sha1",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(
+            transcript_step="t.jsonl#L2", plan_path=str(plan_file)
+        ),
+        state_dir=state_dir,
+    )
+    assert from_bare_with_path.rc == 0
+    assert from_bare_with_path.review is not None
+    assert from_bare_with_path.review.plan_key == resolved_plan
+
+    from_rel_with_path = record_review(
+        plan_key=".planning/2026-11-23-feat/task_plan.md",
+        plan_sha256="sha1",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(
+            transcript_step="t.jsonl#L3", plan_path=str(plan_file)
+        ),
+        state_dir=state_dir,
+    )
+    assert from_rel_with_path.rc == 0
+    assert from_rel_with_path.review is not None
+    assert from_rel_with_path.review.plan_key == resolved_plan
+
+    # 4. Omitted --plan-key in CLI with --plan-path derives canonical key
+    cli_from_path_rc = agy_learn_cli_main(
+        [
+            "record-review",
+            "--plan-sha256",
+            "sha1",
+            "--outcome",
+            "no_new_proposals",
+            "--transcript-step",
+            "t.jsonl#L4",
+            "--plan-path",
+            str(plan_file),
+            "--state-dir",
+            str(state_dir),
+        ]
+    )
+    assert cli_from_path_rc == 0
+
+    # 5. Mismatched --plan-key vs --plan-path fails closed
+    mismatch = record_review(
+        plan_key="other-slug",
+        plan_sha256="sha1",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(
+            transcript_step="t.jsonl#L5", plan_path=str(plan_file)
+        ),
+        state_dir=state_dir,
+    )
+    assert mismatch.rc == 1
+    assert mismatch.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    path_mismatch = record_review(
+        plan_key=str(repo_dir / ".planning" / "other" / "task_plan.md"),
+        plan_sha256="sha1",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(
+            transcript_step="t.jsonl#L6", plan_path=str(plan_file)
+        ),
+        state_dir=state_dir,
+    )
+    assert path_mismatch.rc == 1
+    assert path_mismatch.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # 6. Repo-relative .planning/<PLAN_ID>/task_plan.md and legacy task_plan.md stay valid
+    rel_only = record_review(
+        plan_key=".planning/2026-11-23-feat/task_plan.md",
+        plan_sha256="sha1",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L7"),
+        state_dir=state_dir,
+    )
+    assert rel_only.rc == 0
+    assert rel_only.review is not None
+    assert rel_only.review.plan_key == ".planning/2026-11-23-feat/task_plan.md"
+
+    rel_with_root = record_review(
+        plan_key=".planning/2026-11-23-feat/task_plan.md",
+        plan_sha256="sha1",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=0,
+        survivor_count=0,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L8"),
+        repo_root=str(repo_dir),
+        state_dir=state_dir,
+    )
+    assert rel_with_root.rc == 0
+    assert rel_with_root.review is not None
+    assert rel_with_root.review.plan_key == resolved_plan
+
+
+def test_anti_rubber_stamp_gate_rejects_unjustified_zero_survivor_reviews(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "agy-learn"
+    plan_key = str((tmp_path / ".planning" / "p1" / "task_plan.md").resolve())
+
+    # Missing notes & plan_error_ref
+    missing_both = record_review(
+        plan_key=plan_key,
+        plan_sha256="sha2",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=2,
+        survivor_count=0,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L10"),
+        state_dir=state_dir,
+    )
+    assert missing_both.rc == 1
+    assert missing_both.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # Short notes (< 40 chars) even with plan_error_ref
+    short_notes = record_review(
+        plan_key=plan_key,
+        plan_sha256="sha2",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=1,
+        survivor_count=0,
+        provenance=ProvenanceRef(
+            transcript_step="t.jsonl#L11",
+            plan_error_ref="Errors Encountered row 1",
+        ),
+        notes="Issue #13 canonical path review.",
+        state_dir=state_dir,
+    )
+    assert short_notes.rc == 1
+    assert short_notes.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # Boilerplate notes >= 40 chars rejected
+    for bad_note in (
+        "post-task /learn: no reusable customization updates needed.",
+        "-" * 50,
+        "no new proposals needed; no new proposals needed; none",
+    ):
+        boilerplate = record_review(
+            plan_key=plan_key,
+            plan_sha256="sha2",
+            outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+            error_count=1,
+            survivor_count=0,
+            provenance=ProvenanceRef(
+                transcript_step="t.jsonl#L12",
+                plan_error_ref="Errors Encountered row 1",
+            ),
+            notes=bad_note,
+            state_dir=state_dir,
+        )
+        assert boilerplate.rc == 1
+        assert boilerplate.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # Substantive notes >= 40 chars without plan_error_ref rejected
+    no_err_ref = record_review(
+        plan_key=plan_key,
+        plan_sha256="sha2",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=1,
+        survivor_count=0,
+        provenance=ProvenanceRef(transcript_step="t.jsonl#L13"),
+        notes="Row 1 already enforced in hk.pkl ruff and ty static checks.",
+        state_dir=state_dir,
+    )
+    assert no_err_ref.rc == 1
+    assert no_err_ref.errors[0].code is LearnErrorCode.ERR_INVALID_INPUT
+
+    # Both substantive notes (>= 40 chars) and non-placeholder plan_error_ref succeed
+    accepted = record_review(
+        plan_key=plan_key,
+        plan_sha256="sha2",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=1,
+        survivor_count=0,
+        provenance=ProvenanceRef(
+            transcript_step="t.jsonl#L14",
+            plan_error_ref="Errors Encountered row 1: ruff formatting failure",
+        ),
+        notes="Row 1 already enforced by hk.pkl ruff check; no additional rule needed.",
+        state_dir=state_dir,
+    )
+    assert accepted.rc == 0
+    assert accepted.review is not None
+
+
+def test_heal_check_surfaces_bare_slug_drift_non_fatally(tmp_path: Path) -> None:
+    state_dir = tmp_path / "agy-learn"
+    state_dir.mkdir(parents=True)
+    canon_path = str(
+        (tmp_path / "wt" / ".planning" / "2026-11-23-legacy" / "task_plan.md").resolve()
+    )
+    legacy_rows = [
+        {
+            "review_id": "rev-legacy-bare",
+            "plan_key": "2026-11-23-legacy",
+            "plan_id": "2026-11-23-legacy",
+            "worktree_slug": "legacy",
+            "plan_sha256": "deadbeef",
+            "error_count": 1,
+            "outcome": "no_new_proposals",
+            "survivor_count": 0,
+            "proposal_ids": [],
+            "provenance": {
+                "transcript_step": "step-10",
+                "plan_error_ref": "Errors Encountered row 1",
+                "plan_path": canon_path,
+            },
+            "timestamp": "20261123T120000.000000001-0600",
+            "timestamp_unix_ns": 1795456800000000001,
+        },
+        {
+            "review_id": "rev-canon",
+            "plan_key": canon_path,
+            "plan_id": "2026-11-23-legacy",
+            "worktree_slug": "legacy",
+            "plan_sha256": "deadbeef",
+            "error_count": 1,
+            "outcome": "no_new_proposals",
+            "survivor_count": 0,
+            "proposal_ids": [],
+            "provenance": {
+                "transcript_step": "step-11",
+                "plan_error_ref": "Errors Encountered row 1",
+                "plan_path": canon_path,
+            },
+            "timestamp": "20261123T120001.000000001-0600",
+            "timestamp_unix_ns": 1795456801000000001,
+        },
+    ]
+    (state_dir / "reviews.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in legacy_rows) + "\n", encoding="utf-8"
+    )
+
+    report = run_heal_check(state_dir=state_dir)
+    assert report.healthy is True
+    assert report.errors == []
+    drift_findings = [
+        f
+        for f in report.findings
+        if f.kind is HealFindingKind.HOOK_DRIFT and f.plan_key == "2026-11-23-legacy"
+    ]
+    assert len(drift_findings) == 1
+    assert drift_findings[0].severity is HealSeverity.WARN
+    assert "prune/migrate" in drift_findings[0].message
+    assert agy_learn_cli_main(["heal", "--check", "--state-dir", str(state_dir)]) == 0
 
 
 def test_declined_30_day_buffer_and_recurrence_auto_escalation(
@@ -515,3 +835,184 @@ def test_hooks_python39_compatibility_and_cross_session_worktree_rm(
     assert json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["post-task-learn"][
         "SessionStart"
     ]
+
+
+def test_pwf_guard_errors_encountered_cross_check_and_plan_key_matching(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    xdg = tmp_path / "xdg-err-check"
+    monkeypatch.setenv("XDG_STATE_HOME", str(xdg))
+    pwf_guard = _load_hook("agy-pwf-guard.py")
+
+    main_repo = tmp_path / "repo"
+    (main_repo / ".git").mkdir(parents=True)
+    wt_dir = tmp_path / "repo-errcheck"
+    pdir = wt_dir / ".planning" / "2026-11-23-errcheck"
+    pdir.mkdir(parents=True)
+    plan_file = pdir / "task_plan.md"
+    plan_file.write_text(
+        "# Task Plan: #17 ErrCheck\n\n"
+        "### Phase 1: Do\n**Status:** complete\n\n"
+        "## Errors Encountered\n"
+        "| Error | Resolution |\n"
+        "|-------|------------|\n"
+        "| None yet | - |\n"
+        "|   |   |\n"
+        "| None | N/A |\n"
+        "| First failure | Fixed first |\n"
+        "| Second failure | Fixed second |\n\n"
+        "## Notes\n"
+        "| Col | Val |\n|---|---|\n| Not an error | ok |\n",
+        encoding="utf-8",
+    )
+    assert pwf_guard._count_plan_errors(plan_file.read_text(encoding="utf-8")) == 2
+    digest = hashlib.sha256(plan_file.read_bytes()).hexdigest()
+
+    # Bare-slug review entry never clears worktree:rm
+    reviews_path = xdg / "agy-learn" / "reviews.jsonl"
+    reviews_path.parent.mkdir(parents=True)
+    reviews_path.write_text(
+        json.dumps(
+            {
+                "plan_key": "2026-11-23-errcheck",
+                "plan_sha256": digest,
+                "error_count": 2,
+                "outcome": "no_new_proposals",
+                "timestamp_unix_ns": 100,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bare_denied = pwf_guard._run_hook(
+        {
+            "cwd": str(main_repo),
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "mise run worktree:rm errcheck"},
+            },
+        }
+    )
+    assert bare_denied["decision"] == "deny"
+
+    # Undercounted error_count=1 against 2 logged error rows denies worktree:rm
+    undercount = record_review(
+        plan_key=str(plan_file.resolve()),
+        plan_sha256=digest,
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=1,
+        survivor_count=0,
+        provenance=ProvenanceRef(
+            transcript_step="t.jsonl#L20",
+            plan_error_ref="Errors Encountered row 1",
+        ),
+        notes="Row 1 was a one-off typo that was already covered by ruff checks.",
+    )
+    assert undercount.rc == 0
+    deny_undercount = pwf_guard._run_hook(
+        {
+            "cwd": str(main_repo),
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "mise run worktree:rm errcheck"},
+            },
+        }
+    )
+    assert deny_undercount["decision"] == "deny"
+    assert "error_count=1" in deny_undercount["reason"]
+
+    # Matching error_count=2 with repo-relative .planning/<PLAN_ID>/task_plan.md clears worktree:rm
+    matched = record_review(
+        plan_key=".planning/2026-11-23-errcheck/task_plan.md",
+        plan_sha256=digest,
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=2,
+        survivor_count=0,
+        provenance=ProvenanceRef(
+            transcript_step="t.jsonl#L21",
+            plan_error_ref="Errors Encountered rows 1-2",
+        ),
+        notes="Both logged errors are already enforced by existing hk.pkl and pytest checks.",
+    )
+    assert matched.rc == 0
+    allow_matched = pwf_guard._run_hook(
+        {
+            "cwd": str(main_repo),
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "mise run worktree:rm errcheck"},
+            },
+        }
+    )
+    assert allow_matched == {"decision": "allow"}
+
+
+def test_record_review_task_script_enforces_canonical_key_and_anti_rubber_stamp(
+    tmp_path: Path,
+) -> None:
+    task_script = (
+        REPO_ROOT
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "tasks"
+        / "learn"
+        / "record-review"
+    )
+    state_dir = tmp_path / "xdg" / "agy-learn"
+    plan_file = tmp_path / "wt" / ".planning" / "2026-11-23-task" / "task_plan.md"
+    plan_file.parent.mkdir(parents=True)
+    plan_file.write_text("# Task Plan: #17 Task\n", encoding="utf-8")
+
+    base_env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("usage_") and not k.startswith("GIT_")
+    }
+
+    # Bare slug without --plan-path fails closed with structured ERR_INVALID_INPUT JSON
+    bare_proc = subprocess.run(
+        ["bash", str(task_script)],
+        env={
+            **base_env,
+            "usage_plan_key": "2026-11-23-task",
+            "usage_plan_sha256": "deadbeef",
+            "usage_outcome": "no_new_proposals",
+            "usage_error_count": "0",
+            "usage_survivor_count": "0",
+            "usage_transcript_step": "t.jsonl#L1",
+            "usage_state_dir": str(state_dir),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert bare_proc.returncode == 1
+    bare_json = orjson.loads(bare_proc.stdout)
+    assert bare_json["errors"][0]["code"] == "ERR_INVALID_INPUT"
+
+    # --plan-path with matching bare slug + error_count=1 + substantive notes + plan_error_ref succeeds
+    ok_proc = subprocess.run(
+        ["bash", str(task_script)],
+        env={
+            **base_env,
+            "usage_plan_key": "2026-11-23-task",
+            "usage_plan_sha256": "deadbeef",
+            "usage_outcome": "no_new_proposals",
+            "usage_error_count": "1",
+            "usage_survivor_count": "0",
+            "usage_transcript_step": "t.jsonl#L2",
+            "usage_plan_error_ref": "Errors Encountered row 1: ruff formatting",
+            "usage_plan_path": str(plan_file),
+            "usage_notes": "Row 1 already enforced by existing hk.pkl ruff gate; zero new rules.",
+            "usage_state_dir": str(state_dir),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    ok_json = orjson.loads(ok_proc.stdout)
+    assert ok_json["rc"] == 0
+    assert ok_json["review"]["plan_key"] == str(plan_file.resolve())

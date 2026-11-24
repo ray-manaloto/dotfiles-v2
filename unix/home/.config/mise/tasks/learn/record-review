@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #MISE description="Record a validated /learn review (including 0-survivor no_new_proposals or owing_learn)"
-#USAGE flag "--plan-key <plan_key>" help="Canonical plan key or path"
+#USAGE flag "--plan-key <plan_key>" help="Canonical task_plan.md path (or repo-relative .planning/<PLAN_ID>/task_plan.md; canonicalized against --plan-path)"
 #USAGE flag "--plan-sha256 <sha256>" help="Plan or turn SHA-256 digest"
 #USAGE flag "--outcome <outcome>" help="Verdict: proposed, no_new_proposals, owing_learn, or applied"
 #USAGE flag "--error-count <n>" help="Logged Errors Encountered count"
 #USAGE flag "--survivor-count <n>" help="Surviving proposal count (0 valid for no_new_proposals)"
 #USAGE flag "--transcript-step <step>" help="Transcript step provenance ref"
-#USAGE flag "--plan-error-ref <ref>" help="Plan error row provenance ref"
+#USAGE flag "--plan-error-ref <ref>" help="Plan error row provenance ref (required for no_new_proposals when error_count > 0)"
 #USAGE flag "--transcript-path <path>" help="Transcript file path provenance"
 #USAGE flag "--plan-path <path>" help="Plan file path provenance"
 #USAGE flag "--plan-id <id>" help="PWF PLAN_ID"
@@ -14,7 +14,7 @@
 #USAGE flag "--proposal-id <id>" var=#true help="Surviving proposal ID(s)"
 #USAGE flag "--repo-root <path>" help="Repository root path"
 #USAGE flag "--conversation-id <id>" help="Antigravity conversation ID"
-#USAGE flag "--notes <notes>" help="Optional review notes"
+#USAGE flag "--notes <notes>" help="Review notes (>=40 non-boilerplate chars required for no_new_proposals when error_count > 0)"
 #USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
 set -euo pipefail
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,82 @@ DECLINED_BUFFER_DAYS = 30
 DECLINED_BUFFER_NS = DECLINED_BUFFER_DAYS * 86_400 * 1_000_000_000
 PROPOSAL_MD_MAX_BYTES = 8192
 LOCK_TIMEOUT_S = 10.0
+MIN_SUBSTANTIVE_NOTES_LEN = 40
+
+_PLACEHOLDER_STRINGS = frozenset(
+    {
+        "",
+        "-",
+        "—",
+        "none",
+        "none yet",
+        "no errors",
+        "n/a",
+        "na",
+        "nil",
+        "null",
+        "tbd",
+        "todo",
+        "placeholder",
+        "lgtm",
+        "ok",
+        "done",
+        "looks good",
+        "all good",
+        "no new proposals",
+        "no new proposals needed",
+        "no reusable updates",
+        "no reusable updates needed",
+        "no reusable customization updates needed",
+        "post-task /learn: no reusable customization updates needed",
+        "nothing to learn",
+        "nothing reusable",
+        "canonical path review",
+        "rubber stamp",
+    }
+)
+_BOILERPLATE_WORDS = frozenset(
+    {
+        "a",
+        "all",
+        "canonical",
+        "check",
+        "clean",
+        "customization",
+        "done",
+        "emerged",
+        "for",
+        "good",
+        "issue",
+        "learn",
+        "lgtm",
+        "looks",
+        "n",
+        "na",
+        "needed",
+        "new",
+        "nil",
+        "no",
+        "none",
+        "nothing",
+        "ok",
+        "passed",
+        "path",
+        "placeholder",
+        "post",
+        "proposal",
+        "proposals",
+        "reusable",
+        "review",
+        "same",
+        "task",
+        "tbd",
+        "this",
+        "to",
+        "todo",
+        "updates",
+    }
+)
 
 TIER_RANK: dict[EnforcementTier, int] = {
     EnforcementTier.HK_PKL: 1,
@@ -61,6 +138,178 @@ def has_valid_provenance(provenance: ProvenanceRef) -> bool:
     step = (provenance.transcript_step or "").strip()
     err_ref = (provenance.plan_error_ref or "").strip()
     return bool(step or err_ref)
+
+
+def is_bare_plan_key(plan_key: str) -> bool:
+    """Return True when *plan_key* is a bare non-path slug (no `/` and not ending with `task_plan.md`)."""
+    raw = plan_key.strip()
+    if not raw:
+        return False
+    return "/" not in raw and "\\" not in raw and not raw.endswith("task_plan.md")
+
+
+def _normalize_rel_parts(raw: str) -> tuple[str, ...]:
+    return tuple(
+        part for part in Path(raw.replace("\\", "/")).parts if part not in ("", ".")
+    )
+
+
+def canonicalize_plan_key(
+    plan_key: str,
+    *,
+    plan_path: str | None = None,
+    repo_root: str | None = None,
+    plan_id: str | None = None,
+    worktree_slug: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Canonicalize *plan_key* (against *plan_path* when given) and reject bare non-path slugs."""
+    raw_key = plan_key.strip()
+    raw_path = (plan_path or "").strip()
+    raw_root = (repo_root or "").strip()
+    root_path = (
+        Path(os.path.expanduser(raw_root)).resolve(strict=False) if raw_root else None
+    )
+
+    if raw_path:
+        if is_bare_plan_key(raw_path) or raw_path.endswith(("/", "\\")):
+            return (
+                None,
+                f"plan_path {raw_path!r} must point to a task_plan.md path, not a bare slug or directory.",
+            )
+        p_exp = Path(os.path.expanduser(raw_path))
+        resolved_plan = str(
+            (root_path / p_exp).resolve(strict=False)
+            if (not p_exp.is_absolute() and root_path is not None)
+            else p_exp.resolve(strict=False)
+        )
+        if not raw_key:
+            return resolved_plan, None
+        if is_bare_plan_key(raw_key):
+            plan_dir_name = Path(resolved_plan).parent.name
+            matches_plan = (
+                raw_key == plan_dir_name
+                or (
+                    bool(plan_id and plan_id.strip())
+                    and raw_key == plan_id.strip()
+                    and plan_dir_name == plan_id.strip()
+                )
+                or (
+                    bool(worktree_slug and worktree_slug.strip())
+                    and raw_key == worktree_slug.strip()
+                    and (
+                        plan_dir_name == raw_key
+                        or plan_dir_name.endswith(f"-{raw_key}")
+                    )
+                )
+            )
+            if matches_plan:
+                return resolved_plan, None
+            return (
+                None,
+                f"Bare non-path slug plan_key {raw_key!r} is rejected and does not match plan_path {resolved_plan!r}.",
+            )
+        if raw_key.endswith(("/", "\\")):
+            return (
+                None,
+                f"plan_key {raw_key!r} must reference a plan file, not a directory.",
+            )
+        k_exp = Path(os.path.expanduser(raw_key))
+        if k_exp.is_absolute():
+            resolved_key = str(k_exp.resolve(strict=False))
+            if resolved_key != resolved_plan:
+                return (
+                    None,
+                    f"plan_key {raw_key!r} ({resolved_key}) disagrees with plan_path {resolved_plan!r}.",
+                )
+            return resolved_plan, None
+        if root_path is not None:
+            resolved_key = str((root_path / k_exp).resolve(strict=False))
+            if resolved_key != resolved_plan:
+                return (
+                    None,
+                    f"plan_key {raw_key!r} ({resolved_key}) disagrees with plan_path {resolved_plan!r}.",
+                )
+            return resolved_plan, None
+        rel_parts = _normalize_rel_parts(raw_key)
+        plan_parts = Path(resolved_plan).parts
+        if (
+            rel_parts
+            and len(rel_parts) <= len(plan_parts)
+            and plan_parts[-len(rel_parts) :] == rel_parts
+        ):
+            return resolved_plan, None
+        return (
+            None,
+            f"Relative plan_key {raw_key!r} does not match plan_path {resolved_plan!r}.",
+        )
+
+    if not raw_key:
+        return (
+            None,
+            "plan_key must not be empty (provide canonical task_plan.md path or --plan-path).",
+        )
+    if is_bare_plan_key(raw_key):
+        return (
+            None,
+            f"Bare non-path slug plan_key {raw_key!r} is rejected; pass canonical task_plan.md path, repo-relative .planning/<PLAN_ID>/task_plan.md, or --plan-path.",
+        )
+    if raw_key.endswith(("/", "\\")):
+        return (
+            None,
+            f"plan_key {raw_key!r} must reference a plan file, not a directory.",
+        )
+    k_exp = Path(os.path.expanduser(raw_key))
+    if k_exp.is_absolute():
+        return str(k_exp.resolve(strict=False)), None
+    if root_path is not None:
+        return str((root_path / k_exp).resolve(strict=False)), None
+    norm_posix = Path(raw_key.replace("\\", "/")).as_posix()
+    if norm_posix in (".", "..") or norm_posix.endswith(("/.", "/..")):
+        return None, f"Invalid relative plan_key {raw_key!r}."
+    return norm_posix, None
+
+
+def is_non_placeholder_error_ref(plan_error_ref: str | None) -> bool:
+    """Return True when *plan_error_ref* is non-empty and not a trivial placeholder."""
+    raw = (plan_error_ref or "").strip()
+    if not raw:
+        return False
+    norm = re.sub(r"\s+", " ", raw).strip(" .,:;!?-").lower()
+    return norm not in _PLACEHOLDER_STRINGS
+
+
+def validate_substantive_notes(notes: str | None) -> str | None:
+    """Return an error reason if *notes* is missing, <40 chars, or trivial boilerplate; else None."""
+    if notes is None or not notes.strip():
+        return (
+            f"requires substantive notes (>= {MIN_SUBSTANTIVE_NOTES_LEN} non-whitespace chars "
+            "explaining why logged errors yielded 0 proposals)"
+        )
+    raw_stripped = notes.strip()
+    collapsed = " ".join(raw_stripped.split())
+    if (
+        len(raw_stripped) < MIN_SUBSTANTIVE_NOTES_LEN
+        or len(collapsed) < MIN_SUBSTANTIVE_NOTES_LEN
+    ):
+        return (
+            f"notes must be >= {MIN_SUBSTANTIVE_NOTES_LEN} meaningful chars "
+            f"(got {len(collapsed)})"
+        )
+    norm = collapsed.lower().strip(" .,:;!?-_`\"'")
+    if norm in _PLACEHOLDER_STRINGS:
+        return "notes cannot be trivial placeholder boilerplate"
+    alpha_words = re.findall(r"[A-Za-z]{2,}", collapsed)
+    unique_tokens = {
+        tok.lower() for tok in re.findall(r"[A-Za-z0-9_/-]{2,}", collapsed)
+    }
+    if len(alpha_words) < 5 or len(unique_tokens) < 4:
+        return "notes must contain a substantive explanation (not repeated filler or punctuation)"
+    non_boilerplate = [
+        tok for tok in unique_tokens if tok.strip("_-/") not in _BOILERPLATE_WORDS
+    ]
+    if not non_boilerplate:
+        return "notes cannot consist solely of trivial boilerplate phrasing"
+    return None
 
 
 def _provenance_signature(provenance: ProvenanceRef) -> tuple[str, str]:
@@ -244,7 +493,14 @@ def record_review(
             returns=[],
         )
 
-    if outcome is ReviewVerdict.NO_NEW_PROPOSALS and survivor_count != 0:
+    canonical_key, key_err = canonicalize_plan_key(
+        plan_key,
+        plan_path=provenance.plan_path,
+        repo_root=repo_root,
+        plan_id=plan_id,
+        worktree_slug=worktree_slug,
+    )
+    if key_err is not None or canonical_key is None:
         ts, ns = now_ns_pair()
         return LearnResponse(
             command="record-review",
@@ -254,11 +510,55 @@ def record_review(
             errors=[
                 LearnErrorEntry(
                     code=LearnErrorCode.ERR_INVALID_INPUT,
-                    message="no_new_proposals review requires survivor_count=0.",
+                    message=key_err or "Invalid plan_key.",
                 )
             ],
             returns=[],
         )
+
+    if outcome is ReviewVerdict.NO_NEW_PROPOSALS:
+        if survivor_count != 0:
+            ts, ns = now_ns_pair()
+            return LearnResponse(
+                command="record-review",
+                rc=1,
+                timestamp=ts,
+                timestamp_unix_ns=ns,
+                errors=[
+                    LearnErrorEntry(
+                        code=LearnErrorCode.ERR_INVALID_INPUT,
+                        message="no_new_proposals review requires survivor_count=0.",
+                    )
+                ],
+                returns=[],
+            )
+        if error_count > 0:
+            reasons: list[str] = []
+            notes_err = validate_substantive_notes(notes)
+            if notes_err is not None:
+                reasons.append(notes_err)
+            if not is_non_placeholder_error_ref(provenance.plan_error_ref):
+                reasons.append(
+                    "requires non-empty plan_error_ref referencing Errors Encountered row(s)"
+                )
+            if reasons:
+                ts, ns = now_ns_pair()
+                return LearnResponse(
+                    command="record-review",
+                    rc=1,
+                    timestamp=ts,
+                    timestamp_unix_ns=ns,
+                    errors=[
+                        LearnErrorEntry(
+                            code=LearnErrorCode.ERR_INVALID_INPUT,
+                            message=(
+                                "Anti-rubber-stamp gate rejected no_new_proposals with "
+                                f"error_count={error_count}: {'; '.join(reasons)}."
+                            ),
+                        )
+                    ],
+                    returns=[],
+                )
 
     resolved = resolve_state_dir(state_dir)
     reviews_path = resolved / "reviews.jsonl"
@@ -269,8 +569,8 @@ def record_review(
             ts, ns = now_ns_pair()
             try:
                 review = LearnReviewRecord(
-                    review_id=_make_id("rev", f"{plan_key}:{plan_sha256}", ns),
-                    plan_key=plan_key,
+                    review_id=_make_id("rev", f"{canonical_key}:{plan_sha256}", ns),
+                    plan_key=canonical_key,
                     plan_id=plan_id,
                     worktree_slug=worktree_slug,
                     plan_sha256=plan_sha256,
@@ -342,7 +642,7 @@ def record_review(
         [
             LearnErrorEntry(
                 code=LearnErrorCode.ERR_OWING_LEARN,
-                message=f"Plan {plan_key} marked owing_learn after retry exhaustion.",
+                message=f"Plan {canonical_key} marked owing_learn after retry exhaustion.",
             )
         ]
         if outcome is ReviewVerdict.OWING_LEARN
@@ -359,7 +659,7 @@ def record_review(
         returns=[
             LearnReturnEntry(
                 code=ret_code,
-                message=f"Recorded {outcome.value} review for {plan_key}",
+                message=f"Recorded {outcome.value} review for {canonical_key}",
             )
         ],
     )

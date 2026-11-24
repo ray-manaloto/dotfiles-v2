@@ -9,6 +9,7 @@ from pathlib import Path
 from agy_learn.ledger import (
     PROPOSAL_MD_MAX_BYTES,
     TIER_RANK,
+    is_bare_plan_key,
     latest_proposals_map,
     latest_reviews_by_plan,
     read_proposals,
@@ -178,8 +179,37 @@ def run_heal_check(
     findings: list[HealFinding] = []
 
     latest_reviews = latest_reviews_by_plan(reviews)
+    canonical_keys = {key for key in latest_reviews if not is_bare_plan_key(key)}
     owing_plans: list[str] = []
     for plan_key, rec in sorted(latest_reviews.items()):
+        if is_bare_plan_key(plan_key):
+            plan_path_hint = (rec.provenance.plan_path or "").strip()
+            has_canonical = bool(plan_path_hint) and (
+                plan_path_hint in canonical_keys
+                or str(Path(os.path.expanduser(plan_path_hint)).resolve(strict=False))
+                in canonical_keys
+            )
+            remediation = (
+                f"canonical review already exists at {plan_path_hint}; prune/migrate legacy bare-slug row from reviews.jsonl"
+                if has_canonical
+                else (
+                    f"re-record using canonical path ({plan_path_hint})"
+                    if plan_path_hint
+                    else "re-record using canonical task_plan.md path"
+                )
+            )
+            findings.append(
+                HealFinding(
+                    kind=HealFindingKind.HOOK_DRIFT,
+                    severity=HealSeverity.WARN,
+                    subject=rec.review_id,
+                    plan_key=plan_key,
+                    message=(
+                        f"Bare non-path plan_key {plan_key!r} in reviews.jsonl "
+                        f"({rec.review_id}): {remediation}."
+                    ),
+                )
+            )
         if rec.outcome is ReviewVerdict.OWING_LEARN:
             owing_plans.append(plan_key)
             findings.append(

@@ -105,7 +105,7 @@ def _build_app() -> cyclopts.App:
     @app.command(name="record-review")
     def record_review_cmd(
         *,
-        plan_key: Annotated[str, cyclopts.Parameter(name="--plan-key")],
+        plan_key: Annotated[str, cyclopts.Parameter(name="--plan-key")] = "",
         plan_sha256: Annotated[str, cyclopts.Parameter(name="--plan-sha256")],
         outcome: Annotated[ReviewVerdict, cyclopts.Parameter(name="--outcome")],
         error_count: Annotated[int, cyclopts.Parameter(name="--error-count")] = 0,
