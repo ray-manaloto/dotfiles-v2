@@ -194,7 +194,7 @@ jq_out=$(
         } | tojson
       else "" end
     ) as $quota_json
-  | "\($cid)\u001f\($line)\u001f\($sess_json)\u001f\($quota_json)"
+  | "\($cid)\n\($line)\n\($sess_json)\n\($quota_json)"
 ' <<EOF 2>/dev/null || true
 ${payload}
 EOF
@@ -202,10 +202,14 @@ EOF
 
 [ -n "${jq_out}" ] || exit 0
 
-sep=$(printf '\037')
-IFS=${sep} read -r out_cid out_line out_sess out_quota <<EOF
+exec 3<<EOF
 ${jq_out}
 EOF
+IFS= read -r out_cid <&3 || true
+IFS= read -r out_line <&3 || true
+IFS= read -r out_sess <&3 || true
+IFS= read -r out_quota <&3 || true
+exec 3<&-
 
 printf '%s\n' "${out_line}"
 
