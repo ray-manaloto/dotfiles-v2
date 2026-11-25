@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#MISE description="Read-only claude -p review billed only to linked Claude Console API credits (issue #3)"
+#USAGE flag "--prompt-file <path>" required=#true help="Review prompt (sent over stdin, never argv)"
+#USAGE flag "--cwd <path>" default="." help="Directory the reviewer may Read (confined by --restricted)"
+#USAGE flag "--model <model>" default="sonnet" help="opus, sonnet, or haiku (never fable)" {
+#USAGE   choices "opus" "sonnet" "haiku"
+#USAGE }
+#USAGE flag "--effort <level>" default="medium" help="low, medium, high, or xhigh" {
+#USAGE   choices "low" "medium" "high" "xhigh"
+#USAGE }
+#USAGE flag "--max-turns <n>" default="20" help="Turn cap (1-60)"
+#USAGE flag "--max-budget-usd <usd>" default="2.0" help="Per-run spend cap passed to claude --max-budget-usd (max 25)"
+#USAGE flag "--timeout-sec <s>" default="900" help="Wall-clock watchdog"
+#USAGE flag "--out <path>" help="Write the review text here (default: state dir)"
+#USAGE flag "--dry-run" help="Print the plan without credentials or network"
+#USAGE flag "--json" help="Emit schema-validated ApiRunnerResponse JSON"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		[[ ${common_dir} == /* ]] || common_dir="${repo_root}/${common_dir}"
+		common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+if [[ ! -x ${venv_py} ]]; then
+	echo "api:review: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+
+cmd=("${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from api_runner.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}")
+cmd+=(--prompt-file "${usage_prompt_file:?}" --cwd "${usage_cwd:-.}" --model "${usage_model:-sonnet}" --effort "${usage_effort:-medium}")
+cmd+=(--max-turns "${usage_max_turns:-20}" --max-budget-usd "${usage_max_budget_usd:-2.0}" --timeout-sec "${usage_timeout_sec:-900}")
+[[ -n ${usage_out:-} ]] && cmd+=(--out "${usage_out}")
+[[ ${usage_json:-false} == "true" ]] && cmd+=(--json)
+
+if [[ ${usage_dry_run:-false} == "true" ]]; then
+	exec "${cmd[@]}" --dry-run
+fi
+
+fnox_cfg="${HOME}/.config/fnox/api-credit.toml"
+if [[ ! -f ${fnox_cfg} ]]; then
+	echo "api:review: ${fnox_cfg} missing; run 'mise dot apply' from the main checkout" >&2
+	exit 1
+fi
+# Claude Code trusts the proxy CA through NODE_EXTRA_CA_CERTS; fnox exports SSL_CERT_FILE.
+# The inner sh expands these inside the proxy, so single quotes are intended.
+# shellcheck disable=SC2016
+exec fnox --non-interactive -c "${fnox_cfg}" -P api-credit --no-defaults proxy run -- \
+	/bin/sh -c 'NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-${SSL_CERT_FILE:-}}"; export NODE_EXTRA_CA_CERTS; exec "$@"' sh "${cmd[@]}"
