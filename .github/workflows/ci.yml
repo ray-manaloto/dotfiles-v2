@@ -92,8 +92,8 @@ jobs:
       - name: Run idempotent 2x mise bootstrap and verify zero missing dotfiles
         run: |
           mise trust --all
-          # actions/checkout sets origin without ".git"; mise bootstrap --from must match it exactly.
-          repo_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          # mise bootstrap --from must match the checkout's origin exactly (actions/checkout omits ".git").
+          repo_url="$(git config --get remote.origin.url)"
           MISE_YES=1 MISE_LOCKED=1 mise -E linux bootstrap \
             --from "${repo_url}" \
             --from-dir "${PWD}" \

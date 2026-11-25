@@ -1092,7 +1092,7 @@ def test_host_doctor_checks_skip_in_repo_scope_and_pre_push_sets_it() -> None:
 
     repo = Path(__file__).resolve().parents[1]
     checks = tomllib.loads((repo / "mise.toml").read_text())["doctor"]["checks"]
-    gate = 'test "${DOTFILES_DOCTOR_SCOPE:-full}" = repo || '
+    gate = 'if test "${DOTFILES_DOCTOR_SCOPE:-full}" = repo; then echo "SKIP: host'
     for name in HOST_SCOPED_DOCTOR_CHECKS:
         assert checks[name]["run"].startswith(gate), name
     repo_checks = set(checks) - set(HOST_SCOPED_DOCTOR_CHECKS)
