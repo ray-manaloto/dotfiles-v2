@@ -13,3 +13,6 @@ fi
 if [[ -r "$HOME/.config/dotfiles-v2/vm-env.sh" ]]; then
 	source "$HOME/.config/dotfiles-v2/vm-env.sh"
 fi
+if [[ -r "$HOME/.config/dotfiles-v2/pc-env.sh" ]]; then
+	source "$HOME/.config/dotfiles-v2/pc-env.sh"
+fi

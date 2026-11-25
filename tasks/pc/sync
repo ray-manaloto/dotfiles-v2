@@ -21,7 +21,11 @@ else
 	git clone "$repo" "$checkout" </dev/null
 fi
 target="$checkout/unix/home/.config/mise"
-[[ -f "$target/config.pc.toml" && -s "$HOME/.config/fnox/age.txt" && -x /usr/local/bin/mise ]]
+[[ -f "$target/config.pc.toml" && -x /usr/local/bin/mise ]]
+install -d -m 0700 "$HOME/.config/fnox"
+if [[ ! -s "$HOME/.config/fnox/age.txt" ]]; then
+	echo 'Continuing bootstrap. Before running pc:doctor, provision your fnox age identity at ~/.config/fnox/age.txt on the remote host with mode 0600.' >&2
+fi
 if [[ -e $config || -L $config ]]; then
 	if [[ ! -L $config || ! $config -ef $target ]]; then
 		# Preserve the legacy per-file symlink and any unrelated user config.

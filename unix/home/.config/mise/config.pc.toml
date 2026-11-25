@@ -10,10 +10,10 @@ FNOX_AGE_KEY_FILE = "{{ env.HOME }}/.config/fnox/age.txt"
 [bootstrap.packages]
 "pacman:zsh" = "latest"
 
-# Select this overlay before mise activation, then load the shared zshenv
-# from the home tree containing the linked Option A config.
-[dotfiles."~/.zshenv"]
-content = '''
-export MISE_ENV=linux,pc
-source "$HOME/.config/mise/../../.zshenv"
-'''
+[dotfiles]
+"~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/pc-env.sh" ] && . "${HOME}/.config/dotfiles-v2/pc-env.sh"', position = "prepend" }
+"~/.config/dotfiles-v2/pc-env.sh/mise-env" = { line = "export MISE_ENV=linux,pc" }
+"~/.config/fnox/config.toml" = { source = "~/.config/fnox/config.headless.toml", main_checkout = true, depends = [
+  "~/.config/fnox/config.headless.toml",
+] }
+"~/.profile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/pc-env.sh" ] && . "${HOME}/.config/dotfiles-v2/pc-env.sh"', position = "append" }

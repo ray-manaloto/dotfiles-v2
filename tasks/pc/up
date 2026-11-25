@@ -1,6 +1,6 @@
 #!/usr/bin/env -S usage exec bash
 # shellcheck shell=bash
-#MISE description="Provision standalone mise and the headless fnox identity before syncing Option A"
+#MISE description="Provision standalone mise and sync Option A on the remote Linux host"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
 #USAGE flag "--dry-run" help="Describe provisioning without connecting"
 #USAGE flag "--upgrade-omarchy" default="false" help="Authorize an Omarchy system update before provisioning"
@@ -9,7 +9,7 @@ set -euo pipefail
 host="${usage_host:-pc}"
 upgrade="${usage_upgrade_omarchy:-false}"
 if [[ ${usage_dry_run:-false} == true ]]; then
-	echo "pc:up dry-run ($host): install pinned mise via packslip, wire fnox-age.key, and run pc:sync"
+	echo "pc:up dry-run ($host): install pinned mise via packslip and run pc:sync"
 	if [[ $upgrade == true ]]; then
 		echo "Requested Omarchy update: OMARCHY_PATH=/usr/share/omarchy omarchy update -y"
 	fi
@@ -32,17 +32,6 @@ if [[ ! -x /usr/local/bin/mise || $(/usr/local/bin/mise --version | awk '{print 
 	chmod 0755 "$tmp/packslip"
 	sudo -n "$tmp/packslip" install github.com/jdx/mise --version "$mise_ver" \
 		--pin ps1_nlhmwtfeufglxv5myvwvronk7a --system --bin-dir /usr/local/bin --force
-fi
-keys=$("$HOME/.local/bin/agent-secrets" register pc ray-manaloto/dotfiles-v2 </dev/null)
-[[ $keys == /* && -s "$keys/fnox-age.key" && -r "$keys/fnox-age.key" ]]
-install -d -m 0700 "$HOME/.config/fnox"
-identity="$HOME/.config/fnox/age.txt"
-if [[ ! $identity -ef "$keys/fnox-age.key" ]]; then
-	if [[ -e $identity && ! -L $identity ]]; then
-		echo "Move the existing fnox age.txt identity aside before provisioning" >&2
-		exit 1
-	fi
-	ln -sfnT "$keys/fnox-age.key" "$identity"
 fi
 REMOTE
 exec mise run pc:sync --host "$host"
