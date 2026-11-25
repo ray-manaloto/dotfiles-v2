@@ -14,6 +14,7 @@ wrong pool):
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -50,8 +51,6 @@ PASSTHROUGH_ENV: tuple[str, ...] = (
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "NO_PROXY",
-    "ALL_PROXY",
-    "all_proxy",
     "https_proxy",
     "http_proxy",
     "no_proxy",
@@ -136,9 +135,12 @@ def build_env(parent: Mapping[str, str], config_dir: Path) -> dict[str, str]:
             ApiRunnerErrorCode.ERR_MISSING_CREDENTIAL,
             "ANTHROPIC_API_KEY is absent; run under the fnox `api-credit` profile",
         )
-    if key.startswith("fnox-placeholder") and not (
-        parent.get("HTTPS_PROXY") or parent.get("https_proxy")
-    ):
+    if not key.startswith("fnox-placeholder"):
+        raise RunnerError(
+            ApiRunnerErrorCode.ERR_MISSING_CREDENTIAL,
+            "a raw ANTHROPIC_API_KEY bypasses the strict-egress fnox proxy; use the api-credit profile",
+        )
+    if not (parent.get("HTTPS_PROXY") or parent.get("https_proxy")):
         raise RunnerError(
             ApiRunnerErrorCode.ERR_MISSING_CREDENTIAL,
             "placeholder key without HTTPS_PROXY; the fnox proxy is not active",
@@ -207,6 +209,18 @@ def _opt_int(value: object) -> int | None:
     return int(value) if isinstance(value, int) and value >= 0 else None
 
 
+SECRET_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]+|fnox-placeholder-[A-Za-z0-9_-]+")
+
+
+def stderr_tail(path: Path, limit: int = 800) -> str | None:
+    """Bounded, secret-scrubbed tail of the child's stderr for diagnostics."""
+    try:
+        data = path.read_bytes()[-limit:].decode(errors="replace").strip()
+    except OSError:
+        return None
+    return SECRET_RE.sub("<redacted>", data) or None
+
+
 def run(
     spec: RunSpec,
     prompt: str,
@@ -214,11 +228,7 @@ def run(
     *,
     popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
 ) -> ApiRunnerRunResult:
-    """Run claude, enforcing guards on the live event stream."""
-    validate_spec(spec)
-    config_dir = Path(spec.config_dir)
-    config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    env = build_env(parent_env, config_dir)
+    """Run claude, enforcing guards on the live event stream; never raises."""
     api_key_source: str | None = None
     tools: list[str] = []
     usage: ApiRunnerUsage | None = None
@@ -234,60 +244,86 @@ def run(
             guard_errors=errors,
         )
 
-    proc = popen(
-        build_argv(spec),
-        cwd=spec.cwd,
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    assert proc.stdin is not None and proc.stdout is not None
-    proc.stdin.write(prompt.encode())
-    proc.stdin.close()
-    timed_out = threading.Event()
-
-    def _expire() -> None:
-        timed_out.set()
-        proc.kill()
-
-    watchdog = threading.Timer(spec.timeout_sec, _expire)
-    watchdog.daemon = True
-    watchdog.start()
-    saw_init = False
     try:
-        for line in proc.stdout:
-            try:
-                event = orjson.loads(line)
-            except orjson.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            if event.get("type") == "system" and event.get("subtype") == "init":
-                api_key_source, tools = check_init(event, REVIEW_TOOLS)
-                saw_init = True
-            elif event.get("type") == "result":
-                if not saw_init:
-                    raise RunnerError(
-                        ApiRunnerErrorCode.ERR_WRONG_AUTH_SOURCE,
-                        "result before init event",
-                    )
-                usage, result_text, err = parse_result(event)
-                if err:
-                    errors.append(err)
-            elif not saw_init and event.get("type") not in ("system",):
-                raise RunnerError(
-                    ApiRunnerErrorCode.ERR_WRONG_AUTH_SOURCE,
-                    "model event before init event",
-                )
+        validate_spec(spec)
+        config_dir = Path(spec.config_dir)
+        config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        config_dir.chmod(0o700)
+        env = build_env(parent_env, config_dir)
     except RunnerError as exc:
-        watchdog.cancel()
-        proc.kill()
-        proc.wait()
         errors.append(exc.entry)
         return outcome()
-    code = proc.wait()
-    watchdog.cancel()
+    except OSError as exc:
+        errors.append(
+            ApiRunnerErrorEntry(
+                code=ApiRunnerErrorCode.ERR_INVALID_INPUT, message=str(exc)
+            )
+        )
+        return outcome()
+
+    stderr_path = config_dir / "claude-stderr.log"
+    timed_out = threading.Event()
+    saw_init = False
+    with stderr_path.open("wb") as stderr_fh:
+        proc = popen(
+            build_argv(spec),
+            cwd=spec.cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_fh,
+        )
+
+        def _expire() -> None:
+            timed_out.set()
+            proc.kill()
+
+        watchdog = threading.Timer(spec.timeout_sec, _expire)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            assert proc.stdin is not None and proc.stdout is not None
+            proc.stdin.write(prompt.encode())
+            proc.stdin.close()
+            for line in proc.stdout:
+                try:
+                    event = orjson.loads(line)
+                except orjson.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "system" and event.get("subtype") == "init":
+                    api_key_source, tools = check_init(event, REVIEW_TOOLS)
+                    saw_init = True
+                elif event.get("type") == "result":
+                    if not saw_init:
+                        raise RunnerError(
+                            ApiRunnerErrorCode.ERR_WRONG_AUTH_SOURCE,
+                            "result before init event",
+                        )
+                    usage, result_text, err = parse_result(event)
+                    if err:
+                        errors.append(err)
+                elif not saw_init and event.get("type") != "system":
+                    raise RunnerError(
+                        ApiRunnerErrorCode.ERR_WRONG_AUTH_SOURCE,
+                        "model event before init event",
+                    )
+        except RunnerError as exc:
+            errors.append(exc.entry)
+        except (OSError, ValueError) as exc:
+            errors.append(
+                ApiRunnerErrorEntry(
+                    code=ApiRunnerErrorCode.ERR_COMMAND_FAILED,
+                    message=f"{type(exc).__name__}: {exc}"[:300],
+                )
+            )
+        finally:
+            watchdog.cancel()
+            if proc.poll() is None:
+                proc.kill()
+            code = proc.wait()
+
     if timed_out.is_set():
         errors.append(
             ApiRunnerErrorEntry(
@@ -295,11 +331,13 @@ def run(
                 message=f"exceeded {spec.timeout_sec}s",
             )
         )
-    elif usage is None:
+    elif usage is None and not errors:
+        tail = stderr_tail(stderr_path)
         errors.append(
             ApiRunnerErrorEntry(
                 code=ApiRunnerErrorCode.ERR_COMMAND_FAILED,
                 message=f"claude exited {code} without a result event",
+                detail={"stderr_tail": tail} if tail else None,
             )
         )
     return outcome()

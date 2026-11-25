@@ -23,6 +23,8 @@ from api_runner.runner import (
 )
 from dotfiles_py.generated.api_runner_schema import (
     ApiRunnerEffort,
+    ApiRunnerErrorCode,
+    ApiRunnerErrorEntry,
     ApiRunnerModel,
     ApiRunnerResponse,
 )
@@ -64,6 +66,7 @@ def review(
     """Run one isolated read-only review; dry-run needs no credentials."""
     state = resolve_state_dir(state_dir)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state.chmod(0o700)
     configure_logging(
         jsonl_path=state / "usage.log.jsonl",
         level=logging.WARNING,
@@ -73,8 +76,10 @@ def review(
 
     claude_bin = resolve_claude_bin()
     if claude_bin is None:
-        sys.stderr.write("api:review: claude CLI not found\n")
-        return 2
+        if not dry_run:
+            sys.stderr.write("api:review: claude CLI not found\n")
+            return 2
+        claude_bin = "claude"
     try:
         spec = RunSpec(
             model=model,
@@ -118,11 +123,20 @@ def review(
     else:
         outcome = run(spec, prompt, os.environ)
         result_path: str | None = None
-        if outcome.result_text is not None:
+        guard_errors = list(outcome.guard_errors)
+        if outcome.result_text is not None and not guard_errors:
             target = out or state / f"review-{ns}.md"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(outcome.result_text)
-            result_path = str(target)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(outcome.result_text)
+                result_path = str(target)
+            except OSError as exc:
+                guard_errors.append(
+                    ApiRunnerErrorEntry(
+                        code=ApiRunnerErrorCode.ERR_COMMAND_FAILED,
+                        message=f"review billed but not saved: {exc}",
+                    )
+                )
         response = base.model_copy(
             update={
                 "dry_run": False,
@@ -130,11 +144,11 @@ def review(
                 "tools": outcome.tools,
                 "usage": outcome.usage,
                 "result_path": result_path,
-                "errors": outcome.guard_errors,
+                "errors": guard_errors,
                 "returns": [
                     ReturnEntry(
                         code=CommonReturnCode.RET_PARTIAL
-                        if outcome.guard_errors
+                        if guard_errors
                         else CommonReturnCode.RET_OK
                     )
                 ],

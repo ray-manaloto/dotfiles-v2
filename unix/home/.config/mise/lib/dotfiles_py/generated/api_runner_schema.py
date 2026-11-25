@@ -99,7 +99,7 @@ class ApiRunnerSpec(BaseModel):
     effort: ApiRunnerEffort
     cwd: Annotated[StrictStr, Field(min_length=1)]
     max_turns: Annotated[StrictInt, Field(ge=1, le=60)]
-    max_budget_usd: Annotated[StrictFloat, Field(gt=0.0, le=25.0)]
+    max_budget_usd: Annotated[StrictFloat, Field(ge=0.01, le=25.0)]
     timeout_sec: Annotated[StrictInt, Field(ge=1, le=7200)]
     config_dir: Annotated[StrictStr, Field(min_length=1)]
     claude_bin: Annotated[StrictStr, Field(min_length=1)]

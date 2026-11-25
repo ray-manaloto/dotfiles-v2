@@ -30,6 +30,8 @@ with open(os.environ["FAKE_RECORD"], "w") as fh:
     json.dump({{"argv": sys.argv[1:], "env": dict(os.environ), "prompt": prompt}}, fh)
 def emit(event):
     sys.stdout.write(json.dumps(event) + "\\n"); sys.stdout.flush()
+if mode == "crash":
+    sys.stderr.write("error: unknown option sk-ant-SECRET123\\n"); sys.exit(3)
 source = "none" if mode == "subscription" else "ANTHROPIC_API_KEY"
 tools = ["Read", "Bash"] if mode == "tools" else ["Read"]
 mcp = [{{"name": "x"}}] if mode == "mcp" else []
@@ -243,3 +245,29 @@ def _popen_with(env: dict[str, str], *, mode: bool = True):
         return subprocess.Popen(argv, **kw)
 
     return _popen
+
+
+def test_raw_key_rejected_outside_proxy(tmp_path):
+    with pytest.raises(runner.RunnerError) as exc:
+        runner.build_env(
+            {"ANTHROPIC_API_KEY": "sk-ant-real", "HTTPS_PROXY": "http://x"}, tmp_path
+        )
+    assert exc.value.entry.code is ApiRunnerErrorCode.ERR_MISSING_CREDENTIAL
+
+
+def test_run_returns_typed_error_instead_of_raising(tmp_path, fake_claude):
+    out = runner.run(make_spec(tmp_path, fake_claude), "PROMPT", {"PATH": "/bin"})
+    assert [e.code for e in out.guard_errors] == [
+        ApiRunnerErrorCode.ERR_MISSING_CREDENTIAL
+    ]
+
+
+def test_early_exit_reports_scrubbed_stderr(tmp_path, fake_claude):
+    env = parent_env(tmp_path, "crash")
+    out = runner.run(
+        make_spec(tmp_path, fake_claude), "P" * 200_000, env, popen=_popen_with(env)
+    )
+    assert [e.code for e in out.guard_errors] == [ApiRunnerErrorCode.ERR_COMMAND_FAILED]
+    detail = out.guard_errors[0].detail or {}
+    tail = str(detail.get("stderr_tail", "")) + str(out.guard_errors[0].message)
+    assert "SECRET123" not in tail

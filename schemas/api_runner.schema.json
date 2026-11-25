@@ -198,8 +198,8 @@
         },
         "max_budget_usd": {
           "type": "number",
-          "exclusiveMinimum": 0,
-          "maximum": 25
+          "maximum": 25,
+          "minimum": 0.01
         },
         "timeout_sec": {
           "type": "integer",
