@@ -50,10 +50,10 @@ PASSTHROUGH_ENV: tuple[str, ...] = (
     "LC_CTYPE",
     "HTTPS_PROXY",
     "HTTP_PROXY",
-    "NO_PROXY",
+    # NO_PROXY/no_proxy deliberately omitted: a caller value covering
+    # api.anthropic.com would bypass the fnox key-injecting proxy.
     "https_proxy",
     "http_proxy",
-    "no_proxy",
     "NODE_EXTRA_CA_CERTS",
     "SSL_CERT_FILE",
     "NODE_USE_ENV_PROXY",
@@ -264,15 +264,34 @@ def run(
     stderr_path = config_dir / "claude-stderr.log"
     timed_out = threading.Event()
     saw_init = False
-    with stderr_path.open("wb") as stderr_fh:
-        proc = popen(
-            build_argv(spec),
-            cwd=spec.cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=stderr_fh,
+    try:
+        stderr_fh = stderr_path.open("wb")
+    except OSError as exc:
+        errors.append(
+            ApiRunnerErrorEntry(
+                code=ApiRunnerErrorCode.ERR_COMMAND_FAILED,
+                message=f"{type(exc).__name__}: {exc}"[:300],
+            )
         )
+        return outcome()
+    with stderr_fh:
+        try:
+            proc = popen(
+                build_argv(spec),
+                cwd=spec.cwd,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_fh,
+            )
+        except OSError as exc:
+            errors.append(
+                ApiRunnerErrorEntry(
+                    code=ApiRunnerErrorCode.ERR_COMMAND_FAILED,
+                    message=f"{type(exc).__name__}: {exc}"[:300],
+                )
+            )
+            return outcome()
 
         def _expire() -> None:
             timed_out.set()

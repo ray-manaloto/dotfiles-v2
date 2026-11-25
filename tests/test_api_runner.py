@@ -271,3 +271,25 @@ def test_early_exit_reports_scrubbed_stderr(tmp_path, fake_claude):
     detail = out.guard_errors[0].detail or {}
     tail = str(detail.get("stderr_tail", "")) + str(out.guard_errors[0].message)
     assert "SECRET123" not in tail
+
+
+def test_popen_oserror_returns_typed_error(tmp_path, fake_claude):
+    def boom(*_a, **_k):
+        raise FileNotFoundError("claude not found")
+
+    out = runner.run(
+        make_spec(tmp_path, fake_claude), "PROMPT", parent_env(tmp_path), popen=boom
+    )
+    assert [e.code for e in out.guard_errors] == [ApiRunnerErrorCode.ERR_COMMAND_FAILED]
+
+
+def test_no_proxy_is_never_forwarded(tmp_path, fake_claude):
+    env = parent_env(tmp_path, NO_PROXY="*", no_proxy="api.anthropic.com")
+    runner.run(
+        make_spec(tmp_path, fake_claude),
+        "PROMPT",
+        env,
+        popen=_popen_with(env, mode=False),
+    )
+    child_env = json.loads((tmp_path / "record.json").read_text())["env"]
+    assert "NO_PROXY" not in child_env and "no_proxy" not in child_env
