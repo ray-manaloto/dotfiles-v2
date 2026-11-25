@@ -1094,7 +1094,7 @@ def test_host_doctor_checks_skip_in_repo_scope_and_pre_push_sets_it() -> None:
     """Pushes must depend on the branch, not on live-host drift (owner decision 2026-11-25)."""
     import tomllib
 
-    repo = Path(__file__).resolve().parents[1]
+    repo = REPO_ROOT
     checks = tomllib.loads((repo / "mise.toml").read_text(encoding="utf-8"))["doctor"][
         "checks"
     ]
@@ -1122,7 +1122,7 @@ def test_host_doctor_checks_skip_in_repo_scope_and_pre_push_sets_it() -> None:
 
 
 def test_host_check_helper_rejects_missing_command() -> None:
-    repo = Path(__file__).resolve().parents[1]
+    repo = REPO_ROOT
     proc = subprocess.run(
         ["sh", str(repo / "tasks/py/host_check.sh")],
         env={"PATH": "/usr/bin:/bin"},
@@ -1138,7 +1138,7 @@ def test_host_check_helper_rejects_missing_command() -> None:
     [("repo", 0, "SKIP: host check"), ("full", 7, ""), (None, 7, "")],
 )
 def test_host_check_helper_runs_or_skips(scope: str | None, rc: int, out: str) -> None:
-    repo = Path(__file__).resolve().parents[1]
+    repo = REPO_ROOT
     env = {"PATH": "/usr/bin:/bin"}
     if scope is not None:
         env["DOTFILES_DOCTOR_SCOPE"] = scope
@@ -1150,4 +1150,6 @@ def test_host_check_helper_runs_or_skips(scope: str | None, rc: int, out: str) -
         check=False,
     )
     assert proc.returncode == rc
-    assert proc.stdout.startswith(out)
+    # SKIP goes to stdout (shown by mise doctor); full scope prints nothing itself.
+    assert proc.stdout == (f"{out} (DOTFILES_DOCTOR_SCOPE=repo)\n" if out else "")
+    assert proc.stderr == ""
