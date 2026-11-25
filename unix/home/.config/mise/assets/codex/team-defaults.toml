@@ -1,3 +1,4 @@
+#:schema https://raw.githubusercontent.com/openai/codex/rust-v0.172.0/codex-rs/core/config.schema.json
 # Declarative Codex 0.172.0 routing defaults merged into ~/.codex/config.toml via mise dotfiles.
 # Paired with standalone V2 profiles ($CODEX_HOME/{sol,astra,luna,review}.config.toml) and
 # Starlark execpolicy rules (~/.codex/rules/{guards,workflow}.rules).
@@ -7,6 +8,8 @@
 model = "gpt-6.2-sol"
 model_reasoning_effort = "medium"
 plan_mode_reasoning_effort = "medium"
+# `/review` model (docs: defaults to the session model); keep reviews on sol, spare astra.
+review_model = "gpt-6.2-sol"
 
 [features]
 multi_agent_v2 = true

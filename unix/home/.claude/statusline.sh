@@ -337,4 +337,4 @@ if [[ ${lines_add:-0} != "0" || ${lines_rm:-0} != "0" ]]; then
 fi
 add "$tail_seg"
 
-printf '%b\n' "$out"
+printf '%s\n' "$out"

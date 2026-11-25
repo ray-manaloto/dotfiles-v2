@@ -193,7 +193,6 @@ exclude = ["*"]
 "~/.claude/settings.json/model-routing" = { source = "assets/claude/model-routing.json", merge = true, permissions = "0600" }
 "~/.claude/settings.json/permissions" = { source = "assets/claude/permissions.json", merge = true, permissions = "0600" }
 "~/.claude/statusline.sh" = { main_checkout = true }
-"~/.claude/subagent-statusline.sh" = { main_checkout = true }
 "~/.codex/AGENTS.md" = { source = "assets/agents/codex-AGENTS.md.tera", mode = "template", depends = [
   "~/.agents/AGENTS.md",
 ] }

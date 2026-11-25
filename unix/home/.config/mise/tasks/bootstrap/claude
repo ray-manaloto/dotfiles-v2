@@ -9,7 +9,7 @@ if [[ ! -x "${HOME}/.local/bin/claude" ]]; then
 	trap 'rm -f "${script}"' EXIT
 	curl -fsSLo "${script}" https://claude.ai/install.sh
 	PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" bash "${script}" </dev/null
-elif [[ ${usage_upgrade:-false} == "true" || ${CLAUDE_AUTO_UPDATE:-0} == "1" ]]; then
-	"${HOME}/.local/bin/claude" update </dev/null
+elif [[ ${usage_upgrade:-false} == "true" ]]; then
+	"${HOME}/.local/bin/claude" update </dev/null || echo "WARN: claude update failed; keeping installed version" >&2
 fi
 "${HOME}/.local/bin/claude" --version </dev/null

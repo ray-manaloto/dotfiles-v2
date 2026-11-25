@@ -16,6 +16,9 @@ keywords:
   - pkill
   - killall
   - pgrep
+  - brew
+  - fnox
+  - doppler
 
 safe_patterns:
   - name: mise-cli-readonly-and-managed
@@ -80,3 +83,25 @@ destructive_patterns:
       On macOS BSD pgrep, flags placed after the pattern (e.g. `pgrep foo -a`)
       fail or are misinterpreted as patterns. Place flags before the pattern
       (e.g. `pgrep -fl foo`).
+  - name: homebrew-install
+    pattern: (?i)(?:^|[;&|(\s])brew\s+(?:install|reinstall|upgrade|tap|bundle)\b
+    severity: high
+    description: Blocking ad-hoc Homebrew installs (including wrapper forms like `mise x -- brew install`).
+    explanation: >-
+      Prefer mise-native installs over Homebrew; the end state is that mise
+      manages everything. Declare the tool in the dotfiles-v2 mise config
+      (or bootstrap packages) instead of installing it ad hoc.
+  - name: fnox-secret-printing
+    pattern: (?i)(?:^|[;&|(\s])fnox(?:\s+-{1,2}[A-Za-z][\w-]*(?:[= ][^\s;&|-][^\s;&|]*)?)*\s+(?:get|export|exec|edit|tui|mcp|push)\b|(?:^|[;&|(\s])fnox(?:\s+-{1,2}[A-Za-z][\w-]*(?:[= ][^\s;&|-][^\s;&|]*)?)*\s+list\b[^|;&\n]*\s(?:--values|-[A-Za-z]*v)\b
+    severity: critical
+    description: Blocking fnox commands that print or hand out secret values (with or without leading global flags).
+    explanation: >-
+      Secrets stay inside fnox. Use `fnox proxy run -- <cmd>`, `fnox check`,
+      `fnox list` (names only), or `mise run secret:doctor`.
+  - name: doppler-secret-printing
+    pattern: (?i)(?:^|[;&|(\s])doppler(?:\s+-{1,2}[A-Za-z][\w-]*(?:[= ][^\s;&|-][^\s;&|]*)?)*\s+(?:run\b|secrets\s*(?:$|[;&|)]|\s+(?:get|download|substitute)\b|\s+-))
+    severity: critical
+    description: Blocking doppler commands that print secret values or inject them outside fnox.
+    explanation: >-
+      Manage Doppler only through the `secret:*` mise tasks and consume secrets
+      through fnox proxy rules.

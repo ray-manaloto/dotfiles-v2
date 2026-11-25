@@ -1,5 +1,5 @@
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "{{ env.HOME }}/.local/share/claude-mods/you-should-know-forward:{{ env.HOME }}/.local/share/claude-mods/run-skill-auto"
+    "CLAUDE_CODE_PLUGIN_DIRS": "{{ env.HOME }}/.local/share/claude-mods/you-should-know-forward:{{ env.HOME }}/.local/share/claude-mods/side-notes:{{ env.HOME }}/.local/share/claude-mods/run-skill-auto"
   }
 }

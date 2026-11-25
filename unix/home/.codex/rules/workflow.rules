@@ -1,48 +1,24 @@
-# Narrow allowlist for verified read-only and cross-workspace orchestration commands.
-# Reduces Auto-review round-trips without weakening boundary enforcement on git push,
-# gh pr merge, gh api, ssh, or arbitrary shell mutations. Most-restrictive rule wins.
-# Deployed with mode = "copy" because Codex ignores symlinked .rules entries.
+# Strictly read-only allowlist (owner decision 2026-11-25). An `allow` decision may bypass the
+# sandbox, so nothing here may write files, run repo-defined code (hk run/fix, mise doctor/run,
+# git hooks), or wrap another command (mise x, env, sh -c). Everything else stays on the
+# auto-review path. Most-restrictive rule wins; guards.rules forbids take precedence.
+# Deployed with mode = "copy" because Codex skips symlinked .rules files.
+# Check: codex execpolicy check --rules guards.rules --rules workflow.rules -- <cmd>
 
 prefix_rule(
     pattern = ["hc", ["ls", "get", "read", "wait", "status"]],
     decision = "allow",
     justification = "read/wait on Herdr terminal state",
     match = [["hc", "ls", "--json"], ["hc", "read", "t1", "--lines", "40"], ["hc", "wait", "t2"]],
-    not_match = [["hc", "kill", "t1"], ["hc", "send", "t1", "hi"]],
+    not_match = [["hc", "kill", "t1"], ["hc", "send", "t1", "hi"], ["hc", "run", "x"]],
 )
 
 prefix_rule(
-    pattern = ["vb", ["whoami", "list", "channels", "actors", "read", "tasks"]],
+    pattern = ["vb", ["whoami", "list", "channels", "actors", "read"]],
     decision = "allow",
-    justification = "read-only Vercel Board inspection (posting stays reviewed)",
+    justification = "read-only Vercel Board inspection (posting and task leases stay reviewed)",
     match = [["vb", "whoami"], ["vb", "read", "ops/updates"]],
-    not_match = [["vb", "post", "ops/updates", "hi"], ["vb", "grants", "revoke", "g1"]],
-)
-
-# No `mise x`/`mise exec`/`mise run`/`mise task run`: they wrap arbitrary commands and would bypass
-# guards.rules (e.g. `mise x -- brew install jq`). Those stay on the auto-review path.
-prefix_rule(
-    pattern = ["mise", ["doctor", "ls", "status", "fmt"]],
-    decision = "allow",
-    justification = "read-only mise diagnostics and config formatting",
-    match = [["mise", "doctor", "project"], ["mise", "fmt"], ["mise", "ls"]],
-    not_match = [["mise", "x", "--", "brew", "install", "jq"], ["mise", "run", "py:test"], ["mise", "use", "-g", "node"]],
-)
-
-prefix_rule(
-    pattern = ["mise", ["dot", "dotfiles"], ["status", "diff"]],
-    decision = "allow",
-    justification = "read-only dotfile drift inspection (apply stays reviewed)",
-    match = [["mise", "dot", "status"], ["mise", "dotfiles", "diff"]],
-    not_match = [["mise", "dot", "apply"]],
-)
-
-prefix_rule(
-    pattern = ["hk", ["check", "fix", "validate", "run"]],
-    decision = "allow",
-    justification = "local pre-commit and repo lint/test checks",
-    match = [["hk", "check", "--all"], ["hk", "validate", "--json"]],
-    not_match = [["hk", "uninstall"]],
+    not_match = [["vb", "post", "ops/updates", "hi"], ["vb", "tasks", "claim", "t1"]],
 )
 
 prefix_rule(
@@ -50,7 +26,7 @@ prefix_rule(
     decision = "allow",
     justification = "read-only GitHub PR inspection",
     match = [["gh", "pr", "view", "201"], ["gh", "pr", "checks"]],
-    not_match = [["gh", "pr", "merge", "1"]],
+    not_match = [["gh", "pr", "merge", "1"], ["gh", "pr", "checkout", "1"]],
 )
 
 prefix_rule(
@@ -62,27 +38,37 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["gh", "run", ["list", "view", "watch"]],
+    pattern = ["gh", "run", ["list", "view"]],
     decision = "allow",
-    justification = "read-only GitHub Actions workflow monitoring",
-    match = [["gh", "run", "list"], ["gh", "run", "watch", "12345"]],
-    not_match = [["gh", "run", "cancel", "12345"]],
+    justification = "read-only GitHub Actions run inspection",
+    match = [["gh", "run", "list"], ["gh", "run", "view", "12345"]],
+    not_match = [["gh", "run", "cancel", "12345"], ["gh", "run", "rerun", "1"]],
+)
+
+# git: inspection only. No fetch (--upload-pack runs code), diff/show (--output writes files),
+# add/commit (hooks run), or worktree/branch mutation.
+prefix_rule(
+    pattern = ["git", ["status", "log", "rev-parse"]],
+    decision = "allow",
+    justification = "local git inspection without file writes or hooks",
+    match = [["git", "status", "--short"], ["git", "log", "--oneline", "-5"], ["git", "rev-parse", "HEAD"]],
+    not_match = [["git", "fetch", "origin"], ["git", "diff", "--output=x"], ["git", "commit", "-m", "x"], ["git", "push"]],
 )
 
 prefix_rule(
-    pattern = ["git", ["status", "diff", "log", "branch", "rev-parse", "show", "fetch", "add", "commit", "worktree"]],
+    pattern = ["git", "worktree", "list"],
     decision = "allow",
-    justification = "local git inspection and worktree commits",
-    match = [["git", "status", "--short"], ["git", "worktree", "list"]],
-    not_match = [["git", "push", "origin", "main"], ["git", "reset", "--hard"]],
+    justification = "list linked worktrees",
+    match = [["git", "worktree", "list"]],
+    not_match = [["git", "worktree", "remove", "--force", "x"]],
 )
 
 prefix_rule(
-    pattern = ["docker", ["ps", "images", "logs", "inspect"]],
+    pattern = ["docker", ["ps", "images"]],
     decision = "allow",
-    justification = "read-only container status inspection",
-    match = [["docker", "ps"], ["docker", "logs", "web"]],
-    not_match = [["docker", "compose", "up"], ["docker", "context", "use", "x"], ["docker", "system", "prune", "-a"]],
+    justification = "read-only container listing (inspect/logs can expose secrets)",
+    match = [["docker", "ps"], ["docker", "images"]],
+    not_match = [["docker", "inspect", "x"], ["docker", "logs", "x"], ["docker", "compose", "up"]],
 )
 
 prefix_rule(
@@ -94,26 +80,11 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["ctx7", ["library", "docs", "code", "get-upgrade-guide", "search", "whoami"]],
+    pattern = ["ctx7", ["library", "docs", "search", "whoami"]],
     decision = "allow",
     justification = "read-only Context7 CLI documentation lookup",
     match = [["ctx7", "docs", "/jdx/mise", "systemd"]],
     not_match = [["ctx7", "setup", "--mcp"]],
-)
-
-prefix_rule(
-    pattern = ["uv", "run", "pytest"],
-    decision = "allow",
-    justification = "run repository pytest suite",
-    match = [["uv", "run", "pytest", "-q"]],
-    not_match = [["uv", "pip", "install", "foo"]],
-)
-
-prefix_rule(
-    pattern = ["uv", "lock", "--check"],
-    decision = "allow",
-    justification = "check uv.lock parity without network or install",
-    match = [["uv", "lock", "--check", "--offline"]],
 )
 
 prefix_rule(

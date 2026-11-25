@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "autoMode": {
     "allow": [
       "$defaults",
@@ -7,7 +8,7 @@
     "classifyAllShell": true,
     "environment": [
       "$defaults",
-      "**Trusted repo**: ray-manaloto/dotfiles-v2 (github.com:ray-manaloto/dotfiles-v2.git), the owner's primary working repository, checked out at ~/dev/github/ray-manaloto/dotfiles-v2 with linked worktrees under ~/dev/github/ray-manaloto/dotfiles-v2-*. It is PUBLIC: any push to it publishes. Direct main prototyping commits and PRs are guarded locally by hk check and agy-code-review-guard.py.",
+      "**Trusted repo**: ray-manaloto/dotfiles-v2 (github.com:ray-manaloto/dotfiles-v2.git), the owner's primary working repository, checked out locally together with its linked git worktrees. It is PUBLIC: any push to it publishes. Direct main prototyping commits and PRs are guarded locally by hk check and agy-code-review-guard.py.",
       "**Primary use of Claude Code**: software development: developer-environment configuration (mise, Claude Code, Codex, OpenCode, Herdr) in dotfiles-v2, C++26 libraries, and multi-agent orchestration with Herdr and Vercel Board."
     ],
     "hard_deny": [

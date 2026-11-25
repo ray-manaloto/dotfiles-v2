@@ -4,11 +4,13 @@
 # (~/.config/dcg, wired for Claude/Codex/AGY), which is the full check. workflow.rules must never
 # allow a wrapper prefix. Deployed with mode = "copy": Codex skips a symlinked .rules file
 # (codex-rs/core/src/exec_policy.rs keeps only entries whose own type is a file).
+# Flag-prefixed forms (`fnox -c f -P p get`, `doppler -p x secrets`) are caught by the dcg
+# custom.mise_protect pack, which fails closed when dcg is missing.
 # Policy: prefer mise-native installs over Homebrew; the end state is that mise manages everything.
 # Check: codex execpolicy check --rules unix/home/.codex/rules/guards.rules -- brew install jq
 
 prefix_rule(
-    pattern = ["brew", ["install", "reinstall", "upgrade", "tap"]],
+    pattern = ["brew", ["install", "reinstall", "upgrade", "tap", "bundle"]],
     decision = "forbidden",
     justification = "agents never install with Homebrew; declare packages via mise bootstrap",
     match = [["brew", "install", "jq"], ["brew", "upgrade"]],
@@ -21,6 +23,14 @@ prefix_rule(
     justification = "secrets stay inside fnox; use fnox proxy run -- <cmd>, fnox check, or fnox list",
     match = [["doppler", "secrets", "get", "API_KEY"], ["doppler", "secrets", "download"]],
     not_match = [["doppler", "secrets", "set", "KEY"], ["doppler", "me"]],
+)
+
+prefix_rule(
+    pattern = ["doppler", "secrets"],
+    decision = "forbidden",
+    justification = "bare `doppler secrets` prints every value; use mise run secret:list (names only)",
+    match = [["doppler", "secrets"], ["doppler", "secrets", "--json"]],
+    not_match = [["doppler", "me"]],
 )
 
 prefix_rule(

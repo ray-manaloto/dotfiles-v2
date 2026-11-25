@@ -73,7 +73,10 @@ def main() -> int:
 
     dcg = _resolve_dcg_bin()
     if dcg is None:
-        return _allow()
+        # Fail closed: a missing guard binary must not silently disable every check.
+        return _deny(
+            "Blocked by agy-dcg-guard: dcg not found; run `mise install` to restore the guard"
+        )
 
     sub_env = dict(os.environ)
     sub_env.setdefault("DCG_NO_SELF_HEAL", "1")
