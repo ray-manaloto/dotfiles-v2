@@ -647,3 +647,15 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
     assert hosts[1]["destination"] == "me@mac"
     assert all("host" in h for h in hosts)
     assert cfg.stat().st_mode & 0o777 == 0o600
+
+    # Headers with trailing comments and single-quoted keys are still recognised.
+    cfg.write_text(
+        "port = 8080\n\n[[remote_hosts]] # mac\nhost = 'mac'\ndestination = 'old@mac'\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [sys.executable, "-I", "-B", str(script), str(cfg), "tok", "me@mac"],
+        check=True,
+    )
+    hosts = tomllib.loads(cfg.read_text(encoding="utf-8"))["remote_hosts"]
+    assert [(h["host"], h["destination"]) for h in hosts] == [("mac", "me@mac")]

@@ -4,7 +4,8 @@
 #USAGE flag "--target <target>" default="pc" help="Target environment: pc, mac, or all"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux Docker SSH host alias (for target=pc)"
 #USAGE flag "--tag <tag>" default="dotfiles-v2:dev" help="Docker image tag"
-#USAGE flag "--ref <ref>" help="Git branch or ref to check out in container workspace (default: current branch)"
+#USAGE flag "--ref <ref>" help="Git branch or ref to check out in container workspace (default: current branch; must match local HEAD)"
+#USAGE flag "--allow-drift" help="Build even if the local tree is dirty or differs from origin/<ref> (image and /workspace may diverge)"
 set -euo pipefail
 
 target="${usage_target:-pc}"
@@ -166,9 +167,13 @@ needs_recreate() {
 # container workspace from origin/<ref>; refuse to run when they can differ.
 require_build_context_matches_ref() {
 	local dirty local_sha remote_sha
+	if [[ ${usage_allow_drift:-false} == "true" ]]; then
+		echo "container:up: --allow-drift set; image is built from the local tree and may differ from origin/${ref}" >&2
+		return 0
+	fi
 	dirty="$(git -C "${root}" status --porcelain 2>/dev/null)"
 	if [[ -n ${dirty} ]]; then
-		echo "container:up: working tree has uncommitted or untracked changes; the image build would diverge from origin/${ref}. Commit and push, or stash, first:" >&2
+		echo "container:up: working tree has uncommitted or untracked changes; the image build would diverge from origin/${ref}. Commit and push, or stash, first (or pass --allow-drift):" >&2
 		printf '%s\n' "${dirty}" >&2
 		exit 1
 	fi
@@ -179,7 +184,7 @@ require_build_context_matches_ref() {
 	local_sha="$(git -C "${root}" rev-parse HEAD)"
 	remote_sha="$(git -C "${root}" rev-parse FETCH_HEAD)"
 	if [[ ${local_sha} != "${remote_sha}" ]]; then
-		echo "container:up: local HEAD ${local_sha} != origin/${ref} ${remote_sha}; push or check out '${ref}' so the image and /workspace match" >&2
+		echo "container:up: local HEAD ${local_sha} != origin/${ref} ${remote_sha}; push or check out '${ref}' so the image and /workspace match (or pass --allow-drift)" >&2
 		exit 1
 	fi
 }

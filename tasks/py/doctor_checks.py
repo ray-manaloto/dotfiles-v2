@@ -1616,17 +1616,28 @@ def check_mise_version_parity(repo_root: Path) -> list[str]:
             for idx, line in enumerate(lines):
                 if "jdx/mise-action@" not in line:
                     continue
-                for follow in lines[idx + 1 : idx + 8]:
+                step_indent = len(line) - len(line.lstrip(" -"))
+                found = None
+                for follow in lines[idx + 1 :]:
+                    stripped = follow.strip()
+                    if stripped and (
+                        stripped.startswith("- ")
+                        or len(follow) - len(follow.lstrip()) < step_indent
+                    ):
+                        break
                     vm_match = re.match(
                         r"^\s*version:\s*['\"]?([0-9]{4}\.[0-9]+\.[0-9]+)", follow
                     )
                     if vm_match:
-                        observed[f"{wf.relative_to(repo_root)}:{idx + 1}"] = (
-                            vm_match.group(1)
-                        )
+                        found = vm_match.group(1)
                         break
-                    if re.match(r"^\s*-\s", follow):
-                        break
+                rel = f"{wf.relative_to(repo_root)}:{idx + 1}"
+                if found:
+                    observed[rel] = found
+                else:
+                    errors.append(
+                        f"mise-version-parity: {rel} uses jdx/mise-action without a pinned `version:`"
+                    )
 
     agents_md = repo_root / "AGENTS.md"
     if agents_md.is_file():
