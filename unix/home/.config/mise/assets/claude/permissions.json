@@ -16,7 +16,6 @@
       "Bash(git status *)",
       "Bash(git log *)",
       "Bash(git diff)",
-      "Bash(git diff --stat *)",
       "Bash(git fetch)",
       "Bash(git fetch origin)",
       "Bash(gh pr view *)",
@@ -26,11 +25,11 @@
       "Bash(gh issue view *)",
       "Bash(gh issue list *)",
       "Bash(cd *)",
-      "Bash(herdr-app do *)",
       "Artifact",
       "ArtifactComments",
       "ArtifactData",
-      "Bash(env -u GH_TOKEN git -c credential.https://github.com.helper= -c credential.https://github.com.helper='!mise run -q agent:token' push -u origin *)"
+      "Bash(env -u GH_TOKEN git -c credential.https://github.com.helper= -c credential.https://github.com.helper='!mise run -q agent:token' push -u origin *)",
+      "Bash(git diff --stat)"
     ],
     "ask": [
       "Bash(claude plugin install *)",
@@ -64,16 +63,22 @@
       "Bash(doppler secrets get *)",
       "Bash(doppler secrets download *)",
       "Bash(doppler run *)",
-      "Bash(* push *--force*)",
       "Bash(* push *--mirror*)",
       "Bash(* push *--delete*)",
-      "Bash(* push * +*)",
-      "Bash(* push * -f*)",
       "Bash(fnox * get *)",
       "Bash(fnox * exec *)",
       "Bash(fnox * export *)",
       "Bash(doppler secrets)",
-      "Bash(doppler * secrets *)"
+      "Bash(doppler * secrets *)",
+      "Bash(* push --force)",
+      "Bash(* push --force *)",
+      "Bash(* push *--force)",
+      "Bash(* push *--force *)",
+      "Bash(* push -f*)",
+      "Bash(* push * -f*)",
+      "Bash(* push +*)",
+      "Bash(* push * +*)",
+      "Bash(* push * :*)"
     ]
   },
   "$schema": "https://json.schemastore.org/claude-code-settings.json"

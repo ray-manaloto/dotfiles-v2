@@ -99,7 +99,7 @@ destructive_patterns:
       Secrets stay inside fnox. Use `fnox proxy run -- <cmd>`, `fnox check`,
       `fnox list` (names only), or `mise run secret:doctor`.
   - name: doppler-secret-printing
-    pattern: (?i)(?:^|[;&|(\s])doppler(?:\s+-{1,2}[A-Za-z][\w-]*(?:[= ][^\s;&|-][^\s;&|]*)?)*\s+(?:run\b|secrets\s*(?:$|[;&|)]|\s+(?:get|download|substitute)\b|\s+-))
+    pattern: (?im)(?:^|[;&|(\s])doppler(?:\s+-{1,2}[A-Za-z][\w-]*(?:[= ][^\s;&|-][^\s;&|]*)?)*\s+(?:run\b|secrets\s*(?:$|[;&|)]|\s+(?:get|download|substitute)\b|\s+-(?!-only-names\b)))
     severity: critical
     description: Blocking doppler commands that print secret values or inject them outside fnox.
     explanation: >-

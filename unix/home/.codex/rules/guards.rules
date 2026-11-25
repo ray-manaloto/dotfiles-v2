@@ -18,18 +18,10 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["doppler", "secrets", ["get", "download", "run", "substitute"]],
-    decision = "forbidden",
-    justification = "secrets stay inside fnox; use fnox proxy run -- <cmd>, fnox check, or fnox list",
-    match = [["doppler", "secrets", "get", "API_KEY"], ["doppler", "secrets", "download"]],
-    not_match = [["doppler", "secrets", "set", "KEY"], ["doppler", "me"]],
-)
-
-prefix_rule(
     pattern = ["doppler", "secrets"],
     decision = "forbidden",
-    justification = "bare `doppler secrets` prints every value; use mise run secret:list (names only)",
-    match = [["doppler", "secrets"], ["doppler", "secrets", "--json"]],
+    justification = "all `doppler secrets` subcommands are agent-forbidden: reads print values and writes go only through the `secret:*` mise tasks",
+    match = [["doppler", "secrets"], ["doppler", "secrets", "get", "API_KEY"], ["doppler", "secrets", "download"], ["doppler", "secrets", "set", "KEY"]],
     not_match = [["doppler", "me"]],
 )
 
