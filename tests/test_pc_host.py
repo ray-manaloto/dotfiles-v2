@@ -106,24 +106,24 @@ def test_pc_overlay_and_zsh(tmp_path: Path) -> None:
         check=True,
     )
     result = subprocess.check_output(
-        ["zsh", "-c", 'echo "$MISE_ENV $ZDOTDIR $MISE_IGNORED_CONFIG_PATHS"'],
+        ["zsh", "-c", 'echo "$MISE_ENV $ZDOTDIR $MISE_SYSTEM_CONFIG_DIR"'],
         env=env,
         text=True,
     )
-    assert result.strip() == f"linux,pc {tmp_path}/.config/zsh /etc/mise"
+    assert result.strip() == f"linux,pc {tmp_path}/.config/zsh /nonexistent"
     for rc in (".bashrc", ".profile"):
         result = subprocess.check_output(
             [
                 "bash",
                 "-c",
-                '. "$HOME/$1"; echo "$MISE_ENV $MISE_IGNORED_CONFIG_PATHS"',
+                '. "$HOME/$1"; echo "$MISE_ENV $MISE_SYSTEM_CONFIG_DIR"',
                 "bash",
                 rc,
             ],
             env=env,
             text=True,
         )
-        assert result.strip() == "linux,pc /etc/mise"
+        assert result.strip() == "linux,pc /nonexistent"
 
 
 @pytest.mark.parametrize("login_shell", ["/usr/bin/bash", "/usr/bin/zsh"])
@@ -136,11 +136,11 @@ def test_sync_bootstraps_without_identity(tmp_path: Path, login_shell: str) -> N
     (target / "config.pc.toml").touch()
     sudo_calls = tmp_path / "sudo_calls"
     for name, body in {
-        "git": 'test "$MISE_IGNORED_CONFIG_PATHS" = "/etc/mise" && test "$*" = "-C $HOME/dev/dotfiles-v2 pull --ff-only"',
+        "git": 'test "$MISE_SYSTEM_CONFIG_DIR" = "/nonexistent" && test "$*" = "-c core.hooksPath=/dev/null -C $HOME/dev/dotfiles-v2 pull --ff-only"',
         "getent": f'printf "fixture:x:1000:1000::/tmp:{login_shell}\\n"',
         "zsh": "exit 0",
         "sudo": f'printf "%s\\n" "$*" >> "{sudo_calls}"',
-        "mise": 'test "$MISE_IGNORED_CONFIG_PATHS" = "/etc/mise" && test "$1" = bootstrap && ln -s "$HOME/dev/dotfiles-v2/unix/home/.config/mise" "$HOME/.config/mise"',
+        "mise": 'test "$MISE_SYSTEM_CONFIG_DIR" = "/nonexistent" && test "$1" = bootstrap && ln -s "$HOME/dev/dotfiles-v2/unix/home/.config/mise" "$HOME/.config/mise"',
     }.items():
         stub = tmp_path / name
         stub.write_text(f"#!/bin/sh\n{body}\n")

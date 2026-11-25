@@ -16,8 +16,8 @@ config="$HOME/.config/mise"
 login_shell=$(getent passwd "$(id -un)" | cut -d: -f7)
 [[ ${login_shell##*/} == zsh ]]
 cd "$HOME"
-env -u MISE_ENV -u ZDOTDIR -u MISE_IGNORED_CONFIG_PATHS zsh -l -e -s <<'ZSH'
-[[ $MISE_ENV == linux,pc && $ZDOTDIR == "$HOME/.config/zsh" && $MISE_IGNORED_CONFIG_PATHS == /etc/mise ]]
+env -u MISE_ENV -u ZDOTDIR -u MISE_SYSTEM_CONFIG_DIR zsh -l -e -s <<'ZSH'
+[[ $MISE_ENV == linux,pc && $ZDOTDIR == "$HOME/.config/zsh" && $MISE_SYSTEM_CONFIG_DIR == /nonexistent ]]
 [[ $(command -v mise) -ef /usr/local/bin/mise ]]
 [[ $(mise --version) == 2026.11.14\ * ]]
 [[ $(mise settings get upgrade.auto_prune) == true ]]

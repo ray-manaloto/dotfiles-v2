@@ -12,12 +12,12 @@ if [[ ${usage_dry_run:-false} == true ]]; then
 fi
 ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
 export PATH="/usr/local/bin:$PATH"
-export MISE_IGNORED_CONFIG_PATHS=/etc/mise
+export MISE_SYSTEM_CONFIG_DIR=/nonexistent
 repo=https://github.com/ray-manaloto/dotfiles-v2.git
 checkout="$HOME/dev/dotfiles-v2"
 config="$HOME/.config/mise"
 if [[ -d "$checkout/.git" ]]; then
-	git -C "$checkout" pull --ff-only </dev/null
+	git -c core.hooksPath=/dev/null -C "$checkout" pull --ff-only </dev/null
 else
 	mkdir -p "$HOME/dev"
 	git clone "$repo" "$checkout" </dev/null
