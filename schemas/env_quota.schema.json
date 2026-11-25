@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/env_quota.schema.json",
+  "title": "EnvQuotaResponse",
+  "$ref": "#/$defs/EnvQuotaResponse",
+  "$defs": {
+    "EnvQuotaHarnessReading": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "quota"],
+      "properties": {
+        "harness": {
+          "$ref": "env_smoke.schema.json#/$defs/EnvSmokeHarness"
+        },
+        "quota": {
+          "$ref": "env_smoke.schema.json#/$defs/EnvSmokeQuotaReading"
+        }
+      }
+    },
+    "EnvQuotaResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readings", "timestamp", "timestamp_unix_ns", "errors", "returns"],
+      "properties": {
+        "readings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnvQuotaHarnessReading"
+          }
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "env_smoke.schema.json#/$defs/EnvSmokeErrorEntry"
+          }
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "common/envelope.schema.json#/$defs/ReturnEntry"
+          }
+        }
+      }
+    }
+  }
+}

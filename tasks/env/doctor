@@ -149,7 +149,7 @@ check_container() {
 	fi
 
 	if ! claude_out="$(
-		"${dcmd[@]}" exec -i -w /workspace -e SMOKE="${smoke}" -e ZCODE_SMOKE_MODEL="${ZCODE_SMOKE_MODEL:-}" "${name}" /bin/bash -lc 'bash -euo pipefail -s' <<'CONTAINER'
+		"${dcmd[@]}" exec -i -w /workspace -e SMOKE="${smoke}" -e SKIP_CLAUDE="${skip_claude}" -e SKIP_OPENCODE="${skip_opencode}" -e SKIP_ZCODE="${skip_zcode}" -e ZCODE_SMOKE_MODEL="${ZCODE_SMOKE_MODEL:-}" "${name}" /bin/bash -lc 'bash -euo pipefail -s' <<'CONTAINER'
 test -s /run/agent-secrets/claude-oauth-token
 test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"
 cpath="$(command -v claude)"
@@ -222,11 +222,17 @@ if [ -r /home/dev/.config/board/env.sh ]; then
 fi
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
-	sout="$(claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null)"
-	[[ "${sout}" == *OK* ]]
-	oc_out="$(opencode --standalone run --archived "Reply with exactly: OK" </dev/null)"
-	[[ "${oc_out}" == *OK* ]]
-	python3 - <<'PY'
+	if [[ -z ${SKIP_CLAUDE} ]]; then
+		sout="$(claude -p --safe-mode --model haiku --effort low --tools "" --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null)"
+		[[ "${sout}" == *OK* ]]
+	fi
+	if [[ -z ${SKIP_OPENCODE} ]]; then
+		oc_out="$(opencode --standalone run --archived -m opencode/deepseek-v4.1-flash-free "Reply with exactly: OK" </dev/null)"
+		[[ "${oc_out}" == *OK* ]]
+	fi
+	z_smoke="${SKIP_ZCODE}"
+	if [[ -z ${SKIP_ZCODE} ]]; then
+		python3 - <<'PY'
 import json
 import os
 
@@ -236,23 +242,24 @@ with open(path, "r", encoding="utf-8") as fh:
     data = json.load(fh)
 assert isinstance(data, dict) and data.get("oauth:active_provider") and data.get("zcodejwttoken"), "missing ZCode OAuth session keys"
 PY
-	z_args=(--prompt="Reply with exactly: OK")
-	if [[ -n "${ZCODE_SMOKE_MODEL:-}" ]]; then
-		z_args+=(--model "${ZCODE_SMOKE_MODEL}")
+		z_args=(--mode plan --effort low --prompt="Reply with exactly: OK")
+		if [[ -n "${ZCODE_SMOKE_MODEL:-}" ]]; then
+			z_args+=(--model "${ZCODE_SMOKE_MODEL}")
+		fi
+		z_rc=0
+		z_out="$(zcode "${z_args[@]}" </dev/null 2>&1)" || z_rc=$?
+		if [[ ${z_rc} -eq 0 && "${z_out}" == *OK* ]]; then
+			z_smoke="OK"
+		elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: '1113'"* || "${z_out}" == *"[1113]"* ]]; then
+			z_smoke="AUTH_OK_NO_QUOTA(1113)"
+		elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: 1005"* || "${z_out}" == *"exceed quota limit"* ]]; then
+			z_smoke="AUTH_OK_NO_QUOTA(1005)"
+		else
+			printf '%s\n' "${z_out}" >&2
+			exit 1
+		fi
 	fi
-	z_rc=0
-	z_out="$(zcode "${z_args[@]}" </dev/null 2>&1)" || z_rc=$?
-	if [[ ${z_rc} -eq 0 && "${z_out}" == *OK* ]]; then
-		z_smoke="OK"
-	elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: '1113'"* || "${z_out}" == *"[1113]"* ]]; then
-		z_smoke="AUTH_OK_NO_QUOTA(1113)"
-	elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: 1005"* || "${z_out}" == *"exceed quota limit"* ]]; then
-		z_smoke="AUTH_OK_NO_QUOTA(1005)"
-	else
-		printf '%s\n' "${z_out}" >&2
-		exit 1
-	fi
-	smoke_suffix=", smoke=OK, zcode-smoke=${z_smoke}"
+	smoke_suffix=", claude-smoke=${SKIP_CLAUDE:-OK}, opencode-smoke=${SKIP_OPENCODE:-OK}, zcode-smoke=${z_smoke}"
 fi
 printf 'claude=%s, opencode=%s, zcode=%s, vb=%s%s' "${cver}" "${ocver}" "${zver}" "${vb_status}" "${smoke_suffix}"
 CONTAINER
@@ -311,7 +318,7 @@ check_vm() {
 	fi
 
 	if ! out="$(
-		tart exec -i "${vm_name}" env SMOKE="${smoke}" ZCODE_SMOKE_MODEL="${ZCODE_SMOKE_MODEL:-}" /bin/bash -euo pipefail <<'GUEST'
+		tart exec -i "${vm_name}" env SMOKE="${smoke}" SKIP_CLAUDE="${skip_claude}" SKIP_OPENCODE="${skip_opencode}" SKIP_ZCODE="${skip_zcode}" ZCODE_SMOKE_MODEL="${ZCODE_SMOKE_MODEL:-}" /bin/bash -euo pipefail <<'GUEST'
 export PATH="${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
 export MISE_ENV=vm
 export MISE_TRUSTED_CONFIG_PATHS="${HOME}/dev/dotfiles-v2:${HOME}/.config/mise"
@@ -405,11 +412,17 @@ if [[ -r "${HOME}/.config/board/env.sh" ]]; then
 fi
 smoke_suffix=""
 if [[ "${SMOKE}" == "true" ]]; then
-  sout="$(/bin/bash -lc 'claude -p --model haiku --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null')"
-  [[ "${sout}" == *OK* ]]
-  oc_out="$(/bin/bash -lc 'opencode --standalone run --archived "Reply with exactly: OK" </dev/null')"
-  [[ "${oc_out}" == *OK* ]]
-  /bin/bash -lc 'python3 - <<'\''PY'\''
+  if [[ -z ${SKIP_CLAUDE} ]]; then
+    sout="$(/bin/bash -lc 'claude -p --safe-mode --model haiku --effort low --tools "" --no-session-persistence --output-format text "Reply with exactly: OK" </dev/null')"
+    [[ "${sout}" == *OK* ]]
+  fi
+  if [[ -z ${SKIP_OPENCODE} ]]; then
+    oc_out="$(/bin/bash -lc 'opencode --standalone run --archived -m opencode/deepseek-v4.1-flash-free "Reply with exactly: OK" </dev/null')"
+    [[ "${oc_out}" == *OK* ]]
+  fi
+  z_smoke="${SKIP_ZCODE}"
+  if [[ -z ${SKIP_ZCODE} ]]; then
+    /bin/bash -lc 'python3 - <<'\''PY'\''
 import json
 import os
 
@@ -419,19 +432,20 @@ with open(path, "r", encoding="utf-8") as fh:
     data = json.load(fh)
 assert isinstance(data, dict) and data.get("oauth:active_provider") and data.get("zcodejwttoken"), "missing ZCode OAuth session keys"
 PY'
-  z_rc=0
-  z_out="$(/bin/bash -lc 'z_args=(--prompt="Reply with exactly: OK"); if [[ -n "${ZCODE_SMOKE_MODEL:-}" ]]; then z_args+=(--model "${ZCODE_SMOKE_MODEL}"); fi; zcode "${z_args[@]}" </dev/null 2>&1')" || z_rc=$?
-  if [[ ${z_rc} -eq 0 && "${z_out}" == *OK* ]]; then
-    z_smoke="OK"
-  elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: '\''1113'\''"* || "${z_out}" == *"[1113]"* ]]; then
-    z_smoke="AUTH_OK_NO_QUOTA(1113)"
-  elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: 1005"* || "${z_out}" == *"exceed quota limit"* ]]; then
-    z_smoke="AUTH_OK_NO_QUOTA(1005)"
-  else
-    printf '%s\n' "${z_out}" >&2
-    exit 1
+    z_rc=0
+    z_out="$(/bin/bash -lc 'z_args=(--mode plan --effort low --prompt="Reply with exactly: OK"); if [[ -n "${ZCODE_SMOKE_MODEL:-}" ]]; then z_args+=(--model "${ZCODE_SMOKE_MODEL}"); fi; zcode "${z_args[@]}" </dev/null 2>&1')" || z_rc=$?
+    if [[ ${z_rc} -eq 0 && "${z_out}" == *OK* ]]; then
+      z_smoke="OK"
+    elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: '\''1113'\''"* || "${z_out}" == *"[1113]"* ]]; then
+      z_smoke="AUTH_OK_NO_QUOTA(1113)"
+    elif [[ "${z_out}" == *"PROVIDER_BUSINESS_ERROR"* ]] && [[ "${z_out}" == *"providerCode: 1005"* || "${z_out}" == *"exceed quota limit"* ]]; then
+      z_smoke="AUTH_OK_NO_QUOTA(1005)"
+    else
+      printf '%s\n' "${z_out}" >&2
+      exit 1
+    fi
   fi
-  smoke_suffix=" | smoke=OK | zcode-smoke=${z_smoke}"
+  smoke_suffix=", claude-smoke=${SKIP_CLAUDE:-OK}, opencode-smoke=${SKIP_OPENCODE:-OK}, zcode-smoke=${z_smoke}"
 fi
 printf '%s | mise=%s | %s | claude=%s | opencode=%s | zcode=%s | vb=%s | tailscale-ssh=OK | 0 missing tools%s\n' "${sm}" "${mv}" "${hv}" "${cver}" "${ocver}" "${zver}" "${vb_status}" "${smoke_suffix}"
 GUEST
@@ -450,6 +464,28 @@ run_doctor_target() {
 	"$@" >"${log_file}" 2>&1
 	[[ ${fail_count} -eq 0 ]]
 }
+
+skip_claude=""
+skip_opencode=""
+skip_zcode=""
+eligible=""
+if [[ ${smoke} == "true" ]]; then
+	quota_json="$(mise run env:quota --json </dev/null)"
+	jq -e '([.readings[].harness] | sort) == ["agy","claude","codex","hermes","opencode","zcode"]
+		and all(.readings[]; (.quota.available | type) == "boolean")' <<<"${quota_json}" >/dev/null
+	blocked="$(jq -r '.readings[] | select(.quota.available == false) | [.harness, (.quota.reset // "unknown")] | @tsv' <<<"${quota_json}")"
+	while IFS=$'\t' read -r harness reset; do
+		[[ -n ${harness} ]] || continue
+		skip="SKIP_QUOTA(${harness} resets ${reset})"
+		pass_row host "${skip}"
+		case "${harness}" in
+		claude) skip_claude="${skip}" ;;
+		opencode) skip_opencode="${skip}" ;;
+		zcode) skip_zcode="${skip}" ;;
+		esac
+	done <<<"${blocked}"
+	eligible="$(jq -r '[.readings[] | select(.quota.available) | .harness] | join(",")' <<<"${quota_json}")"
+fi
 
 case "${target}" in
 pc)
@@ -499,11 +535,11 @@ all)
 	;;
 esac
 
-if [[ ${smoke} == "true" ]]; then
-	if mise run env:smoke </dev/null; then
-		pass_row "host" "quota-gated 6-harness smoke (mise run env:smoke)"
+if [[ ${smoke} == "true" && -n ${eligible} ]]; then
+	if mise run env:smoke --harness "${eligible}" </dev/null; then
+		pass_row "host" "quota-gated smoke (${eligible})"
 	else
-		fail_row "host" "quota-gated 6-harness smoke failed (mise run env:smoke)"
+		fail_row "host" "quota-gated smoke failed (${eligible})"
 	fi
 fi
 

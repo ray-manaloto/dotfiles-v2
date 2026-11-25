@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#MISE description="Read zero-token quota for claude, codex, agy, opencode, zcode, and hermes"
+#USAGE flag "--harness <name>" var=#true help="Harness(es) to probe: claude, codex, agy, opencode, zcode, hermes (repeatable or comma list; default all 6)"
+#USAGE flag "--json" help="Emit schema-validated EnvQuotaResponse JSON"
+#USAGE flag "--state-dir <path>" help="Override state directory for JSONL logs"
+#USAGE flag "--write-log" help="Append structured JSONL events to state directory"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} == /* ]]; then
+			common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		else
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		fi
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+
+if [[ ! -x ${venv_py} ]]; then
+	echo "env:quota: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+run_py=(-I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from env_quota.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}")
+if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
+	exec "${venv_py}" "${run_py[@]}" --help
+fi
+
+cmd=("${venv_py}" "${run_py[@]}")
+if [[ -n ${usage_harness+x} && -n ${usage_harness} ]]; then
+	read -r -a harness_list <<<"${usage_harness//,/ }"
+	if [[ ${#harness_list[@]} -eq 0 ]]; then
+		cmd+=(--harness "")
+	else
+		for h in "${harness_list[@]}"; do
+			cmd+=(--harness "${h}")
+		done
+	fi
+fi
+[[ ${usage_json:-false} == "true" ]] && cmd+=(--json)
+[[ -n ${usage_state_dir:-} ]] && cmd+=(--state-dir "${usage_state_dir}")
+[[ ${usage_write_log:-false} == "true" ]] && cmd+=(--write-log)
+
+exec "${cmd[@]}"

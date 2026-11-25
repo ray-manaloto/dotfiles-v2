@@ -74,6 +74,7 @@ from .env_inventory_schema import (
     MiseToolEntry,
     TargetInventory,
 )
+from .env_quota_schema import EnvQuotaHarnessReading, EnvQuotaResponse
 from .env_smoke_schema import (
     EnvSmokeCommandResult,
     EnvSmokeErrorCode,
@@ -177,6 +178,8 @@ __all__ = [
     "EnvInventoryModels",
     "EnvInventoryResponse",
     "EnvInventorySummary",
+    "EnvQuotaHarnessReading",
+    "EnvQuotaResponse",
     "EnvSmokeCommandResult",
     "EnvSmokeErrorCode",
     "EnvSmokeErrorEntry",
