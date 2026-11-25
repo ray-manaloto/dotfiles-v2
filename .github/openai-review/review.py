@@ -35,6 +35,14 @@ SENSITIVE_TEXT = re.compile(
     r"""|(?:\w*token|\w*secret|api[-_]?key|passwd)["']?\s*[:=]\s*["']?[A-Za-z0-9_+.=-]{12,}""",
     re.IGNORECASE,
 )
+# Model output is checked only for high-confidence secret formats, so a finding
+# that quotes a config key name does not discard the whole review.
+SENSITIVE_OUTPUT = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{16,}"
+    r"|sk-ant-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}"
+    r"|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{36}"
+    r"|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35})\b"
+)
 
 
 # Shape errors from unexpected API JSON; mapped to a safe message in __main__.
@@ -56,7 +64,8 @@ def request_json(url, token, *, body=None):
     # Claude API 2026-10-21 documents `Authorization: Bearer <API key>` as the primary
     # auth header (x-api-key is the legacy fallback):
     # https://platform.claude.com/docs/en/api/overview#authentication
-    # The key must be scoped to one workspace; this sends no anthropic-workspace-id.
+    # No anthropic-workspace-id is sent, which the same page says is required for a
+    # key not scoped to one workspace, so use a workspace-scoped key.
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if url == CLAUDE_ENDPOINT:
         headers["anthropic-version"] = "2026-10-21"
@@ -75,10 +84,23 @@ def request_json(url, token, *, body=None):
         return json.loads(raw)
     except urllib.error.HTTPError as exc:
         raise ReviewError(
-            f"{service} returned HTTP {exc.code}. No retries were made."
+            f"{service} returned HTTP {exc.code}{error_type(exc)}. No retries were made."
         ) from None
-    except OSError, ValueError:
+    except (OSError, ValueError):
         raise ReviewError(f"{service} request or JSON decoding failed.") from None
+
+
+def error_type(exc):
+    """Return a safe ` (error_type)` suffix from a JSON error body, or ``""``."""
+    try:
+        payload = json.loads(exc.read(4096))
+    except (OSError, ValueError):
+        return ""
+    err = payload.get("error") if isinstance(payload, dict) else None
+    kind = err.get("type") if isinstance(err, dict) else None
+    if isinstance(kind, str) and re.fullmatch(r"[a-z_]{1,40}", kind):
+        return f" ({kind})"
+    return ""
 
 
 def patch_data(files):
@@ -133,14 +155,22 @@ def response_text(result):
 
 def checked_text(texts):
     text = "\n".join(texts).strip()
-    if not text or SENSITIVE_TEXT.search(text):
+    if not text or SENSITIVE_OUTPUT.search(text):
         raise ReviewError("Review was empty or contained potentially sensitive text.")
     return text
 
 
 def claude_text(result):
-    if result.get("type") != "message" or result.get("stop_reason") != "end_turn":
-        raise ReviewError("Claude did not return a completed review.")
+    stop = result.get("stop_reason")
+    if result.get("type") != "message" or stop != "end_turn":
+        reason = (
+            stop
+            if isinstance(stop, str) and re.fullmatch(r"[a-z_]{1,40}", stop)
+            else "unknown"
+        )
+        raise ReviewError(
+            f"Claude did not return a completed review (stop_reason={reason})."
+        )
     return checked_text(
         part["text"] for part in result.get("content", []) if part.get("type") == "text"
     )

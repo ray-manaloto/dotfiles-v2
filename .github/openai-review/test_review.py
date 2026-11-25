@@ -128,6 +128,35 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(send.call_count, 3)
         self.assertFalse(self.summary.exists())
 
+    def test_review_output_quoting_key_names_is_kept(self):
+        text = "Finding: access_token: abcdefghijklmnop should come from a file."
+        self.assertEqual(review.checked_text([text]), text)
+        with self.assertRaises(review.ReviewError):
+            review.checked_text(["leaked ghp_" + "a" * 20])
+
+    def test_claude_stop_reason_is_named(self):
+        with self.assertRaisesRegex(review.ReviewError, "stop_reason=max_tokens"):
+            review.claude_text({"type": "message", "stop_reason": "max_tokens"})
+
+    def test_http_error_reports_only_safe_error_type(self):
+        import email.message
+        import io
+        import urllib.error
+
+        for body, expected in (
+            (
+                b'{"error": {"type": "authentication_error", "message": "x"}}',
+                " (authentication_error)",
+            ),
+            (b'{"error": {"type": "Bad Type!"}}', ""),
+            (b"not json", ""),
+        ):
+            with self.subTest(body=body):
+                exc = urllib.error.HTTPError(
+                    "u", 401, "m", email.message.Message(), io.BytesIO(body)
+                )
+                self.assertEqual(review.error_type(exc), expected)
+
     def test_path_and_variable_references_are_not_flagged(self):
         for patch in (
             '@@ -1 +1 @@\n-old\n+auth_token_file = "/run/agent-secrets/token"',
@@ -224,3 +253,13 @@ class ReviewTests(unittest.TestCase):
                 "anthropic-version",
                 {name.lower() for name, _ in request.header_items()},
             )
+
+
+class RunnerCompatibilityTests(unittest.TestCase):
+    def test_sources_parse_on_runner_python_312(self):
+        # ubuntu-24.04's stock python3 is 3.12; the repo toolchain is newer.
+        import ast
+
+        for name in ("review.py", "test_review.py"):
+            source = (Path(__file__).parent / name).read_text(encoding="utf-8")
+            ast.parse(source, filename=name, feature_version=(3, 12))

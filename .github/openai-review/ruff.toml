@@ -1,0 +1,5 @@
+extend = "../../pyproject.toml"
+cache-dir = "~/.cache/ruff"
+# The review workflows run the stock ubuntu-24.04 python3 (3.12), not the
+# repo's 3.15 toolchain, so keep syntax 3.12-compatible (no PEP 758 excepts).
+target-version = "py312"

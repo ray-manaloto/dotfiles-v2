@@ -23,8 +23,10 @@ protection and review policies in place.
 For Claude, create the API key in a dedicated Claude Console workspace, so the
 key is scoped to one workspace. The reviewer sends the key as
 `Authorization: Bearer <key>` with `anthropic-version: 2026-10-21`. It does
-not send `anthropic-workspace-id`, so a key that is not scoped to one
-workspace is rejected.
+not send `anthropic-workspace-id`. The
+[API overview](https://platform.claude.com/docs/en/api/overview#authentication)
+says that header is required for a key that isn't scoped to a workspace, so an
+unscoped key fails with an HTTP error.
 
 ## Running
 
