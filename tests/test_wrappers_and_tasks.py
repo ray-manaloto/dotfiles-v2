@@ -1104,6 +1104,18 @@ def test_host_doctor_checks_skip_in_repo_scope_and_pre_push_sets_it() -> None:
     assert "DOTFILES_DOCTOR_SCOPE=repo sh -c" in block
 
 
+def test_host_check_helper_rejects_missing_command() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        ["sh", str(repo / "tasks/py/host_check.sh")],
+        env={"PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 2
+
+
 @pytest.mark.parametrize(
     ("scope", "rc", "out"),
     [("repo", 0, "SKIP: host check"), ("full", 7, ""), (None, 7, "")],
