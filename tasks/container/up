@@ -162,7 +162,30 @@ needs_recreate() {
 	[[ ${have_image} != "${want_image}" || ${have_secrets_src} != "${want_keys}" || ${have_board_dst} != "/home/dev/.config/board" || ${have_claude_dst} != "/home/dev/.claude" || ${have_opencode_dst} != "/home/dev/.local/share/opencode" || ${have_zcode_dst} != "/home/dev/.zcode" || ${have_ts_dst} != "/home/dev/.local/state/tailscale" || ${have_init} != "true" || ${have_hostname} != "${want_hostname}" || ${have_mise_env} != "MISE_ENV=container" ]]
 }
 
+# The image is built from the local tree (${root}) but Phase 2 bootstraps the
+# container workspace from origin/<ref>; refuse to run when they can differ.
+require_build_context_matches_ref() {
+	local dirty local_sha remote_sha
+	dirty="$(git -C "${root}" status --porcelain 2>/dev/null)"
+	if [[ -n ${dirty} ]]; then
+		echo "container:up: working tree has uncommitted or untracked changes; the image build would diverge from origin/${ref}. Commit and push, or stash, first:" >&2
+		printf '%s\n' "${dirty}" >&2
+		exit 1
+	fi
+	if ! git -C "${root}" -c core.hooksPath=/dev/null fetch -q origin "${ref}"; then
+		echo "container:up: origin/${ref} is not fetchable; push '${ref}' before building" >&2
+		exit 1
+	fi
+	local_sha="$(git -C "${root}" rev-parse HEAD)"
+	remote_sha="$(git -C "${root}" rev-parse FETCH_HEAD)"
+	if [[ ${local_sha} != "${remote_sha}" ]]; then
+		echo "container:up: local HEAD ${local_sha} != origin/${ref} ${remote_sha}; push or check out '${ref}' so the image and /workspace match" >&2
+		exit 1
+	fi
+}
+
 ref="$(resolve_ref)"
+require_build_context_matches_ref
 apt_cache_url="$(resolve_apt_cache_url || true)"
 inventory_state_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/dotfiles-v2/inventory"
 build_args=(docker buildx build --progress=plain --load --sbom=true --provenance=mode=max -t "${tag}" -f "${root}/docker/ubuntu/Dockerfile")
