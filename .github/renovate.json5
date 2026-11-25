@@ -4,8 +4,8 @@
   customManagers: [
     {
       customType: "regex",
-      description: "Updates MISE_VER in Tart VM provisioning task",
-      managerFilePatterns: ["/^tasks\\/vm\\/up$/"],
+      description: "Updates MISE_VER in Tart VM and pc provisioning tasks",
+      managerFilePatterns: ["/^tasks\\/(?:vm|pc)\\/up$/"],
       datasourceTemplate: "github-releases",
       depNameTemplate: "mise",
       packageNameTemplate: "jdx/mise",
@@ -22,6 +22,36 @@
       matchStrings: [
         'PACKSLIP_VER="(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)"\\nPACKSLIP_SHA256_MACOS_ARM64="(?<currentDigest>[a-f0-9]{64})"',
       ],
+    },
+    {
+      customType: "regex",
+      description: "Updates PACKSLIP_VER and PACKSLIP_SHA256_LINUX_X64 in pc provisioning task",
+      managerFilePatterns: ["/^tasks\\/pc\\/up$/"],
+      datasourceTemplate: "github-release-attachments",
+      depNameTemplate: "packslip",
+      packageNameTemplate: "jdx/packslip",
+      matchStrings: [
+        'PACKSLIP_VER="(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)"\\nPACKSLIP_SHA256_LINUX_X64="(?<currentDigest>[a-f0-9]{64})"',
+      ],
+    },
+    {
+      customType: "regex",
+      description: "Updates the mise version pinned in jdx/mise-action steps",
+      managerFilePatterns: ["/^\\.github\\/workflows\\/[^/]+\\.ya?ml$/"],
+      datasourceTemplate: "github-releases",
+      depNameTemplate: "mise",
+      packageNameTemplate: "jdx/mise",
+      extractVersionTemplate: "^v(?<version>.+)$",
+      matchStrings: [
+        "uses: jdx/mise-action@[^\\n]+\\n\\s+with:\\n\\s+version: (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)",
+      ],
+    },
+  ],
+  packageRules: [
+    {
+      description: "Bump every mise pin (Dockerfile, CI mise-action, vm:up, pc:up) in one PR so mise-version-parity stays green",
+      matchPackageNames: ["jdx/mise", "ghcr.io/jdx/mise"],
+      groupName: "mise",
     },
   ],
 }

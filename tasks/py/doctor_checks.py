@@ -1558,7 +1558,7 @@ def check_dockerignore_secret_guard(repo_root: Path) -> list[str]:
 
 
 def check_mise_version_parity(repo_root: Path) -> list[str]:
-    """Verify pinned MISE_VER and min_version match across Dockerfile, vm:up, env:doctor, and configs."""
+    """Verify pinned mise versions match across Dockerfile, vm:up, pc:up, env:doctor, CI workflows, AGENTS.md, and configs."""
     errors: list[str] = []
     observed: dict[str, str] = {}
 
@@ -1586,6 +1586,59 @@ def check_mise_version_parity(repo_root: Path) -> list[str]:
             observed["tasks/vm/up"] = m.group(1)
         else:
             errors.append("mise-version-parity: missing MISE_VER in tasks/vm/up")
+
+    pc_up = repo_root / "tasks" / "pc" / "up"
+    if pc_up.is_file():
+        pc_text = pc_up.read_text(encoding="utf-8")
+        m = re.search(r'^MISE_VER="([0-9]+\.[0-9]+\.[0-9]+)"', pc_text, re.MULTILINE)
+        if m:
+            observed["tasks/pc/up"] = m.group(1)
+        else:
+            errors.append("mise-version-parity: missing MISE_VER in tasks/pc/up")
+        if vm_up.is_file():
+            pin_re = re.compile(r'^PACKSLIP_MISE_PIN="(ps1_[a-z0-9]+)"', re.MULTILINE)
+            vm_pin = pin_re.search(vm_up.read_text(encoding="utf-8"))
+            pc_pin = pin_re.search(pc_text)
+            if not vm_pin or not pc_pin:
+                errors.append(
+                    "mise-version-parity: missing PACKSLIP_MISE_PIN in tasks/vm/up or tasks/pc/up"
+                )
+            elif vm_pin.group(1) != pc_pin.group(1):
+                errors.append(
+                    "mise-version-parity: PACKSLIP_MISE_PIN skew between tasks/vm/up "
+                    f"({vm_pin.group(1)}) and tasks/pc/up ({pc_pin.group(1)})"
+                )
+
+    workflows_dir = repo_root / ".github" / "workflows"
+    if workflows_dir.is_dir():
+        for wf in sorted(workflows_dir.glob("*.y*ml")):
+            lines = wf.read_text(encoding="utf-8").splitlines()
+            for idx, line in enumerate(lines):
+                if "jdx/mise-action@" not in line:
+                    continue
+                for follow in lines[idx + 1 : idx + 8]:
+                    vm_match = re.match(
+                        r"^\s*version:\s*['\"]?([0-9]{4}\.[0-9]+\.[0-9]+)", follow
+                    )
+                    if vm_match:
+                        observed[f"{wf.relative_to(repo_root)}:{idx + 1}"] = (
+                            vm_match.group(1)
+                        )
+                        break
+                    if re.match(r"^\s*-\s", follow):
+                        break
+
+    agents_md = repo_root / "AGENTS.md"
+    if agents_md.is_file():
+        for ver in sorted(
+            set(
+                re.findall(
+                    r"mise[ :]([0-9]{4}\.[0-9]+\.[0-9]+)",
+                    agents_md.read_text(encoding="utf-8"),
+                )
+            )
+        ):
+            observed[f"AGENTS.md ({ver})"] = ver
 
     env_doctor = repo_root / "tasks" / "env" / "doctor"
     if env_doctor.is_file():
