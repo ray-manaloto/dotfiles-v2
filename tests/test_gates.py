@@ -233,6 +233,8 @@ def test_schema_contract_check_nested_composites_and_doctor_multi_lock_entries(
         (fake_home / ".config").mkdir(parents=True)
         (fake_home / ".config" / "mise").symlink_to(v2_mise)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        # GitHub Actions sets CI=true, which makes check_host_option_a skip host checks.
+        monkeypatch.delenv("CI", raising=False)
 
         tasks_json = json.dumps(
             [
