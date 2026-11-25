@@ -3,7 +3,6 @@
   "statusLine": {
     "type": "command",
     "command": "~/.local/bin/agy-statusline",
-    "enabled": true,
-    "stack_with_default": false
+    "enabled": true
   }
 }
