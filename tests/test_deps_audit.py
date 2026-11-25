@@ -261,4 +261,6 @@ def test_deps_audit_cli_help_and_repo_offline_json(tmp_path: Path) -> None:
     assert "tailscale" in names
     assert "agent-browser" in names
     assert "bun" in names
+    hk_cfg = next(i for i in payload["items"] if i["name"] == "ray-manaloto/hk-config")
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", hk_cfg["current_version"])
     assert (tmp_path / "state" / "deps-audit.log.jsonl").is_file()

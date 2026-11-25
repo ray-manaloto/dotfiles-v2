@@ -714,6 +714,16 @@ def _audit_hk_preset(repo_root: Path, *, offline: bool) -> list[AuditItem]:
         r"raw\.githubusercontent\.com/ray-manaloto/hk-config/v([0-9]+\.[0-9]+\.[0-9]+)/",
         txt,
     )
+    # SHA-pinned form: raw URLs use a 40-hex commit and a `// hk-config vX.Y.Z` comment names it.
+    if re.search(
+        r"raw\.githubusercontent\.com/ray-manaloto/hk-config/[0-9a-f]{40}/", txt
+    ):
+        sha_vers = re.findall(
+            r"^//\s*hk-config v([0-9]+\.[0-9]+\.[0-9]+)\b", txt, re.MULTILINE
+        )
+        cfg_vers += sha_vers or ["unversioned-sha"]
+        if len(set(re.findall(r"ray-manaloto/hk-config/([0-9a-f]{40})/", txt))) > 1:
+            cfg_vers.append("mixed-commit-shas")
     if cfg_vers:
         unique_cfg = sorted(set(cfg_vers))
         cur = unique_cfg[0]

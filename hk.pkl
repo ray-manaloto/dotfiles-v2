@@ -1,6 +1,9 @@
-amends "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.2.0/presets.pkl"
+// hk-config v1.2.0 — pinned to the immutable commit SHA (tags are movable); bump SHA + version together.
+amends
+  "https://raw.githubusercontent.com/ray-manaloto/hk-config/be984a17e01d35b1984f07238c1b299a03032e4a/presets.pkl"
 
-import "https://raw.githubusercontent.com/ray-manaloto/hk-config/v1.2.0/helpers.pkl"
+import
+  "https://raw.githubusercontent.com/ray-manaloto/hk-config/be984a17e01d35b1984f07238c1b299a03032e4a/helpers.pkl"
 import "package://github.com/jdx/hk/releases/download/v2.14.0/hk@2.14.0#/Builtins.pkl"
 
 recheck_after_fix = true
