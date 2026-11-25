@@ -51,9 +51,10 @@ if [[ ${usage_dry_run:-false} == "true" ]]; then
 	exec "${cmd[@]}" --dry-run
 fi
 
-fnox_cfg="${HOME}/.config/fnox/api-credit.toml"
+# Use this checkout's tracked profile so a worktree runs exactly the reviewed policy.
+fnox_cfg="${repo_root}/unix/home/.config/fnox/api-credit.toml"
 if [[ ! -f ${fnox_cfg} ]]; then
-	echo "api:review: ${fnox_cfg} missing; run 'mise dot apply' from the main checkout" >&2
+	echo "api:review: ${fnox_cfg} missing" >&2
 	exit 1
 fi
 # Claude Code trusts the proxy CA through NODE_EXTRA_CA_CERTS; fnox exports SSL_CERT_FILE.
