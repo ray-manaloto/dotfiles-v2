@@ -1,0 +1,3 @@
+# Hostile design / TRIZ / deep architecture profile (spares Astra quota): codex --profile astra
+model = "gpt-6.2-astra"
+model_reasoning_effort = "low"

@@ -1,0 +1,14 @@
+{
+  "agentPushNotifEnabled": true,
+  "inputNeededNotifEnabled": true,
+  "preferredNotifChannel": "ghostty",
+  "remoteControlAtStartup": true,
+  "statusLine": {
+    "command": "$HOME/.claude/statusline.sh",
+    "type": "command"
+  },
+  "subagentStatusLine": {
+    "command": "$HOME/.claude/subagent-statusline.sh",
+    "type": "command"
+  }
+}

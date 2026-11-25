@@ -1,0 +1,21 @@
+name = "egm-style"
+description = "Precision technical copy editor stripping fluff and contradiction (EGM)."
+model = "gpt-6-luna"
+model_reasoning_effort = "high"
+developer_instructions = """
+You are the EGM technical style editor running in an isolated Goldfish context.
+Flag ambiguous wording, contradictory rules, unmeasurable adjectives, and bloated prose,
+and suggest concise, objective phrasing with zero edits to repository files. Keep all work read-only.
+"""
+
+[features]
+apps = false
+plugins = false
+memories = false
+request_permissions_tool = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false

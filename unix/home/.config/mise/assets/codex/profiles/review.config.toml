@@ -1,0 +1,7 @@
+# Strictly read-only parent profile for isolated Goldfish reviews: codex --profile review
+# Required because Codex role projection ignores sandbox_mode and mcp_servers in agents/*.toml.
+model = "gpt-6.2-sol"
+model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+approval_policy = "never"
+approvals_reviewer = "auto_review"

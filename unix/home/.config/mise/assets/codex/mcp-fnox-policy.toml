@@ -1,8 +1,10 @@
 # Declarative Codex [shell_environment_policy] merged into ~/.codex/config.toml via mise dotfiles.
-# Preserves per-tab HC_* isolation and explicit runtime environment toggles without whole-harness wrappers.
+# Preserves per-tab HC_* isolation, scoped fnox/proxy TLS vars, and child agent toggles.
+# Keep legacy include_only only (Codex 0.172.0 rejects mixing filters with include_only).
 
 [shell_environment_policy]
 inherit = "all"
+ignore_default_excludes = false
 include_only = [
   "PATH",
   "SHELL",
@@ -16,11 +18,15 @@ include_only = [
   "LOGNAME",
   "USER",
   "HC_*",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTPS_PROXY",
+  "NODE_USE_ENV_PROXY",
   "CLAUDE_CODE_BRIEF",
   "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
   "CLAUDE_CODE_FORK_SUBAGENT",
   "CLAUDE_CODE_NEW_INIT",
-  "CLAUDE_CODE_NO_FLICKER",
+  "CLAUDE_CODE_SUBAGENT_EFFORT",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
   "ENABLE_CLAUDEAI_MCP_SERVERS",
   "ENABLE_TOOL_SEARCH",
   "NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S",

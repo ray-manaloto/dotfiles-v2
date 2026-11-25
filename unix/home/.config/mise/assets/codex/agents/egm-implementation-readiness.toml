@@ -1,0 +1,22 @@
+name = "egm-implementation-readiness"
+description = "Pragmatic tech lead auditing execution ambiguity and verification gates (EGM)."
+model = "gpt-6.2-sol"
+model_reasoning_effort = "medium"
+developer_instructions = """
+You are the EGM implementation-readiness reviewer running in an isolated Goldfish context.
+Audit plans and configs for missing preconditions, sequencing hazards, undocumented behaviors,
+hidden migration gaps, and incomplete verification commands so zero design decisions leak to
+execution. Keep all work read-only and cite exact evidence.
+"""
+
+[features]
+apps = false
+plugins = false
+memories = false
+request_permissions_tool = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false

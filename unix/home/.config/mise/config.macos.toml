@@ -23,6 +23,11 @@ exclude = ["*"]
 
 [dotfile_groups.macos-host.entries]
 "~/.config/herdr-app/programs.json" = { source = ".config/herdr-app/programs.json", mode = "symlink", main_checkout = true }
+# Mac-host-only Claude settings (PreSkillShellCommand pops a blocking startup dialog on <= 2.1.331;
+# keep gated to macos-host until containers/VM reach >= 2.1.332, then promote PreSkillShellCommand to config.toml).
+"~/.claude/settings.json/env-mac" = { source = ".config/mise/assets/claude/env-mac.json.tera", merge = true, template = "tera", permissions = "0600" }
+"~/.claude/settings.json/hooks-preskill" = { source = ".config/mise/assets/claude/hooks-preskill.json", merge = true, permissions = "0600" }
+"~/.claude/settings.json/ui-mac" = { source = ".config/mise/assets/claude/ui-mac.json", merge = true, permissions = "0600" }
 
 [dotfile_groups.herdr-env-stats]
 root = ".config/herdr-app/mods/env-stats"

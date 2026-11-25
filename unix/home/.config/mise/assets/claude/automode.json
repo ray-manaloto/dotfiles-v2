@@ -1,0 +1,19 @@
+{
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Lead Self-Merge: on the owner's ray-manaloto repositories, the owner ruled (2026-11-15, and 2026-11-17: no review is required) that a project lead merges its own pull request once its local hk checks and code review gate passed on that exact head, so Merge Without Review does not block `gh pr merge N --merge --match-head-commit <sha> --author-email 1428022+sortakool@users.noreply.github.com`, optionally with `-R ray-manaloto/<repo>`, nor `mise run //repo:pr-merge <number> <title> <body file>` in `dotfiles-v2`, which checks those gates itself and then runs that same command. Only those forms: never `--admin`, `--auto`, `--squash` or `--rebase`, and never another owner's repository."
+    ],
+    "classifyAllShell": true,
+    "environment": [
+      "$defaults",
+      "**Trusted repo**: ray-manaloto/dotfiles-v2 (github.com:ray-manaloto/dotfiles-v2.git), the owner's primary working repository, checked out at ~/dev/github/ray-manaloto/dotfiles-v2 with linked worktrees under ~/dev/github/ray-manaloto/dotfiles-v2-*. It is PUBLIC: any push to it publishes. Direct main prototyping commits and PRs are guarded locally by hk check and agy-code-review-guard.py.",
+      "**Primary use of Claude Code**: software development: developer-environment configuration (mise, Claude Code, Codex, OpenCode, Herdr) in dotfiles-v2, C++26 libraries, and multi-agent orchestration with Herdr and Vercel Board."
+    ],
+    "hard_deny": [
+      "$defaults",
+      "force-push or ref deletion on any public ray-manaloto repo",
+      "gh repo delete, repository visibility changes, or GitHub Actions secret writes"
+    ]
+  }
+}

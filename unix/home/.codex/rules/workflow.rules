@@ -1,0 +1,124 @@
+# Narrow allowlist for verified read-only and cross-workspace orchestration commands.
+# Reduces Auto-review round-trips without weakening boundary enforcement on git push,
+# gh pr merge, gh api, ssh, or arbitrary shell mutations. Most-restrictive rule wins.
+# Deployed with mode = "copy" because Codex ignores symlinked .rules entries.
+
+prefix_rule(
+    pattern = ["hc", ["ls", "get", "read", "wait", "status"]],
+    decision = "allow",
+    justification = "read/wait on Herdr terminal state",
+    match = [["hc", "ls", "--json"], ["hc", "read", "t1", "--lines", "40"], ["hc", "wait", "t2"]],
+    not_match = [["hc", "kill", "t1"], ["hc", "send", "t1", "hi"]],
+)
+
+prefix_rule(
+    pattern = ["vb", ["whoami", "list", "channels", "actors", "read", "tasks"]],
+    decision = "allow",
+    justification = "read-only Vercel Board inspection (posting stays reviewed)",
+    match = [["vb", "whoami"], ["vb", "read", "ops/updates"]],
+    not_match = [["vb", "post", "ops/updates", "hi"], ["vb", "grants", "revoke", "g1"]],
+)
+
+# No `mise x`/`mise exec`/`mise run`/`mise task run`: they wrap arbitrary commands and would bypass
+# guards.rules (e.g. `mise x -- brew install jq`). Those stay on the auto-review path.
+prefix_rule(
+    pattern = ["mise", ["doctor", "ls", "status", "fmt"]],
+    decision = "allow",
+    justification = "read-only mise diagnostics and config formatting",
+    match = [["mise", "doctor", "project"], ["mise", "fmt"], ["mise", "ls"]],
+    not_match = [["mise", "x", "--", "brew", "install", "jq"], ["mise", "run", "py:test"], ["mise", "use", "-g", "node"]],
+)
+
+prefix_rule(
+    pattern = ["mise", ["dot", "dotfiles"], ["status", "diff"]],
+    decision = "allow",
+    justification = "read-only dotfile drift inspection (apply stays reviewed)",
+    match = [["mise", "dot", "status"], ["mise", "dotfiles", "diff"]],
+    not_match = [["mise", "dot", "apply"]],
+)
+
+prefix_rule(
+    pattern = ["hk", ["check", "fix", "validate", "run"]],
+    decision = "allow",
+    justification = "local pre-commit and repo lint/test checks",
+    match = [["hk", "check", "--all"], ["hk", "validate", "--json"]],
+    not_match = [["hk", "uninstall"]],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", ["view", "list", "diff", "checks", "status"]],
+    decision = "allow",
+    justification = "read-only GitHub PR inspection",
+    match = [["gh", "pr", "view", "201"], ["gh", "pr", "checks"]],
+    not_match = [["gh", "pr", "merge", "1"]],
+)
+
+prefix_rule(
+    pattern = ["gh", "issue", ["view", "list", "status"]],
+    decision = "allow",
+    justification = "read-only GitHub issue inspection",
+    match = [["gh", "issue", "view", "24"], ["gh", "issue", "list"]],
+    not_match = [["gh", "issue", "close", "24"]],
+)
+
+prefix_rule(
+    pattern = ["gh", "run", ["list", "view", "watch"]],
+    decision = "allow",
+    justification = "read-only GitHub Actions workflow monitoring",
+    match = [["gh", "run", "list"], ["gh", "run", "watch", "12345"]],
+    not_match = [["gh", "run", "cancel", "12345"]],
+)
+
+prefix_rule(
+    pattern = ["git", ["status", "diff", "log", "branch", "rev-parse", "show", "fetch", "add", "commit", "worktree"]],
+    decision = "allow",
+    justification = "local git inspection and worktree commits",
+    match = [["git", "status", "--short"], ["git", "worktree", "list"]],
+    not_match = [["git", "push", "origin", "main"], ["git", "reset", "--hard"]],
+)
+
+prefix_rule(
+    pattern = ["docker", ["ps", "images", "logs", "inspect"]],
+    decision = "allow",
+    justification = "read-only container status inspection",
+    match = [["docker", "ps"], ["docker", "logs", "web"]],
+    not_match = [["docker", "compose", "up"], ["docker", "context", "use", "x"], ["docker", "system", "prune", "-a"]],
+)
+
+prefix_rule(
+    pattern = ["agentsview", "session", ["search", "messages", "list"]],
+    decision = "allow",
+    justification = "read-only AgentsView session history search",
+    match = [["agentsview", "session", "search", "foo"]],
+    not_match = [["agentsview", "index", "clear"]],
+)
+
+prefix_rule(
+    pattern = ["ctx7", ["library", "docs", "code", "get-upgrade-guide", "search", "whoami"]],
+    decision = "allow",
+    justification = "read-only Context7 CLI documentation lookup",
+    match = [["ctx7", "docs", "/jdx/mise", "systemd"]],
+    not_match = [["ctx7", "setup", "--mcp"]],
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "pytest"],
+    decision = "allow",
+    justification = "run repository pytest suite",
+    match = [["uv", "run", "pytest", "-q"]],
+    not_match = [["uv", "pip", "install", "foo"]],
+)
+
+prefix_rule(
+    pattern = ["uv", "lock", "--check"],
+    decision = "allow",
+    justification = "check uv.lock parity without network or install",
+    match = [["uv", "lock", "--check", "--offline"]],
+)
+
+prefix_rule(
+    pattern = ["codex", "execpolicy", "check"],
+    decision = "allow",
+    justification = "validate Codex execpolicy Starlark rules",
+    match = [["codex", "execpolicy", "check", "--rules", "guards.rules", "--", "git", "status"]],
+)
