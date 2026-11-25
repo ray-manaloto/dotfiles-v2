@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TASKS_DIR = REPO_ROOT / "tasks"
 MISE_TASKS_DIR = REPO_ROOT / "unix" / "home" / ".config" / "mise" / "tasks"
@@ -1092,11 +1094,31 @@ def test_host_doctor_checks_skip_in_repo_scope_and_pre_push_sets_it() -> None:
 
     repo = Path(__file__).resolve().parents[1]
     checks = tomllib.loads((repo / "mise.toml").read_text())["doctor"]["checks"]
-    gate = 'if test "${DOTFILES_DOCTOR_SCOPE:-full}" = repo; then echo "SKIP: host'
+    gate = "sh tasks/py/host_check.sh "
     for name in HOST_SCOPED_DOCTOR_CHECKS:
         assert checks[name]["run"].startswith(gate), name
     repo_checks = set(checks) - set(HOST_SCOPED_DOCTOR_CHECKS)
-    assert not any(checks[n]["run"].startswith(gate) for n in repo_checks)
+    assert not any("host_check.sh" in checks[n]["run"] for n in repo_checks)
     cfg = tomllib.loads((repo / "unix/home/.config/mise/config.toml").read_text())
     block = cfg["dotfiles"]["~/.gitconfig/gh-doctor"]["block"]
     assert "DOTFILES_DOCTOR_SCOPE=repo sh -c" in block
+
+
+@pytest.mark.parametrize(
+    ("scope", "rc", "out"),
+    [("repo", 0, "SKIP: host check"), ("full", 7, ""), (None, 7, "")],
+)
+def test_host_check_helper_runs_or_skips(scope: str | None, rc: int, out: str) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    env = {"PATH": "/usr/bin:/bin"}
+    if scope is not None:
+        env["DOTFILES_DOCTOR_SCOPE"] = scope
+    proc = subprocess.run(
+        ["sh", str(repo / "tasks/py/host_check.sh"), "sh", "-c", "exit 7"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == rc
+    assert proc.stdout.startswith(out)
