@@ -121,6 +121,10 @@ up_mac() {
 	local uid
 	uid="$(id -u)"
 	launchctl bootout "gui/${uid}/dev.mise.beszel-agent" >/dev/null 2>&1 || true
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		launchctl print "gui/${uid}/dev.mise.beszel-agent" >/dev/null 2>&1 || break
+		sleep 0.3
+	done
 	launchctl bootstrap "gui/${uid}" "${plist}"
 	launchctl kickstart -k "gui/${uid}/dev.mise.beszel-agent"
 	echo "OK    mac beszel-agent (GPU_COLLECTOR=macmon, docker-socket-proxy POST=0)"
@@ -180,6 +184,10 @@ VM_UP
 		chmod 0644 "${plist}"
 		uid="$(id -u)"
 		launchctl bootout "gui/${uid}/dev.mise.beszel-agent" >/dev/null 2>&1 || true
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			launchctl print "gui/${uid}/dev.mise.beszel-agent" >/dev/null 2>&1 || break
+			sleep 0.3
+		done
 		launchctl bootstrap "gui/${uid}" "${plist}"
 		launchctl kickstart -k "gui/${uid}/dev.mise.beszel-agent"
 	' <"${plist_tmp}"

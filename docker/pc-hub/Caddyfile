@@ -82,6 +82,8 @@ http://:{$PC_HUB_CADDY_PORT:8880} {
 	# @vercel/board Web Inspector (/) and API (/api/board).
 	# Note: codebase-memory-mcp has ZERO Caddy / HTTP exposure (SSH CLI only).
 	handle {
-		reverse_proxy 127.0.0.1:4100
+		reverse_proxy 127.0.0.1:4100 {
+			header_up X-Forwarded-Proto https
+		}
 	}
 }
