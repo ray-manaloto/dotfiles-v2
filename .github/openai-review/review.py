@@ -17,19 +17,28 @@ MAX_FILES = 30
 MAX_PATCH_BYTES = 24000
 MAX_HTTP_BYTES = 4_000_000
 FOCUS = "bootstrap idempotency, platform compatibility, pinned dependencies, and accidental config leaks."
-PRIVATE = False
 SENSITIVE_PATH = re.compile(
-    r"(^|/)(\.env(?:\.[^/]+)?|\.ssh|\.aws|[^/]*(?:secret|credential|password)"
+    r"(^|/)(\.env(?:\.[^/]+)?|\.ssh|\.aws|\.?netrc|\.?npmrc|\.?pypirc"
+    r"|(?:private_)?dot_(?:env|ssh|aws|netrc|npmrc|pypirc)[^/]*"
+    r"|[^/]*(?:secret|credential|password)"
     r"[^/]*|[^/]+\.(?:pem|p12|pfx|key|kdbx|tfstate))($|/)",
     re.IGNORECASE,
 )
 SENSITIVE_TEXT = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{16,}"
     r"|sk-ant-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}"
-    r"|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,})\b"
-    r"""|\b(?:password|client_secret|api_key|access_token)\s*[:=]\s*["']?[A-Za-z0-9_+./=-]{12,}""",
+    r"|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{36}"
+    r"|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35})\b"
+    r"""|\b(?:password|client_secret|api_key|access_token)\s*[:=]\s*["']?[A-Za-z0-9_+./=-]{12,}"""
+    # Broader key names (auth_token=, _authToken=, secret:, apikey=) with literal,
+    # path-free values, so `token_file = "/run/..."` and `${VAR}` lines still pass.
+    r"""|(?:\w*token|\w*secret|api[-_]?key|passwd)["']?\s*[:=]\s*["']?[A-Za-z0-9_+.=-]{12,}""",
     re.IGNORECASE,
 )
+
+
+# Shape errors from unexpected API JSON; mapped to a safe message in __main__.
+MALFORMED_ERRORS = (AttributeError, KeyError, TypeError, ValueError)
 
 
 class ReviewError(Exception):
@@ -44,6 +53,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def request_json(url, token, *, body=None):
+    # Claude API 2026-10-21 documents `Authorization: Bearer <API key>` as the primary
+    # auth header (x-api-key is the legacy fallback):
+    # https://platform.claude.com/docs/en/api/overview#authentication
+    # The key must be scoped to one workspace; this sends no anthropic-workspace-id.
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if url == CLAUDE_ENDPOINT:
         headers["anthropic-version"] = "2026-10-21"
@@ -163,7 +176,8 @@ def model_review(provider, key, data, send):
                 "model": MODEL,
                 "store": False,
                 "reasoning": {"effort": "low"},
-                "max_output_tokens": 1800,
+                # Responses API counts reasoning tokens against this budget.
+                "max_output_tokens": 6000,
                 "instructions": instructions,
                 "input": data,
             },
@@ -184,7 +198,10 @@ def run(env, send=request_json):
         raise ReviewError("Dispatch only from the default branch.")
     if not re.fullmatch(r"[1-9][0-9]{0,8}", number):
         raise ReviewError("Enter a positive PR number.")
-    if PRIVATE and env.get("ALLOW_PRIVATE_DIFF") != "true":
+    repo_private = env.get("REPO_PRIVATE")
+    if repo_private not in {"true", "false"}:
+        raise ReviewError("Repository visibility is unknown; refusing to send patches.")
+    if repo_private == "true" and env.get("ALLOW_PRIVATE_DIFF") != "true":
         raise ReviewError(
             "Private patches are disabled; confirm explicitly for this run."
         )
@@ -227,5 +244,5 @@ if __name__ == "__main__":
         run(os.environ)
     except ReviewError as exc:
         sys.exit(str(exc))
-    except (KeyError, TypeError, ValueError):
+    except MALFORMED_ERRORS:
         sys.exit("Review configuration or API response was invalid.")

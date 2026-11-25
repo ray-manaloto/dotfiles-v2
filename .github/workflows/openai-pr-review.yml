@@ -7,6 +7,11 @@ on:
         description: Open pull request targeting the default branch
         required: true
         type: string
+      allow_private_diff:
+        description: Allow sending patches if this repository is private
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,7 +29,7 @@ jobs:
     environment: openai-pr-review
     steps:
       - name: Check out only the dispatched default-branch commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -34,6 +39,8 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          ALLOW_PRIVATE_DIFF: ${{ inputs.allow_private_diff }}
           GITHUB_TOKEN: ${{ github.token }}
           REVIEW_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
         run: python3 -B .github/openai-review/review.py

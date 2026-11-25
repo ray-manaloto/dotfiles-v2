@@ -18,6 +18,14 @@ def pr():
     }
 
 
+def claude_ok():
+    return {
+        "type": "message",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "No actionable findings."}],
+    }
+
+
 def item(**overrides):
     out = {
         "filename": "src/file.cpp",
@@ -39,7 +47,8 @@ class ReviewTests(unittest.TestCase):
             "GITHUB_EVENT_NAME": "workflow_dispatch",
             "GITHUB_REF": "refs/heads/main",
             "PR_NUMBER": "5",
-            "ALLOW_PRIVATE_DIFF": "true",
+            "REPO_PRIVATE": "false",
+            "ALLOW_PRIVATE_DIFF": "false",
             "REVIEW_API_KEY": "synthetic-api-key-for-tests",
             "GITHUB_TOKEN": "synthetic-gh-token-for-tests",
             "GITHUB_STEP_SUMMARY": str(self.summary),
@@ -92,6 +101,17 @@ class ReviewTests(unittest.TestCase):
             item(additions=2),
             item(patch="@@ -1 +1 @@\n-old\n+password = 'syntheticValue1234'"),
             item(patch="@@ -1 +1 @@\n-old\n+" + "z" * review.MAX_PATCH_BYTES),
+            item(filename="home/.netrc"),
+            item(filename="private_dot_ssh/config"),
+            item(filename="dot_npmrc"),
+            item(
+                patch="@@ -1 +1 @@\n-old\n+//registry.npmjs.org/:_authToken=npm_"
+                + "A" * 36
+            ),
+            item(patch="@@ -1 +1 @@\n-old\n+token = glpat-" + "b" * 20),
+            item(patch="@@ -1 +1 @@\n-old\n+key: AIza" + "c" * 35),
+            item(patch="@@ -1 +1 @@\n-old\n+auth_token = 'syntheticValue1234'"),
+            item(patch='@@ -1 +1 @@\n-old\n+"apiKey": "syntheticValue1234"'),
         ):
             with self.subTest(path=bad["filename"]):
                 send = Mock(side_effect=[pr(), [bad]])
@@ -108,12 +128,46 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(send.call_count, 3)
         self.assertFalse(self.summary.exists())
 
-    def test_private_defaults_to_no_transfer(self):
-        if review.PRIVATE:
-            send = Mock()
-            with self.assertRaises(review.ReviewError):
-                review.run(dict(self.env, ALLOW_PRIVATE_DIFF="false"), send)
-            send.assert_not_called()
+    def test_path_and_variable_references_are_not_flagged(self):
+        for patch in (
+            '@@ -1 +1 @@\n-old\n+auth_token_file = "/run/agent-secrets/token"',
+            '@@ -1 +1 @@\n-old\n+token="${BOARD_TOKEN_VALUE}"',
+            "@@ -1 +1 @@\n-old\n+max_tokens = 1800",
+        ):
+            with self.subTest(patch=patch):
+                self.assertIsNone(review.SENSITIVE_TEXT.search(patch))
+
+    def test_private_repo_requires_explicit_opt_in(self):
+        for private, allow, blocked in (
+            ("true", "false", True),
+            ("true", "", True),
+            ("true", "true", False),
+            ("false", "false", False),
+            (None, "true", True),
+            ("", "true", True),
+        ):
+            with self.subTest(private=private, allow=allow):
+                env = dict(self.env, ALLOW_PRIVATE_DIFF=allow)
+                if private is None:
+                    env.pop("REPO_PRIVATE")
+                else:
+                    env["REPO_PRIVATE"] = private
+                if blocked:
+                    send = Mock()
+                    with self.assertRaises(review.ReviewError):
+                        review.run(env, send)
+                    send.assert_not_called()
+                else:
+                    send = Mock(side_effect=[pr(), [item()], pr(), claude_ok()])
+                    review.run(dict(env, REVIEW_PROVIDER="claude"), send)
+                    self.assertEqual(send.call_count, 4)
+
+    def test_non_object_api_response_maps_to_safe_message(self):
+        for provider in ("claude", "openai"):
+            with self.subTest(provider=provider):
+                send = Mock(side_effect=[pr(), [item()], pr(), ["not", "a", "dict"]])
+                with self.assertRaises(review.MALFORMED_ERRORS):
+                    review.run(dict(self.env, REVIEW_PROVIDER=provider), send)
 
     def test_incomplete_or_empty_review_is_not_success(self):
         for output in ({"status": "incomplete"}, {"status": "completed", "output": []}):
