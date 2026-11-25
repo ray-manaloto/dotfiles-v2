@@ -22,8 +22,11 @@
   - [x] 2.1 Claude Code (`agent-secrets` OAuth token mount)
   - [x] 2.2 OpenCode (free zero-retention model)
   - [x] 2.3 ZCode (`npm:zcode-app-cli`)
-  - [ ] 2.4 Antigravity CLI (`agy`, `Orchestrator (Neon)` default)
+  - [ ] 2.4 Antigravity CLI (`agy`, `Orchestrator (Neon)` default; `agy-rc-guard`
+    and quota-gated `env:smoke` landed; container/VM bootstrap tracked in `#24`)
   - [ ] 2.5 Codex (`--device-auth`) + `ray-manaloto/skills` + `[dotfile_groups]`
+    (`dotfile_groups`, 6-harness `bootstrap:skills`, and `env:smoke` landed;
+    remaining container/VM `codex` bootstrap parity tracked in `#24`)
 - [ ] **Step 3:** Declarative C++26 core (`mise.ubuntu.toml`: pinned latest
   GCC 16, Clang 23, `lld`/`lldb`/`libc++`, `gdb`, `valgrind`, `cppcheck`,
   `cmake`, `ninja`, `vcpkg`, `gcovr`) + C++26 smoke test, followed by optional
@@ -35,9 +38,9 @@
   -> `github:atanunq/viu`, `dockerfilegraph` ->
   `github:patrickhoefler/dockerfilegraph`) to global `mise` config while keeping
   native C++/system libraries and Casks in Homebrew.
-- [ ] **Follow-up (`packslip v1.11.5`):** Switch `tasks/vm/up` from
-  `packslip verify --pin` back to `packslip install github.com/jdx/mise` once
-  `jdx/packslip` `v1.11.5` (PR `#337`, fixing `#346`) releases.
+- [x] **Follow-up (`packslip v1.11.5`):** Switched `tasks/vm/up` back to
+  `packslip install --pin ps1_nlhmwtfeufglxv5myvwvronk7a` once `jdx/packslip`
+  `v1.11.5` (PR `#347`, fixing `#346`) released (`#13`).
 - [x] **Follow-up (Phase 0 local `vercel/board` + `jdx` skills prototype):**
   Packaged `npm:@vercel/board` (`0.54.1`), `pitchfork`, `aube`, `communique`,
   and `usage` in repo config (`147cba6`), synced `jdx` + `vercel-board` skills,
@@ -52,7 +55,7 @@
   Shipped clean-room 6-harness rolling-restart engine (`herdr_roll`, `e73ce7b`,
   `5b5513a`), `repotools trust` worktree wiring, and ordered 2-stage
   post-review verification gate (`2eb3410`).
-- [ ] **Follow-up (Herdr rolling restarts & issue-mapped PWF workflow):**
+- [x] **Follow-up (Herdr rolling restarts & issue-mapped PWF workflow):**
   - [x] [#4](https://github.com/ray-manaloto/dotfiles-v2/issues/4) Cut over
     global `roll:*` `mise` tasks and Herdr skills from legacy `dotfiles` to
     `dotfiles-v2` (`PLAN_ID` / worktree slug: `herdr-roll-global-cutover`;
@@ -99,8 +102,11 @@
   - [ ] [#11](https://github.com/ray-manaloto/dotfiles-v2/issues/11) Host
     `@vercel/board` always-on on remote Linux host (`pc`) and adopt
     `templates/swarm` + `factory` orchestration (`PLAN_ID` / worktree slug:
-    `vercel-board-pc-orchestration`; blocked by `#9` and OpenWiki
-    `vercel/board` mapping).
+    `vercel-board-pc-orchestration`; `@vercel/board@0.56.1` now live behind
+    `pc` Caddy/Tailscale and synced across `host`/`pc`/`mac`/`vm` in
+    `806d74c`–`5d6b945`; remaining: `templates/swarm`/`factory` channel
+    conventions `ops/kb-queue` & `work/*`, tailnet ACL cleanup, and
+    `--no-tailscale` Mac fallback check).
 - [ ] **Follow-up (Deep Audit, Full `mise`/`jdx` & Dependency Upgrades, Hardened Tier 1–3 Health Gates):**
   - [x] [#13](https://github.com/ray-manaloto/dotfiles-v2/issues/13) Upgrade
     `mise` (`2026.11.13`), `packslip` (`1.11.5`), `hk` (`2.14.0`), all outdated
@@ -144,3 +150,46 @@
     `0.80.0` (`npm:oxfmt`/`aube`), add `syft` `1.57.2`, and support canonical
     `npm:` entries in `check_mise_lock_integrity` (`PLAN_ID` / worktree slug:
     `mise-registry-canonical`; shipped on `main` at `23794f3`).
+- [x] **Follow-up (Phase 13 Wave 1A & 1B: core `mise`, 6-harness skills,
+  Arch B `fnox`, 0-MCP CLI+Skill, hardened hooks/CI):**
+  - [x] [#21](https://github.com/ray-manaloto/dotfiles-v2/issues/21) Wave 1A:
+    core `mise 2026.11.14`, strict `tombi` schema, `[dotfile_groups]`,
+    universal `zsh`, 6-harness `bootstrap:skills`, `[shell_alias]`, `Herdr.app`
+    cask, `upgrade.auto_prune`, `dotfiles-catalog`, `yt-dlp`, `1h` soak, Arch B
+    scoped `fnox`, `dcg`+`0555` hardening, `0` global MCPs, and `deps:audit`
+    (shipped on `main` at `2daba55`, `1e2a3ca`, `278efcc`, `5c5212e`).
+  - [x] [#22](https://github.com/ray-manaloto/dotfiles-v2/issues/22) Wave 1B:
+    `/learn` & hook shell-unwrapping hardening, Claude/Codex `/learn` hooks,
+    `codex:hook-trust` / `codex:plugin-update`, smart wrappers + `agy-rc-guard`,
+    `herdr_roll` closed-space fix, `env:enter`, and
+    `.github/workflows/{ci,health}.yml` (shipped on `main` at `fb0e5c6`,
+    `fb9065b`, `b1387b9`, `dac18ce`).
+- [ ] **Follow-up (Phase 13 Wave 2A/2B & Track 4: `pc` Hub, Stats UI, `pc`
+  Option A, `env:quota`, multi-project containers):**
+  - [ ] [#23](https://github.com/ray-manaloto/dotfiles-v2/issues/23) Wave 2A:
+    **Shipped:** always-on `pc` Hub (`Caddy`, `Beszel 0.21.2` + Permanent
+    Universal Token + `3/3` host agents + 20 containers, `@vercel/board@0.56.1`
+    synced across `host`/`pc`/`mac`/`vm`, `AgentsView Hub` w/ `11G` Mac archive
+    & `NO_LOCAL_DAEMON`, `SearXNG`+`Valkey`, `qmd 2.9.0` w/ `43,029` indexed KB
+    files via `knowledge-base-v2` `PR #160`/`#161`, CLI-only static
+    `codebase-memory-mcp 0.12.1`; `806d74c`–`5d6b945`). **Remaining:**
+    `config.pc.toml` + `tasks/pc/{up,sync,doctor}` Option A cutover on `pc`
+    (`fnox-age.key`) and `ops/kb-queue` / `work/*` board channels.
+  - [ ] [#24](https://github.com/ray-manaloto/dotfiles-v2/issues/24) Wave 2B:
+    **Shipped:** dynamic quota-gated `env:smoke --skill-check`, Track 4 UI/TUI
+    (`bottom`, `env:top`, `env:stats`, native GPUI `env-stats` Herdr mod,
+    `herdr:realtime-stats`, `<25ms` `agy-statusline`, dead Codex `[otel]`
+    cleanup; `278efcc`, `6e88e27`–`0fbb33b`). **Remaining:** standalone
+    `tasks/env/quota` (`env:doctor --smoke`), container/VM `agy`/`codex`
+    bootstrap parity, and persistent Docker volumes + multi-project `pc`
+    containers (`kb-v2-pc`, `cpp-core-pc`).
+- [ ] **Follow-up (GitHub Actions AI PR reviewers & upstream trackers):**
+  - [ ] [#25](https://github.com/ray-manaloto/dotfiles-v2/issues/25) Claude
+    GitHub Actions PR code review setup (`PR #1` & sibling repos).
+  - [ ] [#26](https://github.com/ray-manaloto/dotfiles-v2/issues/26) Codex
+    GitHub Actions PR code review setup (`PR #1` & sibling repos).
+  - [ ] [#27](https://github.com/ray-manaloto/dotfiles-v2/issues/27) Upstream
+    tracker: Codex `app-server-daemon` env isolation, ephemeral `fnox` CA
+    lifecycle & plugin hook trust.
+  - [ ] [#28](https://github.com/ray-manaloto/dotfiles-v2/issues/28) Upstream
+    tracker: Antigravity CLI (`agy`) Remote Control macOS bugs.
