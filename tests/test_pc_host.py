@@ -120,15 +120,20 @@ def test_pc_overlay_and_zsh(tmp_path: Path) -> None:
         assert result.strip() == "linux,pc"
 
 
-def test_sync_bootstraps_without_identity(tmp_path: Path) -> None:
+@pytest.mark.parametrize("login_shell", ["/usr/bin/bash", "/usr/bin/zsh"])
+def test_sync_bootstraps_without_identity(tmp_path: Path, login_shell: str) -> None:
     assert "agent-secrets" not in (TASKS / "up").read_text()
     checkout = tmp_path / "dev/dotfiles-v2"
     (checkout / ".git").mkdir(parents=True)
     target = checkout / "unix/home/.config/mise"
     target.mkdir(parents=True)
     (target / "config.pc.toml").touch()
+    sudo_calls = tmp_path / "sudo_calls"
     for name, body in {
         "git": 'test "$*" = "-C $HOME/dev/dotfiles-v2 pull --ff-only"',
+        "getent": f'printf "fixture:x:1000:1000::/tmp:{login_shell}\\n"',
+        "zsh": "exit 0",
+        "sudo": f'printf "%s\\n" "$*" >> "{sudo_calls}"',
         "mise": 'test "$1" = bootstrap && ln -s "$HOME/dev/dotfiles-v2/unix/home/.config/mise" "$HOME/.config/mise"',
     }.items():
         stub = tmp_path / name
@@ -150,6 +155,13 @@ def test_sync_bootstraps_without_identity(tmp_path: Path) -> None:
         env={"HOME": str(tmp_path), "PATH": f"{tmp_path}:{os.defpath}"},
         check=True,
     )
+    user = subprocess.check_output(["id", "-un"], text=True).strip()
+    if login_shell.endswith("/bash"):
+        assert sudo_calls.read_text().splitlines() == [
+            f"-n usermod -s {tmp_path / 'zsh'} {user}"
+        ]
+    else:
+        assert not sudo_calls.exists()
     assert "age.txt" in result.stderr and "0600" in result.stderr
     assert stat.S_IMODE((tmp_path / ".config/fnox").stat().st_mode) == 0o700
     assert not (tmp_path / ".config/fnox/age.txt").exists()

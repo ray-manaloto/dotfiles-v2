@@ -40,6 +40,14 @@ export MISE_ENV=linux,pc MISE_YES=1 MISE_LOCKED=1
 export PATH="/usr/local/bin:$PATH"
 export MISE_TRUSTED_CONFIG_PATHS="$checkout:$config"
 cd "$HOME"
+# Arch/Omarchy unprivileged chsh requires a password over BatchMode SSH.
+login_shell=$(getent passwd "$(id -un)" | cut -d: -f7)
+if [[ ${login_shell##*/} != zsh ]]; then
+	if ! command -v zsh >/dev/null 2>&1; then
+		sudo -n pacman -S --noconfirm --needed -- zsh </dev/null
+	fi
+	sudo -n usermod -s "$(command -v zsh)" "$(id -un)" </dev/null
+fi
 /usr/local/bin/mise bootstrap --from "$repo" --from-dir "$checkout" \
 	--config-dir unix/home/.config/mise --force-dotfiles --yes </dev/null
 [[ -L $config && $config -ef $target ]]
