@@ -80,7 +80,17 @@ mise skills sync --global --prune
 
 # Install the official agentsview skill for the cross-harness ~/.agents/skills root only.
 # Never pass `--harness claude`: that generates the MCP-only agentsview-search-conversations skill.
+# [wrappers.agentsview] makes `command -v` succeed even when its ~/.local/bin target is not
+# applied yet (e.g. CI `mise install` without dotfiles), so probe that it actually executes.
+av_ok=false
 if command -v agentsview >/dev/null 2>&1; then
+	if agentsview --version </dev/null >/dev/null 2>&1; then
+		av_ok=true
+	else
+		echo "WARN: agentsview is on PATH but does not run (wrapper target missing?); skipping agentsview skill install" >&2
+	fi
+fi
+if [[ ${av_ok} == "true" ]]; then
 	av_skill="${agents_dir}/agentsview-finding-history"
 	if [[ -L ${av_skill} ]]; then
 		av_raw="$(readlink "${av_skill}" 2>/dev/null || true)"

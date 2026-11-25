@@ -76,17 +76,17 @@ hint = "Run `MISE_CONFIG_DIR=$PWD/unix/home/.config/mise mise lock` and ensure 0
 
 [doctor.checks.host-option-a]
 description = "Strict Option A host parity, no-legacy-symlinks, roll-ownership, and dotfiles status"
-run = "python3 -I -B tasks/py/doctor_checks.py host-option-a --strict-host"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || python3 -I -B tasks/py/doctor_checks.py host-option-a --strict-host"
 hint = "Complete Issue #9 Option A host cutover (~/.config/mise -> dotfiles-v2/unix/home/.config/mise) and sync dotfiles."
 
 [doctor.checks.mise-doctor-clean]
 description = "Global mise doctor --json reports 0 errors and 0 warnings"
-run = "python3 -I -B tasks/py/doctor_checks.py mise-doctor-clean"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || python3 -I -B tasks/py/doctor_checks.py mise-doctor-clean"
 hint = "Inspect `mise -C ~ doctor --json` and eliminate any errors or PATH-ordering warnings."
 
 [doctor.checks.host-hygiene]
 description = "Host shims, command-wrappers, mise plugins, pitchfork daemons, vb, local bins, opencode.jsonc, config.local.toml, and skills parity are clean"
-run = "python3 -I -B tasks/py/doctor_checks.py host-hygiene"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || python3 -I -B tasks/py/doctor_checks.py host-hygiene"
 hint = "Run `mise run host:prune --apply` and `mise run bootstrap:skills` to clear stale host residue."
 
 [doctor.checks.uv-env-integrity]
@@ -199,7 +199,7 @@ hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-c
 
 [doctor.checks.host-gemini-sync]
 description = "Local ~/.gemini/config/ hooks, rules, skills, and hooks.json match unix/home/.gemini/config/ and [dotfiles]"
-run = "mise run host:sync-gemini --check"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || mise run host:sync-gemini --check"
 hint = "Run 'mise run host:sync-gemini' to sync ~/.gemini/config/ hooks, rules, skills, and hooks.json on this host."
 
 [doctor.checks.native-harnesses]
@@ -374,28 +374,28 @@ hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable, .venv is sync
 [doctor.checks.agy-learn-heal]
 description = "Self-healing agy-learn ledger and schemas pass read-only health check"
 depends = "py-deps-fresh"
-run = "mise run learn:heal --check --repo ."
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || mise run learn:heal --check --repo ."
 hint = "Inspect '$XDG_STATE_HOME/agy-learn/' via 'mise run learn:heal --check' and resolve any owing_learn or proposal bloat."
 
 [doctor.checks.herdr-app-bundle]
 description = "macOS Herdr.app lives exclusively under /Applications/Herdr.app without duplicate ~/Applications/Herdr.app"
-run = "python3 -I -B tasks/py/doctor_checks.py herdr-app-bundle"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || python3 -I -B tasks/py/doctor_checks.py herdr-app-bundle"
 hint = "Install Herdr.app cleanly at /Applications/Herdr.app and remove any duplicate ~/Applications/Herdr.app."
 
 [doctor.checks.codex-hook-trust]
 description = "Codex plugin hook-trust registry matches live hooks/list RPC hashes"
 depends = "py-deps-fresh"
-run = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
 hint = "Inspect trust drift with `mise run codex:hook-trust --check --json` and repair cleanly with `--repair`."
 
 [doctor.checks.mise-binary-integrity]
 description = "Compiled mise install binaries are hardened (0555/a-w) and dcg guardrails/hooks are configured"
-run = "python3 -I -B tasks/py/doctor_checks.py mise-binary-integrity"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || python3 -I -B tasks/py/doctor_checks.py mise-binary-integrity"
 hint = "Run `mise run host:harden-bins` and `mise -C unix/home/.config/mise install` to harden installs and configure dcg."
 
 [doctor.checks.agy-rc-health]
 description = "Antigravity CLI Remote Control guard and LaunchAgent health pass on macOS hosts"
-run = "python3 -I -B tasks/py/doctor_checks.py agy-rc-health"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || python3 -I -B tasks/py/doctor_checks.py agy-rc-health"
 hint = "Inspect or heal Remote Control via `mise run host:agy-rc-guard`."
 
 [doctor.checks.pc-hub-config]
@@ -406,5 +406,5 @@ hint = "Inspect docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} and 
 
 [doctor.checks.skills-6harness-parity]
 description = "Canonical ~/.agents/skills parity across Codex, OpenCode, AGY, Claude, ZCode, and Hermes"
-run = "python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"
+run = "test \"${DOTFILES_DOCTOR_SCOPE:-full}\" = repo || python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"
 hint = "Run `mise run bootstrap:skills` and keep canonical skills under unix/home/.agents/skills/."

@@ -92,7 +92,8 @@ jobs:
       - name: Run idempotent 2x mise bootstrap and verify zero missing dotfiles
         run: |
           mise trust --all
-          repo_url="https://github.com/ray-manaloto/dotfiles-v2.git"
+          # actions/checkout sets origin without ".git"; mise bootstrap --from must match it exactly.
+          repo_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           MISE_YES=1 MISE_LOCKED=1 mise -E linux bootstrap \
             --from "${repo_url}" \
             --from-dir "${PWD}" \

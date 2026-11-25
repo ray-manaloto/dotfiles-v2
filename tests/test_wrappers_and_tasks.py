@@ -1070,3 +1070,33 @@ def test_sync_gemini_and_6harness_parity_retire_legacy_mirrors(
     ).strip()
     assert pre_commit_cmd.endswith("hk run pre-commit --from-hook --staged")
     assert pre_push_cmd.endswith("doctor project'")
+
+
+HOST_SCOPED_DOCTOR_CHECKS = (
+    "host-option-a",
+    "mise-doctor-clean",
+    "host-hygiene",
+    "host-gemini-sync",
+    "agy-learn-heal",
+    "herdr-app-bundle",
+    "codex-hook-trust",
+    "mise-binary-integrity",
+    "agy-rc-health",
+    "skills-6harness-parity",
+)
+
+
+def test_host_doctor_checks_skip_in_repo_scope_and_pre_push_sets_it() -> None:
+    """Pushes must depend on the branch, not on live-host drift (owner decision 2026-11-25)."""
+    import tomllib
+
+    repo = Path(__file__).resolve().parents[1]
+    checks = tomllib.loads((repo / "mise.toml").read_text())["doctor"]["checks"]
+    gate = 'test "${DOTFILES_DOCTOR_SCOPE:-full}" = repo || '
+    for name in HOST_SCOPED_DOCTOR_CHECKS:
+        assert checks[name]["run"].startswith(gate), name
+    repo_checks = set(checks) - set(HOST_SCOPED_DOCTOR_CHECKS)
+    assert not any(checks[n]["run"].startswith(gate) for n in repo_checks)
+    cfg = tomllib.loads((repo / "unix/home/.config/mise/config.toml").read_text())
+    block = cfg["dotfiles"]["~/.gitconfig/gh-doctor"]["block"]
+    assert "DOTFILES_DOCTOR_SCOPE=repo sh -c" in block
