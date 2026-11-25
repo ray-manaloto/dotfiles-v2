@@ -1,0 +1,42 @@
+#!/usr/bin/env -S usage exec bash
+# shellcheck shell=bash
+#MISE description="Fast-forward the remote checkout and bootstrap the linux,pc environment"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
+#USAGE flag "--dry-run" help="Describe synchronization without connecting"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+if [[ ${usage_dry_run:-false} == true ]]; then
+	echo "pc:sync dry-run ($host): fast-forward checkout, migrate legacy config, mise bootstrap --force-dotfiles (linux,pc)"
+	exit 0
+fi
+ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
+repo=https://github.com/ray-manaloto/dotfiles-v2.git
+checkout="$HOME/dev/dotfiles-v2"
+config="$HOME/.config/mise"
+if [[ -d "$checkout/.git" ]]; then
+	git -C "$checkout" pull --ff-only </dev/null
+else
+	mkdir -p "$HOME/dev"
+	git clone "$repo" "$checkout" </dev/null
+fi
+target="$checkout/unix/home/.config/mise"
+[[ -f "$target/config.pc.toml" && -s "$HOME/.config/fnox/age.txt" && -x /usr/local/bin/mise ]]
+if [[ -e $config || -L $config ]]; then
+	if [[ ! -L $config || ! $config -ef $target ]]; then
+		# Preserve the legacy per-file symlink and any unrelated user config.
+		backup=$(mktemp -d "$HOME/.config/mise.before-option-a.XXXXXX")
+		mv -T "$config" "$backup/mise"
+		# Restore the original layout if bootstrap fails before creating its link.
+		trap 'if [[ ! -e $config && ! -L $config ]]; then mv -T "$backup/mise" "$config"; fi' EXIT
+		echo "Saved previous mise configuration in $backup"
+	fi
+fi
+export MISE_ENV=linux,pc MISE_YES=1 MISE_LOCKED=1
+export PATH="/usr/local/bin:$PATH"
+export MISE_TRUSTED_CONFIG_PATHS="$checkout:$config"
+cd "$HOME"
+/usr/local/bin/mise bootstrap --from "$repo" --from-dir "$checkout" \
+	--config-dir unix/home/.config/mise --force-dotfiles --yes </dev/null
+[[ -L $config && $config -ef $target ]]
+REMOTE

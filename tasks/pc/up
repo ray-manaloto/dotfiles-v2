@@ -1,0 +1,48 @@
+#!/usr/bin/env -S usage exec bash
+# shellcheck shell=bash
+#MISE description="Provision standalone mise and the headless fnox identity before syncing Option A"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
+#USAGE flag "--dry-run" help="Describe provisioning without connecting"
+#USAGE flag "--upgrade-omarchy" default="false" help="Authorize an Omarchy system update before provisioning"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+upgrade="${usage_upgrade_omarchy:-false}"
+if [[ ${usage_dry_run:-false} == true ]]; then
+	echo "pc:up dry-run ($host): install pinned mise via packslip, wire fnox-age.key, and run pc:sync"
+	if [[ $upgrade == true ]]; then
+		echo "Requested Omarchy update: OMARCHY_PATH=/usr/share/omarchy omarchy update -y"
+	fi
+	exit 0
+fi
+
+if [[ $upgrade == true ]]; then
+	ssh -n -o BatchMode=yes -- "$host" 'OMARCHY_PATH=/usr/share/omarchy omarchy update -y'
+fi
+ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
+[[ $(uname -sm) == "Linux x86_64" ]]
+mise_ver="2026.11.14"
+packslip_ver="v1.11.5"
+packslip_sha="926bdf0536385f017321ac06d046edde21d624e1a2f9871545b3b14ecfeb1364"
+if [[ ! -x /usr/local/bin/mise || $(/usr/local/bin/mise --version | awk '{print $1}') != "$mise_ver" ]]; then
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' EXIT
+	curl -fsSLo "$tmp/packslip" "https://github.com/jdx/packslip/releases/download/$packslip_ver/packslip-$packslip_ver-linux-x64"
+	printf '%s  %s\n' "$packslip_sha" "$tmp/packslip" | sha256sum -c -
+	chmod 0755 "$tmp/packslip"
+	sudo -n "$tmp/packslip" install github.com/jdx/mise --version "$mise_ver" \
+		--pin ps1_nlhmwtfeufglxv5myvwvronk7a --system --bin-dir /usr/local/bin --force
+fi
+keys=$("$HOME/.local/bin/agent-secrets" register pc ray-manaloto/dotfiles-v2 </dev/null)
+[[ $keys == /* && -s "$keys/fnox-age.key" && -r "$keys/fnox-age.key" ]]
+install -d -m 0700 "$HOME/.config/fnox"
+identity="$HOME/.config/fnox/age.txt"
+if [[ ! $identity -ef "$keys/fnox-age.key" ]]; then
+	if [[ -e $identity && ! -L $identity ]]; then
+		echo "Move the existing fnox age.txt identity aside before provisioning" >&2
+		exit 1
+	fi
+	ln -sfnT "$keys/fnox-age.key" "$identity"
+fi
+REMOTE
+exec mise run pc:sync --host "$host"

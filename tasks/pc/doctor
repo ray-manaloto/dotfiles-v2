@@ -1,0 +1,35 @@
+#!/usr/bin/env -S usage exec bash
+# shellcheck shell=bash
+#MISE description="Check the remote Option A config, login shell, Tailscale version, and fnox resolution"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
+#USAGE flag "--dry-run" help="Describe the checks without connecting"
+set -euo pipefail
+
+host="${usage_host:-pc}"
+if [[ ${usage_dry_run:-false} == true ]]; then
+	echo "pc:doctor dry-run ($host): check standalone mise, Option A symlink, upgrade settings, Tailscale, zsh, and fnox"
+	exit 0
+fi
+ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
+config="$HOME/.config/mise"
+[[ -L $config && $config -ef "$HOME/dev/dotfiles-v2/unix/home/.config/mise" ]]
+login_shell=$(getent passwd "$(id -un)" | cut -d: -f7)
+[[ ${login_shell##*/} == zsh ]]
+cd "$HOME"
+env -u MISE_ENV -u ZDOTDIR zsh -l -e -s <<'ZSH'
+[[ $MISE_ENV == linux,pc && $ZDOTDIR == "$HOME/.config/zsh" ]]
+[[ $(command -v mise) -ef /usr/local/bin/mise ]]
+[[ $(mise --version) == 2026.11.14\ * ]]
+[[ $(mise settings get upgrade.auto_prune) == true ]]
+[[ $(mise settings get upgrade.prune_after) == 24h ]]
+version=$(/usr/bin/tailscale version)
+version=${version%%$'\n'*}
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+printf '%s\n' 1.104.4 "$version" | sort -VC
+[[ -s "$HOME/.config/fnox/age.txt" ]]
+[[ "$HOME/.config/fnox/config.toml" -ef "$HOME/.config/fnox/config.headless.toml" ]]
+unset FNOX_AGE_KEY
+mise exec -- fnox --non-interactive --no-daemon -P infra --no-defaults check --all --strict
+ZSH
+REMOTE
+echo "PASS  pc:doctor ($host)"

@@ -1,0 +1,19 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[settings]
+upgrade.auto_prune = true
+upgrade.prune_after = "24h"
+
+[env]
+FNOX_AGE_KEY_FILE = "{{ env.HOME }}/.config/fnox/age.txt"
+
+[bootstrap.packages]
+"pacman:zsh" = "latest"
+
+# Select this overlay before mise activation, then load the shared zshenv
+# from the home tree containing the linked Option A config.
+[dotfiles."~/.zshenv"]
+content = '''
+export MISE_ENV=linux,pc
+source "$HOME/.config/mise/../../.zshenv"
+'''
