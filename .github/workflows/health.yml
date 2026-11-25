@@ -48,9 +48,7 @@ jobs:
           audit_file="$(mktemp)"
           audit_err="$(mktemp)"
           audit_rc=0
-          if ! mise -C unix/home/.config/mise audit --json >"${audit_file}" 2>"${audit_err}"; then
-            audit_rc=$?
-          fi
+          mise -C unix/home/.config/mise audit --json >"${audit_file}" 2>"${audit_err}" || audit_rc=$?
           python3 -I -B tasks/py/doctor_checks.py mise-audit-fixable \
             --json-file "${audit_file}" --rc "${audit_rc}" --err-file "${audit_err}"
           rm -f "${audit_file}" "${audit_err}"
