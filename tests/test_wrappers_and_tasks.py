@@ -1074,12 +1074,14 @@ def test_sync_gemini_and_6harness_parity_retire_legacy_mirrors(
     assert pre_push_cmd.endswith("doctor project'")
 
 
-HOST_SCOPED_DOCTOR_CHECKS = (
+# Pure live-host checks implemented as mise tasks: wrapped by tasks/py/host_check.sh.
+WRAPPED_HOST_DOCTOR_CHECKS = ("host-gemini-sync", "agy-learn-heal")
+# Python checks that mix committed-file assertions with live-host probes: they skip
+# only the live-host part in repo scope (doctor_checks._live_host_skipped).
+SCOPE_AWARE_DOCTOR_CHECKS = (
     "host-option-a",
     "mise-doctor-clean",
     "host-hygiene",
-    "host-gemini-sync",
-    "agy-learn-heal",
     "herdr-app-bundle",
     "codex-hook-trust",
     "mise-binary-integrity",
@@ -1093,15 +1095,30 @@ def test_host_doctor_checks_skip_in_repo_scope_and_pre_push_sets_it() -> None:
     import tomllib
 
     repo = Path(__file__).resolve().parents[1]
-    checks = tomllib.loads((repo / "mise.toml").read_text())["doctor"]["checks"]
+    checks = tomllib.loads((repo / "mise.toml").read_text(encoding="utf-8"))["doctor"][
+        "checks"
+    ]
     gate = "sh tasks/py/host_check.sh "
-    for name in HOST_SCOPED_DOCTOR_CHECKS:
+    for name in WRAPPED_HOST_DOCTOR_CHECKS:
         assert checks[name]["run"].startswith(gate), name
-    repo_checks = set(checks) - set(HOST_SCOPED_DOCTOR_CHECKS)
-    assert not any("host_check.sh" in checks[n]["run"] for n in repo_checks)
-    cfg = tomllib.loads((repo / "unix/home/.config/mise/config.toml").read_text())
+    others = set(checks) - set(WRAPPED_HOST_DOCTOR_CHECKS)
+    assert not any("host_check.sh" in checks[n]["run"] for n in others)
+    for name in SCOPE_AWARE_DOCTOR_CHECKS:
+        assert checks[name]["run"].startswith(
+            "python3 -I -B tasks/py/doctor_checks.py "
+        ), name
+    gc = repo / "unix/home/.config/mise/config.toml"
+    cfg = tomllib.loads(gc.read_text(encoding="utf-8"))
     block = cfg["dotfiles"]["~/.gitconfig/gh-doctor"]["block"]
-    assert "DOTFILES_DOCTOR_SCOPE=repo sh -c" in block
+    pre_push = subprocess.run(
+        ["git", "config", "--file", "-", "--get", "hook.gh-doctor-pre-push.command"],
+        input=block,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "DOTFILES_DOCTOR_SCOPE=repo sh -c" in pre_push
+    assert pre_push.rstrip().endswith("doctor project'")
 
 
 def test_host_check_helper_rejects_missing_command() -> None:

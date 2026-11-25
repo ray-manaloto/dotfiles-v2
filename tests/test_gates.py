@@ -1714,3 +1714,17 @@ def test_doctor_checks_registry_aliases_and_container_lock_and_daemon_health(
             for e in h_errs
         )
         assert not any("_valid" in e for e in h_errs)
+
+
+def test_repo_scope_keeps_committed_file_checks(monkeypatch, tmp_path) -> None:
+    """Greptile PR #32: repo scope must skip only live-host probes, not repo assertions."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    assert doc_mod._live_host_skipped() is True
+    errs, _ = doc_mod.check_mise_binary_integrity(tmp_path)
+    assert any("missing unix/home/.config/dcg/config.toml" in e for e in errs)
+    host_errs, msg = doc_mod.check_host_option_a(tmp_path, strict_host=True)
+    assert host_errs == [] and msg.startswith("DOTFILES_DOCTOR_SCOPE=repo:")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "full")
+    assert doc_mod._live_host_skipped() is False
