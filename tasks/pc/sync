@@ -11,6 +11,8 @@ if [[ ${usage_dry_run:-false} == true ]]; then
 	exit 0
 fi
 ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
+export PATH="/usr/local/bin:$PATH"
+export MISE_IGNORED_CONFIG_PATHS=/etc/mise
 repo=https://github.com/ray-manaloto/dotfiles-v2.git
 checkout="$HOME/dev/dotfiles-v2"
 config="$HOME/.config/mise"
@@ -37,7 +39,6 @@ if [[ -e $config || -L $config ]]; then
 	fi
 fi
 export MISE_ENV=linux,pc MISE_YES=1 MISE_LOCKED=1
-export PATH="/usr/local/bin:$PATH"
 export MISE_TRUSTED_CONFIG_PATHS="$checkout:$config"
 cd "$HOME"
 # Arch/Omarchy unprivileged chsh requires a password over BatchMode SSH.

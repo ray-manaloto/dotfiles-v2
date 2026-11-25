@@ -13,6 +13,7 @@ FNOX_AGE_KEY_FILE = "{{ env.HOME }}/.config/fnox/age.txt"
 [dotfiles]
 "~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/pc-env.sh" ] && . "${HOME}/.config/dotfiles-v2/pc-env.sh"', position = "prepend" }
 "~/.config/dotfiles-v2/pc-env.sh/mise-env" = { line = "export MISE_ENV=linux,pc" }
+"~/.config/dotfiles-v2/pc-env.sh/mise-ignore-etc" = { line = "export MISE_IGNORED_CONFIG_PATHS=/etc/mise" }
 "~/.config/fnox/config.toml" = { source = "~/.config/fnox/config.headless.toml", main_checkout = true, depends = [
   "~/.config/fnox/config.headless.toml",
 ] }
