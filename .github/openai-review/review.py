@@ -77,7 +77,7 @@ def request_json(url, token, *, body=None):
         raise ReviewError(
             f"{service} returned HTTP {exc.code}. No retries were made."
         ) from None
-    except (OSError, ValueError):
+    except OSError, ValueError:
         raise ReviewError(f"{service} request or JSON decoding failed.") from None
 
 
