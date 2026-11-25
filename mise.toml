@@ -404,6 +404,12 @@ depends = "py-deps-fresh"
 run = "mise run hub:doctor --offline"
 hint = "Inspect docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} and docker/mac-agent/compose.yaml with `mise run hub:doctor --offline`."
 
+[doctor.checks.claude-mcps]
+description = "Declared user-scope Claude MCPs (bootstrap:claude-mcps, e.g. graphify-reviews) are registered and Connected"
+run = "python3 -I -B tasks/py/doctor_checks.py claude-mcps"
+timeout = "120s"
+hint = "Run `mise run bootstrap:claude-mcps`, then in Claude Code run /mcp -> <server> -> Authenticate."
+
 [doctor.checks.skills-6harness-parity]
 description = "Canonical ~/.agents/skills parity across Codex, OpenCode, AGY, Claude, ZCode, and Hermes"
 run = "python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"

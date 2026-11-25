@@ -1728,3 +1728,56 @@ def test_repo_scope_keeps_committed_file_checks(monkeypatch, tmp_path) -> None:
     assert host_errs == [] and msg.startswith("DOTFILES_DOCTOR_SCOPE=repo:")
     monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "full")
     assert doc_mod._live_host_skipped() is False
+
+
+def _claude_mcps_repo(root: Path, servers: str, prune: str = "") -> None:
+    task = root / "unix/home/.config/mise/tasks/bootstrap/claude-mcps"
+    task.parent.mkdir(parents=True)
+    task.write_text(f"SERVERS=(\n{servers})\n", encoding="utf-8")
+    task.chmod(0o755)
+    pr = root / "unix/home/.config/mise/tasks/host/prune-mcps"
+    pr.parent.mkdir(parents=True)
+    pr.write_text(prune, encoding="utf-8")
+
+
+def test_claude_mcps_repo_scope_validates_declarations(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
+    errs, msg = doc_mod.check_claude_mcps(tmp_path)
+    assert errs == [] and "1 declared" in msg
+
+
+def test_claude_mcps_rejects_name_in_prune_list(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    _claude_mcps_repo(
+        tmp_path,
+        '\t"graphify|https://api.graphify.com/mcp"\n',
+        'LEGACY_MCP_NAMES = frozenset({\n    "graphify",\n})\n',
+    )
+    errs, _ = doc_mod.check_claude_mcps(tmp_path)
+    assert any("prune-mcps" in e for e in errs)
+
+
+def test_claude_mcps_live_requires_connected(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
+    home = tmp_path / "home"
+    claude = home / ".local/bin/claude"
+    claude.parent.mkdir(parents=True)
+    claude.write_text(
+        "#!/bin/sh\nprintf '%s:\\n  Status: ! Needs authentication\\n  URL: https://api.graphify.com/mcp\\n' \"$3\"\n"
+    )
+    claude.chmod(0o755)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    errs, _ = doc_mod.check_claude_mcps(tmp_path)
+    assert errs and "Authenticate" in errs[0]
+    claude.write_text(
+        "#!/bin/sh\nprintf '%s:\\n  Status: \\342\\234\\224 Connected\\n  URL: https://api.graphify.com/mcp\\n' \"$3\"\n"
+    )
+    errs, msg = doc_mod.check_claude_mcps(tmp_path)
+    assert errs == [] and "Connected" in msg

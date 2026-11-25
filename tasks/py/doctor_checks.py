@@ -2362,6 +2362,65 @@ def check_skills_6harness_parity(repo_root: Path) -> tuple[list[str], str]:
     )
 
 
+def check_claude_mcps(repo_root: Path) -> tuple[list[str], str]:
+    """Declared user-scope Claude MCPs are well-formed (repo) and Connected (live host)."""
+    errors: list[str] = []
+    task = repo_root / "unix/home/.config/mise/tasks/bootstrap/claude-mcps"
+    if not task.is_file() or not os.access(task, os.X_OK):
+        return [f"claude-mcps: missing executable {task.relative_to(repo_root)}"], ""
+    servers = re.findall(
+        r'^\t"([a-z0-9-]+)\|(https://[^"|]+)"$', task.read_text(encoding="utf-8"), re.M
+    )
+    if not servers:
+        errors.append(
+            "claude-mcps: no name|url entries in bootstrap/claude-mcps SERVERS"
+        )
+    prune = repo_root / "unix/home/.config/mise/tasks/host/prune-mcps"
+    prune_txt = prune.read_text(encoding="utf-8") if prune.is_file() else ""
+    for name, _url in servers:
+        if f'"{name}"' in prune_txt:
+            errors.append(
+                f"claude-mcps: {name} is also in host:prune-mcps LEGACY_MCP_NAMES (it would be deleted)"
+            )
+    if errors or _live_host_skipped():
+        return errors, _skip_reason(
+            f"{len(servers)} declared Claude MCP(s) well-formed; live status not probed"
+        ) if not errors else ""
+    claude = Path.home() / ".local/bin/claude"
+    if not claude.is_file():
+        return [f"claude-mcps: {claude} missing (run `mise run bootstrap:claude`)"], ""
+    for name, url in servers:
+        try:
+            out = subprocess.run(
+                [str(claude), "mcp", "get", name],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=45,
+                check=False,
+            ).stdout
+        except subprocess.TimeoutExpired:
+            errors.append(f"claude-mcps: `claude mcp get {name}` timed out")
+            continue
+        status = next(
+            (
+                ln.split(":", 1)[1].strip()
+                for ln in out.splitlines()
+                if ln.strip().startswith("Status:")
+            ),
+            "",
+        )
+        if url not in out:
+            errors.append(
+                f"claude-mcps: {name} not registered at {url} (run `mise run bootstrap:claude-mcps`)"
+            )
+        elif "Connected" not in status:
+            errors.append(
+                f"claude-mcps: {name} status '{status or 'unknown'}' (in Claude Code: /mcp -> {name} -> Authenticate)"
+            )
+    return errors, f"{len(servers)} Claude MCP(s) registered and Connected"
+
+
 def _report(label: str, errors: list[str], ok_msg: str) -> int:
     if errors:
         sys.stderr.write("\n".join(errors) + "\n")
@@ -2379,6 +2438,7 @@ def main(argv: list[str] | None = None) -> int:
     p_host.add_argument("--strict-host", action="store_true")
     sub.add_parser("mise-doctor-clean")
     sub.add_parser("host-hygiene")
+    sub.add_parser("claude-mcps")
     sub.add_parser("jouet-rules")
     sub.add_parser("usage-lint")
     sub.add_parser("pitchfork-config")
@@ -2497,6 +2557,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "agy-rc-health":
         errs, msg = check_agy_rc_health(repo_root, strict_host=args.strict_host)
         return _report("agy-rc-health", errs, msg)
+    if args.cmd == "claude-mcps":
+        errs, msg = check_claude_mcps(repo_root)
+        return _report("claude-mcps", errs, msg)
     if args.cmd == "skills-6harness-parity":
         errs, msg = check_skills_6harness_parity(repo_root)
         return _report("skills-6harness-parity", errs, msg)

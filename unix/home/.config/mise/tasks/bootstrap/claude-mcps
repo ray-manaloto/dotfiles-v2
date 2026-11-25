@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+#MISE description="Register declared user-scope Claude Code MCP servers idempotently (OAuth stays a one-time human step via /mcp)"
+#MISE depends=["bootstrap:claude"]
+set -euo pipefail
+
+# Owner decision 2026-11-25: claude.ai connectors stay disabled
+# (disableClaudeAiConnectors at user scope since 2026-11-07), so hosted MCPs the
+# owner needs are registered directly. Named graphify-reviews, not graphify:
+# host:prune-mcps retires the legacy local `graphify` server.
+# name|url pairs; HTTP transport, OAuth handled by Claude Code (/mcp -> Authenticate).
+SERVERS=(
+	"graphify-reviews|https://api.graphify.com/mcp"
+)
+
+claude_bin="${HOME}/.local/bin/claude"
+if [[ ! -x ${claude_bin} ]]; then
+	echo "WARN: ${claude_bin} missing; skipping MCP registration" >&2
+	exit 0
+fi
+
+for entry in "${SERVERS[@]}"; do
+	name="${entry%%|*}"
+	url="${entry#*|}"
+	current="$(jq -r --arg n "${name}" '.mcpServers[$n].url // empty' "${HOME}/.claude.json" 2>/dev/null || true)"
+	if [[ ${current} == "${url}" ]]; then
+		echo "ok: ${name} already registered"
+		continue
+	fi
+	if [[ -n ${current} ]]; then
+		"${claude_bin}" mcp remove --scope user "${name}" </dev/null >/dev/null
+	fi
+	"${claude_bin}" mcp add --scope user --transport http "${name}" "${url}" </dev/null
+	echo "added: ${name} -> ${url} (authenticate once: /mcp -> ${name} -> Authenticate)"
+done
