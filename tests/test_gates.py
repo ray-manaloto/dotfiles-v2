@@ -1781,3 +1781,13 @@ def test_claude_mcps_live_requires_connected(monkeypatch, tmp_path) -> None:
     )
     errs, msg = doc_mod.check_claude_mcps(tmp_path)
     assert errs == [] and "Connected" in msg
+
+
+def test_claude_mcps_live_skips_without_claude(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
+    errs, msg = doc_mod.check_claude_mcps(tmp_path)
+    assert errs == [] and "not installed" in msg

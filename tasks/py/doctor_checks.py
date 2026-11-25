@@ -2377,6 +2377,8 @@ def check_claude_mcps(repo_root: Path) -> tuple[list[str], str]:
         )
     prune = repo_root / "unix/home/.config/mise/tasks/host/prune-mcps"
     prune_txt = prune.read_text(encoding="utf-8") if prune.is_file() else ""
+    m = re.search(r"LEGACY_MCP_NAMES = frozenset\(\{(.*?)\}\)", prune_txt, re.S)
+    prune_txt = m.group(1) if m else ""
     for name, _url in servers:
         if f'"{name}"' in prune_txt:
             errors.append(
@@ -2388,7 +2390,7 @@ def check_claude_mcps(repo_root: Path) -> tuple[list[str], str]:
         ) if not errors else ""
     claude = Path.home() / ".local/bin/claude"
     if not claude.is_file():
-        return [f"claude-mcps: {claude} missing (run `mise run bootstrap:claude`)"], ""
+        return [], f"{claude} not installed on this host; live MCP status not probed"
     for name, url in servers:
         try:
             out = subprocess.run(

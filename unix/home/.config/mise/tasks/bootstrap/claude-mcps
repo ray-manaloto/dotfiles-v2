@@ -21,7 +21,12 @@ fi
 for entry in "${SERVERS[@]}"; do
 	name="${entry%%|*}"
 	url="${entry#*|}"
-	current="$(jq -r --arg n "${name}" '.mcpServers[$n].url // empty' "${HOME}/.claude.json" 2>/dev/null || true)"
+	# `claude mcp get` is the source of truth (no jq / ~/.claude.json parsing).
+	current=""
+	if info="$("${claude_bin}" mcp get "${name}" </dev/null 2>/dev/null)"; then
+		current="$(printf '%s\n' "${info}" | awk '/^ *URL: /{print $2; exit}')"
+		current="${current:-unknown}"
+	fi
 	if [[ ${current} == "${url}" ]]; then
 		echo "ok: ${name} already registered"
 		continue
