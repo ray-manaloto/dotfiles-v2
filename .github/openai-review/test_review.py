@@ -129,8 +129,10 @@ class ReviewTests(unittest.TestCase):
         self.assertFalse(self.summary.exists())
 
     def test_review_output_quoting_key_names_is_kept(self):
-        text = "Finding: access_token: abcdefghijklmnop should come from a file."
+        text = "Finding: auth_token = some_long_identifier should come from a file."
         self.assertEqual(review.checked_text([text]), text)
+        with self.assertRaises(review.ReviewError):
+            review.checked_text(["access_token: abcdefghijklmnop"])
         with self.assertRaises(review.ReviewError):
             review.checked_text(["leaked ghp_" + "a" * 20])
 
@@ -162,6 +164,9 @@ class ReviewTests(unittest.TestCase):
             '@@ -1 +1 @@\n-old\n+auth_token_file = "/run/agent-secrets/token"',
             '@@ -1 +1 @@\n-old\n+token="${BOARD_TOKEN_VALUE}"',
             "@@ -1 +1 @@\n-old\n+max_tokens = 1800",
+            '@@ -1 +1 @@\n-old\n+secret = "DOPPLER_TOKEN_DOTFILES"',
+            "@@ -1 +1 @@\n-old\n+exe_token = cmdline.split()",
+            "@@ -1 +1 @@\n-old\n+SEARXNG_SECRET:-dev-only-secret-value",
         ):
             with self.subTest(patch=patch):
                 self.assertIsNone(review.SENSITIVE_TEXT.search(patch))

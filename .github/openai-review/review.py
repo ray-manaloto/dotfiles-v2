@@ -30,18 +30,24 @@ SENSITIVE_TEXT = re.compile(
     r"|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{36}"
     r"|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35})\b"
     r"""|\b(?:password|client_secret|api_key|access_token)\s*[:=]\s*["']?[A-Za-z0-9_+./=-]{12,}"""
-    # Broader key names (auth_token=, _authToken=, secret:, apikey=) with literal,
-    # path-free values, so `token_file = "/run/..."` and `${VAR}` lines still pass.
-    r"""|(?:\w*token|\w*secret|api[-_]?key|passwd)["']?\s*[:=]\s*["']?[A-Za-z0-9_+.=-]{12,}""",
+    # Broader key names (auth_token=, _authToken=, secret:, apikey=) with a
+    # token-shaped literal: path-free, starts alphanumeric, and has a digit and a
+    # lowercase letter. `token_file = "/run/..."`, `${VAR}`, `secret = "ENV_NAME"`
+    # and `x_token = obj.method` lines still pass.
+    r"""|(?:\w*token|\w*secret|api[-_]?key|passwd)["']?\s*[:=]\s*["']?"""
+    r"(?=[A-Za-z0-9_+.=-]*[0-9])(?-i:(?=[A-Za-z0-9_+.=-]*[a-z]))"
+    r"[A-Za-z0-9][A-Za-z0-9_+.=-]{11,}",
     re.IGNORECASE,
 )
-# Model output is checked only for high-confidence secret formats, so a finding
-# that quotes a config key name does not discard the whole review.
+# Model output skips only the broad *token/*secret/apikey pattern, so a finding
+# that quotes such a key name does not discard the whole review.
 SENSITIVE_OUTPUT = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{16,}"
     r"|sk-ant-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}"
     r"|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{36}"
     r"|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35})\b"
+    r"""|\b(?:password|client_secret|api_key|access_token)\s*[:=]\s*["']?[A-Za-z0-9_+./=-]{12,}""",
+    re.IGNORECASE,
 )
 
 
