@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from dotfiles_py.generated.pc_hub_schema import (
@@ -607,3 +608,42 @@ def test_hub_status_and_agent_up_invariants() -> None:
     assert 'rm -rf "${tmp_dir}"' in agent_up_text
     assert 'rm -f "${plist_tmp}"' in agent_up_text
     assert agent_up_text.count("trap - RETURN") >= 4
+
+
+def _hub_up_agentsview_config_script() -> str:
+    text = (REPO_ROOT / "tasks" / "hub" / "up").read_text(encoding="utf-8")
+    start = text.index('python3 - "${REMOTE_HOME}/.agentsview/config.toml"')
+    body = text[text.index("\n", start) + 1 :]
+    return body[: body.index("\nPY\n")]
+
+
+def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
+    script = tmp_path / "rewrite.py"
+    script.write_text(_hub_up_agentsview_config_script(), encoding="utf-8")
+    cfg = tmp_path / "config.toml"
+    # Simulates a config corrupted by the pre-fix rewrite: the Mac [[remote_hosts]]
+    # entry lost its `host` key, and a top-level `host` bind must still be dropped.
+    cfg.write_text(
+        'host = "0.0.0.0"\nport = 8080\nauth_token = "old"\n\n'
+        '[[remote_hosts]]\ntransport = "ssh"\ndestination = "me@mac"\ninterval = "5m"\n\n'
+        '[[remote_hosts]]\nhost = "other"\ndestination = "x@y"\n',
+        encoding="utf-8",
+    )
+    outputs = []
+    for _ in range(3):
+        subprocess.run(
+            [sys.executable, "-I", "-B", str(script), str(cfg), 'tok"1', "me@mac"],
+            check=True,
+        )
+        outputs.append(cfg.read_text(encoding="utf-8"))
+    assert outputs[0] == outputs[1] == outputs[2]
+    data = tomllib.loads(outputs[-1])
+    assert data["auth_token"] == 'tok"1'
+    assert data["require_auth"] is True
+    assert "host" not in data
+    assert data["port"] == 8080
+    hosts = data["remote_hosts"]
+    assert [h.get("host") for h in hosts] == ["other", "mac"]
+    assert hosts[1]["destination"] == "me@mac"
+    assert all("host" in h for h in hosts)
+    assert cfg.stat().st_mode & 0o777 == 0o600

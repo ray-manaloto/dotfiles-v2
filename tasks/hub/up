@@ -168,25 +168,69 @@ ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"
 
 av_tok="$(tr -d '\r\n' <"${REMOTE_HOME}/.config/agentsview/server-token")"
 python3 - "${REMOTE_HOME}/.agentsview/config.toml" "${av_tok}" "${MAC_SSH:-}" <<'PY'
+import json
+import re
 import sys
+import tomllib
 from pathlib import Path
 
 cfg_path = Path(sys.argv[1])
 token = sys.argv[2]
 mac_ssh = sys.argv[3].strip()
 lines = cfg_path.read_text(encoding="utf-8").splitlines() if cfg_path.is_file() else []
-out = [line for line in lines if not line.startswith(("auth_token", "require_auth", "host "))]
-out.insert(0, f'auth_token = "{token}"')
-out.insert(1, "require_auth = true")
-text = "\n".join(out).rstrip() + "\n"
-if mac_ssh and f'destination = "{mac_ssh}"' not in text:
-    text += (
-        "\n[[remote_hosts]]\n"
-        'host = "mac"\n'
-        'transport = "ssh"\n'
-        f'destination = "{mac_ssh}"\n'
-        'interval = "5m"\n'
+
+
+def is_header(line: str) -> bool:
+    return line.lstrip().startswith("[")
+
+
+def toml_str(value: str) -> str:
+    # JSON string escapes are a valid subset of TOML basic-string escapes.
+    return json.dumps(value, ensure_ascii=False)
+
+
+# Split into top-level keys (before the first table header) and tables.
+first_table = next((i for i, line in enumerate(lines) if is_header(line)), len(lines))
+# Top-level auth_token/require_auth/host are owned by this script; table keys
+# (such as [[remote_hosts]] host) are left alone.
+owned = re.compile(r"^\s*(?:auth_token|require_auth|host)\s*=")
+preamble = [line for line in lines[:first_table] if not owned.match(line)]
+tables: list[list[str]] = []
+for line in lines[first_table:]:
+    if is_header(line) or not tables:
+        tables.append([])
+    tables[-1].append(line)
+
+# Drop any existing remote_hosts entry for the Mac (including entries a previous
+# rerun left without a host key) so the entry below is rewritten idempotently.
+mac_lines = {f"host = {toml_str('mac')}", f"destination = {toml_str(mac_ssh)}"} if mac_ssh else set()
+if mac_ssh:
+    tables = [
+        table
+        for table in tables
+        if not (table[0].strip() == "[[remote_hosts]]" and mac_lines & {line.strip() for line in table[1:]})
+    ]
+
+out = [f"auth_token = {toml_str(token)}", "require_auth = true", *preamble]
+while out and not out[-1].strip():
+    out.pop()
+for table in tables:
+    while table and not table[-1].strip():
+        table.pop()
+    out.extend(["", *table])
+if mac_ssh:
+    out.extend(
+        [
+            "",
+            "[[remote_hosts]]",
+            f"host = {toml_str('mac')}",
+            'transport = "ssh"',
+            f"destination = {toml_str(mac_ssh)}",
+            'interval = "5m"',
+        ]
     )
+text = "\n".join(out).rstrip() + "\n"
+tomllib.loads(text)
 cfg_path.write_text(text, encoding="utf-8")
 cfg_path.chmod(0o600)
 PY
