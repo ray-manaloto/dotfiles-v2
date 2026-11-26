@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/mcp-policy.schema.json",
+  "title": "McpPolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "entries"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/McpPolicyEntry"
+      }
+    }
+  },
+  "$defs": {
+    "McpPolicyEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "harnesses", "decision", "reason", "replacement"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["server", "plugin"]
+        },
+        "harnesses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["agy", "claude", "codex", "opencode"]
+          }
+        },
+        "decision": {
+          "enum": ["keep", "cli", "skill", "deny"]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replacement": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

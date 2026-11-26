@@ -3120,6 +3120,216 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
     )
 
 
+_MCP_POLICY_PATH = "unix/home/.config/mise/assets/mcp-policy.json"
+_MCP_POLICY_HARNESSES = {"agy", "claude", "codex", "opencode"}
+
+
+def _mcp_config_names(
+    harness: str, data: dict[str, Any], *, manifest: bool = False
+) -> list[tuple[str, str]]:
+    def mapping(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError
+        return value
+
+    def active(table: Any, flag: str, disabled: bool) -> list[str]:
+        return [
+            name
+            for name, settings in mapping(table).items()
+            if mapping(settings).get(flag) is not disabled
+        ]
+
+    def listed(value: Any) -> list[str]:
+        if not isinstance(value, list) or not all(
+            isinstance(name, str) for name in value
+        ):
+            raise ValueError
+        return value
+
+    if manifest:
+        plugins = data.get("plugins", {} if harness == "agy" else [])
+        plugins = list(mapping(plugins)) if harness == "agy" else listed(plugins)
+        servers = listed(data.get("connected_mcps", [])) + listed(
+            data.get("mcp_servers", [])
+        )
+    elif harness == "opencode":
+        plugins = []
+        plugin_settings = data.get("plugins", [])
+        if not isinstance(plugin_settings, list):
+            raise ValueError
+        for plugin in plugin_settings:
+            if isinstance(plugin, str):
+                plugins.append(plugin)
+            elif "package" in mapping(plugin):
+                plugins.extend(listed([plugin["package"]]))
+            # Built-in enablement directives do not declare a package.
+        mcp = mapping(data.get("mcp", {}))
+        servers = active(mcp.get("servers", {}), "disabled", True)
+        # OpenCode v2 still reads legacy flat server names.
+        servers += active(
+            {
+                name: value
+                for name, value in mcp.items()
+                if name not in {"servers", "timeout"}
+            },
+            "enabled",
+            False,
+        )
+    elif harness == "codex":
+        servers = active(data.get("mcp_servers", {}), "enabled", False)
+        plugins = active(data.get("plugins", {}), "enabled", False)
+    elif harness == "agy":
+        servers = active(data.get("mcpServers", {}), "disabled", True)
+        plugins = []
+    else:
+        servers = list(mapping(data.get("mcpServers", {})))
+        plugins = [
+            name
+            for name, enabled in mapping(data.get("enabledPlugins", {})).items()
+            if enabled is not False
+        ]
+    return [("server", name) for name in servers] + [
+        ("plugin", name) for name in plugins
+    ]
+
+
+def _mcp_policy_rules(path: Path) -> dict[tuple[str, str, str], str]:
+    rules: dict[tuple[str, str, str], str] = {}
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
+    if not isinstance(entries, list) or not entries:
+        raise ValueError
+    for entry in entries:
+        name, kind, harnesses, decision = (
+            entry["name"],
+            entry["kind"],
+            entry["harnesses"],
+            entry["decision"],
+        )
+        if (
+            not isinstance(name, str)
+            or not name
+            or kind not in {"server", "plugin"}
+            or not isinstance(harnesses, list)
+            or not harnesses
+            or decision not in {"keep", "cli", "skill", "deny"}
+        ):
+            raise ValueError
+        for harness in harnesses:
+            key = (harness, kind, name)
+            if harness not in _MCP_POLICY_HARNESSES or key in rules:
+                raise ValueError
+            rules[key] = decision
+    return rules
+
+
+def _mcp_live_fix(harness: str, kind: str, name: str, label: str) -> str:
+    commands = {
+        ("claude", "server"): "claude mcp remove --scope user",
+        ("claude", "plugin"): "claude plugin disable",
+        ("codex", "server"): "codex mcp remove",
+        ("codex", "plugin"): "codex plugin remove",
+        ("agy", "server"): "agy mcp remove",
+    }
+    command = commands.get((harness, kind))
+    if command and re.fullmatch(r"[\w:@./-]+", name) and not name.startswith("-"):
+        return f"{command} {shlex.quote(name)}"
+    return f"${{EDITOR:-vi}} {label}"
+
+
+def check_mcp_policy(repo_root: Path) -> tuple[list[str], str]:
+    """Compare enabled MCP and plugin names against the repository policy."""
+    try:
+        rules = _mcp_policy_rules(repo_root / _MCP_POLICY_PATH)
+    except OSError, ValueError, KeyError, TypeError:
+        return [
+            f"mcp-policy: invalid policy; fix with `${{EDITOR:-vi}} {_MCP_POLICY_PATH}`"
+        ], ""
+
+    errors: list[str] = []
+    managed_home = repo_root / "unix/home"
+    assets = managed_home / ".config/mise/assets"
+    repo_fix = f"${{EDITOR:-vi}} {_MCP_POLICY_PATH}"
+
+    def scan(
+        path: Path,
+        label: str,
+        harness: str,
+        *,
+        live: bool = False,
+        manifest: bool = False,
+    ) -> None:
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = tomllib.loads(raw) if path.suffix == ".toml" else json.loads(raw)
+            if manifest:
+                data = data.get(harness, {})
+            if not isinstance(data, dict):
+                raise ValueError
+            names = _mcp_config_names(harness, data, manifest=manifest)
+        except OSError, ValueError, AttributeError:
+            errors.append(
+                f"mcp-policy: cannot read declarations in {label}; fix with `${{EDITOR:-vi}} {label}`"
+            )
+            return
+        for kind, name in sorted(set(names)):
+            policy_name = name
+            if harness == "opencode" and kind == "plugin":
+                package, separator, _version = name.rpartition("@")
+                if separator and package:
+                    policy_name = package
+            decision = rules.get((harness, kind, policy_name))
+            if decision == "keep":
+                continue
+            fix = (
+                _mcp_live_fix(harness, kind, name, label)
+                if live
+                else f"${{EDITOR:-vi}} {label}"
+            )
+            if decision is None:
+                fix += f"` or record an approved decision with `{repo_fix}"
+            errors.append(
+                f"mcp-policy: {label}: {harness} {kind} {name!r} "
+                f"has decision {decision or 'unlisted'}; fix with `{fix}`"
+            )
+
+    for path in sorted(
+        [
+            *(assets / "claude").rglob("*.json*"),
+            *(managed_home / ".claude").rglob("*.json"),
+        ]
+    ):
+        if path.name.endswith((".json", ".json.tera")):
+            scan(path, path.relative_to(repo_root).as_posix(), "claude")
+    for rel, harness in (
+        (".config/mise/assets/codex/team-defaults.toml", "codex"),
+        (".config/mise/assets/codex/mcp-fnox-policy.toml", "codex"),
+        (".config/opencode/opencode.json", "opencode"),
+        (".gemini/config/mcp_config.json", "agy"),
+        (".claude.json", "claude"),
+    ):
+        path = managed_home / rel
+        if harness not in {"agy", "claude"} or path.exists():
+            scan(path, path.relative_to(repo_root).as_posix(), harness)
+    manifest = assets / "reviewer-plugins.json"
+    for harness in sorted(_MCP_POLICY_HARNESSES):
+        scan(
+            manifest, manifest.relative_to(repo_root).as_posix(), harness, manifest=True
+        )
+
+    if _live_host_skipped():
+        return errors, _skip_reason("MCP policy checked against managed configurations")
+    for rel, harness in (
+        (".claude.json", "claude"),
+        (".claude/settings.json", "claude"),
+        (".codex/config.toml", "codex"),
+        (".gemini/config/mcp_config.json", "agy"),
+    ):
+        path = Path.home() / rel
+        if path.exists():
+            scan(path, f"~/{rel}", harness, live=True)
+    return errors, "MCP policy checked against managed and live configurations"
+
+
 def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
     """Declared reviewer-bot plugins are well-formed (repo) and installed/Connected (live Mac host)."""
     errors: list[str] = []
@@ -3226,6 +3436,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mise-doctor-clean")
     sub.add_parser("host-hygiene")
     sub.add_parser("reviewer-plugins")
+    sub.add_parser("mcp-policy")
     sub.add_parser("claude-ship-env")
     sub.add_parser("jouet-rules")
     sub.add_parser("usage-lint")
@@ -3365,6 +3576,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "reviewer-plugins":
         errs, msg = check_reviewer_plugins(repo_root)
         return _report("reviewer-plugins", errs, msg)
+    if args.cmd == "mcp-policy":
+        errs, msg = check_mcp_policy(repo_root)
+        return _report("mcp-policy", errs, msg)
     if args.cmd == "claude-ship-env":
         errs, msg = check_claude_ship_env(repo_root)
         return _report("claude-ship-env", errs, msg)

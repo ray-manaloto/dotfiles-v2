@@ -277,6 +277,23 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
       )
     check = "DOTFILES_DOCTOR_SCOPE=repo python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"
   }
+  ["mcp-policy"] = new Step {
+    glob =
+      List(
+        "schemas/mcp-policy.schema.json",
+        "tasks/py/doctor_checks.py",
+        "unix/home/.claude.json",
+        "unix/home/.claude/**/*.json",
+        "unix/home/.config/mise/assets/claude/**",
+        "unix/home/.config/mise/assets/codex/mcp-fnox-policy.toml",
+        "unix/home/.config/mise/assets/codex/team-defaults.toml",
+        "unix/home/.config/mise/assets/mcp-policy.json",
+        "unix/home/.config/mise/assets/reviewer-plugins.json",
+        "unix/home/.config/opencode/opencode.json",
+        "unix/home/.gemini/config/mcp_config.json",
+      )
+    check = "DOTFILES_DOCTOR_SCOPE=repo python3 -I -B tasks/py/doctor_checks.py mcp-policy"
+  }
   ["private-paths"] = new Step {
     check = "mise run privacy:scan -- {{ files }}"
   }
@@ -361,6 +378,7 @@ hooks {
       ["dcg-packs"] = fastSteps["dcg-packs"]
       ["no-installs-clobber"] = fastSteps["no-installs-clobber"]
       ["reviewer-plugins-declared"] = fastSteps["reviewer-plugins-declared"]
+      ["mcp-policy"] = fastSteps["mcp-policy"]
       ["codegen-check"] = fastSteps["codegen-check"]
       ["schema-first-ast"] = fastSteps["schema-first-ast"]
       ["schema-contract-check"] = fastSteps["schema-contract-check"]

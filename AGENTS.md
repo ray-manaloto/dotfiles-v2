@@ -76,7 +76,8 @@ and C++26 workstation setup.
   collaboration across `pc`, `mac`, `vm`, and Mac host (`claude`, `codex`,
   `agy`, `opencode`, `zcode`), run `mise run board:up` (`pitchfork`-supervised
   `@vercel/board`), keep claude.ai connectors off unless needed and
-  prefer CLI/SDK for research tools across harnesses (keeping `openwiki mcp` repo-local to `knowledge-base-v2`), keep canonical repo
+  prefer CLI/SDK for research tools across harnesses, keep `openwiki mcp`
+  user-wide in Claude, Codex, and Antigravity, and keep canonical repo
   skills under `unix/home/.agents/skills/` (discovered natively by `agy`, `codex`,
   `opencode`, `zcode`, and Hermes `external_dirs`; no `~/.gemini/config/skills` or
   `~/.zcode/skills` mirrors) and the shared rules in `unix/home/.agents/AGENTS.md`

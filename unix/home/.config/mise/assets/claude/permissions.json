@@ -6,6 +6,12 @@
     },
     {
       "serverName": "plugin:apify:apify"
+    },
+    {
+      "serverName": "context7"
+    },
+    {
+      "serverName": "plugin:context7:context7"
     }
   ],
   "disableClaudeAiConnectors": true,

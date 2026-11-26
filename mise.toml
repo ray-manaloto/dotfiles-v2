@@ -432,6 +432,11 @@ run = "python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"
 timeout = "420s"
 hint = "Run `mise run bootstrap:reviewer-plugins` (and `mise run repowise:guard`), then in Claude Code run /mcp -> <server> -> Authenticate. Details: `mise run doctor:explain reviewer-plugins`."
 
+[doctor.checks.mcp-policy]
+description = "Enabled MCP servers and plugins match the approved policy"
+run = "python3 -I -B tasks/py/doctor_checks.py mcp-policy"
+hint = "Follow the fix command in each diagnostic and record approved decisions in unix/home/.config/mise/assets/mcp-policy.json."
+
 [doctor.checks.skills-6harness-parity]
 description = "Canonical ~/.agents/skills parity across Codex, OpenCode, AGY, Claude, ZCode, and Hermes"
 run = "python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"

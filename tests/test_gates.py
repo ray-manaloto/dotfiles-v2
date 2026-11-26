@@ -1981,6 +1981,58 @@ def test_reviewer_plugins_repo_scope_passes_on_real_tree(monkeypatch, tmp_path) 
 
 
 @pytest.mark.parametrize(
+    ("server", "decision"),
+    [
+        ("openwiki", None),
+        ("other-docs", "unlisted"),
+        ("context7", "cli"),
+        ("openaiDeveloperDocs", "skill"),
+    ],
+)
+def test_mcp_policy_managed_servers(monkeypatch, tmp_path, server, decision) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    root = Path(__file__).resolve().parents[1]
+    shutil.copytree(
+        root / "unix/home/.config/mise/assets",
+        tmp_path / "unix/home/.config/mise/assets",
+    )
+    opencode = tmp_path / "unix/home/.config/opencode"
+    opencode.mkdir(parents=True)
+    shutil.copy2(root / "unix/home/.config/opencode/opencode.json", opencode)
+    codex = tmp_path / "unix/home/.config/mise/assets/codex/team-defaults.toml"
+    private_value = "private-" + "transport-value"
+    with codex.open("a", encoding="utf-8") as handle:
+        handle.write(f'\n[mcp_servers.{server}]\ncommand = "{private_value}"\n')
+    errors, message = doc_mod.check_mcp_policy(tmp_path)
+    assert private_value not in "\n".join(errors)
+    if decision is None:
+        assert errors == [] and "repo" in message
+    else:
+        assert len(errors) == 1
+        assert f"{server!r} has decision {decision}; fix with" in errors[0]
+
+
+def test_mcp_policy_reports_live_cli_server_without_transport(
+    monkeypatch, tmp_path
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"context7": {"url": "private-" + "endpoint"}}}),
+        encoding="utf-8",
+    )
+    root = Path(__file__).resolve().parents[1]
+    errors, _ = doc_mod.check_mcp_policy(root)
+    assert errors == [
+        "mcp-policy: ~/.claude.json: claude server 'context7' has decision cli; "
+        "fix with `claude mcp remove --scope user context7`"
+    ]
+
+
+@pytest.mark.parametrize(
     ("edit", "needle"),
     [
         (lambda m: m["claude"]["plugins"].append("bad id"), "not name@marketplace"),
