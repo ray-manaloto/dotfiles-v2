@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TASKS_DIR = REPO_ROOT / "tasks"
 MISE_TASKS_DIR = REPO_ROOT / "unix" / "home" / ".config" / "mise" / "tasks"
@@ -1070,3 +1072,84 @@ def test_sync_gemini_and_6harness_parity_retire_legacy_mirrors(
     ).strip()
     assert pre_commit_cmd.endswith("hk run pre-commit --from-hook --staged")
     assert pre_push_cmd.endswith("doctor project'")
+
+
+# Pure live-host checks implemented as mise tasks: wrapped by tasks/py/host_check.sh.
+WRAPPED_HOST_DOCTOR_CHECKS = ("host-gemini-sync", "agy-learn-heal")
+# Python checks that mix committed-file assertions with live-host probes: they skip
+# only the live-host part in repo scope (doctor_checks._live_host_skipped).
+SCOPE_AWARE_DOCTOR_CHECKS = (
+    "host-option-a",
+    "mise-doctor-clean",
+    "host-hygiene",
+    "herdr-app-bundle",
+    "codex-hook-trust",
+    "mise-binary-integrity",
+    "agy-rc-health",
+    "skills-6harness-parity",
+)
+
+
+def test_host_doctor_checks_skip_in_repo_scope_and_pre_push_sets_it() -> None:
+    """Pushes must depend on the branch, not on live-host drift (owner decision 2026-11-25)."""
+    import tomllib
+
+    repo = REPO_ROOT
+    checks = tomllib.loads((repo / "mise.toml").read_text(encoding="utf-8"))["doctor"][
+        "checks"
+    ]
+    gate = "sh tasks/py/host_check.sh "
+    for name in WRAPPED_HOST_DOCTOR_CHECKS:
+        assert checks[name]["run"].startswith(gate), name
+    others = set(checks) - set(WRAPPED_HOST_DOCTOR_CHECKS)
+    assert not any("host_check.sh" in checks[n]["run"] for n in others)
+    for name in SCOPE_AWARE_DOCTOR_CHECKS:
+        assert checks[name]["run"].startswith(
+            "python3 -I -B tasks/py/doctor_checks.py "
+        ), name
+    gc = repo / "unix/home/.config/mise/config.toml"
+    cfg = tomllib.loads(gc.read_text(encoding="utf-8"))
+    block = cfg["dotfiles"]["~/.gitconfig/gh-doctor"]["block"]
+    pre_push = subprocess.run(
+        ["git", "config", "--file", "-", "--get", "hook.gh-doctor-pre-push.command"],
+        input=block,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "DOTFILES_DOCTOR_SCOPE=repo sh -c" in pre_push
+    assert pre_push.rstrip().endswith("doctor project'")
+
+
+def test_host_check_helper_rejects_missing_command() -> None:
+    repo = REPO_ROOT
+    proc = subprocess.run(
+        ["sh", str(repo / "tasks/py/host_check.sh")],
+        env={"PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 2
+
+
+@pytest.mark.parametrize(
+    ("scope", "rc", "out"),
+    [("repo", 0, "SKIP: host check"), ("full", 7, ""), (None, 7, "")],
+)
+def test_host_check_helper_runs_or_skips(scope: str | None, rc: int, out: str) -> None:
+    repo = REPO_ROOT
+    env = {"PATH": "/usr/bin:/bin"}
+    if scope is not None:
+        env["DOTFILES_DOCTOR_SCOPE"] = scope
+    proc = subprocess.run(
+        ["sh", str(repo / "tasks/py/host_check.sh"), "sh", "-c", "exit 7"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == rc
+    # SKIP goes to stdout (shown by mise doctor); full scope prints nothing itself.
+    assert proc.stdout == (f"{out} (DOTFILES_DOCTOR_SCOPE=repo)\n" if out else "")
+    assert proc.stderr == ""

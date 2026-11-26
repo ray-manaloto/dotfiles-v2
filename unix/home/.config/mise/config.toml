@@ -215,7 +215,7 @@ exclude = ["*"]
 ''', template = "tera" }
 "~/.gitconfig/gh-doctor" = { block = '''
 [hook "gh-doctor-pre-push"]
-	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE sh -c 'exec \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" doctor project'
+	command = test \"${HK:-1}\" = \"0\" || env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE DOTFILES_DOCTOR_SCOPE=repo sh -c 'exec \"$(command -v mise || (test -x \"$HOME/.local/bin/mise\" && printf %s/.local/bin/mise \"$HOME\") || printf /usr/local/bin/mise)\" doctor project'
 	event = pre-push
 ''' }
 "~/.gitconfig/hk" = { block = '''

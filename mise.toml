@@ -199,7 +199,7 @@ hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-c
 
 [doctor.checks.host-gemini-sync]
 description = "Local ~/.gemini/config/ hooks, rules, skills, and hooks.json match unix/home/.gemini/config/ and [dotfiles]"
-run = "mise run host:sync-gemini --check"
+run = "sh tasks/py/host_check.sh mise run host:sync-gemini --check"
 hint = "Run 'mise run host:sync-gemini' to sync ~/.gemini/config/ hooks, rules, skills, and hooks.json on this host."
 
 [doctor.checks.native-harnesses]
@@ -374,7 +374,7 @@ hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable, .venv is sync
 [doctor.checks.agy-learn-heal]
 description = "Self-healing agy-learn ledger and schemas pass read-only health check"
 depends = "py-deps-fresh"
-run = "mise run learn:heal --check --repo ."
+run = "sh tasks/py/host_check.sh mise run learn:heal --check --repo ."
 hint = "Inspect '$XDG_STATE_HOME/agy-learn/' via 'mise run learn:heal --check' and resolve any owing_learn or proposal bloat."
 
 [doctor.checks.herdr-app-bundle]

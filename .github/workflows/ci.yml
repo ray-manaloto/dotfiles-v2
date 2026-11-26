@@ -58,7 +58,9 @@ jobs:
           fi
 
       - name: Run hk check suite
-        run: hk check --all
+        # private-paths scans for the *local* $HOME/$USER via repotools (a host-only uv tool);
+        # on the runner those patterns are /home/runner, so the step is meaningful only locally.
+        run: hk check --all --skip-step private-paths
 
       - name: Run mise doctor project checks
         env:
@@ -92,7 +94,8 @@ jobs:
       - name: Run idempotent 2x mise bootstrap and verify zero missing dotfiles
         run: |
           mise trust --all
-          repo_url="https://github.com/ray-manaloto/dotfiles-v2.git"
+          # mise bootstrap --from must match the checkout's origin exactly (actions/checkout omits ".git").
+          repo_url="$(git config --get remote.origin.url)"
           MISE_YES=1 MISE_LOCKED=1 mise -E linux bootstrap \
             --from "${repo_url}" \
             --from-dir "${PWD}" \

@@ -65,6 +65,9 @@ def test_upgrade_requires_opt_in(opt_in: bool, offline_env: dict[str, str]) -> N
     assert commands == expected
 
 
+@pytest.mark.skipif(
+    shutil.which("zsh") is None, reason="zsh not installed (e.g. CI runner)"
+)
 def test_pc_overlay_and_zsh(tmp_path: Path) -> None:
     source = (MISE / "config.pc.toml").read_text()
     assert source.splitlines()[0] == "#:schema https://mise.jdx.dev/schema/mise.json"
