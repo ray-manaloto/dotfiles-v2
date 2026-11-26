@@ -1972,3 +1972,29 @@ def test_repowise_telemetry_reads_persistent_consent(tmp_path) -> None:
     (home / ".repowise").mkdir(parents=True)
     (home / ".repowise" / "platform.json").write_text('{"telemetry_enabled": false}')
     assert lib.repowise_telemetry_enabled(home) is False
+
+
+def test_config_hygiene_rejects_global_flag_fetch_killers(
+    tmp_path, monkeypatch
+) -> None:
+    """DO_NOT_TRACK et al. in global mise [env] drop /ship and /steward from every new Claude session."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[env]\nDO_NOT_TRACK = "1"\nREPOWISE_TELEMETRY_DISABLED = "1"\n'
+    )
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any("DO_NOT_TRACK" in e and "/ship" in e for e in errors), errors
+    assert not any("REPOWISE_TELEMETRY_DISABLED" in e for e in errors), errors
+
+
+def test_real_global_env_keeps_ship_available() -> None:
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    doc_mod = _load_task_module("doctor_checks")
+    for cfg in (root / "unix/home/.config/mise").glob("config*.toml"):
+        env = tomllib.loads(cfg.read_text(encoding="utf-8")).get("env", {})
+        assert not (doc_mod._FLAG_FETCH_KILLERS & set(env)), cfg

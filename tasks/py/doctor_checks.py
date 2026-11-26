@@ -1590,6 +1590,18 @@ def _load_mise_registry_map() -> dict[str, list[tuple[str, list[str]]]]:
     return by_backend
 
 
+# Env vars that make Claude Code skip feature-flag fetching (code.claude.com/docs/en/ship-command-troubleshooting).
+# Set globally they silently remove /ship and /steward, so they may only be scoped to a single command.
+_FLAG_FETCH_KILLERS = frozenset(
+    {
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "CLAUDE_CODE_DISABLE_SHIP",
+        "DISABLE_TELEMETRY",
+        "DO_NOT_TRACK",
+    }
+)
+
+
 def check_config_hygiene(repo_root: Path) -> list[str]:
     """Validate registry short names, hyphenated npm prerelease, wrapper flags, programs.json, and [dotfiles] paths."""
     errors: list[str] = []
@@ -1611,6 +1623,13 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
     for cfg_file in sorted(mise_dir.glob("config*.toml")):
         cfg_data = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
         rel = cfg_file.relative_to(repo_root).as_posix()
+        env_tbl = cfg_data.get("env")
+        if isinstance(env_tbl, dict):
+            for name in sorted(_FLAG_FETCH_KILLERS & set(env_tbl)):
+                errors.append(
+                    f"config-hygiene: {rel} [env] sets {name}; it disables Claude Code feature-flag "
+                    "fetching and removes /ship and /steward from every new session (scope it per command)"
+                )
         tools_tbl = cfg_data.get("tools")
         if isinstance(tools_tbl, dict):
             for tool_key, spec in tools_tbl.items():
