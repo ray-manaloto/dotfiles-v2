@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -120,7 +121,8 @@ def build_argv(spec: RunSpec, tools: Sequence[str] = REVIEW_TOOLS) -> list[str]:
         "--max-turns",
         str(spec.max_turns),
         "--max-budget-usd",
-        f"{spec.max_budget_usd:.2f}",
+        # Round down to cents so the cap never exceeds the requested budget.
+        str(Decimal(str(spec.max_budget_usd)).quantize(Decimal("0.01"), ROUND_DOWN)),
         "--output-format",
         "stream-json",
         "--verbose",
@@ -200,7 +202,8 @@ def parse_result(
     elif event.get("is_error") or subtype != "success":
         error = ApiRunnerErrorEntry(
             code=ApiRunnerErrorCode.ERR_MODEL_ERROR,
-            message=(str(text)[:300] if text else subtype) or "error",
+            # Never copy result text: it can hold prompt/review content that is logged.
+            message=subtype or "error",
         )
     return usage, (str(text) if text is not None else None), error
 

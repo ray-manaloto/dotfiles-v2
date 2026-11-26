@@ -2368,10 +2368,20 @@ def check_claude_mcps(repo_root: Path) -> tuple[list[str], str]:
     task = repo_root / "unix/home/.config/mise/tasks/bootstrap/claude-mcps"
     if not task.is_file() or not os.access(task, os.X_OK):
         return [f"claude-mcps: missing executable {task.relative_to(repo_root)}"], ""
-    servers = re.findall(
-        r'^\t"([a-z0-9-]+)\|(https://[^"|]+)"$', task.read_text(encoding="utf-8"), re.M
-    )
-    if not servers:
+    text = task.read_text(encoding="utf-8")
+    body = re.search(r"^SERVERS=\((.*?)^\)", text, re.S | re.M)
+    entries = [ln.strip() for ln in (body.group(1) if body else "").splitlines()]
+    entries = [ln for ln in entries if ln and not ln.startswith("#")]
+    servers: list[tuple[str, str]] = []
+    for ln in entries:
+        m = re.fullmatch(r'"([a-z0-9-]+)\|(https://[^"|\s]+)"', ln)
+        if m:
+            servers.append((m.group(1), m.group(2)))
+        else:
+            errors.append(
+                f'claude-mcps: malformed SERVERS entry {ln!r} (want "name|https://url")'
+            )
+    if not entries:
         errors.append(
             "claude-mcps: no name|url entries in bootstrap/claude-mcps SERVERS"
         )
@@ -2421,7 +2431,7 @@ def check_claude_mcps(repo_root: Path) -> tuple[list[str], str]:
             errors.append(
                 f"claude-mcps: {name} not registered at {url} (run `mise run bootstrap:claude-mcps`)"
             )
-        elif "Connected" not in status:
+        elif not re.fullmatch(r"(?:\u2714\s*)?Connected", status):
             errors.append(
                 f"claude-mcps: {name} status '{status or 'unknown'}' (in Claude Code: /mcp -> {name} -> Authenticate)"
             )
