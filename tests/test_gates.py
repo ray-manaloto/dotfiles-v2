@@ -402,7 +402,7 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
 
     # Live repo passes all offline checks
     assert doc_mod.check_dockerignore_secret_guard(repo_root) == []
-    assert doc_mod.check_git_index_locks(repo_root) == []
+    assert doc_mod.check_git_index_locks(repo_root, now=0.0) == []  # invariant only
     assert doc_mod.check_mise_version_parity(repo_root) == []
     assert doc_mod.check_config_hygiene(repo_root) == []
     assert doc_mod.check_usage_lint(repo_root) == []
@@ -2694,6 +2694,10 @@ def test_git_index_locks_requires_optional_locks_env_and_flags_stale_locks(
     assert len(errs) == 1 and "stale" in errs[0] and str(lock) in errs[0]
 
     lock.unlink()
-    (tmp_path / "hk.pkl").write_text("// env dropped\n")
+    (tmp_path / "hk.pkl").write_text(
+        'env {\n  ["FOO"] = "1"\n  ["GIT_OPTIONAL_LOCKS"] = "0"\n}\n'
+    )
+    assert doc_mod.check_git_index_locks(tmp_path) == []  # multi-entry block
+    (tmp_path / "hk.pkl").write_text('// env { ["GIT_OPTIONAL_LOCKS"] = "0" }\n')
     errs = doc_mod.check_git_index_locks(tmp_path)
     assert errs and "GIT_OPTIONAL_LOCKS" in errs[0]

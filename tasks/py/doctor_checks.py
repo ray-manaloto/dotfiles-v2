@@ -1559,12 +1559,16 @@ def check_dockerignore_secret_guard(repo_root: Path) -> list[str]:
 
 
 _OPTIONAL_LOCKS_ENV = re.compile(
-    r'^env\s*\{\s*\["GIT_OPTIONAL_LOCKS"\]\s*=\s*"0"\s*\}', re.MULTILINE
+    r'^env\s*\{[^}]*\["GIT_OPTIONAL_LOCKS"\]\s*=\s*"0"', re.MULTILINE
 )
 
 
+def _strip_pkl_line_comments(text: str) -> str:
+    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+
+
 def check_git_index_locks(
-    repo_root: Path, *, now: float | None = None, max_age_s: int = 120
+    repo_root: Path, *, now: float | None = None, max_age_s: int = 600
 ) -> list[str]:
     """Keep hk read-only git calls lock-free and name stale `index.lock` files in any worktree.
 
@@ -1575,36 +1579,40 @@ def check_git_index_locks(
     errors: list[str] = []
     hk_pkl = repo_root / "hk.pkl"
     if hk_pkl.is_file() and not _OPTIONAL_LOCKS_ENV.search(
-        hk_pkl.read_text(encoding="utf-8")
+        _strip_pkl_line_comments(hk_pkl.read_text(encoding="utf-8"))
     ):
         errors.append(
             'git-index-locks: hk.pkl must keep top-level `env { ["GIT_OPTIONAL_LOCKS"] = "0" }` '
             "(fail_fast kills a step's `git status` mid-refresh and strands index.lock)"
         )
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
-    out = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_root),
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
+    lsof = shutil.which("lsof")
+    if lsof is None:
+        # Without lsof a long-running git command is indistinguishable from a crashed one;
+        # never block a push on a guess. The hk.pkl invariant above still applies.
+        return errors
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except OSError:
+        return errors
     if out.returncode != 0:
         return errors
     common = Path(out.stdout.strip())
+    if (
+        not common.is_absolute()
+    ):  # git < 2.31 has no --path-format; resolve it ourselves
+        common = (repo_root / common).resolve()
     locks = [
         common / "index.lock",
         *sorted((common / "worktrees").glob("*/index.lock")),
     ]
     now = time.time() if now is None else now
-    lsof = shutil.which("lsof")
     for lock in locks:
         try:
             age = now - lock.stat().st_mtime
@@ -1612,16 +1620,14 @@ def check_git_index_locks(
             continue
         if age < max_age_s:
             continue
-        if (
-            lsof
-            and subprocess.run(
-                [lsof, "-t", str(lock)], capture_output=True, text=True, check=False
-            ).stdout.strip()
-        ):
+        if subprocess.run(
+            [lsof, "-t", str(lock)], capture_output=True, text=True, check=False
+        ).stdout.strip():
             continue
         errors.append(
             f"git-index-locks: stale {lock} ({int(age)}s old, no process has it open); "
-            f"confirm no git command is running in that worktree, then remove it: rm {lock}"
+            f"check `lsof {lock}` and that no git command runs in that worktree, "
+            f"then remove it: rm {lock}"
         )
     return errors
 
