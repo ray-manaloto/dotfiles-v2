@@ -2103,3 +2103,26 @@ def test_config_hygiene_venv_guard_tolerates_odd_tables(tmp_path, monkeypatch) -
     monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
     errors = doc_mod.check_config_hygiene(tmp_path)
     assert any("uv_venv_auto = 'source'" in e for e in errors), errors
+
+
+def test_no_repo_skills_allows_claude_runtime_state(tmp_path) -> None:
+    """/ship watch timers create .claude/scheduled_tasks.lock; only skill dirs may fail the check."""
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    cmd = tomllib.loads((root / "mise.toml").read_text(encoding="utf-8"))["doctor"][
+        "checks"
+    ]["no-repo-skills"]["run"]
+
+    def run() -> int:
+        return subprocess.run(["bash", "-c", cmd], cwd=tmp_path, check=False).returncode
+
+    assert run() == 0
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "scheduled_tasks.lock").write_text("")
+    assert run() == 0
+    (tmp_path / ".claude" / "skills").mkdir()
+    assert run() != 0
+    (tmp_path / ".claude" / "skills").rmdir()
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
+    assert run() != 0

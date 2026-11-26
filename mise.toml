@@ -128,9 +128,11 @@ run = "python3 -I -B tasks/py/doctor_checks.py config-hygiene"
 hint = "Check `unix/home/.config/mise/config*.toml` and `unix/home/.config/herdr-app/programs.json` against Tier 1/2 hygiene rules."
 
 [doctor.checks.no-repo-skills]
-description = "No duplicated repo-level .agents or .claude skill directories"
-run = "test ! -e .agents && test ! -e .claude"
-hint = "Remove .agents/ and .claude/ from the repository root."
+description = "No duplicated repo-level .agents/skills or .claude/skills directories"
+# Only skill dirs are forbidden: Claude Code writes runtime state under .claude/ (e.g. scheduled_tasks.lock for
+# /ship and /steward watch timers), so forbidding all of .claude/ blocked every watch's pre-push.
+run = "test ! -e .agents/skills && test ! -e .claude/skills"
+hint = "Remove .agents/skills/ and .claude/skills/ from the repository root; canonical skills live in unix/home/.agents/skills/."
 
 [doctor.checks.pwf-root-mode]
 description = "Committed .mode pins autonomous mode for planning-with-files"
