@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,6 +55,11 @@ def _fake_dcg(home: Path, script: str) -> None:
         ("mise install; rm -rf x", 2),
         ("mise install && curl x", 2),
         ("echo $(mise install)", 2),
+        ("mise install\nrm -rf x", 2),
+        ("mise install > ~/.bashrc", 2),
+        ("mise install < /dev/null", 2),
+        ("mise installer-x", 2),
+        ("mise doctorx", 2),
     ],
 )
 def test_missing_dcg_fails_closed_with_recovery(
@@ -99,4 +103,28 @@ def test_agy_guard_denies_without_dcg(tmp_path: Path) -> None:
         check=False,
     )
     assert json.loads(proc.stdout.strip().splitlines()[-1])["decision"] == "deny"
-    assert os.path.basename(str(AGY_GUARD)) == "agy-dcg-guard.py"
+
+
+def test_agy_guard_denies_with_broken_dcg(tmp_path: Path) -> None:
+    """A dcg that exits non-zero with no decision (an uninstalled mise shim) must deny, not allow."""
+    _fake_dcg(tmp_path, "echo 'mise ERROR dcg is not installed' >&2\nexit 1\n")
+    payload = json.dumps(
+        {"toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}}
+    )
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": f"{tmp_path}/.local/share/mise/shims:/usr/bin:/bin",
+        "MISE_DATA_DIR": str(tmp_path / ".local/share/mise"),
+    }
+    proc = subprocess.run(
+        [sys.executable, "-I", "-B", str(AGY_GUARD)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=20,
+        check=False,
+    )
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["decision"] == "deny", out
+    assert "dcg failed" in json.dumps(out)

@@ -1,9 +1,6 @@
 {
   "deniedMcpServers": [
     {
-      "serverCommand": ["npx", "-y", "@modelcontextprotocol/server-pdf", "--stdio"]
-    },
-    {
       "serverUrl": "https://mcp.apify.com/*"
     }
   ],

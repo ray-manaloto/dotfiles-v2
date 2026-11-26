@@ -124,6 +124,12 @@ def main() -> int:
             or "Blocked by dcg"
         )
         return _deny(str(reason))
+    if proc.returncode != 0:
+        # A broken guard (for example a mise shim for an uninstalled dcg) must not allow everything.
+        detail = proc.stderr.strip()[:200] or f"exit {proc.returncode}"
+        return _deny(
+            f"Blocked by agy-dcg-guard: dcg failed ({detail}); run `mise install` to restore the guard"
+        )
     return _allow()
 
 

@@ -45,14 +45,14 @@ prefix_rule(
     not_match = [["gh", "run", "cancel", "12345"], ["gh", "run", "rerun", "1"]],
 )
 
-# git: inspection only. No fetch (--upload-pack runs code), diff/show (--output writes files),
+# git: inspection only. No fetch (--upload-pack runs code), diff/show/log (--output writes files),
 # add/commit (hooks run), or worktree/branch mutation.
 prefix_rule(
-    pattern = ["git", ["status", "log", "rev-parse"]],
+    pattern = ["git", ["status", "rev-parse"]],
     decision = "allow",
     justification = "local git inspection without file writes or hooks",
-    match = [["git", "status", "--short"], ["git", "log", "--oneline", "-5"], ["git", "rev-parse", "HEAD"]],
-    not_match = [["git", "fetch", "origin"], ["git", "diff", "--output=x"], ["git", "commit", "-m", "x"], ["git", "push"]],
+    match = [["git", "status", "--short"], ["git", "rev-parse", "HEAD"]],
+    not_match = [["git", "fetch", "origin"], ["git", "diff", "--output=x"], ["git", "log", "--output=x"], ["git", "commit", "-m", "x"], ["git", "push"]],
 )
 
 prefix_rule(
