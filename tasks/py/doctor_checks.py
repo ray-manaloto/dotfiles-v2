@@ -1820,6 +1820,55 @@ _FLAG_FETCH_KILLERS = frozenset(
 )
 
 
+# Keep shell words intact so quoted and escaped separators stay inside their command.
+_SHELL_STARTUP_TOKENS = re.compile(
+    r"""(?:\\.|'[^']*'|"(?:\\.|[^"\\])*"|[^\s;&|'"\\])+|[;&|]+|\S"""
+)
+_SHELL_STARTUP_FLAG_FALLBACK = re.compile(
+    r"(?:^|\s)(" + "|".join(sorted(_FLAG_FETCH_KILLERS)) + r")="
+)
+
+
+def _shell_startup_flag_names(line: str) -> set[str]:
+    segments: list[str] = []
+    start = 0
+    end = len(line)
+    for match in _SHELL_STARTUP_TOKENS.finditer(line):
+        token = match[0]
+        if token.startswith("#"):
+            end = match.start()
+            break
+        if token[0] in ";&|":
+            segments.append(line[start : match.start()])
+            start = match.end()
+    segments.append(line[start:end])
+
+    names: set[str] = set()
+    for segment in segments:
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            # A physical line may end inside a multiline value. Check the raw text.
+            names.update(_SHELL_STARTUP_FLAG_FALLBACK.findall(line))
+            names.update(_SHELL_STARTUP_FLAG_FALLBACK.findall(segment))
+            continue
+        if words[:1] == ["export"]:
+            assignments = words[1:]
+        elif words[:2] in (["declare", "-x"], ["typeset", "-x"]):
+            assignments = words[2:]
+        elif all(re.match(r"[a-zA-Z_][a-zA-Z0-9_]*=", word) for word in words):
+            # Bare assignments may be exported by allexport or an attribute set
+            # in an earlier sourced file. Command-prefix assignments stay scoped.
+            assignments = words
+        else:
+            continue
+        names.update(
+            _FLAG_FETCH_KILLERS
+            & {word.partition("=")[0] for word in assignments if "=" in word}
+        )
+    return names
+
+
 def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
     """Reject global [env] / Dockerfile ENV entries that turn off Claude Code feature-flag fetching."""
     errors: list[str] = []
@@ -1927,34 +1976,7 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
             lines = sh_file.read_text(encoding="utf-8").splitlines()
         except OSError, UnicodeDecodeError:
             continue
-        names: set[str] = set()
-        for line in lines:
-            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
-            lexer.whitespace_split = True
-            # A hash inside a shell word is literal. Stop at a comment token instead.
-            lexer.commenters = ""
-            words: list[str] = []
-            try:
-                for word in lexer:
-                    if word.startswith(("#", ";", "&", "|")):
-                        break
-                    words.append(word)
-            except ValueError:
-                continue
-            if words[:1] == ["export"]:
-                assignments = words[1:]
-            elif words[:2] in (["declare", "-x"], ["typeset", "-x"]):
-                assignments = words[2:]
-            elif all(re.match(r"[a-zA-Z_][a-zA-Z0-9_]*=", word) for word in words):
-                # Bare assignments may be exported by allexport or an attribute set
-                # in an earlier sourced file. Command-prefix assignments stay scoped.
-                assignments = words
-            else:
-                continue
-            names.update(
-                _FLAG_FETCH_KILLERS
-                & {word.partition("=")[0] for word in assignments if "=" in word}
-            )
+        names = {name for line in lines for name in _shell_startup_flag_names(line)}
         for name in sorted(names):
             errors.append(
                 f"config-hygiene: {sh_file.relative_to(repo_root).as_posix()} exports {name}; {msg}"
