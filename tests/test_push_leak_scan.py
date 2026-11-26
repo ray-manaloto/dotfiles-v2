@@ -13,7 +13,7 @@ A, B, C, D = ("a" * 40, "b" * 40, "c" * 40, "d" * 40)
 
 @pytest.fixture(autouse=True)
 def every_commit_known(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(scan, "has_commit", lambda oid: oid != D)
+    monkeypatch.setattr(scan, "known_commits", lambda oids: {o for o in oids if o != D})
 
 
 def line(local: str, remote: str, ref: str = "refs/heads/x") -> str:
@@ -23,6 +23,10 @@ def line(local: str, remote: str, ref: str = "refs/heads/x") -> str:
 def test_every_pushed_ref_is_a_tip() -> None:
     stdin = "\n".join([line(A, Z40), line(B, C, "refs/heads/y")])
     assert scan.push_log_opts(stdin, "origin") == [A, B, "--not", C, "--remotes=origin"]
+
+
+def test_update_of_known_ref_is_bounded_by_its_old_oid_only() -> None:
+    assert scan.push_log_opts(line(A, C), "origin") == [A, "--not", C]
 
 
 def test_delete_only_push_publishes_nothing() -> None:
