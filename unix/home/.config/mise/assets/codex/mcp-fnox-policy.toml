@@ -1,3 +1,4 @@
+#:schema https://raw.githubusercontent.com/openai/codex/rust-v0.172.0/codex-rs/core/config.schema.json
 # Declarative Codex [shell_environment_policy] merged into ~/.codex/config.toml via mise dotfiles.
 # Preserves per-tab HC_* isolation, scoped fnox/proxy TLS vars, and child agent toggles.
 # Keep legacy include_only only (Codex 0.172.0 rejects mixing filters with include_only).
@@ -19,6 +20,9 @@ include_only = [
   "USER",
   "HC_*",
   "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "CURL_CA_BUNDLE",
+  "REQUESTS_CA_BUNDLE",
   "HTTPS_PROXY",
   "NODE_USE_ENV_PROXY",
   "https_proxy",
@@ -37,6 +41,7 @@ include_only = [
   "MISE_YES",
   "MISE_ENV",
   "MISE_SYSTEM_CONFIG_DIR",
+  "PLAN_ID",
   "CLAUDE_CODE_BRIEF",
   "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
   "CLAUDE_CODE_FORK_SUBAGENT",

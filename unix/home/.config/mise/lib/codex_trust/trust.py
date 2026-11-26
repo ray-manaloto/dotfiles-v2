@@ -393,7 +393,7 @@ def inspect_hook_trust(
     codex_home: Path | None = None,
     client: Any = None,
 ) -> CodexTrustResponse:
-    """Audit plugin hook trust and config.toml [hooks.state.*] via native `hooks/list` RPC."""
+    """Audit enabled user hooks and plugin trust via native `hooks/list` RPC."""
     return _run_hook_trust(
         repair=False,
         cwd=cwd or Path.cwd(),
@@ -504,13 +504,31 @@ def _run_hook_trust(
             continue
         source = str(row.get("source") or "")
         key = str(row.get("key") or "")
-        if source != "plugin" or not key:
+        if not key:
             continue
-        live_plugin_keys.add(key)
-        plugin_id = str(row.get("pluginId") or "")
         source_path = str(row.get("sourcePath") or "")
         trust_status = str(row.get("trustStatus") or "untrusted").lower()
         current_hash = str(row.get("currentHash") or "")
+        if (
+            source == "user"
+            and not repair
+            and row.get("enabled")
+            and trust_status in {"modified", "untrusted"}
+        ):
+            findings.append(
+                CodexHookFinding(
+                    key=key,
+                    event_name=row.get("eventName"),
+                    source_path=source_path or None,
+                    status=CodexHookStatus(trust_status),
+                    issue="review the user hook source and re-approve it in Codex /hooks",
+                    current_hash=current_hash or None,
+                )
+            )
+        if source != "plugin":
+            continue
+        live_plugin_keys.add(key)
+        plugin_id = str(row.get("pluginId") or "")
 
         raw_entry = state_tbl.get(key)
         state_entry: dict[str, Any] = raw_entry if isinstance(raw_entry, dict) else {}
@@ -609,7 +627,7 @@ def _run_hook_trust(
         errors.append(
             CodexTrustErrorEntry(
                 code=CodexTrustErrorCode.ERR_UNTRUSTED_OR_MODIFIED,
-                message="One or more Codex plugin hooks are modified or untrusted.",
+                message="One or more Codex hooks are modified or untrusted.",
             )
         )
     if unmigrated_keys:
@@ -690,14 +708,14 @@ def _run_hook_trust(
         returns = [
             CodexTrustReturnEntry(
                 code=CodexTrustReturnCode.RET_FAILED,
-                message=f"Found {len(findings)} plugin hook issue(s) and {len(legacy_drift_paths)} legacy baseline drift(s); run with --repair.",
+                message=f"Found {len(findings)} hook issue(s) and {len(legacy_drift_paths)} legacy baseline drift(s).",
             )
         ]
     else:
         returns = [
             CodexTrustReturnEntry(
                 code=CodexTrustReturnCode.RET_OK,
-                message="All Codex plugin hooks trusted and migrated.",
+                message="Enabled user hooks and plugin hook trust passed.",
             )
         ]
 

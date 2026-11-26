@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-#MISE description="Inspect or repair Codex plugin hook trust and stale [hooks.state.*] entries via native hooks/list RPC"
-#USAGE flag "--check" help="Read-only inspection of Codex plugin hook trust (default)"
+#MISE description="Inspect Codex user and plugin hook trust, or repair plugin trust via native hooks/list RPC"
+#USAGE flag "--check" help="Read-only inspection of enabled user hooks and plugin trust (default)"
 #USAGE flag "--repair" help="Upsert missing/modified trusted_hash + trusted_content_hash and prune orphaned entries"
 #USAGE flag "--json" help="Emit CodexTrustResponse JSON"
 #USAGE flag "--cwd <path>" help="Working directory passed to Codex hooks/list"

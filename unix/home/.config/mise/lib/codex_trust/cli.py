@@ -71,7 +71,7 @@ def _build_app() -> cyclopts.App:
             Path | None, cyclopts.Parameter(name="--codex-home")
         ] = None,
     ) -> int:
-        """Inspect or repair Codex plugin hook trust via native `hooks/list` RPC."""
+        """Inspect Codex user and plugin hook trust, or repair plugin hook trust."""
         _ = check
         _configure_logging(json_mode=json_out, mutating=repair)
         resp = (

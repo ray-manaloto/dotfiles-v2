@@ -2281,6 +2281,71 @@ def check_herdr_app_bundle() -> tuple[list[str], str]:
     return errors, "Herdr.app bundle verified exclusively at /Applications/Herdr.app"
 
 
+def check_codex_managed_config(repo_root: Path) -> tuple[list[str], str]:
+    """Validate the managed config and rule files using the installed CLI."""
+    codex = shutil.which("codex")
+    if not codex:
+        if os.environ.get("CI"):
+            return [], "CI: native Codex config check skipped (CLI unavailable)"
+        return ["install Codex to validate the managed configuration"], ""
+
+    assets = repo_root / "unix/home/.config/mise/assets/codex"
+    rules = repo_root / "unix/home/.codex/rules"
+    errors: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="codex-managed-config-") as directory:
+        isolated_home = Path(directory)
+        env = {**os.environ, "CODEX_HOME": directory}
+        config = isolated_home / "config.toml"
+
+        def run_check(label: str, args: list[str]) -> None:
+            result = subprocess.run(
+                [codex, *args],
+                cwd=isolated_home,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode:
+                failure = result.stdout.strip() or result.stderr.strip()
+                errors.append(f"{label}: {failure or f'exit {result.returncode}'}")
+
+        try:
+            # The two merge fragments currently own disjoint top-level sections.
+            base = "\n".join(
+                (assets / name).read_text(encoding="utf-8")
+                for name in ("team-defaults.toml", "mcp-fnox-policy.toml")
+            )
+            startup = ["app-server", "--strict-config", "--print-startup-config"]
+            config.write_text(base, encoding="utf-8")
+            run_check("merged config", startup)
+            for name in ("astra", "luna", "review", "sol"):
+                profile = assets / "profiles" / f"{name}.config.toml"
+                shutil.copyfile(profile, config)
+                run_check(profile.name, startup)
+            run_check(
+                "execpolicy",
+                [
+                    "execpolicy",
+                    "check",
+                    "--rules",
+                    str(rules / "guards.rules"),
+                    "--rules",
+                    str(rules / "workflow.rules"),
+                    "--",
+                    "git",
+                    "status",
+                ],
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(str(exc))
+    return (
+        errors,
+        "native CLI accepted the merged config, four profiles and execpolicy rules",
+    )
+
+
 def check_codex_hook_trust(
     repo_root: Path, *, strict_host: bool = False
 ) -> tuple[list[str], str]:
@@ -2385,7 +2450,7 @@ def check_codex_hook_trust(
             f"codex-hook-trust: 0 modified/unmigrated ({len(orphaned)} orphaned entries; "
             "run `mise run codex:hook-trust --repair` to prune)"
         )
-    return [], "codex-hook-trust: all plugin hook trust hashes match live hooks/list"
+    return [], "codex-hook-trust: enabled user hooks and plugin hook trust passed"
 
 
 def check_mise_binary_integrity(repo_root: Path) -> tuple[list[str], str]:
@@ -2995,6 +3060,7 @@ def main(argv: list[str] | None = None) -> int:
     p_audit.add_argument("--rc", type=int, default=0)
     p_audit.add_argument("--err-file", type=Path, default=None)
     sub.add_parser("herdr-app-bundle")
+    sub.add_parser("codex-managed-config")
     p_trust = sub.add_parser("codex-hook-trust")
     p_trust.add_argument("--strict-host", action="store_true")
     sub.add_parser("mise-binary-integrity")
@@ -3099,6 +3165,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "herdr-app-bundle":
         errs, msg = check_herdr_app_bundle()
         return _report("herdr-app-bundle", errs, msg)
+    if args.cmd == "codex-managed-config":
+        errs, msg = check_codex_managed_config(repo_root)
+        return _report("codex-managed-config", errs, msg)
     if args.cmd == "codex-hook-trust":
         errs, msg = check_codex_hook_trust(repo_root, strict_host=args.strict_host)
         return _report("codex-hook-trust", errs, msg)
