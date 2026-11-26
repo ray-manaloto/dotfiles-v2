@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#MISE description="Run one doctor check the way `mise doctor project` does and print its full output and exit code"
+#USAGE arg "<check>" help="Doctor check name, as listed by `mise doctor project`"
+set -euo pipefail
+
+check="${usage_check:-}"
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+cd "${repo_root}"
+
+# Every loaded config file can declare [doctor.checks.*] (repo mise.toml and the global config).
+configs="$(mise config ls --json)"
+run="$(
+	CONFIGS="${configs}" python3 -I -B - "${check}" <<'PY'
+import json
+import os
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit("doctor:explain needs Python >= 3.11 (tomllib); run it via `mise run doctor:explain`")
+import tomllib
+
+name = sys.argv[1]
+found = {}
+for entry in json.loads(os.environ["CONFIGS"]):
+    path = entry.get("path") if isinstance(entry, dict) else None
+    if not path or not path.endswith(".toml"):
+        continue
+    try:
+        with open(path, "rb") as fh:
+            checks = tomllib.load(fh).get("doctor", {}).get("checks", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        continue
+    for key, spec in checks.items():
+        if isinstance(spec, dict) and "run" in spec:
+            found.setdefault(key, (path, spec))
+if name not in found:
+    print(f"doctor:explain: unknown check {name!r}. Known checks:", file=sys.stderr)
+    for key in sorted(found):
+        print(f"  {key}", file=sys.stderr)
+    sys.exit(2)
+source, spec = found[name]
+print(f"doctor:explain {name} (from {source})", file=sys.stderr)
+# mise doctor also applies these keys; explain runs the bare command, so say so.
+for key in ("depends", "timeout", "os"):
+    if key in spec:
+        print(f"note: doctor applies {key} = {spec[key]!r}; explain does not", file=sys.stderr)
+print(spec["run"])
+PY
+)"
+
+printf '$ %s\n' "${run}" >&2
+set +e
+sh -c "${run}"
+rc=$?
+set -e
+echo "doctor:explain ${check}: exit ${rc}" >&2
+exit "${rc}"

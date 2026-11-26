@@ -54,100 +54,100 @@ run = 'repotools privacy-scan --patterns="$PRIVATE_PATTERNS" --files="${usage_fi
 [doctor.checks.no-project-tools]
 description = "Project mise TOMLs declare zero [tools], no root mise.lock, and slim pyproject.toml"
 run = "python3 -I -B tasks/py/doctor_checks.py no-project-tools"
-hint = "Declare global tools in unix/home/.config/mise/config.toml and keep dev/lint CLI tools out of [project].dependencies."
+hint = "Declare global tools in unix/home/.config/mise/config.toml and keep dev/lint CLI tools out of [project].dependencies. Details: `mise run doctor:explain no-project-tools`."
 
 [doctor.checks.py-deps-fresh]
 description = "Root .venv matches pyproject.toml and uv.lock via mise deps uv --explain"
 run = "mise deps uv --explain"
-hint = "Run 'mise deps uv' to sync .venv with uv.lock."
+hint = "Run 'mise deps uv' to sync .venv with uv.lock. Details: `mise run doctor:explain py-deps-fresh`."
 
 [doctor.checks.schema-first-ast]
 description = "No hand-written BaseModel/dataclass/Enum/TypedDict DTOs outside generated modules and tests"
 run = "python3 -I -B tasks/py/schema_first_ast.py"
-hint = "Declare DTOs and Enums in schemas/**/*.schema.json and run 'mise run py:codegen'."
+hint = "Declare DTOs and Enums in schemas/**/*.schema.json and run 'mise run py:codegen'. Details: `mise run doctor:explain schema-first-ast`."
 
 [doctor.checks.schema-contract-check]
 description = "All schemas/**/*.schema.json satisfy Draft 2020-12 and envelope contracts"
 run = "python3 -I -B tasks/py/schema_contract_check.py"
-hint = "Ensure every schema declares Draft 2020-12, additionalProperties: false, and envelope fields."
+hint = "Ensure every schema declares Draft 2020-12, additionalProperties: false, and envelope fields. Details: `mise run doctor:explain schema-contract-check`."
 
 [doctor.checks.mise-lock-integrity]
 description = "unix/home/.config/mise/mise.lock and locks/ match config.toml across all platforms"
 run = 'python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity && MISE_OFFLINE=1 MISE_CONFIG_DIR="$PWD/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global'
-hint = "Run `MISE_CONFIG_DIR=$PWD/unix/home/.config/mise mise lock` and ensure 0644 lockfile permissions."
+hint = "Run `MISE_CONFIG_DIR=$PWD/unix/home/.config/mise mise lock` and ensure 0644 lockfile permissions. Details: `mise run doctor:explain mise-lock-integrity`."
 
 [doctor.checks.host-option-a]
 description = "Strict Option A host parity, no-legacy-symlinks, roll-ownership, and dotfiles status"
 run = "python3 -I -B tasks/py/doctor_checks.py host-option-a --strict-host"
-hint = "Complete Issue #9 Option A host cutover (~/.config/mise -> dotfiles-v2/unix/home/.config/mise) and sync dotfiles."
+hint = "Complete Issue #9 Option A host cutover (~/.config/mise -> dotfiles-v2/unix/home/.config/mise) and sync dotfiles. Details: `mise run doctor:explain host-option-a`."
 
 [doctor.checks.mise-doctor-clean]
 description = "Global mise doctor --json reports 0 errors and 0 warnings"
 run = "python3 -I -B tasks/py/doctor_checks.py mise-doctor-clean"
-hint = "Inspect `mise -C ~ doctor --json` and eliminate any errors or PATH-ordering warnings."
+hint = "Inspect `mise -C ~ doctor --json` and eliminate any errors or PATH-ordering warnings. Details: `mise run doctor:explain mise-doctor-clean`."
 
 [doctor.checks.host-hygiene]
 description = "Host shims, command-wrappers, mise plugins, pitchfork daemons, vb, local bins, opencode.jsonc, config.local.toml, and skills parity are clean"
 run = "python3 -I -B tasks/py/doctor_checks.py host-hygiene"
-hint = "Run `mise run host:prune --apply` and `mise run bootstrap:skills` to clear stale host residue."
+hint = "Run `mise run host:prune --apply` and `mise run bootstrap:skills` to clear stale host residue. Details: `mise run doctor:explain host-hygiene`."
 
 [doctor.checks.uv-env-integrity]
 description = "uv lockfile, environment packages, and locked dry-run sync pass offline checks"
 depends = "py-deps-fresh"
 run = "uv lock --check --offline && uv pip check && uv sync --locked --offline --dry-run"
-hint = "Run `mise deps uv` and `uv lock` to reconcile pyproject.toml, uv.lock, and .venv."
+hint = "Run `mise deps uv` and `uv lock` to reconcile pyproject.toml, uv.lock, and .venv. Details: `mise run doctor:explain uv-env-integrity`."
 
 [doctor.checks.jouet-rules]
 description = "All jouet rules and committed repository rules pass their fires/quiet examples"
 run = "python3 -I -B tasks/py/doctor_checks.py jouet-rules"
-hint = "Run `jouet rule test --all` and fix failing rule patterns or examples."
+hint = "Run `jouet rule test --all` and fix failing rule patterns or examples. Details: `mise run doctor:explain jouet-rules`."
 
 [doctor.checks.usage-lint]
 description = "All #USAGE task specifications pass `usage lint -W -q`"
 run = "python3 -I -B tasks/py/doctor_checks.py usage-lint"
-hint = "Run `usage lint -W -q <task-file>` and fix any warnings or syntax errors."
+hint = "Run `usage lint -W -q <task-file>` and fix any warnings or syntax errors. Details: `mise run doctor:explain usage-lint`."
 
 [doctor.checks.pitchfork-config]
 description = "Committed pitchfork config parses cleanly via `pitchfork daemons --json`"
 run = "python3 -I -B tasks/py/doctor_checks.py pitchfork-config"
-hint = "Validate `unix/home/.config/pitchfork/config.toml` with `pitchfork daemons --json`."
+hint = "Validate `unix/home/.config/pitchfork/config.toml` with `pitchfork daemons --json`. Details: `mise run doctor:explain pitchfork-config`."
 
 [doctor.checks.dockerignore-secret-guard]
 description = ".dockerignore excludes *.local.*, __pycache__, *.pyc, and .DS_Store from Docker build context"
 run = "python3 -I -B tasks/py/doctor_checks.py dockerignore-secret-guard"
-hint = "Ensure `.dockerignore` re-excludes `**/*.local.*`, `**/__pycache__`, `**/__pycache__/**`, `**/*.pyc`, and `**/.DS_Store` after `!unix/home/.config/mise/**`."
+hint = "Ensure `.dockerignore` re-excludes `**/*.local.*`, `**/__pycache__`, `**/__pycache__/**`, `**/*.pyc`, and `**/.DS_Store` after `!unix/home/.config/mise/**`. Details: `mise run doctor:explain dockerignore-secret-guard`."
 
 [doctor.checks.mise-version-parity]
 description = "Pinned MISE_VER and min_version match across Dockerfile, tasks/vm/up, env:doctor, configs, and docs"
 run = "python3 -I -B tasks/py/doctor_checks.py mise-version-parity"
-hint = "Keep mise version pins synchronized across Dockerfile, tasks/vm/up, tasks/env/doctor, mise.toml, config.toml, AGENTS.md, and SKILL.md."
+hint = "Keep mise version pins synchronized across Dockerfile, tasks/vm/up, tasks/env/doctor, mise.toml, config.toml, AGENTS.md, and SKILL.md. Details: `mise run doctor:explain mise-version-parity`."
 
 [doctor.checks.config-hygiene]
 description = "mise configs and programs.json pass canonical registry, prerelease, wrapper, and [dotfiles] traversal hygiene checks"
 run = "python3 -I -B tasks/py/doctor_checks.py config-hygiene"
-hint = "Check `unix/home/.config/mise/config*.toml` and `unix/home/.config/herdr-app/programs.json` against Tier 1/2 hygiene rules."
+hint = "Check `unix/home/.config/mise/config*.toml` and `unix/home/.config/herdr-app/programs.json` against Tier 1/2 hygiene rules. Details: `mise run doctor:explain config-hygiene`."
 
 [doctor.checks.no-repo-skills]
 description = "No duplicated repo-level .agents/skills or .claude/skills directories"
 # Only skill dirs are forbidden: Claude Code writes runtime state under .claude/ (e.g. scheduled_tasks.lock for
 # /ship and /steward watch timers), so forbidding all of .claude/ blocked every watch's pre-push.
 run = "test ! -e .agents/skills && test ! -e .claude/skills"
-hint = "Remove .agents/skills/ and .claude/skills/ from the repository root; canonical skills live in unix/home/.agents/skills/."
+hint = "Remove .agents/skills/ and .claude/skills/ from the repository root; canonical skills live in unix/home/.agents/skills/. Details: `mise run doctor:explain no-repo-skills`."
 
 [doctor.checks.pwf-root-mode]
 description = "Committed .mode pins autonomous mode for planning-with-files"
 run = 'test -f .mode && test "$(tr -d "[:space:]" < .mode)" = "autonomous"'
-hint = "Commit 'autonomous' in .mode at repository root."
+hint = "Commit 'autonomous' in .mode at repository root. Details: `mise run doctor:explain pwf-root-mode`."
 
 [doctor.checks.hk-validate]
 description = "hk.pkl configuration evaluates cleanly with zero warnings"
 run = "hk validate --json --deny-warnings"
-hint = "Run 'hk validate --json --deny-warnings' to inspect hk.pkl errors or warnings."
+hint = "Run 'hk validate --json --deny-warnings' to inspect hk.pkl errors or warnings. Details: `mise run doctor:explain hk-validate`."
 
 [doctor.checks.mise-task-validate]
 description = "All mise tasks validate cleanly"
 run = "mise task validate"
-hint = "Run 'mise task validate' to inspect task definition errors."
+hint = "Run 'mise task validate' to inspect task definition errors. Details: `mise run doctor:explain mise-task-validate`."
 
 [doctor.checks.pwf-worktree-plan]
 description = "Worktree PLAN_ID resolves and passes plan-doctor when set"
@@ -163,7 +163,7 @@ resolved="$(sh "$pwf_dir/scripts/resolve-plan-dir.sh")"
 test -n "$resolved" && test -f "$resolved/task_plan.md"
 ! sh "$pwf_dir/scripts/plan-doctor.sh" | grep -q "^FAIL "
 '''
-hint = "Run 'mise run worktree:new <slug>' or verify .planning/$PLAN_ID."
+hint = "Run 'mise run worktree:new <slug>' or verify .planning/$PLAN_ID. Details: `mise run doctor:explain pwf-worktree-plan`."
 
 [doctor.checks.agy-skill-cutoff]
 description = "Antigravity 24 KB skill cutoff hook and universal rule are valid and replace hardcoded last30days rule"
@@ -173,7 +173,7 @@ test -f unix/home/.gemini/config/rules/skill-cutoff-agy.md
 test ! -e unix/home/.gemini/config/rules/last30days-agy.md
 python3 -I -B unix/home/.gemini/config/hooks/agy-skill-cutoff.py --check --no-write --json >/dev/null
 '''
-hint = "Ensure unix/home/.gemini/config/hooks/agy-skill-cutoff.py is executable and skill-cutoff-agy.md replaces last30days-agy.md."
+hint = "Ensure unix/home/.gemini/config/hooks/agy-skill-cutoff.py is executable and skill-cutoff-agy.md replaces last30days-agy.md. Details: `mise run doctor:explain agy-skill-cutoff`."
 
 [doctor.checks.agy-pwf-guard]
 description = "Antigravity PWF PreToolUse guard hook and hooks.json registration are valid"
@@ -181,7 +181,7 @@ run = '''
 test -x unix/home/.gemini/config/hooks/agy-pwf-guard.py
 python3 -I -B unix/home/.gemini/config/hooks/agy-pwf-guard.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
 '''
-hint = "Ensure unix/home/.gemini/config/hooks/agy-pwf-guard.py is executable, passes --self-check, and registers in hooks.json."
+hint = "Ensure unix/home/.gemini/config/hooks/agy-pwf-guard.py is executable, passes --self-check, and registers in hooks.json. Details: `mise run doctor:explain agy-pwf-guard`."
 
 [doctor.checks.agy-interactive-questions]
 description = "Antigravity interactive-questions PreToolUse/Stop hook, rule, and hooks.json registration are valid"
@@ -190,7 +190,7 @@ test -x unix/home/.gemini/config/hooks/agy-interactive-questions.py
 test -f unix/home/.gemini/config/rules/interactive-questions.md
 python3 -I -B unix/home/.gemini/config/hooks/agy-interactive-questions.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
 '''
-hint = "Ensure unix/home/.gemini/config/hooks/agy-interactive-questions.py passes --self-check and registers in hooks.json."
+hint = "Ensure unix/home/.gemini/config/hooks/agy-interactive-questions.py passes --self-check and registers in hooks.json. Details: `mise run doctor:explain agy-interactive-questions`."
 
 [doctor.checks.post-task-learn]
 description = "Antigravity post-task-learn Stop hook, skill, and hooks.json registration are valid"
@@ -199,12 +199,12 @@ test -x unix/home/.gemini/config/hooks/post-task-learn.py
 test -f unix/home/.agents/skills/post-task-learn/SKILL.md
 python3 -I -B unix/home/.gemini/config/hooks/post-task-learn.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
 '''
-hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-check and registers in hooks.json."
+hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-check and registers in hooks.json. Details: `mise run doctor:explain post-task-learn`."
 
 [doctor.checks.host-gemini-sync]
 description = "Local ~/.gemini/config/ hooks, rules, skills, and hooks.json match unix/home/.gemini/config/ and [dotfiles]"
 run = "sh tasks/py/host_check.sh mise run host:sync-gemini --check"
-hint = "Run 'mise run host:sync-gemini' to sync ~/.gemini/config/ hooks, rules, skills, and hooks.json on this host."
+hint = "Run 'mise run host:sync-gemini' to sync ~/.gemini/config/ hooks, rules, skills, and hooks.json on this host. Details: `mise run doctor:explain host-gemini-sync`."
 
 [doctor.checks.native-harnesses]
 description = "Global mise config blocks non-native AI harnesses and mise installs via disable_tools and auto_install_disable_tools"
@@ -225,7 +225,7 @@ for key in ("disable_tools", "auto_install_disable_tools"):
     assert not missing, f"{key} missing: {sorted(missing)}"
 PY
 '''
-hint = "Keep claude, codex, agy, opencode, and mise in disable_tools and auto_install_disable_tools (not [tools]) in unix/home/.config/mise/config.toml."
+hint = "Keep claude, codex, agy, opencode, and mise in disable_tools and auto_install_disable_tools (not [tools]) in unix/home/.config/mise/config.toml. Details: `mise run doctor:explain native-harnesses`."
 
 [doctor.checks.zcode-config]
 description = "Committed ZCode settings and AGENTS.md are registered in [dotfiles] and pass zcode doctor --json"
@@ -259,7 +259,7 @@ if shutil.which("zcode"):
     assert zcfg.get("diagnostics") == [], zcfg
 PY
 '''
-hint = "Keep unix/home/.zcode/cli/setting.json valid, registered in [dotfiles] with ~/.zcode/AGENTS.md, and passing zcode doctor --json."
+hint = "Keep unix/home/.zcode/cli/setting.json valid, registered in [dotfiles] with ~/.zcode/AGENTS.md, and passing zcode doctor --json. Details: `mise run doctor:explain zcode-config`."
 
 [doctor.checks.agy-code-review-guard]
 description = "Antigravity code-review PreToolUse guard hook, always-on protocol rule, and hooks.json registration are valid"
@@ -268,7 +268,7 @@ test -x unix/home/.gemini/config/hooks/agy-code-review-guard.py
 test -f unix/home/.gemini/config/rules/code-review-protocol.md
 python3 -I -B unix/home/.gemini/config/hooks/agy-code-review-guard.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
 '''
-hint = "Ensure unix/home/.gemini/config/hooks/agy-code-review-guard.py is executable, passes --self-check, and registers with code-review-protocol.md."
+hint = "Ensure unix/home/.gemini/config/hooks/agy-code-review-guard.py is executable, passes --self-check, and registers with code-review-protocol.md. Details: `mise run doctor:explain agy-code-review-guard`."
 
 [doctor.checks.agy-hc-send-guard]
 description = "Antigravity hc-send PreToolUse guard hook, always-on peer-messaging rule, and hooks.json registration are valid"
@@ -277,7 +277,7 @@ test -x unix/home/.gemini/config/hooks/agy-hc-send-guard.py
 test -f unix/home/.gemini/config/rules/agy-peer-messaging.md
 python3 -I -B unix/home/.gemini/config/hooks/agy-hc-send-guard.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
 '''
-hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md."
+hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md. Details: `mise run doctor:explain agy-hc-send-guard`."
 
 [doctor.checks.vercel-board-config]
 description = "jdx tools, @vercel/board, pitchfork config, bootstrap:skills, and canonical skills are valid"
@@ -359,7 +359,7 @@ deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
 PY
 '''
-hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly."
+hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly. Details: `mise run doctor:explain vercel-board-config`."
 
 [doctor.checks.herdr-roll]
 description = "Clean-room herdr_roll engine tests and executable roll:* tasks pass validation"
@@ -371,53 +371,53 @@ done
 test -f "unix/home/.agents/skills/herdr-roll/SKILL.md"
 .venv/bin/python -I -B -m unittest discover -s unix/home/.config/mise/lib/herdr_roll/tests -t unix/home/.config/mise/lib
 '''
-hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable, .venv is synced via `mise deps uv`, and herdr_roll unit tests pass."
+hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable, .venv is synced via `mise deps uv`, and herdr_roll unit tests pass. Details: `mise run doctor:explain herdr-roll`."
 
 [doctor.checks.agy-learn-heal]
 description = "Self-healing agy-learn ledger and schemas pass read-only health check"
 depends = "py-deps-fresh"
 run = "sh tasks/py/host_check.sh mise run learn:heal --check --repo ."
-hint = "Inspect '$XDG_STATE_HOME/agy-learn/' via 'mise run learn:heal --check' and resolve any owing_learn or proposal bloat."
+hint = "Inspect '$XDG_STATE_HOME/agy-learn/' via 'mise run learn:heal --check' and resolve any owing_learn or proposal bloat. Details: `mise run doctor:explain agy-learn-heal`."
 
 [doctor.checks.herdr-app-bundle]
 description = "macOS Herdr.app lives exclusively under /Applications/Herdr.app without duplicate ~/Applications/Herdr.app"
 run = "python3 -I -B tasks/py/doctor_checks.py herdr-app-bundle"
-hint = "Install Herdr.app cleanly at /Applications/Herdr.app and remove any duplicate ~/Applications/Herdr.app."
+hint = "Install Herdr.app cleanly at /Applications/Herdr.app and remove any duplicate ~/Applications/Herdr.app. Details: `mise run doctor:explain herdr-app-bundle`."
 
 [doctor.checks.codex-hook-trust]
 description = "Codex plugin hook-trust registry matches live hooks/list RPC hashes"
 depends = "py-deps-fresh"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
-hint = "Inspect trust drift with `mise run codex:hook-trust --check --json` and repair cleanly with `--repair`."
+hint = "Inspect trust drift with `mise run codex:hook-trust --check --json` and repair cleanly with `--repair`. Details: `mise run doctor:explain codex-hook-trust`."
 
 [doctor.checks.mise-binary-integrity]
 description = "Compiled mise install binaries are hardened (0555/a-w) and dcg guardrails/hooks are configured"
 run = "python3 -I -B tasks/py/doctor_checks.py mise-binary-integrity"
-hint = "Run `mise run host:harden-bins` and `mise -C unix/home/.config/mise install` to harden installs and configure dcg."
+hint = "Run `mise run host:harden-bins` and `mise -C unix/home/.config/mise install` to harden installs and configure dcg. Details: `mise run doctor:explain mise-binary-integrity`."
 
 [doctor.checks.agy-rc-health]
 description = "Antigravity CLI Remote Control guard and LaunchAgent health pass on macOS hosts"
 run = "python3 -I -B tasks/py/doctor_checks.py agy-rc-health"
-hint = "Inspect or heal Remote Control via `mise run host:agy-rc-guard`."
+hint = "Inspect or heal Remote Control via `mise run host:agy-rc-guard`. Details: `mise run doctor:explain agy-rc-health`."
 
 [doctor.checks.pc-hub-config]
 description = "pc Hub Compose, Caddyfile, SearXNG, mac-agent, and zero-OTel/zero-CBM-HTTP invariants pass offline validation"
 depends = "py-deps-fresh"
 run = "mise run hub:doctor --offline"
-hint = "Inspect docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} and docker/mac-agent/compose.yaml with `mise run hub:doctor --offline`."
+hint = "Inspect docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} and docker/mac-agent/compose.yaml with `mise run hub:doctor --offline`. Details: `mise run doctor:explain pc-hub-config`."
 
 [doctor.checks.claude-ship-env]
 description = "Managed and live Claude settings never disable feature-flag fetching, /ship or /steward, and keep claude.ai connectors off (env, skillOverrides, disableBundledSkills, disableClaudeAiConnectors, shell env, active checkout venv)"
 run = "python3 -I -B tasks/py/doctor_checks.py claude-ship-env"
-hint = "Remove the flagged env var / override; keep disableClaudeAiConnectors=true unless a connector is really needed; scope telemetry opt-outs to a single command. See docs/pr-shipping-protocol.md."
+hint = "Remove the flagged env var / override; keep disableClaudeAiConnectors=true unless a connector is really needed; scope telemetry opt-outs to a single command. See docs/pr-shipping-protocol.md. Details: `mise run doctor:explain claude-ship-env`."
 
 [doctor.checks.reviewer-plugins]
 description = "Reviewer-bot plugins (Graphify, Greptile, CodeRabbit, Repowise) declared in assets/reviewer-plugins.json are installed in Claude/Codex/agy/OpenCode, Claude plugin MCPs Connected, and Repowise's Bash rewrite disabled in indexed repos"
 run = "python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"
 timeout = "420s"
-hint = "Run `mise run bootstrap:reviewer-plugins` (and `mise run repowise:guard`), then in Claude Code run /mcp -> <server> -> Authenticate."
+hint = "Run `mise run bootstrap:reviewer-plugins` (and `mise run repowise:guard`), then in Claude Code run /mcp -> <server> -> Authenticate. Details: `mise run doctor:explain reviewer-plugins`."
 
 [doctor.checks.skills-6harness-parity]
 description = "Canonical ~/.agents/skills parity across Codex, OpenCode, AGY, Claude, ZCode, and Hermes"
 run = "python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"
-hint = "Run `mise run bootstrap:skills` and keep canonical skills under unix/home/.agents/skills/."
+hint = "Run `mise run bootstrap:skills` and keep canonical skills under unix/home/.agents/skills/. Details: `mise run doctor:explain skills-6harness-parity`."
