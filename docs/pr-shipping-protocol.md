@@ -40,12 +40,13 @@ Single writer: one agent owns a worktree until its PR merges or closes.
 4. **Wait** (inside `pr:ship`): read the required checks for the head commit, then
    `gh event listen --resource <PR> --event ...check_suite.status.changed.v1,...head.changed.v1,...state.changed.v1 --timeout 10m`,
    then read state again. Events are not replayed, so state is always re-read after a wait or timeout. The task stops on a
-   red required check (exit 1), on a moved head (exit 3), or after `--max-waits` (exit 2; re-run to resume). No sleep loops.
+   red required check (exit 1), on a moved head (exit 3), after `--max-waits` (exit 2; re-run to resume), or when the GitHub
+   API fails three times in a row (exit 4). No sleep loops; if event streams are unavailable it falls back to a 60 s re-read.
 5. **Bot sweep**: read every bot line comment once; fix real findings by going back to step 2. At most three pushes for one
    cause; after that, report to the owner.
 6. **Merge** after `pr:ship` prints READY: re-run `hk check --all` on that exact head with a clean tree, then
    `gh pr merge N --merge --match-head-commit <sha> --author-email <owner noreply>` (the form the owner's auto-mode policy
-   allows). A moved head makes the merge fail closed.
+   allows; `pr:ship` prints the exact command with the owner's GitHub noreply address). A moved head makes the merge fail closed.
 7. **After merge**: fast-forward the main checkout (`git merge --ff-only origin/main`) and verify the change is live.
 
 ## Preconditions kept by guards
@@ -62,6 +63,6 @@ Scope telemetry opt-outs to the one command that needs them (for example `DO_NOT
 
 ## Known limits
 
-- `gh event listen` is a preview feature; if it fails, `pr:ship` falls back to re-reading state after each timeout.
+- `gh event listen` is a preview feature; if it fails, `pr:ship` falls back to re-reading state every 60 s.
 - Bots review only when a PR opens; their silence after a follow-up push is expected, not a failure.
 - A crashed lead resumes by re-running `pr:ship`; it rebuilds its state from the PR.

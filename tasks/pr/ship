@@ -7,7 +7,7 @@
 #USAGE flag "--max-waits <n>" default="12" help="Maximum event waits before giving up"
 # Re-runnable: every step reads current state first, so a crashed or repeated run picks up where it left off.
 # It never merges. On READY it prints the owner-sanctioned merge command for the lead to run.
-# Exit: 0 READY, 1 required check failed, 2 wait timed out, 3 preflight refused.
+# Exit: 0 READY, 1 required check failed, 2 wait timed out, 3 preflight refused, 4 GitHub API unavailable.
 set -euo pipefail
 
 repo="ray-manaloto/dotfiles-v2"
@@ -20,11 +20,26 @@ refuse() {
 	exit 3
 }
 
+# gh with retries: a transient API failure must not look like a red check or a moved head.
+ghq() {
+	local attempt out
+	for attempt in 1 2 3; do
+		if out="$(gh "$@" 2>/dev/null)"; then
+			printf '%s\n' "${out}"
+			return 0
+		fi
+		sleep $((attempt * 5))
+	done
+	echo "pr:ship: gh $1 $2 failed 3 times; GitHub API unavailable, re-run pr:ship later" >&2
+	exit 4
+}
+
 # 1. Preflight: a clean wt/* branch, never main, nothing unpushed-but-uncommitted.
 branch="$(git rev-parse --abbrev-ref HEAD)"
 [[ ${branch} == wt/* ]] || refuse "branch '${branch}' is not a wt/* branch"
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] || refuse "uncommitted tracked changes; commit them first"
-[[ "$(gh api "repos/${repo}" --jq .allow_auto_merge)" == "false" ]] || refuse "repo allow_auto_merge is on; it would bypass the gates"
+auto_merge="$(ghq api "repos/${repo}" --jq .allow_auto_merge)"
+[[ ${auto_merge} == "false" ]] || refuse "repo allow_auto_merge is on; it would bypass the gates"
 
 # 2. Local gates on the exact head (Stage 1/2 receipts are enforced by the pre-push hook).
 if [[ -z ${usage_skip_local_gates:-} ]]; then
@@ -36,14 +51,15 @@ head="$(git rev-parse HEAD)"
 
 # 3. Push (pre-push hook runs the review guard and doctor) and find or open the PR.
 git push origin "HEAD:refs/heads/${branch}"
-pr="$(gh pr list -R "${repo}" --head "${branch}" --state open --json number --jq '.[0].number // empty' 2>/dev/null)"
+pr="$(ghq pr list -R "${repo}" --head "${branch}" --state open --json number --jq '.[0].number // empty')"
 if [[ -z ${pr} ]]; then
 	[[ -n ${usage_title:-} && -n ${usage_body_file:-} ]] || refuse "no open PR for ${branch}; pass --title and --body-file to open one"
 	gh pr create -R "${repo}" --base main --head "${branch}" --title "${usage_title}" --body-file "${usage_body_file}" >/dev/null
-	pr="$(gh pr list -R "${repo}" --head "${branch}" --state open --json number --jq '.[0].number' 2>/dev/null)"
+	pr="$(ghq pr list -R "${repo}" --head "${branch}" --state open --json number --jq '.[0].number')"
 fi
 url="https://github.com/${repo}/pull/${pr}"
-[[ "$(gh pr view "${pr}" -R "${repo}" --json autoMergeRequest --jq '.autoMergeRequest != null' 2>/dev/null)" == "false" ]] || refuse "auto-merge is set on #${pr}; disable it (gh pr merge --disable-auto)"
+pr_auto="$(ghq pr view "${pr}" -R "${repo}" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+[[ ${pr_auto} == "false" ]] || refuse "auto-merge is set on #${pr}; disable it (gh pr merge --disable-auto)"
 echo "pr:ship: #${pr} head ${head:0:7} ${url}"
 
 # 4. Event-driven wait: read state, then listen; events are not replayed, so always re-read after each wait.
@@ -51,10 +67,10 @@ echo "pr:ship: #${pr} head ${head:0:7} ${url}"
 required=()
 while IFS= read -r ctx; do
 	[[ -n ${ctx} ]] && required+=("${ctx}")
-done < <(gh api "repos/${repo}/rules/branches/main" --jq '.[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context')
+done < <(ghq api "repos/${repo}/rules/branches/main" --jq '.[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context')
 ((${#required[@]} > 0)) || refuse "could not read required checks for main from the ruleset"
 state() {
-	gh api "repos/${repo}/commits/${head}/check-runs?per_page=100" --jq '.check_runs[]|"\(.name)\t\(.status)\t\(.conclusion // "")"'
+	ghq api "repos/${repo}/commits/${head}/check-runs?per_page=100" --jq '.check_runs[]|"\(.name)\t\(.status)\t\(.conclusion // "")"'
 }
 verdict=""
 for ((i = 1; i <= max_waits; i++)); do
@@ -62,7 +78,8 @@ for ((i = 1; i <= max_waits; i++)); do
 	done_n=0
 	failed=""
 	for name in "${required[@]}"; do
-		line="$(grep -F "${name}"$'\t' <<<"${runs}" | head -1 || true)"
+		# Exact name match on the first field; the API lists the newest run of a re-run check first.
+		line="$(awk -F '\t' -v n="${name}" '$1 == n { print; exit }' <<<"${runs}")"
 		[[ ${line} == *$'\tcompleted\t'* ]] || continue
 		done_n=$((done_n + 1))
 		[[ ${line} == *$'\tcompleted\tsuccess' ]] || failed+="${name}; "
@@ -81,9 +98,11 @@ for ((i = 1; i <= max_waits; i++)); do
 		--event com.github.pull_request.check_suite.status.changed.v1,com.github.pull_request.head.changed.v1,com.github.pull_request.state.changed.v1 \
 		--timeout "${wait_timeout}" >/dev/null 2>&1 || rc=$?
 	if ((rc != 0 && rc != 8)); then
-		echo "pr:ship: gh event listen exited ${rc}; continuing with state re-read" >&2
+		echo "pr:ship: gh event listen exited ${rc} (event streams unavailable?); falling back to a 60s re-read" >&2
+		sleep 60
 	fi
-	[[ "$(gh pr view "${pr}" -R "${repo}" --json headRefOid --jq .headRefOid 2>/dev/null)" == "${head}" ]] || refuse "PR head moved off ${head:0:7}; re-run pr:ship"
+	pr_head="$(ghq pr view "${pr}" -R "${repo}" --json headRefOid --jq .headRefOid)"
+	[[ ${pr_head} == "${head}" ]] || refuse "PR head moved off ${head:0:7}; re-run pr:ship"
 done
 
 # 5. Bot sweep (advisory: bots review once and may be quota-limited; the lead reads and fixes real findings).

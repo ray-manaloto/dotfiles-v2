@@ -2606,7 +2606,8 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
         errors.append(
             f"claude-ship-env: this shell exports {name}; new Claude sessions started from it lose /ship and /steward"
         )
-    if os.environ.get("VIRTUAL_ENV", "").startswith(str(repo_root)):
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if venv and Path(venv).resolve().is_relative_to(repo_root.resolve()):
         errors.append(
             "claude-ship-env: a checkout venv is active (VIRTUAL_ENV); /ship and /steward refuse to watch"
         )

@@ -2239,3 +2239,93 @@ def test_real_managed_claude_settings_keep_ship(monkeypatch) -> None:
     monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
     errors, _ = doc_mod.check_claude_ship_env(Path(__file__).resolve().parents[1])
     assert errors == []
+
+
+def _pr_ship_sandbox(tmp_path, checks: str) -> tuple[list[str], dict[str, str]]:
+    """Temp wt/* repo with a bare origin and a fake gh that serves canned API answers."""
+    root = Path(__file__).resolve().parents[1]
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "wt/demo", str(work)], check=True)
+    git = [
+        "git",
+        "-C",
+        str(work),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+    ]
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+    subprocess.run([*git, "remote", "add", "origin", str(origin)], check=True)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (tmp_path / "checks.tsv").write_text(checks)
+    fake = bindir / "gh"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  "api repos/ray-manaloto/dotfiles-v2 --jq .allow_auto_merge") echo false ;;\n'
+        '  "pr list"*) echo 7 ;;\n'
+        "  *autoMergeRequest*) echo false ;;\n"
+        '  *rules/branches/main*) printf "Lint, Gates, and Tests\\nBootstrap Convergence\\n" ;;\n'
+        f'  *check-runs*) cat "{tmp_path}/checks.tsv" ;;\n'
+        "  *headRefOid*) git rev-parse HEAD ;;\n"
+        '  *"/comments"*) : ;;\n'
+        '  "event listen"*) exit 8 ;;\n'
+        '  *) echo unexpected gh "$*" >&2; exit 1 ;;\n'
+        "esac\n"
+    )
+    fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "usage_skip_local_gates": "1",
+        "usage_max_waits": "2",
+        # The sandbox push must not run this host's global config-based git hooks (hk, gh-doctor).
+        "HK": "0",
+    }
+    return ["bash", str(root / "tasks/pr/ship")], {
+        **env,
+        "PWD": str(work),
+        "_WORK": str(work),
+    }
+
+
+@pytest.mark.parametrize(
+    ("checks", "code", "needle"),
+    [
+        (
+            "Lint, Gates, and Tests\tcompleted\tsuccess\nBootstrap Convergence\tcompleted\tsuccess\n",
+            0,
+            "READY #7",
+        ),
+        (
+            "Lint, Gates, and Tests\tcompleted\tfailure\nBootstrap Convergence\tcompleted\tsuccess\n",
+            1,
+            "RED",
+        ),
+        # A check whose name only ends in a required name must not count (exact match).
+        (
+            "Not Bootstrap Convergence\tcompleted\tsuccess\nLint, Gates, and Tests\tcompleted\tsuccess\n",
+            2,
+            "TIMEOUT",
+        ),
+    ],
+)
+def test_pr_ship_verdicts(tmp_path, checks, code, needle) -> None:
+    cmd, env = _pr_ship_sandbox(tmp_path, checks)
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    assert needle in proc.stdout + proc.stderr
+    if code == 0:
+        assert "--merge --match-head-commit" in proc.stdout
