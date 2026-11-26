@@ -28,7 +28,8 @@ if [[ -z ${bin} || ! -x ${bin} ]]; then
 		if [[ -n ${latest_match} && -x ${latest_match} ]]; then
 			bin="${latest_match}"
 		else
-			bin="${data_dir}/shims/${cmd}"
+			# No shim fallback: config.toml shims.exclude keeps mise from shimming this name.
+			bin=""
 		fi
 	fi
 fi

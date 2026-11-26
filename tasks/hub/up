@@ -196,7 +196,7 @@ ssh -o BatchMode=yes "${host}" "docker compose -f '${stack_dir}/compose.yaml' --
 
 if [[ ${skip_systemd} != "true" ]]; then
 	node_bin="$(ssh -o BatchMode=yes "${host}" 'command -v node || command -v /usr/bin/node')"
-	av_bin="$(ssh -o BatchMode=yes "${host}" 'if [[ -x "$HOME/.local/bin/agentsview" ]]; then printf "%s/.local/bin/agentsview" "$HOME"; else command -v agentsview || printf "%s/.local/share/mise/shims/agentsview" "$HOME"; fi')"
+	av_bin="$(ssh -o BatchMode=yes "${host}" 'if [[ -x "$HOME/.local/bin/agentsview" ]]; then printf "%s/.local/bin/agentsview" "$HOME"; else command -v agentsview || printf "%s/.local/bin/agentsview" "$HOME"; fi')"
 	qmd_bin="${remote_home}/.local/bin/qmd"
 	board_mjs="${remote_home}/.config/mise/assets/board/server.mjs"
 	if ! ssh -o BatchMode=yes "${host}" "test -f '${board_mjs}'"; then

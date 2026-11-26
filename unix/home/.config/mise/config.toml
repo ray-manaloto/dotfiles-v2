@@ -465,6 +465,8 @@ hint = "Check your SSH key in the agent and on GitHub."
 timeout = "15s"
 
 [settings]
+# ~/.local/bin wrappers (see [wrappers]) own these names; a mise shim would be shadowed and trip `mise doctor`.
+shims.exclude = ["agentsview", "board", "vb"]
 auto_install_disable_tools = [
   "agy",
   "antigravity-cli",

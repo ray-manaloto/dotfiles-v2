@@ -9,7 +9,7 @@ if [[ $OSTYPE == darwin* ]]; then
 fi
 _inherited=("${(@)path[1,${path[(i)(/usr/bin|/bin|/usr/sbin|/sbin)]}-1]}")
 _mise_shims="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims"
-_core_prefix=("$HOME/.local/bin" "$HOME/.opencode/bin" "$_mise_shims")
+_core_prefix=("$HOME/.local/bin" "$_mise_shims" "$HOME/.opencode/bin")
 [[ -d /usr/local/share/mise/shims ]] && _core_prefix+=(/usr/local/share/mise/shims)
 _core_prefix+=(/usr/local/bin)
 if [[ $OSTYPE == darwin* ]]; then
