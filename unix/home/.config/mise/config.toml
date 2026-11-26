@@ -388,6 +388,7 @@ mode = "0700"
 description = "Install idempotent native AI harness CLIs"
 depends = [
   "bootstrap:claude",
+  "bootstrap:claude-mcps",
   "bootstrap:herdr-app",
   "bootstrap:herdr-core",
   "bootstrap:herdr-mods",
