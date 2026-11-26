@@ -2,6 +2,8 @@
 
 from collections import Counter
 
+import batch
+import independent
 import triage
 from inputs import REPOS, read_json
 from spend import totals
@@ -20,7 +22,8 @@ def metrics(graded, probability, severity):
     unknown = sum(row[0] == "insufficient-evidence" for row in accepted)
     fp = len(accepted) - tp - unknown
     positives = sum(row[0] == "defect" for row in graded)
-    return len(accepted), tp, fp, unknown, positives
+    changed_positives = sum(row[0] == "defect" and row[3] for row in graded)
+    return len(accepted), tp, fp, unknown, positives, changed_positives
 
 
 def thresholds(graded):
@@ -36,7 +39,97 @@ def money(amount):
     return f"${amount / 1_000_000:.6f}"
 
 
-def render(cache, rows, estimate, response_counts, graded, batch_status):
+def independent_section(summary, grid):
+    rows = summary["rows"]
+    accepted = [row for row in rows if row["selected"]]
+    held = [row for row in rows if not row["selected"]]
+    baseline = [row for row in accepted if row["baseline"]]
+    weight = summary["total_rejected"] / len(held) if held else 0
+    p, s = independent.PROBABILITY, independent.SEVERITY
+    lines = [
+        "## Independent re-grade",
+        "",
+        f"GPT-6 Sol graded all {len(accepted)} candidates selected at probability {p:.2f} "
+        f"and severity {s:.1f}, plus a simple random sample of {len(held)} of the "
+        f"{summary['total_rejected']} rejects. Sampling sorted internal IDs used seed "
+        f"`{summary['seed']}`. Sol received the same excerpts and rubric. Luna labels and "
+        f"triage scores were withheld. {sum(row['completed'] for row in rows)} of "
+        f"{len(rows)} Responses requests completed with `store: false`.",
+        "",
+        "| Grader | Selected defects / nondefects / inconclusive | Sampled reject defects / nondefects / inconclusive | Resolved precision | Precision lower bound | Estimated raw recall |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for grader, field in (("GPT-6 Luna", "luna"), ("GPT-6 Sol", "verdict")):
+        tp, fp, unknown = independent.breakdown(accepted, field)
+        missed, rejected_fp, rejected_unknown = independent.breakdown(held, field)
+        positives = tp + weight * missed
+        lines.append(
+            f"| {grader} | {tp} / {fp} / {unknown} | {missed} / {rejected_fp} / "
+            f"{rejected_unknown} | {rate(tp, tp + fp)} | {rate(tp, len(accepted))} | "
+            f"{rate(tp, positives)} |"
+        )
+
+    base_tp, base_fp, base_unknown = independent.breakdown(baseline, "verdict")
+    full = grid[p, s]
+    pairs = [(row["luna"], row["verdict"]) for row in rows]
+    resolved = [(a, b) for a, b in pairs if "insufficient-evidence" not in (a, b)]
+    exact = sum(a == b for a, b in pairs)
+    binary = sum((a == "defect") == (b == "defect") for a, b in resolved)
+    jointly_unknown = pairs.count(("insufficient-evidence", "insufficient-evidence"))
+    upgraded = pairs.count(("insufficient-evidence", "defect"))
+    tokens, cost, unmetered = independent.usage_totals(rows)
+    lines.extend(
+        [
+            "",
+            f"Each sampled reject represents {summary['total_rejected']}/{len(held)} rejects "
+            "when estimating raw recall."
+            if held
+            else "The comparison has no sampled rejects.",
+            f"Luna's full-cohort recall was {rate(full[1], full[4])} across all raw candidates "
+            f"and {rate(full[1], full[5])} among changed-line candidates. Under Sol, production "
+            f"selected {len(baseline)} candidates (defects {base_tp}, nondefects {base_fp}, "
+            f"inconclusive {base_unknown}). Estimated raw recall was {rate(base_tp, positives)}.",
+            "",
+            f"The graders assigned the same six-way label to {exact} of {len(rows)} candidates "
+            f"({rate(exact, len(rows))}), including {jointly_unknown} jointly inconclusive cases. "
+            f"They agreed on defect versus nondefect for {binary} of the {len(resolved)} cases "
+            f"both resolved ({rate(binary, len(resolved))}). Sol called {upgraded} of Luna's "
+            "inconclusive cases defects.",
+            "",
+            f"The follow-up upper estimate was **{money(summary['estimate'])}** against a "
+            f"**$10** added cap. Metered usage cost **{money(cost)}** at standard rates. "
+            f"The responses recorded {tokens['input']:,} input tokens, including {tokens['reads']:,} cached reads and "
+            f"{tokens['writes']:,} 30-minute cache writes, and {tokens['output']:,} output tokens. "
+            "[OpenAI API pricing](https://developers.openai.com/api/docs/pricing)",
+        ]
+    )
+    if unmetered:
+        lines.append(f"Usage was unavailable for {unmetered} responses.")
+    if (
+        tp > base_tp
+        and (p, s) == (triage.MIN_PROBABILITY, 0.0)
+        and s < triage.MIN_SEVERITY
+    ):
+        lines.extend(
+            [
+                "",
+                "### Revised recommendation",
+                "",
+                f"Keep `MIN_PROBABILITY = {p:.2f}` and lower `MIN_SEVERITY` to `{s:.1f}` "
+                f"for the next calibration rollout. Sol's estimated raw recall rises from "
+                f"{rate(base_tp, positives)} to {rate(tp, positives)}. The lower floor recovered "
+                f"{tp - base_tp} additional Sol-labeled defects and selected {fp - base_fp} "
+                "additional labeled nondefects. Drop the zero-additional-false-positive rule. "
+                f"Selection grew from {len(baseline)} to {len(accepted)}. "
+                "Validate that volume in shadow mode before enabling automatic posting.",
+            ]
+        )
+    return lines
+
+
+def render(
+    cache, rows, estimate, response_counts, graded, batch_status, previous_report
+):
     decline = Counter(row["decline"] for row in rows if "decline" in row)
     skipped = Counter()
     for row in rows:
@@ -44,8 +137,8 @@ def render(cache, rows, estimate, response_counts, graded, batch_status):
     labels = Counter(row[0] for row in graded)
     grid = thresholds(graded)
     entries = totals(cache)
-    batch = read_json(cache / "spend-batch.json")
-    batch_cost = batch["actual_microusd"] or 0
+    batch_usage = read_json(batch.reservation_path(cache))
+    batch_cost = batch_usage["actual_microusd"] or 0
     actual = sum(item.actual_microusd or 0 for item in entries)
     unmetered = sum(
         item.reserved_microusd for item in entries if item.actual_microusd is None
@@ -74,11 +167,11 @@ def render(cache, rows, estimate, response_counts, graded, batch_status):
         f"{money(batch_cost)} and Decisions {money(actual - batch_cost)}. "
         f"Unreconciled reservation {money(unmetered)}.",
         f"- Metered cost per parsed PR {per_pr}.",
-        f"- Batch output usage records {batch['input_tokens']:,} input tokens "
-        f"(including {batch['cached_tokens']:,} cached) and {batch['output_tokens']:,} output tokens.",
-        f"- Decisions usage records {sum(item.input_tokens for item in entries) - batch['input_tokens']:,} "
-        f"input tokens (including {sum(item.cached_tokens for item in entries) - batch['cached_tokens']:,} "
-        f"cached reads and {sum(item.cache_write_tokens for item in entries) - batch['cache_write_tokens']:,} cache writes).",
+        f"- Batch output usage records {batch_usage['input_tokens']:,} input tokens "
+        f"(including {batch_usage['cached_tokens']:,} cached) and {batch_usage['output_tokens']:,} output tokens.",
+        f"- Decisions usage records {sum(item.input_tokens for item in entries) - batch_usage['input_tokens']:,} "
+        f"input tokens (including {sum(item.cached_tokens for item in entries) - batch_usage['cached_tokens']:,} "
+        f"cached reads and {sum(item.cache_write_tokens for item in entries) - batch_usage['cache_write_tokens']:,} cache writes).",
         "",
         "## Declines and coverage",
         "",
@@ -97,28 +190,38 @@ def render(cache, rows, estimate, response_counts, graded, batch_status):
         "",
         "## Triage thresholds",
         "",
-        "Precision excludes insufficient-evidence labels. Recall measures recovery of labeled defects "
-        "in the raw candidate pool only. "
-        "The grid excludes PRs with unavailable production triage.",
+        "Resolved precision excludes inconclusive labels. The precision lower bound counts "
+        "every inconclusive selection as a false positive. Raw recall uses all labeled defects "
+        "in the raw candidate pool. Changed-line recall uses only labeled defects on lines "
+        "that can reach production triage. Candidates with unavailable triage are unselected.",
         "",
-        "| Probability | Severity | Selected | True | False | Unknown | Precision | Recall |",
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Probability | Severity | Selected | True | False | Unknown | Resolved precision | Precision lower bound | Raw recall | Changed-line recall |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for (p, s), (selected, tp, fp, unknown, positives) in grid.items():
+    for (p, s), (
+        selected,
+        tp,
+        fp,
+        unknown,
+        positives,
+        changed_positives,
+    ) in grid.items():
         lines.append(
             f"| {p:.2f} | {s:.1f} | {selected} | {tp} | {fp} | {unknown} | "
-            f"{rate(tp, tp + fp)} | {rate(tp, positives)} |"
+            f"{rate(tp, tp + fp)} | {rate(tp, selected)} | {rate(tp, positives)} | "
+            f"{rate(tp, changed_positives)} |"
         )
     base = (triage.MIN_PROBABILITY, triage.MIN_SEVERITY)
-    base_selected, base_tp, _, base_unknown, positives = grid[base]
+    base_selected, base_tp, _, base_unknown, positives, changed_positives = grid[base]
     lines.extend(
         [
             "",
             f"The production thresholds selected {base_selected} candidates. "
             f"The grader labeled {base_unknown} inconclusive and recovered {base_tp} "
-            f"of the {positives} labeled defects in the scored pool.",
+            f"of {positives} labeled defects across all raw candidates. "
+            f"{changed_positives} labeled defects were on changed lines.",
             "",
-            "## Recurring false positives",
+            "## False-positive labels in the raw candidate pool",
             "",
             *[
                 f"- {label.replace('-', ' ')} — {count}"
@@ -128,7 +231,9 @@ def render(cache, rows, estimate, response_counts, graded, batch_status):
         ]
     )
     if all(label in {"defect", "insufficient-evidence"} for label in labels):
-        lines.append("The replay has no classified false positives in the scored pool.")
+        lines.append(
+            "The replay has no classified false positives in the raw candidate pool."
+        )
     prompt = {
         "preexisting": "Require the candidate to identify the behavior made incorrect by an added or modified line.",
         "incorrect": "Require direct patch evidence for each factual claim and omit candidates that depend on missing implementation.",
@@ -162,4 +267,13 @@ def render(cache, rows, estimate, response_counts, graded, batch_status):
             "and only findings returned on their admitted patches.",
         ]
     )
+    summary = cache / "independent-summary.json"
+    if summary.is_file():
+        lines.extend(["", *independent_section(read_json(summary), grid)])
+    start_marker = "<!-- BEGIN REPLAY SPOT CHECKS -->"
+    end_marker = "<!-- END REPLAY SPOT CHECKS -->"
+    _, start, remainder = previous_report.partition(start_marker)
+    block, end, _ = remainder.partition(end_marker)
+    if start and end:
+        lines.extend(["", start + block + end])
     return "\n".join(lines) + "\n"

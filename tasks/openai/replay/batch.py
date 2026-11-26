@@ -157,13 +157,21 @@ def existing_batch(cache, requests):
     return checked_id(receipt["id"], "batch_")
 
 
-def submit(cache: Path, key, requests, estimate_row):
+def reservation_path(cache):
+    return cache / read_json(cache / "batch.json").get(
+        "reservation", "spend-batch.json"
+    )
+
+
+def submit(cache: Path, key, requests, estimate_row, *, retry_reserved=False):
     receipt = cache / "batch.json"
     if receipt.exists():
         return existing_batch(cache, requests)
     if not requests:
         raise RuntimeError("No PR passed the production patch checks.")
-    reserve(cache, "batch", estimate_row["batch"])
+    reservation = reserve(
+        cache, "batch", estimate_row["batch"], retry_reserved=retry_reserved
+    )
     file_id = checked_id(upload(key, requests), "file-")
     write_json(cache / "batch-upload.json", {"id": file_id})
     payload = {
@@ -175,8 +183,17 @@ def submit(cache: Path, key, requests, estimate_row):
     response = json.loads(
         api("/batches", key, data=json.dumps(payload).encode("utf-8"))
     )
-    identifier = checked_id(response["id"], "batch_")
-    write_json(receipt, {"id": identifier, "request_digest": request_digest(requests)})
+    identifier = checked_id(
+        response.get("id") if isinstance(response, dict) else None, "batch_"
+    )
+    write_json(
+        receipt,
+        {
+            "id": identifier,
+            "request_digest": request_digest(requests),
+            "reservation": reservation.name,
+        },
+    )
     LOGGER.info("batch_submitted", requests=len(requests), batch_id=identifier)
     return identifier
 

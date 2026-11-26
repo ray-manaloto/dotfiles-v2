@@ -45,12 +45,16 @@ def charge(entry):
     return entry.actual_microusd
 
 
-def reserve(cache, request_id, amount):
+def reserve(cache, request_id, amount, *, retry_reserved=False):
     path = cache / f"spend-{request_id}.json"
-    if path.exists():
+    if path.exists() and not retry_reserved:
         raise RuntimeError(
-            "A request already has a reservation. Reconcile it before retrying."
+            "A request already has a reservation. Use --retry-reserved to charge another attempt."
         )
+    attempt = 0
+    while path.exists():
+        attempt += 1
+        path = cache / f"spend-{request_id}-retry-{attempt}.json"
     if sum(map(charge, totals(cache))) + amount > CAP:
         raise RuntimeError("Replay stopped at the $15 spend ceiling.")
     write_json(path, ReplaySpend(reserved_microusd=amount).model_dump())
@@ -70,9 +74,9 @@ def meter(path, usages, *, batch=False):
             )
         details = usage.get("input_tokens_details") or {}
         in_tokens += usage["input_tokens"]
-        cached += details.get("cached_tokens", 0)
-        written += details.get("cache_write_tokens", 0)
-        out_tokens += usage.get("output_tokens", 0)
+        cached += details.get("cached_tokens") or 0
+        written += details.get("cache_write_tokens") or 0
+        out_tokens += usage.get("output_tokens") or 0
     if cached + written > in_tokens:
         raise RuntimeError("API token usage did not reconcile.")
     if batch:

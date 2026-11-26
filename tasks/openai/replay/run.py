@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 import batch
+import independent
 import review
 import triage
 from filelock import FileLock
@@ -54,16 +55,19 @@ def prepare_evidence(cache, rows, requests, schema, result):
     LOGGER.info("evidence_prepared", **counts)
 
 
-def analyze(cache, key, rows, requests, schema, result):
+def analyze(
+    cache, key, rows, requests, schema, result, *, retry_reserved=False, regrade=False
+):
     output, expected = batch_reviews(requests, result)
     if result["status"] == "completed" and output.keys() == expected:
         meter(
-            cache / "spend-batch.json",
+            batch.reservation_path(cache),
             [row["usage"] for row in output.values()],
             batch=True,
         )
     counts = Counter(missing_or_unmetered_batch=len(expected - output.keys()))
     graded = []
+    records = []
     for row in rows:
         row_id = row["id"]
         if row_id not in output:
@@ -81,30 +85,76 @@ def analyze(cache, key, rows, requests, schema, result):
             for item in candidates
             if item["line"] in lines.get(item["file"], set())
         ]
+        eligible_ids = {item["id"] for item in eligible}
         counts["changed_line_candidates"] += len(eligible)
         try:
-            scores, accepted = production_scores(cache, key, row_id, eligible, patches)
+            scores, accepted = production_scores(
+                cache, key, row_id, eligible, patches, retry_reserved=retry_reserved
+            )
             counts["production_selected"] += len(accepted)
-        except review.ReviewError, triage.TriageError:
+        except (
+            review.ReviewError,
+            triage.TriageError,
+            RuntimeError,
+            OSError,
+            *review.MALFORMED_ERRORS,
+        ):
+            if regrade:
+                raise RuntimeError(
+                    "Re-grade requires cached production triage."
+                ) from None
             counts["production_triage_unavailable"] += 1
-            scores = None
+            scores = {}
         prior = []
         for item in candidates:
-            label, context = grade(cache, key, row, item, prior)
+            try:
+                label, context = grade(
+                    cache, key, row, item, prior, retry_reserved=retry_reserved
+                )
+            except (
+                review.ReviewError,
+                RuntimeError,
+                OSError,
+                *review.MALFORMED_ERRORS,
+            ):
+                if regrade:
+                    raise RuntimeError(
+                        "Re-grade requires cached Luna grades."
+                    ) from None
+                counts["grader_unavailable"] += 1
+                label, context = "insufficient-evidence", False
+            score = scores.get(item["id"], (-1, -1))
+            graded.append((label, *score, item["id"] in eligible_ids))
+            if regrade:
+                records.append(
+                    {
+                        "id": f"{row_id}-{item['id']}",
+                        "luna": label,
+                        "scores": score,
+                        "finding": item,
+                        "prior": list(prior),
+                    }
+                )
             prior.append(item["claim"][:80])
             counts["graded_with_follow_up_sources"] += context
             counts[f"raw_grade_{label}"] += 1
-            if scores is not None:
-                graded.append((label, *scores.get(item["id"], (-1, -1))))
-    return counts, graded
+    return counts, graded, records
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "phase", choices=["prepare", "submit", "poll", "evidence", "finish"]
+        "phase", choices=["prepare", "submit", "poll", "evidence", "finish", "regrade"]
     )
+    parser.add_argument("--cached-only", action="store_true")
+    parser.add_argument("--retry-reserved", action="store_true")
     args = parser.parse_args()
+    if args.cached_only and args.phase not in {"finish", "regrade"}:
+        parser.error("--cached-only requires finish or regrade.")
+    if args.retry_reserved and (
+        args.cached_only or args.phase not in {"submit", "finish"}
+    ):
+        parser.error("--retry-reserved requires a live submit or finish.")
     plan_id = os.environ.get("PLAN_ID", "")
     plan_root = (ROOT / ".planning" / plan_id).resolve()
     if (
@@ -135,9 +185,11 @@ def main():
             raise RuntimeError(
                 "Decisions model changed. Verify prices before running replay."
             )
-        key = batch.api_key()
+        key = None if args.cached_only else batch.api_key()
         if args.phase == "submit":
-            batch.submit(cache, key, requests, estimate)
+            batch.submit(
+                cache, key, requests, estimate, retry_reserved=args.retry_reserved
+            )
             return
         identifier = batch.existing_batch(cache, requests)
         if args.phase == "poll":
@@ -146,10 +198,31 @@ def main():
         result = read_json(cache / "batch-results.json")
         if not (cache / "evidence-ready.json").exists():
             raise RuntimeError("Collect GitHub grading inputs with the evidence phase.")
-        counts, graded = analyze(cache, key, rows, requests, schema, result)
+        regrade = args.phase == "regrade"
+        counts, graded, records = analyze(
+            cache,
+            None if regrade else key,
+            rows,
+            requests,
+            schema,
+            result,
+            retry_reserved=args.retry_reserved,
+            regrade=regrade,
+        )
+        if regrade:
+            independent.regrade(cache, key, records)
+            return
         report = ROOT / "tasks/openai/replay/report.md"
         report.write_text(
-            render(cache, rows, estimate, counts, graded, result["status"]),
+            render(
+                cache,
+                rows,
+                estimate,
+                counts,
+                graded,
+                result["status"],
+                report.read_text(encoding="utf-8") if report.exists() else "",
+            ),
             encoding="utf-8",
         )
         LOGGER.info(
@@ -162,7 +235,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
+    except (OSError, RuntimeError, review.ReviewError, *review.MALFORMED_ERRORS) as exc:
         # Provider response payloads and subprocess stderr can contain private evidence.
         if type(exc) is RuntimeError:
             LOGGER.error("replay_failed", reason=str(exc))

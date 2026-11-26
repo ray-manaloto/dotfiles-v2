@@ -51,7 +51,8 @@ def merged_inventory():
         )
         numbers = {item["number"] for page in pages for item in page["items"]}
         if (
-            any(page["incomplete_results"] for page in pages)
+            not pages
+            or any(page["incomplete_results"] for page in pages)
             or len(numbers) != pages[0]["total_count"]
         ):
             raise RuntimeError("GitHub merged PR inventory was incomplete.")
@@ -81,7 +82,9 @@ def collect_one(cache, repo, number):
         "default_branch": pr["base"]["repo"]["default_branch"],
     }
     count = pr["changed_files"]
-    if count > review.GITHUB_FILE_LIMIT:
+    if pr["base"]["ref"] != row["default_branch"]:
+        row["decline"] = "non-default-base-branch"
+    elif count > review.GITHUB_FILE_LIMIT:
         row["decline"] = "github-file-limit"
     else:
         # GitHub's merged PR files endpoint provides the same merge-base-to-head
@@ -90,7 +93,7 @@ def collect_one(cache, repo, number):
         try:
             row["data"], skipped = review.patch_data(files)
             row["skipped"] = dict(Counter(item["reason"] for item in skipped))
-        except review.ReviewError as exc:
+        except (review.ReviewError, review.ReviewDeclined) as exc:
             row["decline"] = str(exc)
             row["skipped"] = dict(
                 Counter(

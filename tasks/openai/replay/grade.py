@@ -20,22 +20,28 @@ VERDICTS = {
 }
 
 
-def decisions(cache, key, request_id, body):
+def decisions(cache, key, request_id, body, *, retry_reserved=False):
     path = cache / f"decision-{request_id}.json"
     if path.exists():
         return read_json(path)
-    reservation = reserve(cache, request_id, upper_cost(token_bound(body)))
+    if key is None:
+        raise RuntimeError("Cached Decisions response is missing.")
+    reservation = reserve(
+        cache, request_id, upper_cost(token_bound(body)), retry_reserved=retry_reserved
+    )
     result = review.request_json(triage.ENDPOINT, key, body=body)
     meter(reservation, [result.get("usage")])
     write_json(path, result)
     return result
 
 
-def production_scores(cache, key, row_id, findings, patches):
+def production_scores(cache, key, row_id, findings, patches, *, retry_reserved=False):
     captured = {}
 
     def send(_url, _key, *, body):
-        result = decisions(cache, key, f"triage-{row_id}", body)
+        result = decisions(
+            cache, key, f"triage-{row_id}", body, retry_reserved=retry_reserved
+        )
         captured.update(
             {answer["name"]: answer for answer in result.get("answers", [])}
         )
@@ -121,7 +127,7 @@ def merged_excerpt(row, path, line):
 
 def patch_excerpt(patch, line):
     lines = patch.splitlines()
-    target = start = new_line = 0
+    start = new_line = 0
     for index, text in enumerate(lines):
         hunk = review.HUNK.match(text)
         if hunk:
@@ -129,12 +135,11 @@ def patch_excerpt(patch, line):
             new_line = int(hunk[1])
         elif text.startswith(("+", " ")):
             if new_line == line:
-                target = index
-                break
+                excerpt = lines[max(start + 1, index - 7) : index + 8]
+                # Keep the cited line even when nearby lines are unusually long.
+                return "\n".join([lines[start][:80], *(text[:90] for text in excerpt)])
             new_line += 1
-    excerpt = lines[max(start + 1, target - 7) : target + 8]
-    # Keep the cited line even when nearby lines are unusually long.
-    return "\n".join([lines[start][:80], *(text[:90] for text in excerpt)])
+    return "[Cited line absent from the supplied patch.]"
 
 
 def follow_up(cache, row, path, line):
@@ -173,7 +178,7 @@ def grade_context(cache, row, finding, patches):
     return context
 
 
-def grade(cache, key, row, finding, prior):
+def grade(cache, key, row, finding, prior, *, retry_reserved=False):
     key_id = f"grade-{row['id']}-{finding['id']}"
     response_path = cache / f"decision-{key_id}.json"
     context_path = cache / f"evidence-{row['id']}-{finding['id']}.json"
@@ -229,7 +234,7 @@ def grade(cache, key, row, finding, prior):
         if len(json.dumps(body).encode("utf-8")) > MAX_GRADE_BYTES:
             return "insufficient-evidence", False
         write_json(cache / f"context-{key_id}.json", {"usable": coverage})
-        result = decisions(cache, key, key_id, body)
+        result = decisions(cache, key, key_id, body, retry_reserved=retry_reserved)
     answers = result.get("answers", [])
     if len(answers) != 1 or answers[0].get("name") != "grade":
         raise RuntimeError("Decisions grader returned an unexpected answer set.")

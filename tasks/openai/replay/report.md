@@ -32,29 +32,29 @@ Successfully parsed **114** Batch reviews.
 
 ## Triage thresholds
 
-Precision excludes insufficient-evidence labels. Recall measures recovery of labeled defects in the raw candidate pool only. The grid excludes PRs with unavailable production triage.
+Resolved precision excludes inconclusive labels. The precision lower bound counts every inconclusive selection as a false positive. Raw recall uses all labeled defects in the raw candidate pool. Changed-line recall uses only labeled defects on lines that can reach production triage. Candidates with unavailable triage are unselected.
 
-| Probability | Severity | Selected | True | False | Unknown | Precision | Recall |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.70 | 0.0 | 114 | 64 | 3 | 47 | 95.5% | 91.4% |
-| 0.70 | 1.0 | 2 | 0 | 0 | 2 | — | 0.0% |
-| 0.70 | 2.0 | 0 | 0 | 0 | 0 | — | 0.0% |
-| 0.80 | 0.0 | 112 | 64 | 3 | 45 | 95.5% | 91.4% |
-| 0.80 | 1.0 | 2 | 0 | 0 | 2 | — | 0.0% |
-| 0.80 | 2.0 | 0 | 0 | 0 | 0 | — | 0.0% |
-| 0.85 | 0.0 | 105 | 59 | 2 | 44 | 96.7% | 84.3% |
-| 0.85 | 1.0 | 2 | 0 | 0 | 2 | — | 0.0% |
-| 0.85 | 2.0 | 0 | 0 | 0 | 0 | — | 0.0% |
-| 0.90 | 0.0 | 95 | 54 | 1 | 40 | 98.2% | 77.1% |
-| 0.90 | 1.0 | 2 | 0 | 0 | 2 | — | 0.0% |
-| 0.90 | 2.0 | 0 | 0 | 0 | 0 | — | 0.0% |
-| 0.95 | 0.0 | 51 | 32 | 1 | 18 | 97.0% | 45.7% |
-| 0.95 | 1.0 | 1 | 0 | 0 | 1 | — | 0.0% |
-| 0.95 | 2.0 | 0 | 0 | 0 | 0 | — | 0.0% |
+| Probability | Severity | Selected | True | False | Unknown | Resolved precision | Precision lower bound | Raw recall | Changed-line recall |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.70 | 0.0 | 114 | 64 | 3 | 47 | 95.5% | 56.1% | 91.4% | 94.1% |
+| 0.70 | 1.0 | 2 | 0 | 0 | 2 | — | 0.0% | 0.0% | 0.0% |
+| 0.70 | 2.0 | 0 | 0 | 0 | 0 | — | — | 0.0% | 0.0% |
+| 0.80 | 0.0 | 112 | 64 | 3 | 45 | 95.5% | 57.1% | 91.4% | 94.1% |
+| 0.80 | 1.0 | 2 | 0 | 0 | 2 | — | 0.0% | 0.0% | 0.0% |
+| 0.80 | 2.0 | 0 | 0 | 0 | 0 | — | — | 0.0% | 0.0% |
+| 0.85 | 0.0 | 105 | 59 | 2 | 44 | 96.7% | 56.2% | 84.3% | 86.8% |
+| 0.85 | 1.0 | 2 | 0 | 0 | 2 | — | 0.0% | 0.0% | 0.0% |
+| 0.85 | 2.0 | 0 | 0 | 0 | 0 | — | — | 0.0% | 0.0% |
+| 0.90 | 0.0 | 95 | 54 | 1 | 40 | 98.2% | 56.8% | 77.1% | 79.4% |
+| 0.90 | 1.0 | 2 | 0 | 0 | 2 | — | 0.0% | 0.0% | 0.0% |
+| 0.90 | 2.0 | 0 | 0 | 0 | 0 | — | — | 0.0% | 0.0% |
+| 0.95 | 0.0 | 51 | 32 | 1 | 18 | 97.0% | 62.7% | 45.7% | 47.1% |
+| 0.95 | 1.0 | 1 | 0 | 0 | 1 | — | 0.0% | 0.0% | 0.0% |
+| 0.95 | 2.0 | 0 | 0 | 0 | 0 | — | — | 0.0% | 0.0% |
 
-The production thresholds selected 2 candidates. The grader labeled 2 inconclusive and recovered 0 of the 70 labeled defects in the scored pool.
+The production thresholds selected 2 candidates. The grader labeled 2 inconclusive and recovered 0 of 70 labeled defects across all raw candidates. 68 labeled defects were on changed lines.
 
-## Recurring false positives
+## False-positive labels in the raw candidate pool
 
 - incorrect — 4
 
@@ -66,23 +66,25 @@ The grader is a model, and shares its model with production triage. Agreement ca
 
 ## Independent re-grade
 
-GPT-6 Sol independently graded all 105 candidates selected at probability 0.85 and severity 0.0. It also graded a simple random sample of 30 of the 43 rejects. The sample used Python's seeded random sampling after sorting internal candidate IDs, with seed `20261126`. The grader received the same excerpts and verdict rubric, with Luna labels and triage scores withheld. All 135 `/v1/responses` requests completed with `store: false`.
+GPT-6 Sol graded all 105 candidates selected at probability 0.85 and severity 0.0, plus a simple random sample of 30 of the 43 rejects. Sampling sorted internal IDs used seed `20261126`. Sol received the same excerpts and rubric. Luna labels and triage scores were withheld. 135 of 135 Responses requests completed with `store: false`.
 
-| Grader | Selected defects / nondefects / inconclusive | Sampled reject defects / nondefects / inconclusive | Resolved precision | Estimated candidate recall |
-| --- | ---: | ---: | ---: | ---: |
-| GPT-6 Luna | 59 / 2 / 44 | 7 / 2 / 21 | 96.7% | 85.5% |
-| GPT-6 Sol | 73 / 6 / 26 | 10 / 6 / 14 | 92.4% | 83.6% |
+| Grader | Selected defects / nondefects / inconclusive | Sampled reject defects / nondefects / inconclusive | Resolved precision | Precision lower bound | Estimated raw recall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| GPT-6 Luna | 59 / 2 / 44 | 7 / 2 / 21 | 96.7% | 56.2% | 85.5% |
+| GPT-6 Sol | 73 / 6 / 26 | 10 / 6 / 14 | 92.4% | 69.5% | 83.6% |
 
-Precision uses selected candidates with a conclusive verdict. Recall uses observed selected defects plus an estimate of rejected defects, weighting each sampled reject by 43/30. Luna's full-cohort recall was 84.3%. Under Sol, the current 0.85/1.0 thresholds selected one defect and one inconclusive candidate, for 1.1% estimated recall and precision based on just one resolved verdict. These are model estimates within the raw candidate pool. They exclude inconclusive verdicts from the defect counts.
+Each sampled reject represents 43/30 rejects when estimating raw recall.
+Luna's full-cohort recall was 84.3% across all raw candidates and 86.8% among changed-line candidates. Under Sol, production selected 2 candidates (defects 1, nondefects 0, inconclusive 1). Estimated raw recall was 1.1%.
 
-The graders assigned the same six-way label to 92 of 135 candidates (68.1%). That includes 36 jointly inconclusive labels. They agreed on defect versus nondefect for 57 of the 66 cases both resolved (86.4%). Sol called 24 of Luna's inconclusive cases defects. Shared evidence limits both graders.
+The graders assigned the same six-way label to 92 of 135 candidates (68.1%), including 36 jointly inconclusive cases. They agreed on defect versus nondefect for 57 of the 66 cases both resolved (86.4%). Sol called 24 of Luna's inconclusive cases defects.
 
-The follow-up upper estimate was **$8.570862** against a **$10** added cap. Metered usage cost **$0.793424** at standard rates. The 135 responses used 210,207 input tokens, including 183,759 30-minute cache writes, and 28,113 output tokens. [OpenAI API pricing](https://developers.openai.com/api/docs/pricing?offer=add-linebreak)
+The follow-up upper estimate was **$8.570862** against a **$10** added cap. Metered usage cost **$0.793424** at standard rates. The responses recorded 210,207 input tokens, including 0 cached reads and 183,759 30-minute cache writes, and 28,113 output tokens. [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
 
 ### Revised recommendation
 
-Keep `MIN_PROBABILITY = 0.85` and lower `MIN_SEVERITY` to `0.0` in the next calibration rollout. Sol's estimated recall rises from 1.1% to 83.6%. The lower floor recovered 72 additional Sol-labeled defects alongside six additional labeled nondefects. Drop the zero-additional-false-positive rule. The lower floor grows the historical selection from 2 to 105, so validate that volume in shadow mode before enabling automatic posting.
+Keep `MIN_PROBABILITY = 0.85` and lower `MIN_SEVERITY` to `0.0` for the next calibration rollout. Sol's estimated raw recall rises from 1.1% to 83.6%. The lower floor recovered 72 additional Sol-labeled defects and selected 6 additional labeled nondefects. Drop the zero-additional-false-positive rule. Selection grew from 2 to 105. Validate that volume in shadow mode before enabling automatic posting.
 
+<!-- BEGIN REPLAY SPOT CHECKS -->
 ### Spot checks
 
 Ten pairs were sampled from the re-graded candidates in the public repository using seed `20261127`. Finding summaries are paraphrased.
@@ -99,3 +101,4 @@ Ten pairs were sampled from the re-graded candidates in the public repository us
 | `tasks/py/doctor_checks.py` | The shell guard misses the blocked variable when it appears later in a multi-variable export. | Inconclusive | Defect |
 | `tasks/py/doctor_checks.py` | The shell guard can treat a local assignment as an export. | Defect | Defect |
 | `unix/home/.config/mise/lib/api_runner/runner.py` | An unexpected stream event subtype can carry arbitrary text into a loggable diagnostic. | Defect | Defect |
+<!-- END REPLAY SPOT CHECKS -->

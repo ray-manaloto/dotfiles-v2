@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 #MISE description="Replay merged PRs through the OpenAI reviewer under a $15 hard cap"
 #USAGE arg "<phase>" help="Collect, submit, poll, gather evidence, or finish a replay" {
-#USAGE   choices "prepare" "submit" "poll" "evidence" "finish"
+#USAGE   choices "prepare" "submit" "poll" "evidence" "finish" "regrade"
 #USAGE }
+#USAGE flag "--cached-only" help="Use cached results only in finish or regrade"
+#USAGE flag "--retry-reserved" help="Authorize another charged attempt in submit or finish"
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
 cd "${root}"
 export PYTHONPATH="${root}/tasks/openai/replay:${root}/.github/openai-review:${root}/unix/home/.config/mise/lib"
 cmd=("${root}/.venv/bin/python" -B tasks/openai/replay/run.py "${usage_phase:?}")
+if [[ ${usage_retry_reserved:-false} == true ]]; then
+	cmd+=(--retry-reserved)
+fi
+if [[ ${usage_cached_only:-false} == true ]]; then
+	cmd+=(--cached-only)
+	exec "${cmd[@]}"
+fi
 if [[ ${usage_phase} == prepare || ${usage_phase} == evidence ]]; then
 	exec "${cmd[@]}"
 fi
