@@ -427,7 +427,7 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
         v_errs = doc_mod.check_mise_version_parity(root)
         assert any("version skew detected" in e for e in v_errs)
 
-        # config-hygiene catches non-canonical short name (with zero opt-out exceptions across config*.toml),
+        # config-hygiene catches backend-qualified keys that have a registry short name,
         # missing prerelease, programs.json, and raw .. traversal
         mise_dir = root / "unix" / "home" / ".config" / "mise"
         mise_dir.mkdir(parents=True)
@@ -1835,3 +1835,23 @@ def test_claude_mcps_not_connected_fails(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     errs, _ = doc_mod.check_claude_mcps(tmp_path)
     assert errs and "Not Connected" in errs[0]
+
+
+def test_config_hygiene_allows_backend_for_tools_not_in_registry(
+    monkeypatch, tmp_path
+) -> None:
+    """Short-name rule applies only when a registry entry exists; PyPI/GitHub-only tools never block."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[tools]\n"pipx:repowise" = "0.62.0"\n"github:example/notinregistry" = "1.0.0"\nhk = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        doc_mod,
+        "_load_mise_registry_map",
+        lambda: {"aqua:jdx/hk": ("hk", ["aqua:jdx/hk"])},
+    )
+    errs = doc_mod.check_config_hygiene(tmp_path)
+    assert not any("canonical mise registry short name" in e for e in errs), errs
