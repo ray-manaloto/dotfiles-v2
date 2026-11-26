@@ -116,7 +116,10 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(
             json.loads((output / "findings.json").read_text())["findings"], [finding()]
         )
-        self.assertEqual((output / "comment.md").read_text(), summary)
+        comment = (output / "comment.md").read_text()
+        self.assertTrue(summary.startswith(comment))
+        self.assertNotIn("OpenAI usage", comment)
+        self.assertIn('OpenAI usage: `{"cost_usd": 0.0, "usage": {}}`', summary)
 
     def test_automatic_review_requires_same_repo(self):
         env = dict(
@@ -167,6 +170,36 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(
             json.loads((output / "findings.json").read_text())["head"], head
         )
+
+    def test_metered_send_sums_openai_usage_and_prices_it(self):
+        usage = {}
+        responses = {
+            review.OPENAI_ENDPOINT: {
+                "usage": {
+                    "input_tokens": 1_000_000,
+                    "input_tokens_details": {"cached_tokens": 400_000},
+                    "output_tokens": 100_000,
+                }
+            },
+            review.triage.ENDPOINT: {"usage": {"input_tokens": 2_000_000}},
+            "https://api.github.com/repos/example/repo/pulls/5": {"usage": "ignored"},
+        }
+        send = review.metered(lambda url, token, **kwargs: responses[url], usage)
+        for url in responses:
+            send(url, "token")
+        send(review.OPENAI_ENDPOINT, "token", body={})
+        self.assertEqual(
+            usage[review.MODEL],
+            {
+                "input_tokens": 2_000_000,
+                "cached_tokens": 800_000,
+                "output_tokens": 200_000,
+            },
+        )
+        self.assertEqual(usage[review.triage.MODEL]["input_tokens"], 2_000_000)
+        self.assertEqual(len(usage), 2)
+        # 1.2M fresh * $2 + 0.8M cached * $0.10 + 0.2M out * $10 + 2M luna * $0.10
+        self.assertEqual(review.usage_cost(usage), 4.68)
 
     def test_triage_failure_writes_untriaged_candidates_and_note(self):
         output = Path(self.directory.name) / "output"
