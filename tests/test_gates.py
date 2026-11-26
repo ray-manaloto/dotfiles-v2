@@ -2959,9 +2959,11 @@ def test_codex_live_marketplaces_flag_claude_imports() -> None:
         "source": "https://github.com/anthropics/claude-plugins-community.git"
     }
     dirty["plugins"]["eli5@claude-community"] = {}
+    dirty["plugins"]["apify@apify"] = {"enabled": False}
     dirty["plugins"]["no-marketplace"] = {}
     errs = doc_mod._codex_live_marketplace_errors(policy, dirty)
     assert any("names no marketplace" in e for e in errs)
+    assert not any("apify@apify" in e for e in errs)
     unapplied = {
         "marketplaces": {
             "egm": {"source": "git@github.com:google/elephant-goldfish-model"}
