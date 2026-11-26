@@ -2208,3 +2208,191 @@ def test_no_repo_skills_allows_claude_runtime_state(tmp_path) -> None:
     (tmp_path / ".claude" / "skills").rmdir()
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
     assert run() != 0
+
+
+def test_claude_ship_env_flags_managed_settings(tmp_path, monkeypatch) -> None:
+    """Managed Claude settings must not disable feature-flag fetching or the ship skills."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    assets = tmp_path / "unix/home/.config/mise/assets/claude"
+    assets.mkdir(parents=True)
+    (assets / "env-common.json").write_text('{"env": {"CLAUDE_CODE_BRIEF": "1"}}')
+    errors, msg = doc_mod.check_claude_ship_env(tmp_path)
+    assert errors == [] and "not probed" in msg
+    (assets / "bad.json").write_text(
+        '{"env": {"DISABLE_TELEMETRY": "1"}, "skillOverrides": {"steward": "off"}, "disableBundledSkills": true}'
+    )
+    (assets / "env-mac.json.tera").write_text(
+        '{"env": {"DO_NOT_TRACK": "{{ x }}"}, "skillOverrides": {"ship-local": "off"}, "disableBundledSkills": true}'
+    )
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    joined = "\n".join(errors)
+    for needle in (
+        "DISABLE_TELEMETRY",
+        "turns off steward",
+        "disableBundledSkills",
+        "env-mac.json.tera sets DO_NOT_TRACK",
+        "env-mac.json.tera skillOverrides turns off ship-local",
+        "env-mac.json.tera disableBundledSkills",
+    ):
+        assert needle in joined, errors
+
+
+def test_real_managed_claude_settings_keep_ship(monkeypatch) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    errors, _ = doc_mod.check_claude_ship_env(Path(__file__).resolve().parents[1])
+    assert errors == []
+
+
+def _pr_ship_sandbox(tmp_path, checks: str) -> tuple[list[str], dict[str, str]]:
+    """Temp wt/* repo with a bare origin and a fake gh that serves canned API answers."""
+    root = Path(__file__).resolve().parents[1]
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "wt/demo", str(work)], check=True)
+    git = [
+        "git",
+        "-C",
+        str(work),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+    ]
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+    subprocess.run([*git, "remote", "add", "origin", str(origin)], check=True)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (tmp_path / "checks.tsv").write_text(checks)
+    fake = bindir / "gh"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  "api repos/ray-manaloto/dotfiles-v2 --jq .allow_auto_merge") echo false ;;\n'
+        '  "pr list"*) echo 7 ;;\n'
+        "  *autoMergeRequest*) echo false ;;\n"
+        '  *rules/branches/main*) [ -n "$FAKE_GH_FAIL_RULES" ] && exit 1; printf "Lint, Gates, and Tests\\nBootstrap Convergence\\n" ;;\n'
+        f'  *check-runs*) cat "{tmp_path}/checks.tsv" ;;\n'
+        "  *headRefOid*) git rev-parse HEAD ;;\n"
+        '  *"/comments"*) : ;;\n'
+        '  "event listen"*) exit 8 ;;\n'
+        '  *) echo unexpected gh "$*" >&2; exit 1 ;;\n'
+        "esac\n"
+    )
+    fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "usage_skip_local_gates": "1",
+        "usage_max_waits": "2",
+        # The sandbox push must not run this host's global config-based git hooks (hk, gh-doctor).
+        "HK": "0",
+    }
+    return ["/bin/bash", str(root / "tasks/pr/ship")], {
+        **env,
+        "PWD": str(work),
+        "_WORK": str(work),
+    }
+
+
+@pytest.mark.parametrize(
+    ("checks", "code", "needle"),
+    [
+        (
+            "Lint, Gates, and Tests\tcompleted\tsuccess\nBootstrap Convergence\tcompleted\tsuccess\n",
+            0,
+            "READY #7",
+        ),
+        (
+            "Lint, Gates, and Tests\tcompleted\tfailure\nBootstrap Convergence\tcompleted\tsuccess\n",
+            1,
+            "RED",
+        ),
+        # A check whose name only ends in a required name must not count (exact match).
+        (
+            "Not Bootstrap Convergence\tcompleted\tsuccess\nLint, Gates, and Tests\tcompleted\tsuccess\n",
+            2,
+            "TIMEOUT",
+        ),
+    ],
+)
+def test_pr_ship_verdicts(tmp_path, checks, code, needle) -> None:
+    cmd, env = _pr_ship_sandbox(tmp_path, checks)
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    assert needle in proc.stdout + proc.stderr
+    if code == 0:
+        assert "--merge --match-head-commit" in proc.stdout
+
+
+def test_pr_ship_api_failure_exits_4(tmp_path) -> None:
+    """A GitHub API outage must not look like a red check, a refusal, or a moved head."""
+    cmd, env = _pr_ship_sandbox(tmp_path, "")
+    env |= {"FAKE_GH_FAIL_RULES": "1", "PR_SHIP_RETRY_SLEEP": "0"}
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+    assert "GitHub API unavailable" in proc.stderr
+
+
+def test_pr_ship_final_read_after_last_wait(tmp_path) -> None:
+    """A result that lands during the last wait is reported, not turned into a timeout."""
+    cmd, env = _pr_ship_sandbox(tmp_path, "")
+    checks = tmp_path / "checks.tsv"
+    # The fake gh's `event listen` writes the final state, simulating CI finishing during the wait.
+    fake = tmp_path / "bin" / "gh"
+    fake.write_text(
+        fake.read_text().replace(
+            '"event listen"*) exit 8 ;;',
+            f'"event listen"*) printf "Lint, Gates, and Tests\\tcompleted\\tfailure\\nBootstrap Convergence\\tcompleted\\tsuccess\\n" > "{checks}"; exit 8 ;;',
+        )
+    )
+    env["usage_max_waits"] = "1"
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "RED" in proc.stderr
+
+
+def test_claude_ship_env_live_without_settings_file(tmp_path, monkeypatch) -> None:
+    """A host with no ~/.claude/settings.json has nothing that disables /ship."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    for name in doc_mod._FLAG_FETCH_KILLERS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(doc_mod.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / "unix/home/.config/mise/assets/claude").mkdir(parents=True)
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert errors == []
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"env": {"DO_NOT_TRACK": "1"}}')
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert any("~/.claude/settings.json env sets DO_NOT_TRACK" in e for e in errors), (
+        errors
+    )
