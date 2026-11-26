@@ -1617,19 +1617,28 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
 
     reg_map, short_to_backends = _normalize_registry_entries(raw_reg_map)
 
+    # Global env files: user config*.toml, conf.d/<topic>/mise.toml fragments, and the repo-root mise.toml.
+    env_files = [
+        *mise_dir.glob("config*.toml"),
+        *mise_dir.glob("conf.d/**/mise.toml"),
+        repo_root / "mise.toml",
+    ]
+    for env_file in sorted(f for f in env_files if f.is_file()):
+        env_tbl = tomllib.loads(env_file.read_text(encoding="utf-8")).get("env")
+        if isinstance(env_tbl, dict):
+            for name in sorted(_FLAG_FETCH_KILLERS & set(env_tbl)):
+                errors.append(
+                    f"config-hygiene: {env_file.relative_to(repo_root).as_posix()} [env] sets {name}; it disables "
+                    "Claude Code feature-flag fetching and removes /ship and /steward from every new session "
+                    "(scope it per command)"
+                )
+
     # 1, 2, 3, 4 & 6. Registry canonical short names, hyphenated npm prerelease, wrapper checks, and dotfiles paths across config*.toml.
     # Short-name rule: a backend-qualified key is an error only when `mise registry` already maps it to a
     # short name (so upstream can switch backends). Tools absent from the registry keep an explicit backend.
     for cfg_file in sorted(mise_dir.glob("config*.toml")):
         cfg_data = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
         rel = cfg_file.relative_to(repo_root).as_posix()
-        env_tbl = cfg_data.get("env")
-        if isinstance(env_tbl, dict):
-            for name in sorted(_FLAG_FETCH_KILLERS & set(env_tbl)):
-                errors.append(
-                    f"config-hygiene: {rel} [env] sets {name}; it disables Claude Code feature-flag "
-                    "fetching and removes /ship and /steward from every new session (scope it per command)"
-                )
         tools_tbl = cfg_data.get("tools")
         if isinstance(tools_tbl, dict):
             for tool_key, spec in tools_tbl.items():

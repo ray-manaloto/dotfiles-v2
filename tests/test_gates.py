@@ -1988,6 +1988,18 @@ def test_config_hygiene_rejects_global_flag_fetch_killers(
     errors = doc_mod.check_config_hygiene(tmp_path)
     assert any("DO_NOT_TRACK" in e and "/ship" in e for e in errors), errors
     assert not any("REPOWISE_TELEMETRY_DISABLED" in e for e in errors), errors
+    frag = mise_dir / "conf.d" / "x" / "mise.toml"
+    frag.parent.mkdir(parents=True)
+    frag.write_text('[env]\nDISABLE_TELEMETRY = "1"\n')
+    (tmp_path / "mise.toml").write_text('[env]\nCLAUDE_CODE_DISABLE_SHIP = "1"\n')
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any(
+        "conf.d/x/mise.toml" in e and "DISABLE_TELEMETRY" in e for e in errors
+    ), errors
+    assert any(
+        e.startswith("config-hygiene: mise.toml") and "CLAUDE_CODE_DISABLE_SHIP" in e
+        for e in errors
+    ), errors
 
 
 def test_real_global_env_keeps_ship_available() -> None:
