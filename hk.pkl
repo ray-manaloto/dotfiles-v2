@@ -162,6 +162,11 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     check = "uv run --offline --locked datamodel-codegen --check"
     fix = "uv run --offline --locked datamodel-codegen"
   }
+  // The PR-review workflows' offline tests sit outside pytest testpaths; run them here so PR CI covers them.
+  ["openai-review-tests"] = new Step {
+    glob = List(".github/openai-review/**")
+    check = "python3 -I -B -m unittest discover -s .github/openai-review -p 'test_*.py'"
+  }
   ["schema-first-ast"] = new Step {
     glob = List("**/*.py")
     check = "python3 -I -B tasks/py/schema_first_ast.py {{ files }}"
