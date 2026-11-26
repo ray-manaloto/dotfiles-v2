@@ -75,8 +75,8 @@ and C++26 workstation setup.
   `knowledge-base-v2` directly from `dotfiles-v2`. For multi-harness async
   collaboration across `pc`, `mac`, `vm`, and Mac host (`claude`, `codex`,
   `agy`, `opencode`, `zcode`), run `mise run board:up` (`pitchfork`-supervised
-  `@vercel/board`), use CLI+Skill first with `0` global MCPs across harnesses
-  (keeping `openwiki mcp` repo-local to `knowledge-base-v2`), keep canonical repo
+  `@vercel/board`), keep claude.ai connectors off unless needed and
+  prefer CLI/SDK for research tools across harnesses (keeping `openwiki mcp` repo-local to `knowledge-base-v2`), keep canonical repo
   skills under `unix/home/.agents/skills/` (discovered natively by `agy`, `codex`,
   `opencode`, `zcode`, and Hermes `external_dirs`; no `~/.gemini/config/skills` or
   `~/.zcode/skills` mirrors) and the shared rules in `unix/home/.agents/AGENTS.md`

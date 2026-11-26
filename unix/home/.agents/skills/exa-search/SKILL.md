@@ -3,7 +3,7 @@ name: exa-search
 description: >-
   Use when querying Exa semantic/deep web search (`POST /search`) or clean page
   extraction (`POST /contents`) directly via `curl` through scoped `fnox`
-  research proxy or `pc` gateway with zero MCP schema overhead.
+  research proxy or `pc` gateway without MCP schema overhead (CLI/SDK preferred over the MCP).
 ---
 
 # Exa Search & Contents (`api.exa.ai`)

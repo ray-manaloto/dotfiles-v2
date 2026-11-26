@@ -318,16 +318,6 @@ def sync(manifest: dict, home: Path) -> list[str]:
             if pid not in plugins:
                 rc, out = _run([claude, "plugin", "install", pid])
                 log.append(_result(f"claude plugin install {pid}", rc, out))
-        plugins, _ = claude_state(claude)
-        missing = [p for p in spec.get("plugins", []) if p not in plugins]
-        for name in spec.get("retired_mcps", []):
-            if missing:
-                log.append(
-                    f"{FAIL}claude keep {name}: replacement plugins missing {missing}"
-                )
-            elif claude_mcp_status(claude, name) is not None:
-                rc, out = _run([claude, "mcp", "remove", "--scope", "user", name])
-                log.append(_result(f"claude mcp remove {name}", rc, out))
     codex = _bin("codex", home)
     if codex and "codex" in manifest:
         spec = manifest["codex"]
@@ -388,9 +378,6 @@ def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list
             for p in spec.get("plugins", [])
             if p not in plugins
         ]
-        for name in spec.get("retired_mcps", []):
-            if claude_mcp_status(claude, name) is not None:
-                errors.append(f"claude retired MCP still registered: {name}")
         if require_connected:
             for name in spec.get("connected_mcps", []):
                 status = claude_mcp_status(claude, name)

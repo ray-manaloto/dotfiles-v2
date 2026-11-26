@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#MISE description="Audit or prune a dead [otel] stanza in ~/.codex/config.toml (MCP servers and plugins are never touched)"
+#USAGE flag "--check" help="Report a dead Codex [otel] stanza without modifying files (default)"
+#USAGE flag "--apply" help="Back up ~/.codex/config.toml and remove the dead [otel] stanza"
+set -euo pipefail
+
+apply="${usage_apply:-false}"
+if [[ ${usage_check:-false} == "true" ]]; then
+	apply="false"
+fi
+
+py_bin=""
+if command -v python3 >/dev/null 2>&1; then
+	py_bin="$(command -v python3)"
+elif [[ -x /usr/bin/python3 ]]; then
+	py_bin="/usr/bin/python3"
+fi
+
+if [[ -z ${py_bin} ]]; then
+	echo "host:prune-codex-otel: python3 unavailable" >&2
+	exit 1
+fi
+
+exec "${py_bin}" -I -B - "${apply}" <<'PY'
+import os
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+apply = sys.argv[1] == "true"
+home = Path.home()
+ts_tag = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+backup_dir = home / ".local" / "state" / "dotfiles-v2" / "backups"
+
+
+def _backup(path: Path) -> Path:
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(backup_dir, 0o700)
+    dst = backup_dir / f"{path.name}.{ts_tag}.bak"
+    idx = 1
+    while dst.exists():
+        dst = backup_dir / f"{path.name}.{ts_tag}.{idx}.bak"
+        idx += 1
+    shutil.copy2(path, dst)
+    os.chmod(dst, 0o600)
+    return dst
+
+
+found: list[str] = []
+
+
+codex_cfg = home / ".codex" / "config.toml"
+if codex_cfg.is_file():
+    raw_lines = codex_cfg.read_text(encoding="utf-8").splitlines(keepends=True)
+    sec_re = re.compile(r'^\s*\[\[?([^\]]+?)\]\]?\s*(?:#.*)?$')
+    kv_re = re.compile(r'^\s*(environment|endpoint)\s*=\s*["\']([^"\']+)["\']')
+
+    # Detect dead [otel] stanzas (e.g. symphony-cpp-local / http://127.0.0.1:4318/v1/logs)
+    # using stdlib-only parsing compatible with /usr/bin/python3 (3.9+).
+    dead_otel = False
+    in_otel = False
+    for line in raw_lines:
+        m = sec_re.match(line)
+        if m:
+            sec_name = m.group(1).strip()
+            in_otel = sec_name == "otel" or sec_name.startswith("otel.")
+            continue
+        if in_otel:
+            kvm = kv_re.match(line)
+            if kvm:
+                key, val = kvm.group(1), kvm.group(2)
+                if (key == "environment" and val == "symphony-cpp-local") or (
+                    key == "endpoint"
+                    and (
+                        val == "http://127.0.0.1:4318/v1/logs"
+                        or val.startswith(("http://127.0.0.1:4318", "http://localhost:4318"))
+                    )
+                ):
+                    dead_otel = True
+                    break
+
+    kept_lines: list[str] = []
+    skip_section = False
+    codex_changed = False
+    for line in raw_lines:
+        m = sec_re.match(line)
+        if m:
+            sec_name = m.group(1).strip()
+            skip_section = False
+            if dead_otel and (sec_name == "otel" or sec_name.startswith("otel.")):
+                skip_section = True
+                found.append(f"codex-dead-otel {codex_cfg}: [{sec_name}]")
+                codex_changed = True
+        if not skip_section:
+            kept_lines.append(line)
+    if apply and codex_changed:
+        bak = _backup(codex_cfg)
+        codex_cfg.write_text("".join(kept_lines), encoding="utf-8")
+        os.chmod(codex_cfg, 0o600)
+        print(f"PRUNED codex dead [otel] sections ({codex_cfg}, backup={bak})")
+
+if not found:
+    print("OK  host:prune-codex-otel: no dead Codex [otel] stanza found")
+elif not apply:
+    for item in found:
+        print(f"FOUND {item}")
+    print(f"host:prune-codex-otel: {len(found)} dead [otel] section(s) found (pass --apply to remove)")
+PY

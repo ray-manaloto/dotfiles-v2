@@ -3,7 +3,7 @@
 #USAGE flag "--harness <name>" var=#true help="Harness(es) to test: claude, codex, agy, opencode, zcode, hermes (repeatable or comma list; default all 6)"
 #USAGE flag "--json" help="Emit schema-validated EnvSmokeResponse JSON"
 #USAGE flag "--dry-run" help="Zero-token quota pre-flight only; never sends a prompt"
-#USAGE flag "--skill-check" help="Verify agentsview-finding-history runs via the agentsview CLI with zero MCP calls"
+#USAGE flag "--skill-check" help="Verify agentsview-finding-history runs its CLI fallback (a shell tool call must run the agentsview CLI)"
 #USAGE flag "--timeout <seconds>" help="Per-harness prompt timeout in seconds (default 120)"
 #USAGE flag "--state-dir <path>" help="Override state directory for JSONL logs"
 #USAGE flag "--write-log" help="Append structured JSONL events to state directory"

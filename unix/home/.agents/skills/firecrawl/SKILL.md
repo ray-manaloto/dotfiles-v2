@@ -8,7 +8,7 @@ description: >-
 
 # Web Extraction & Search (`webclaw` -> `firecrawl` -> `agent-browser`)
 
-Follow the 3-tier CLI pipeline with zero global MCPs:
+Follow the 3-tier CLI pipeline (CLI/SDK preferred over the MCP):
 
 1. **Tier 0 (Fast local TLS fetch, 0 keys, 0 credits): `webclaw`**
    Use `webclaw` first for static docs, changelogs, and `llms.txt`:

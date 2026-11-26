@@ -1742,7 +1742,6 @@ def _reviewer_repo(tmp_path: Path, mutate=None) -> Path:
         "unix/home/.config/mise/tasks/bootstrap/reviewer-plugins",
         "unix/home/.config/mise/tasks/repowise/guard",
         "unix/home/.config/mise/tasks/repowise/init",
-        "unix/home/.config/mise/tasks/host/prune-mcps",
         "unix/home/.config/opencode/opencode.json",
     ]
     for rel in rels:
@@ -1773,10 +1772,6 @@ def test_reviewer_plugins_repo_scope_passes_on_real_tree(monkeypatch, tmp_path) 
         (
             lambda m: m["claude"]["connected_mcps"].append("plugin:ghost:ghost"),
             "no matching Claude plugin",
-        ),
-        (
-            lambda m: m["claude"]["retired_mcps"].append("not-pruned"),
-            "missing from host:prune-mcps",
         ),
         (
             lambda m: m["opencode"]["plugins"].append("other@1.0.0"),
@@ -1833,11 +1828,7 @@ def test_reviewer_plugins_live_reports_unconnected_mcp(monkeypatch, tmp_path) ->
     monkeypatch.setattr(
         lib,
         "claude_mcp_status",
-        lambda _c, n: (
-            None
-            if n in manifest["claude"]["retired_mcps"]
-            else statuses.get(n, "\u2714 Connected")
-        ),
+        lambda _c, n: statuses.get(n, "\u2714 Connected"),
     )
     errs, _ = doc_mod.check_reviewer_plugins(root)
     assert any("plugin:graphify:graphify not Connected" in e for e in errs), errs
@@ -1988,19 +1979,18 @@ def test_reviewer_sync_failure_detection(tmp_path, rc, failed) -> None:
     assert lib.sync_failed(["guarded: /home/u/dev/rc=5"]) is False
 
 
-def test_reviewer_sync_keeps_retired_mcp_until_replacements_installed(
-    monkeypatch, tmp_path
-) -> None:
+def test_reviewer_sync_never_removes_mcp_servers(monkeypatch, tmp_path) -> None:
+    """Owner rule: sync never deletes locally configured MCP servers (even ones a manifest once retired)."""
     doc_mod = _load_task_module("doctor_checks")
     lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
     calls: list[list[str]] = []
     monkeypatch.setattr(lib, "_bin", lambda n, _h: n if n == "claude" else None)
     monkeypatch.setattr(
-        lib, "claude_state", lambda _c: (set(), {"graphify", "repowise"})
+        lib, "claude_state", lambda _c: ({"graphify@graphify"}, {"graphify"})
     )
-    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: "✔ Connected")
+    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: "\u2714 Connected")
     monkeypatch.setattr(
-        lib, "_run", lambda argv, timeout=180: calls.append(argv) or (1, "nope")
+        lib, "_run", lambda argv, timeout=180: calls.append(argv) or (0, "ok")
     )
     monkeypatch.setattr(lib, "repowise_repos", lambda _r: [])
     manifest = {
@@ -2009,10 +1999,15 @@ def test_reviewer_sync_keeps_retired_mcp_until_replacements_installed(
             "retired_mcps": ["graphify-reviews"],
         }
     }
-    log = lib.sync(manifest, tmp_path)
-    assert not any(a[:3] == ["claude", "mcp", "remove"] for a in calls)
-    assert lib.sync_failed(log)
-    assert any("keep graphify-reviews" in ln for ln in log)
+    lib.sync(manifest, tmp_path)
+    assert not any(a[1:3] == ["mcp", "remove"] for a in calls), calls
+    real = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "unix/home/.config/mise/assets/reviewer-plugins.json"
+        ).read_text()
+    )
+    assert "retired_mcps" not in real["claude"]
 
 
 @pytest.mark.parametrize("pre_existing", [False, True])
@@ -2217,6 +2212,7 @@ def test_claude_ship_env_flags_managed_settings(tmp_path, monkeypatch) -> None:
     assets = tmp_path / "unix/home/.config/mise/assets/claude"
     assets.mkdir(parents=True)
     (assets / "env-common.json").write_text('{"env": {"CLAUDE_CODE_BRIEF": "1"}}')
+    (assets / "permissions.json").write_text('{"disableClaudeAiConnectors": true}')
     errors, msg = doc_mod.check_claude_ship_env(tmp_path)
     assert errors == [] and "not probed" in msg
     (assets / "bad.json").write_text(
@@ -2395,4 +2391,63 @@ def test_claude_ship_env_live_without_settings_file(tmp_path, monkeypatch) -> No
     errors, _ = doc_mod.check_claude_ship_env(tmp_path)
     assert any("~/.claude/settings.json env sets DO_NOT_TRACK" in e for e in errors), (
         errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("settings", "needle"),
+    [
+        (
+            {"disableClaudeAiConnectors": False},
+            "disableClaudeAiConnectors=false turns claude.ai connectors on",
+        ),
+        (
+            {"env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "true"}},
+            "ENABLE_CLAUDEAI_MCP_SERVERS turns claude.ai connectors on",
+        ),
+        (
+            {"permissions": {"deny": []}},
+            "no managed Claude settings file sets disableClaudeAiConnectors=true",
+        ),
+    ],
+)
+def test_claude_ship_env_keeps_connectors_off(
+    tmp_path, monkeypatch, settings, needle
+) -> None:
+    """Owner rule: claude.ai connectors stay off unless needed; MCP denies themselves are fine."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    assets = tmp_path / "unix/home/.config/mise/assets/claude"
+    assets.mkdir(parents=True)
+    (assets / "x.json").write_text(json.dumps(settings))
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert any(needle in e for e in errors), errors
+    (assets / "x.json").write_text(
+        json.dumps(
+            {
+                "disableClaudeAiConnectors": True,
+                "deniedMcpServers": [{"serverName": "plugin:apify:apify"}],
+                "permissions": {"deny": ["mcp__clion__*"]},
+            }
+        )
+    )
+    (assets / "y.json.tera").write_text('{"disableClaudeAiConnectors": false}')
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert errors == [
+        "claude-ship-env: unix/home/.config/mise/assets/claude/y.json.tera turns claude.ai connectors on"
+    ], errors
+
+
+def test_real_managed_claude_settings_keep_connectors_off() -> None:
+    data = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "unix/home/.config/mise/assets/claude/permissions.json"
+        ).read_text()
+    )
+    assert data["disableClaudeAiConnectors"] is True
+    assert {"serverName": "plugin:apify:apify"} in data["deniedMcpServers"]
+    assert any(
+        "@modelcontextprotocol/server-pdf" in d.get("serverCommand", [])
+        for d in data["deniedMcpServers"]
     )

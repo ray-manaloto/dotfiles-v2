@@ -45,8 +45,8 @@ SMOKE_PROMPT = "Reply with exactly: OK"
 SKILL_NAME = "agentsview-finding-history"
 SKILL_PROMPT = (
     f"Activate the {SKILL_NAME} skill and use it to list exactly 1 recent "
-    "session. Global MCP count is 0: skip MCP tool calls and run the skill's "
-    "agentsview CLI commands through your shell tool. Reply with the session id only."
+    "session. Exercise the skill's CLI fallback: run its agentsview CLI "
+    "commands through your shell tool. Reply with the session id only."
 )
 DEFAULT_TIMEOUT_S = 120.0
 DRAIN_TIMEOUT_S = 1.5

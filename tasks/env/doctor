@@ -185,21 +185,7 @@ python3 - <<'PY'
 import json
 import os
 import subprocess
-import tomllib
-from pathlib import Path
 
-LEGACY_MCPS = {
-    "mcp-jdx", "mise", "hk", "pitchfork", "usage-mise",
-    "firecrawl", "exa", "exa-web", "context7", "apify",
-    "agentsview", "codebase-memory-mcp", "graphify", "clion",
-}
-claude_cfg = Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR") else Path("/home/dev/.claude.json")
-c = json.loads(claude_cfg.read_text(encoding="utf-8"))
-claude_bad = sorted(LEGACY_MCPS & set((c.get("mcpServers") or {}).keys()))
-assert not claude_bad, f"Unexpected legacy global Claude mcpServers in {claude_cfg}: {claude_bad}"
-cx = tomllib.loads(Path("/home/dev/.codex/config.toml").read_text(encoding="utf-8"))
-codex_bad = sorted(LEGACY_MCPS & set((cx.get("mcp_servers") or {}).keys()))
-assert not codex_bad, f"Unexpected legacy global Codex mcp_servers: {codex_bad}"
 dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "dot", "status", "--json"], text=True))
 healthy = {"applied", "tracked", "absent", "not_on_this_machine", "ok", "synced", "match"}
 entries = ((dot_data.get("files") or []) + (dot_data.get("edits") or [])) if isinstance(dot_data, dict) else (dot_data or [])
@@ -374,23 +360,9 @@ python3 - <<'PY'
 import json
 import os
 import subprocess
-import tomllib
-from pathlib import Path
 
 assert os.path.realpath(os.path.expanduser("~/.gemini/config/AGENTS.md")) == os.path.realpath(os.path.expanduser("~/dev/dotfiles-v2/unix/home/.agents/AGENTS.md")), "~/.gemini/config/AGENTS.md must resolve to unix/home/.agents/AGENTS.md"
 assert not os.path.lexists(os.path.expanduser("~/.gemini/GEMINI.md")), "legacy ~/.gemini/GEMINI.md must be absent"
-LEGACY_MCPS = {
-    "mcp-jdx", "mise", "hk", "pitchfork", "usage-mise",
-    "firecrawl", "exa", "exa-web", "context7", "apify",
-    "agentsview", "codebase-memory-mcp", "graphify", "clion",
-}
-claude_cfg = Path(os.environ["CLAUDE_CONFIG_DIR"]) / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR") else Path.home() / ".claude.json"
-c = json.loads(claude_cfg.read_text(encoding="utf-8"))
-claude_bad = sorted(LEGACY_MCPS & set((c.get("mcpServers") or {}).keys()))
-assert not claude_bad, f"Unexpected legacy global Claude mcpServers in {claude_cfg}: {claude_bad}"
-cx = tomllib.loads(Path(os.path.expanduser("~/.codex/config.toml")).read_text(encoding="utf-8"))
-codex_bad = sorted(LEGACY_MCPS & set((cx.get("mcp_servers") or {}).keys()))
-assert not codex_bad, f"Unexpected legacy global Codex mcp_servers: {codex_bad}"
 dot_data = json.loads(subprocess.check_output(["mise", "-C", os.environ["HOME"], "-E", "vm", "dot", "status", "--json"], text=True))
 healthy = {"applied", "tracked", "absent", "not_on_this_machine", "ok", "synced", "match"}
 entries = ((dot_data.get("files") or []) + (dot_data.get("edits") or [])) if isinstance(dot_data, dict) else (dot_data or [])
