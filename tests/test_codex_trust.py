@@ -272,6 +272,96 @@ def test_inspect_and_repair_hook_trust_fixes_modified_unmigrated_and_orphans(
     assert old_resp.errors[0].code is CodexTrustErrorCode.ERR_UNSUPPORTED_CODEX_VERSION
 
 
+@pytest.mark.parametrize(
+    ("asset", "event", "event_name", "status"),
+    [
+        ("dcg-hooks.json", "PreToolUse", "preToolUse", CodexHookStatus.MODIFIED),
+        ("learn-hooks.json", "SessionStart", "sessionStart", CodexHookStatus.UNTRUSTED),
+        ("learn-hooks.json", "Stop", "stop", CodexHookStatus.MODIFIED),
+    ],
+)
+def test_check_reports_user_hook_drift_without_approving_it(
+    tmp_path: Path, asset: str, event: str, event_name: str, status: CodexHookStatus
+) -> None:
+    assets = Path(__file__).resolve().parents[1] / "unix/home/.config/mise/assets/codex"
+    declaration = json.loads((assets / asset).read_text(encoding="utf-8"))
+    config = tmp_path / "config.toml"
+    original = '[hooks.state."user:pre_tool_use:0:0"]\ntrusted_hash = "sha256:old"\n'
+    config.write_text(original, encoding="utf-8")
+    key = "user:pre_tool_use:0:0"
+    row = {
+        "source": "user",
+        "key": key,
+        "sourcePath": str(tmp_path / "hooks.json"),
+        "eventName": event_name,
+        "command": declaration["hooks"][event][0]["hooks"][0]["command"],
+        "enabled": True,
+        "trustStatus": status.value,
+        "currentHash": "sha256:new",
+    }
+    client = _FakeRpcClient(
+        config_path=config,
+        hooks_rows=[row, {**row, "key": "disabled", "enabled": False}],
+    )
+
+    result = inspect_hook_trust(cwd=tmp_path, codex_home=tmp_path, client=client)
+    assert result.rc == 1
+    assert [(f.key, f.status, f.advisory) for f in result.findings] == [
+        (key, status, False)
+    ]
+    assert result.errors[0].code is CodexTrustErrorCode.ERR_UNTRUSTED_OR_MODIFIED
+
+    repair_hook_trust(cwd=tmp_path, codex_home=tmp_path, client=client)
+    assert not client.batch_calls
+    assert config.read_text(encoding="utf-8") == original
+
+    row["trustStatus"] = "trusted"
+    assert inspect_hook_trust(cwd=tmp_path, codex_home=tmp_path, client=client).rc == 0
+
+
+def test_check_reports_advisories_across_hook_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "config.toml").touch()
+    user = {
+        "key": "personal-hook",
+        "source": "user",
+        "sourcePath": str(tmp_path / "hooks.json"),
+        "eventName": "preToolUse",
+        "command": "echo personal",
+        "enabled": True,
+        "trustStatus": "untrusted",
+    }
+    system = {**user, "key": "system-hook", "source": "system"}
+    project = {**user, "key": "project-hook", "source": "project"}
+    managed = {
+        **system,
+        "key": "managed-hook",
+        "source": "mdm",
+        "trustStatus": "modified",
+        "isManaged": True,
+    }
+    client = _FakeRpcClient()
+    monkeypatch.setattr(
+        client,
+        "hooks_list",
+        lambda _cwd: {
+            "data": [{"hooks": [user]}, {"hooks": [user, system, project, managed]}]
+        },
+    )
+
+    result = inspect_hook_trust(cwd=tmp_path, codex_home=tmp_path, client=client)
+    assert result.rc == 0
+    assert not result.errors
+    assert [f.key for f in result.findings] == [
+        "personal-hook",
+        "system-hook",
+        "project-hook",
+        "managed-hook",
+    ]
+    assert all(f.advisory for f in result.findings)
+
+
 def test_update_plugin_additive_install_and_hook_diff_confirmation_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -389,11 +389,16 @@ description = "macOS Herdr.app lives exclusively under /Applications/Herdr.app w
 run = "python3 -I -B tasks/py/doctor_checks.py herdr-app-bundle"
 hint = "Install Herdr.app cleanly at /Applications/Herdr.app and remove any duplicate ~/Applications/Herdr.app. Details: `mise run doctor:explain herdr-app-bundle`."
 
+[doctor.checks.codex-managed-config]
+description = "Host validation of managed config, profiles, and execpolicy rules with Codex 0.172.0 or newer"
+run = "python3 -I -B tasks/py/doctor_checks.py codex-managed-config"
+timeout = "65s"
+
 [doctor.checks.codex-hook-trust]
-description = "Codex plugin hook-trust registry matches live hooks/list RPC hashes"
+description = "Audit live Codex hook trust, including project hooks visible from the current directory"
 depends = "py-deps-fresh"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
-hint = "Inspect trust drift with `mise run codex:hook-trust --check --json` and repair cleanly with `--repair`. Details: `mise run doctor:explain codex-hook-trust`."
+hint = "Inspect trust drift with `mise run codex:hook-trust --check --json`. Review changed user hooks before approving them in Codex /hooks. The `--repair` mode is for plugins."
 
 [doctor.checks.mise-binary-integrity]
 description = "Compiled mise install binaries are hardened (0555/a-w) and dcg guardrails/hooks are configured"
