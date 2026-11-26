@@ -80,6 +80,14 @@ main_root="$(dirname "${common_dir}")"
 [[ -z "$(git -C "${main_root}" status --porcelain --untracked-files=no)" ]] || refuse "main checkout has uncommitted tracked changes"
 git -C "${main_root}" -c core.hooksPath=/dev/null pull -q --ff-only origin main </dev/null ||
 	refuse "could not fast-forward ${main_root} to origin/main (diverged local main?)"
+main_head="$(git -C "${main_root}" rev-parse --verify HEAD)" || refuse "could not resolve main HEAD after the pull"
+origin_main="$(git -C "${main_root}" rev-parse --verify refs/remotes/origin/main)" ||
+	refuse "could not resolve origin/main after the pull"
+if [[ ${main_head} != "${origin_main}" ]]; then
+	ahead_commits="$(git -C "${main_root}" log --oneline "${origin_main}..${main_head}")" ||
+		refuse "main does not match origin/main after the pull and could not list local commits"
+	refuse "main does not match origin/main after the pull. Local commits absent from origin/main:"$'\n'"${ahead_commits}"
+fi
 git -C "${main_root}" merge-base --is-ancestor "${merge_commit}" HEAD || refuse "merge commit ${merge_commit:0:7} is not on main after the pull"
 echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_root}" rev-parse --short HEAD)"
 
