@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#MISE description="Run `mise doctor project` in four shells (current env, login, clean login, clean interactive login) and fail if any differs from all-pass"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+zsh_bin="$(command -v zsh || true)"
+failed=0
+
+# Summary line plus every FAIL line from one `mise doctor project` run.
+report() {
+	local label="$1"
+	shift
+	local out rc
+	set +e
+	out="$("$@" 2>&1)"
+	rc=$?
+	set -e
+	local summary
+	summary="$(printf '%s\n' "${out}" | grep -E '[0-9]+ passed, [0-9]+ failed' | tail -1 || true)"
+	printf '%-36s %s\n' "${label}" "${summary:-no summary (exit ${rc})}"
+	printf '%s\n' "${out}" | grep -E '^FAIL ' | sed 's/^/    /' || true
+	if [[ ${rc} -ne 0 || -z ${summary} ]]; then
+		failed=1
+	fi
+}
+
+# The repo path travels as $1, never spliced into the command string.
+# shellcheck disable=SC2016
+doctor_cmd='cd "$1" && mise doctor project'
+clean_env=(env -i HOME="${HOME}" USER="${USER:-}" TERM="${TERM:-xterm}")
+report "current env" sh -c "${doctor_cmd}" _ "${repo_root}"
+if [[ -n ${zsh_bin} ]]; then
+	report "zsh -lc (login, inherited env)" "${zsh_bin}" -lc "${doctor_cmd}" _ "${repo_root}"
+	report "env -i zsh -lc (clean login)" "${clean_env[@]}" "${zsh_bin}" -lc "${doctor_cmd}" _ "${repo_root}"
+	report "env -i zsh -lic (clean interactive)" "${clean_env[@]}" "${zsh_bin}" -lic "${doctor_cmd}" _ "${repo_root}" </dev/null
+else
+	# Hosts without zsh (some containers) can only run the first variant; say so rather than claim all four.
+	skipped=3
+	echo "zsh not found: skipped the three login-shell variants" >&2
+fi
+
+if [[ ${failed} -ne 0 ]]; then
+	echo "doctor:matrix: at least one shell failed; for details run: mise run doctor:explain <check>" >&2
+	exit 1
+fi
+if [[ ${skipped:-0} -ne 0 ]]; then
+	echo "doctor:matrix: 1 of 4 shells ran and passed (${skipped} skipped: no zsh)"
+else
+	echo "doctor:matrix: all 4 shells pass"
+fi
