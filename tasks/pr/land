@@ -16,44 +16,53 @@ refuse() {
 branch="$(git rev-parse --abbrev-ref HEAD)"
 [[ ${branch} == wt/* ]] || refuse "branch '${branch}' is not a wt/* branch; run pr:land from the merged worktree"
 slug="${branch#wt/}"
-[[ -z "$(git status --porcelain --untracked-files=no)" ]] || refuse "uncommitted tracked changes in ${slug}; they would be lost"
+[[ -z "$(git status --porcelain --untracked-files=normal)" ]] || refuse "uncommitted or untracked files in ${slug}; commit or remove them first (they would be lost)"
 head="$(git rev-parse HEAD)"
 
 # 1. The PR merged, at exactly this worktree's head (nothing local left unshipped).
+gh_or_exit() {
+	local out
+	if ! out="$(gh "$@" 2>&1)"; then
+		echo "pr:land: gh $1 $2 failed: ${out}" >&2
+		exit 4
+	fi
+	printf '%s\n' "${out}"
+}
 if [[ -n ${usage_pr:-} ]]; then
 	pr="${usage_pr}"
+	[[ ${pr} =~ ^[0-9]+$ ]] || refuse "--pr must be a PR number, got '${pr}'"
 else
-	pr="$(gh pr list -R "${repo}" --head "${branch}" --state merged --json number --jq '.[0].number // empty' 2>/dev/null)" ||
-		{
-			echo "pr:land: GitHub API unavailable" >&2
-			exit 4
-		}
+	pr="$(gh_or_exit pr list -R "${repo}" --head "${branch}" --state merged --json number --jq '.[0].number // empty')"
 	[[ -n ${pr} ]] || refuse "no merged PR for ${branch}"
 fi
-info="$(gh pr view "${pr}" -R "${repo}" --json state,headRefOid,mergeCommit --jq '"\(.state) \(.headRefOid) \(.mergeCommit.oid // "")"' 2>/dev/null)" ||
-	{
-		echo "pr:land: GitHub API unavailable" >&2
-		exit 4
-	}
-read -r state pr_head merge_commit <<<"${info}"
-[[ ${state} == MERGED ]] || refuse "#${pr} is ${state}, not MERGED"
+info="$(gh_or_exit pr view "${pr}" -R "${repo}" --json state,headRefName,baseRefName,headRefOid,mergeCommit,commits \
+	--jq '"\(.state) \(.headRefName) \(.baseRefName) \(.headRefOid) \(.mergeCommit.oid // "-") \(.commits[0].committedDate // "1970-01-01T00:00:00Z")"')"
+read -r state pr_branch pr_base pr_head merge_commit first_commit_at <<<"${info}"
+[[ ${pr_branch} == "${branch}" && ${pr_base} == main ]] || refuse "#${pr} is ${pr_branch} -> ${pr_base}, not ${branch} -> main"
+[[ ${state} == MERGED && ${merge_commit} != "-" ]] || refuse "#${pr} is ${state}, not MERGED"
 [[ ${pr_head} == "${head}" ]] || refuse "#${pr} merged at ${pr_head:0:7} but ${slug} is at ${head:0:7}; push or drop the extra commits first"
 
 # 2. The post-task-learn review for this worktree is recorded (the learn step is part of landing).
-plan_id="$(sed -n 's/^PLAN_ID *= *"\(.*\)"/\1/p' mise.local.toml 2>/dev/null | head -1)"
+plan_id="$(sed -n 's/^PLAN_ID *= *"\(.*\)"/\1/p' mise.local.toml 2>/dev/null | head -1 || true)"
 reviews="${XDG_STATE_HOME:-${HOME}/.local/state}/agy-learn/reviews.jsonl"
 if [[ -z ${usage_skip_learn_check:-} ]]; then
 	if ! python3 -I -B -c '
 import json, sys
-path, plan_id, slug = sys.argv[1:4]
+from datetime import datetime
+path, plan_id, slug, created = sys.argv[1:5]
+since_ns = int(datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp() * 1e9)
 try:
     rows = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
-except OSError:
+except (OSError, ValueError):
     sys.exit(1)
-ok = any(r.get("worktree_slug") == slug or (plan_id and r.get("plan_id") == plan_id) for r in rows)
-sys.exit(0 if ok else 1)
-' "${reviews}" "${plan_id}" "${slug}"; then
-		refuse "no post-task-learn review recorded for ${slug} (PLAN_ID ${plan_id:-unset}); run the post-task-learn skill (mise run learn:record-review --worktree-slug ${slug} --plan-id ${plan_id:-<id>} ...), or pass --skip-learn-check"
+# PLAN_ID is unique per worktree; a slug can be reused, so it only counts when PLAN_ID is unknown.
+# Either way the review must be newer than the first commit of the PR, so an old review cannot satisfy a new landing.
+def mine(r):
+    same = r.get("plan_id") == plan_id if plan_id else r.get("worktree_slug") == slug
+    return same and int(r.get("timestamp_unix_ns") or 0) >= since_ns
+sys.exit(0 if any(mine(r) for r in rows) else 1)
+' "${reviews}" "${plan_id}" "${slug}" "${first_commit_at}"; then
+		refuse "no post-task-learn review recorded for ${slug} (PLAN_ID ${plan_id:-unset}) since the first commit of #${pr}; run the post-task-learn skill (mise run learn:record-review --worktree-slug ${slug} --plan-id ${plan_id:-<id>} ...); only the owner may approve --skip-learn-check"
 	fi
 else
 	echo "pr:land: WARNING: landing ${slug} without a recorded learn review" >&2
@@ -64,11 +73,17 @@ common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
 main_root="$(dirname "${common_dir}")"
 [[ "$(git -C "${main_root}" rev-parse --abbrev-ref HEAD)" == main ]] || refuse "main checkout ${main_root} is not on main"
 [[ -z "$(git -C "${main_root}" status --porcelain --untracked-files=no)" ]] || refuse "main checkout has uncommitted tracked changes"
-git -C "${main_root}" -c core.hooksPath=/dev/null pull -q --ff-only origin main </dev/null
+git -C "${main_root}" -c core.hooksPath=/dev/null pull -q --ff-only origin main </dev/null ||
+	refuse "could not fast-forward ${main_root} to origin/main (diverged local main?)"
 git -C "${main_root}" merge-base --is-ancestor "${merge_commit}" HEAD || refuse "merge commit ${merge_commit:0:7} is not on main after the pull"
 echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_root}" rev-parse --short HEAD)"
 
-# 4. Remove the worktree and its branch (the branch is merged, so `branch -d` is safe).
+# 4. Keep the git-ignored plan files (removing the worktree would delete them), then remove the
+# worktree and its branch (the branch is merged, so `branch -d` is safe).
+if [[ -n ${plan_id} && -d .planning/${plan_id} ]]; then
+	mkdir -p "${main_root}/.planning"
+	cp -R ".planning/${plan_id}" "${main_root}/.planning/" && echo "pr:land: kept plan files in ${main_root}/.planning/${plan_id}"
+fi
 cd "${main_root}"
 MISE_YES=1 mise run -q worktree:rm "${slug}" </dev/null
 echo "pr:land: removed worktree ${slug} and branch ${branch}"
