@@ -19,6 +19,7 @@ import time
 import tomllib
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from functools import cmp_to_key
 from pathlib import Path
 from typing import Any
 
@@ -3124,6 +3125,96 @@ _MCP_POLICY_PATH = "unix/home/.config/mise/assets/mcp-policy.json"
 _MCP_POLICY_HARNESSES = {"agy", "claude", "codex", "opencode"}
 
 
+def _mcp_plugin_declares_server(root: Path, harness: str) -> bool:
+    def server_table(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        servers = data.get("mcpServers", data)
+        return isinstance(servers, dict) and bool(servers)
+
+    manifest = root / f".{harness}-plugin/plugin.json"
+    if not manifest.is_file():
+        manifest = root / "plugin.json"
+    if manifest.is_file():
+        declaration = json.loads(manifest.read_text(encoding="utf-8")).get("mcpServers")
+        for entry in declaration if isinstance(declaration, list) else [declaration]:
+            if isinstance(entry, dict) and entry:
+                return True
+            if isinstance(entry, str):
+                path = (root / entry).resolve()
+                if path.is_relative_to(root.resolve()) and server_table(path):
+                    return True
+    return server_table(root / ".mcp.json")
+
+
+def _mcp_live_plugins(home: Path, harness: str, names: set[str]) -> set[str]:
+    if not names:
+        return set()
+    if harness == "claude":
+        registry = home / ".claude/plugins/installed_plugins.json"
+        if not registry.is_file():
+            return set()
+        installed = json.loads(registry.read_text(encoding="utf-8"))["plugins"]
+        return {
+            name
+            for name in names
+            if any(
+                _mcp_plugin_declares_server(Path(record["installPath"]), harness)
+                for record in installed.get(name, [])
+            )
+        }
+    cache = home / ".codex/plugins/cache"
+    plugins: set[str] = set()
+    for name in names:
+        plugin, _, marketplace = name.partition("@")
+        if not all(
+            re.fullmatch(r"[\w-][\w.-]*", part) for part in (plugin, marketplace)
+        ):
+            continue
+        versions = cache / marketplace / plugin
+        local = versions / "local"
+        root = (
+            local
+            if local.is_dir()
+            else max(
+                (
+                    path
+                    for path in versions.glob("*/")
+                    if re.fullmatch(r"[\w.+-]+", path.name)
+                ),
+                key=cmp_to_key(_compare_codex_cache_versions),
+                default=None,
+            )
+        )
+        if root is not None and _mcp_plugin_declares_server(root, harness):
+            plugins.add(name)
+    return plugins
+
+
+def _compare_codex_cache_versions(left: Path, right: Path) -> int:
+    def semver(name: str):
+        match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([\w.-]+))?(?:\+[\w.-]+)?", name)
+        if match is None:
+            return None
+        major, minor, patch, pre = match.groups()
+        prerelease = (
+            tuple(
+                (0, int(item)) if item.isdigit() else (1, item)
+                for item in pre.split(".")
+            )
+            if pre
+            else ()
+        )
+        return int(major), int(minor), int(patch), not pre, prerelease
+
+    # Codex prefers local and otherwise compares SemVer pairs or sorts lexically.
+    left_version, right_version = semver(left.name), semver(right.name)
+    if left_version is not None and right_version is not None:
+        return (left_version > right_version) - (left_version < right_version)
+    return (left.name > right.name) - (left.name < right.name)
+
+
 def _mcp_config_names(
     harness: str, data: dict[str, Any], *, manifest: bool = False
 ) -> list[tuple[str, str]]:
@@ -3165,16 +3256,6 @@ def _mcp_config_names(
             # Built-in enablement directives do not declare a package.
         mcp = mapping(data.get("mcp", {}))
         servers = active(mcp.get("servers", {}), "disabled", True)
-        # OpenCode v2 still reads legacy flat server names.
-        servers += active(
-            {
-                name: value
-                for name, value in mcp.items()
-                if name not in {"servers", "timeout"}
-            },
-            "enabled",
-            False,
-        )
     elif harness == "codex":
         servers = active(data.get("mcp_servers", {}), "enabled", False)
         plugins = active(data.get("plugins", {}), "enabled", False)
@@ -3182,7 +3263,11 @@ def _mcp_config_names(
         servers = active(data.get("mcpServers", {}), "disabled", True)
         plugins = []
     else:
-        servers = list(mapping(data.get("mcpServers", {})))
+        servers = active(data.get("mcpServers", {}), "disabled", True)
+        for project in mapping(data.get("projects", {})).values():
+            servers.extend(
+                active(mapping(project).get("mcpServers", {}), "disabled", True)
+            )
         plugins = [
             name
             for name, enabled in mapping(data.get("enabledPlugins", {})).items()
@@ -3249,6 +3334,7 @@ def check_mcp_policy(repo_root: Path) -> tuple[list[str], str]:
     managed_home = repo_root / "unix/home"
     assets = managed_home / ".config/mise/assets"
     repo_fix = f"${{EDITOR:-vi}} {_MCP_POLICY_PATH}"
+    permissions = assets / "claude/permissions.json"
 
     def scan(
         path: Path,
@@ -3266,11 +3352,70 @@ def check_mcp_policy(repo_root: Path) -> tuple[list[str], str]:
             if not isinstance(data, dict):
                 raise ValueError
             names = _mcp_config_names(harness, data, manifest=manifest)
-        except OSError, ValueError, AttributeError:
+            if live:
+                active_plugins = _mcp_live_plugins(
+                    Path.home(),
+                    harness,
+                    {name for kind, name in names if kind == "plugin"},
+                )
+                names = [
+                    (kind, name)
+                    for kind, name in names
+                    if kind != "plugin" or name in active_plugins
+                ]
+        except OSError, ValueError, AttributeError, KeyError, TypeError:
             errors.append(
                 f"mcp-policy: cannot read declarations in {label}; fix with `${{EDITOR:-vi}} {label}`"
             )
             return
+        if (
+            harness == "opencode"
+            and not manifest
+            and data.get("mcp", {}).keys()
+            - {
+                "servers",
+                "timeout",
+            }
+        ):
+            errors.append(
+                f"mcp-policy: {label}: use OpenCode v2 mcp.servers for MCP declarations; "
+                f"fix with `${{EDITOR:-vi}} {label}`"
+            )
+        if path == permissions:
+            deny_entries = data.get("deniedMcpServers", [])
+            denied = (
+                {
+                    entry["serverName"]
+                    for entry in deny_entries
+                    if isinstance(entry, dict)
+                    and isinstance(entry.get("serverName"), str)
+                }
+                if isinstance(deny_entries, list)
+                else set()
+            )
+            for (client, kind, name), decision in sorted(rules.items()):
+                if client != "claude" or decision == "keep":
+                    continue
+                if name == "claude.ai":
+                    configured = data.get("disableClaudeAiConnectors") is True
+                elif kind == "plugin":
+                    prefix = f"plugin:{name.partition('@')[0]}:"
+                    servers = {
+                        server
+                        for (client, kind, server), rule in rules.items()
+                        if client == "claude"
+                        and kind == "server"
+                        and server.startswith(prefix)
+                        and rule != "keep"
+                    }
+                    configured = bool(servers) and servers <= denied
+                else:
+                    configured = name in denied
+                if not configured:
+                    errors.append(
+                        f"mcp-policy: {label}: missing Claude deny for {name!r}; "
+                        f"fix with `${{EDITOR:-vi}} {label}`"
+                    )
         for kind, name in sorted(set(names)):
             policy_name = name
             if harness == "opencode" and kind == "plugin":
@@ -3283,6 +3428,12 @@ def check_mcp_policy(repo_root: Path) -> tuple[list[str], str]:
             fix = (
                 _mcp_live_fix(harness, kind, name, label)
                 if live
+                and not (
+                    harness == "claude"
+                    and kind == "server"
+                    and data.get("projects")
+                    and name not in data.get("mcpServers", {})
+                )
                 else f"${{EDITOR:-vi}} {label}"
             )
             if decision is None:
@@ -3293,10 +3444,11 @@ def check_mcp_policy(repo_root: Path) -> tuple[list[str], str]:
             )
 
     for path in sorted(
-        [
+        {
+            permissions,
             *(assets / "claude").rglob("*.json*"),
             *(managed_home / ".claude").rglob("*.json"),
-        ]
+        }
     ):
         if path.name.endswith((".json", ".json.tera")):
             scan(path, path.relative_to(repo_root).as_posix(), "claude")

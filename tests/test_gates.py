@@ -2032,6 +2032,107 @@ def test_mcp_policy_reports_live_cli_server_without_transport(
     ]
 
 
+def test_mcp_policy_checks_claude_project_servers(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".claude.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {"disabled-user": {"disabled": True}},
+                "projects": {
+                    "private-project": {
+                        "mcpServers": {
+                            "github": {},
+                            "disabled-project": {"disabled": True},
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    root = Path(__file__).resolve().parents[1]
+    errors, _ = doc_mod.check_mcp_policy(root)
+    assert errors == [
+        "mcp-policy: ~/.claude.json: claude server 'github' has decision cli; "
+        "fix with `${EDITOR:-vi} ~/.claude.json`"
+    ]
+
+
+def test_mcp_policy_filters_live_plugins_using_installed_manifests(
+    monkeypatch, tmp_path
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    claude = tmp_path / ".claude"
+    claude_plugins = {
+        "skills@market": {},
+        "inline@market": {"mcpServers": {"server": {"url": "private-" + "endpoint"}}},
+    }
+    installed = {}
+    for plugin_id, manifest in claude_plugins.items():
+        plugin_path = claude / "plugins/cache" / plugin_id
+        (plugin_path / ".claude-plugin").mkdir(parents=True)
+        (plugin_path / ".claude-plugin/plugin.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        installed[plugin_id] = [{"installPath": str(plugin_path)}]
+    (claude / "plugins/installed_plugins.json").write_text(
+        json.dumps({"plugins": installed}), encoding="utf-8"
+    )
+    (claude / "settings.json").write_text(
+        json.dumps({"enabledPlugins": dict.fromkeys(claude_plugins, True)}),
+        encoding="utf-8",
+    )
+    codex = tmp_path / ".codex"
+    cache = codex / "plugins/cache/market"
+    for plugin, version in (
+        ("skills", "1.9.0"),
+        ("skills", "1.10.0"),
+        ("file", "1.0.0"),
+    ):
+        (cache / plugin / version).mkdir(parents=True)
+    for plugin in ("skills/1.9.0", "file/1.0.0"):
+        (cache / plugin / ".mcp.json").write_text(
+            '{"mcpServers":{"server":{}}}', encoding="utf-8"
+        )
+    (codex / "config.toml").write_text(
+        '[plugins."skills@market"]\nenabled = true\n[plugins."file@market"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+    root = Path(__file__).resolve().parents[1]
+    errors, _ = doc_mod.check_mcp_policy(root)
+    assert len(errors) == 2
+    assert "claude plugin 'inline@market' has decision unlisted" in errors[0]
+    assert "codex plugin 'file@market' has decision unlisted" in errors[1]
+    assert "private-endpoint" not in "\n".join(errors)
+
+
+def test_mcp_policy_checks_claude_denies_and_opencode_v2_layout(
+    monkeypatch, tmp_path
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    root = Path(__file__).resolve().parents[1]
+    assets = "unix/home/.config/mise/assets"
+    shutil.copytree(root / assets, tmp_path / assets)
+    permissions = tmp_path / assets / "claude/permissions.json"
+    data = json.loads(permissions.read_text(encoding="utf-8"))
+    data["deniedMcpServers"].remove({"serverName": "github"})
+    permissions.write_text(json.dumps(data), encoding="utf-8")
+    opencode = tmp_path / "unix/home/.config/opencode/opencode.json"
+    opencode.parent.mkdir(parents=True)
+    opencode.write_text('{"mcp":{"repowise":{"type":"local"}}}', encoding="utf-8")
+    errors, _ = doc_mod.check_mcp_policy(tmp_path)
+    assert len(errors) == 2
+    assert "missing Claude deny for 'github'" in errors[0]
+    assert "use OpenCode v2 mcp.servers for MCP declarations" in errors[1]
+
+
 @pytest.mark.parametrize(
     ("edit", "needle"),
     [

@@ -190,7 +190,7 @@
       "kind": "plugin",
       "harnesses": ["codex"],
       "decision": "keep",
-      "reason": "Declared CodeRabbit reviewer. The published plugin uses the CLI.",
+      "reason": "The published Codex plugin uses the CodeRabbit CLI and declares no MCP server for the Codex 0.172.0 tool allowlist.",
       "replacement": "coderabbit CLI for local review"
     },
     {

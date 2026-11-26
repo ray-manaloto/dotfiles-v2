@@ -12,6 +12,15 @@
     },
     {
       "serverName": "plugin:context7:context7"
+    },
+    {
+      "serverName": "apify"
+    },
+    {
+      "serverName": "firecrawl"
+    },
+    {
+      "serverName": "github"
     }
   ],
   "disableClaudeAiConnectors": true,

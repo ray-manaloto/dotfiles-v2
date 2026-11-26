@@ -45,7 +45,7 @@ hosts, Linux containers, and macOS VMs.
   Prefer `mise`, `hk`, `fnox`, `aube`, and `jdx` ecosystem tools, native compiled
   `hk` builtins (`Rust`, `Go`, `Haskell`, `Pkl`), and `mise fmt` for mise
   configs.
-- Before adding an MCP server or plugin, record its CLI, skill or SDK alternative and decision in `mcp-policy.json`.
+- **MCP policy:** Before adding an MCP server or plugin, record its CLI, skill or SDK alternative and decision in `mcp-policy.json`.
 - **Schemas and verification:** Declare public `$schema` / `#:schema` headers on
   supported config files. Prefer `mise doctor project` and `hk` checks/hooks
   over unit tests for upstream tools, git hooks, or config/setup verification

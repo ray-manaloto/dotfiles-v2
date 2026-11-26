@@ -7,11 +7,6 @@ import = ["./shared.toml"]
 [proxy]
 egress = "strict"
 rules = [
-  { secret = "CONTEXT7_API_KEY", domain = "mcp.context7.com", header = "authorization", placeholder = "fnox-placeholder-context7-mcp" },
-  { secret = "CONTEXT7_API_KEY", domain = "context7.com", header = "authorization", placeholder = "fnox-placeholder-context7-mcp" },
-  { secret = "EXA_API_KEY", domain = "mcp.exa.ai", header = "authorization", placeholder = "fnox-placeholder-exa-mcp" },
-  { secret = "EXA_API_KEY", domain = "api.exa.ai", header = "x-api-key", placeholder = "fnox-placeholder-exa-mcp" },
-  { secret = "EXA_API_KEY", domain = "api.exa.ai", header = "authorization", placeholder = "fnox-placeholder-exa-mcp" },
   { secret = "APIFY_TOKEN", domain = "api.apify.com", header = "authorization", placeholder = "fnox-placeholder-apify-token" },
   { secret = "FIRECRAWL_API_KEY", domain = "api.firecrawl.dev", header = "authorization", placeholder = "fnox-placeholder-firecrawl-mcp" },
   { secret = "FIRECRAWL_API_KEY", domain = "mcp.firecrawl.dev", header = "authorization", placeholder = "fnox-placeholder-firecrawl-mcp" },
