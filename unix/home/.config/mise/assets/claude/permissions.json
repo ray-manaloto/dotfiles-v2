@@ -5,7 +5,6 @@
       "Bash(hc ls *)",
       "Bash(hc get *)",
       "Bash(git status *)",
-      "Bash(git log *)",
       "Bash(git diff)",
       "Bash(git fetch)",
       "Bash(git fetch origin)",

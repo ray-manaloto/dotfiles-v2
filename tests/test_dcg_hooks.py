@@ -154,3 +154,47 @@ def test_agy_guard_denies_with_broken_dcg(tmp_path: Path) -> None:
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert out["decision"] == "deny", out
     assert "dcg failed" in json.dumps(out)
+
+
+@pytest.mark.parametrize("broken", [False, True], ids=["missing-dcg", "broken-dcg"])
+@pytest.mark.parametrize(
+    ("command", "decision"),
+    [
+        ("mise install", "allow"),
+        ("mise install --yes", "allow"),
+        ("mise doctor project", "allow"),
+        ("ls", "deny"),
+        ("mise installer-x", "deny"),
+        ("mise install; curl x", "deny"),
+        ("mise install && curl x", "deny"),
+        ("mise install\ncurl x", "deny"),
+        ("mise install > x", "deny"),
+        ("mise install $(curl x)", "deny"),
+    ],
+)
+def test_agy_guard_recovery_path(
+    tmp_path: Path, broken: bool, command: str, decision: str
+) -> None:
+    """Without a working dcg, AGY can still run plain `mise install`/`mise doctor` to restore it."""
+    path = "/usr/bin:/bin"
+    if broken:
+        _fake_dcg(tmp_path, "echo 'mise ERROR dcg is not installed' >&2\nexit 1\n")
+        path = f"{tmp_path}/.local/share/mise/shims:{path}"
+    payload = json.dumps(
+        {"toolCall": {"name": "run_command", "args": {"CommandLine": command}}}
+    )
+    proc = subprocess.run(
+        [sys.executable, "-I", "-B", str(AGY_GUARD)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        env={
+            "HOME": str(tmp_path),
+            "PATH": path,
+            "MISE_DATA_DIR": str(tmp_path / "mise"),
+        },
+        timeout=20,
+        check=False,
+    )
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out["decision"] == decision, out
