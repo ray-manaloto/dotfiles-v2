@@ -215,7 +215,17 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
         "unix/home/.config/mise/locks/**",
       )
     check =
-      #"python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity && { out="$(MISE_OFFLINE=1 MISE_CONFIG_DIR="$PWD/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global 2>&1)" && printf '%s\n' "$out" | head -1 || { printf '%s\n' "$out"; exit 1; }; }"#
+      #"""
+      python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity || exit $?
+      if out="$(MISE_OFFLINE=1 MISE_CONFIG_DIR="$PWD/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global 2>&1)"; then
+        # Keep the summary and diagnostics, omitting routine per-platform provenance rows.
+        printf '%s\n' "$out" | awk '!/^  [^[:space:]]+@[^[:space:]]+ for [[:alnum:]_-]+: (checksum only|cosign|github-attestations|none)$/'
+      else
+        rc=$?
+        printf '%s\n' "$out"
+        exit "$rc"
+      fi
+      """#
   }
   ["usage-lint"] = new Step {
     glob = List("tasks/**", "unix/home/.config/mise/tasks/**")
@@ -355,8 +365,9 @@ hooks {
         scan = "commits"
         // hk passes a step one from_ref/to_ref per push, so `git push origin a b` (or a delete plus
         // an update) scanned only one ref. push_leak_scan.py reads every line git gives the hook
-        // and scans all pushed commits the target remote lacks. A structured Command passes the
-        // hook input as single arguments (no shell); `effect = "read"` keeps it under `hk --safe`.
+        // and scans all pushed commits the target remote lacks. Pipe the ref list to avoid
+        // the exec argument size limit. `effect = "read"` keeps the step under `hk --safe`.
+        stdin = "{{hook_stdin}}"
         check = new CommandSpec {
           command = new Command {
             argv =
@@ -365,7 +376,6 @@ hooks {
                 "-I",
                 "-B",
                 "tasks/py/push_leak_scan.py",
-                "{{hook_stdin}}",
                 "{{hook_args}}",
               )
           }
