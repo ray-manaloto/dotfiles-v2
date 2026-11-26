@@ -2604,12 +2604,16 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
             else ""
         )
     settings = Path.home() / ".claude/settings.json"
-    try:
-        errors += _claude_settings_ship_errors(
-            "~/.claude/settings.json", json.loads(settings.read_text(encoding="utf-8"))
-        )
-    except (OSError, ValueError) as exc:
-        errors.append(f"claude-ship-env: cannot read ~/.claude/settings.json: {exc}")
+    if settings.is_file():  # no settings file means nothing disables the ship skills
+        try:
+            errors += _claude_settings_ship_errors(
+                "~/.claude/settings.json",
+                json.loads(settings.read_text(encoding="utf-8")),
+            )
+        except (OSError, ValueError) as exc:
+            errors.append(
+                f"claude-ship-env: cannot read ~/.claude/settings.json: {exc}"
+            )
     for name in sorted(_FLAG_FETCH_KILLERS & set(os.environ)):
         errors.append(
             f"claude-ship-env: this shell exports {name}; new Claude sessions started from it lose /ship and /steward"

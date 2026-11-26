@@ -2376,3 +2376,23 @@ def test_pr_ship_final_read_after_last_wait(tmp_path) -> None:
     )
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "RED" in proc.stderr
+
+
+def test_claude_ship_env_live_without_settings_file(tmp_path, monkeypatch) -> None:
+    """A host with no ~/.claude/settings.json has nothing that disables /ship."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    for name in doc_mod._FLAG_FETCH_KILLERS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(doc_mod.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / "unix/home/.config/mise/assets/claude").mkdir(parents=True)
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert errors == []
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"env": {"DO_NOT_TRACK": "1"}}')
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert any("~/.claude/settings.json env sets DO_NOT_TRACK" in e for e in errors), (
+        errors
+    )
