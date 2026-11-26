@@ -48,12 +48,19 @@ def _run(argv: list[str], timeout: int = 180) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
+FAIL = "FAIL: "
+
+
 def _result(label: str, rc: int, out: str) -> str:
-    """One sync log line; failures carry the command's last error line."""
+    """One sync log line. Any non-zero rc (incl. negative: killed by a signal) is prefixed FAIL."""
     if rc == 0:
         return f"{label}: rc=0"
     tail = out.strip().splitlines()[-1][:200] if out.strip() else ""
-    return f"{label}: rc={rc} {tail}".rstrip()
+    return f"{FAIL}{label}: rc={rc} {tail}".rstrip()
+
+
+def sync_failed(log: list[str]) -> bool:
+    return any(ln.startswith((FAIL, "MANUAL")) for ln in log)
 
 
 def _json(argv: list[str]) -> object:
@@ -316,7 +323,7 @@ def sync(manifest: dict, home: Path) -> list[str]:
         for name in spec.get("retired_mcps", []):
             if missing:
                 log.append(
-                    f"claude keep {name}: replacement plugins missing {missing}: rc=1"
+                    f"{FAIL}claude keep {name}: replacement plugins missing {missing}"
                 )
             elif claude_mcp_status(claude, name) is not None:
                 rc, out = _run([claude, "mcp", "remove", "--scope", "user", name])
@@ -347,7 +354,11 @@ def sync(manifest: dict, home: Path) -> list[str]:
             [repowise, "telemetry", "disable"],
         )
         log.append(_result("repowise telemetry disable", rc, out))
-    log.extend(apply_guard(r) for r in repowise_repos(default_roots(home)))
+    for repo in repowise_repos(default_roots(home)):
+        try:
+            log.append(apply_guard(repo))
+        except OSError as exc:
+            log.append(f"{FAIL}repowise guard {repo}: {exc}")
     return log
 
 
@@ -439,10 +450,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "sync":
         log = sync(manifest, home)
         _emit(log, "reviewer-plugins: up to date")
-        failed = [
-            ln for ln in log if re.search(r"rc=[1-9]", ln) or ln.startswith("MANUAL")
-        ]
-        return 1 if failed else 0
+        return 1 if sync_failed(log) else 0
     errs = check(manifest, home)
     _emit(errs, "reviewer-plugins: all declared plugins installed and Connected")
     return 1 if errs else 0
