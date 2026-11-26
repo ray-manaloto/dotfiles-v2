@@ -118,9 +118,9 @@ run = "python3 -I -B tasks/py/doctor_checks.py dockerignore-secret-guard"
 hint = "Ensure `.dockerignore` re-excludes `**/*.local.*`, `**/__pycache__`, `**/__pycache__/**`, `**/*.pyc`, and `**/.DS_Store` after `!unix/home/.config/mise/**`. Details: `mise run doctor:explain dockerignore-secret-guard`."
 
 [doctor.checks.mise-version-parity]
-description = "Pinned MISE_VER and min_version match across Dockerfile, tasks/vm/up, env:doctor, configs, and docs"
+description = "Pinned mise versions match across Dockerfile, tasks/vm/up, tasks/pc/up, env:doctor, CI workflows, AGENTS.md, and configs"
 run = "python3 -I -B tasks/py/doctor_checks.py mise-version-parity"
-hint = "Keep mise version pins synchronized across Dockerfile, tasks/vm/up, tasks/env/doctor, mise.toml, config.toml, AGENTS.md, and SKILL.md. Details: `mise run doctor:explain mise-version-parity`."
+hint = "Keep mise version pins synchronized across Dockerfile, tasks/vm/up, tasks/pc/up (incl. PACKSLIP_MISE_PIN), tasks/env/doctor, .github/workflows jdx/mise-action version:, mise.toml, config.toml, and AGENTS.md. Details: `mise run doctor:explain mise-version-parity`."
 
 [doctor.checks.config-hygiene]
 description = "mise configs and programs.json pass canonical registry, prerelease, wrapper, and [dotfiles] traversal hygiene checks"

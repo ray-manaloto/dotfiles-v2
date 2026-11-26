@@ -710,18 +710,53 @@ def _audit_hk_preset(repo_root: Path, *, offline: bool) -> list[AuditItem]:
         return []
     items: list[AuditItem] = []
 
+    sha_problems: list[str] = []
     cfg_vers = re.findall(
         r"raw\.githubusercontent\.com/ray-manaloto/hk-config/v([0-9]+\.[0-9]+\.[0-9]+)/",
         txt,
     )
+    # SHA-pinned form: raw URLs use a 40-hex commit and a `// hk-config vX.Y.Z` comment names it.
+    if re.search(
+        r"raw\.githubusercontent\.com/ray-manaloto/hk-config/[0-9a-f]{40}/", txt
+    ):
+        sha_vers = re.findall(
+            r"^//\s*hk-config v([0-9]+\.[0-9]+\.[0-9]+)\b", txt, re.MULTILINE
+        )
+        cfg_vers += sha_vers
+        shas = sorted(set(re.findall(r"ray-manaloto/hk-config/([0-9a-f]{40})/", txt)))
+        if not sha_vers:
+            sha_problems.append(
+                f"hk.pkl pins hk-config to {shas[0][:12]} without a `// hk-config vX.Y.Z` comment"
+            )
+        if len(shas) > 1:
+            sha_problems.append(
+                "hk.pkl references mixed hk-config commit SHAs: "
+                + ", ".join(x[:12] for x in shas)
+            )
+    if sha_problems and not cfg_vers:
+        items.append(
+            AuditItem(
+                name="ray-manaloto/hk-config",
+                source_kind=DepsAuditSourceKind.HK_PRESET,
+                file_path="hk.pkl",
+                os_scope=["macos", "linux", "container", "vm"],
+                current_version=None,
+                latest_version=None,
+                status=DepsAuditStatus.UNKNOWN,
+                release_url="https://github.com/ray-manaloto/hk-config/releases",
+                compare_url=None,
+                note="; ".join(sha_problems),
+            )
+        )
     if cfg_vers:
         unique_cfg = sorted(set(cfg_vers))
         cur = unique_cfg[0]
-        skew_cfg = (
-            f"hk.pkl references mixed hk-config versions: {', '.join(unique_cfg)}"
-            if len(unique_cfg) > 1
-            else None
-        )
+        skew_parts = list(sha_problems)
+        if len(unique_cfg) > 1:
+            skew_parts.append(
+                f"hk.pkl references mixed hk-config versions: {', '.join(unique_cfg)}"
+            )
+        skew_cfg = "; ".join(skew_parts) or None
         lat_tag, rel_url = (None, "https://github.com/ray-manaloto/hk-config/releases")
         if not offline:
             lat_tag, rel_url = _gh_latest_tag("ray-manaloto/hk-config")

@@ -14,9 +14,7 @@ run_outdated_check() {
 	local out_file err_file rc=0
 	out_file="$(mktemp)"
 	err_file="$(mktemp)"
-	if ! mise "$@" >"${out_file}" 2>"${err_file}"; then
-		rc=$?
-	fi
+	mise "$@" >"${out_file}" 2>"${err_file}" || rc=$?
 	local err_text out_text
 	err_text="$(cat "${err_file}")"
 	out_text="$(cat "${out_file}")"
@@ -51,9 +49,7 @@ run_outdated_check "mise-outdated-global" -C "${HOME}" outdated -b --json --glob
 switch_out="$(mktemp)"
 switch_err="$(mktemp)"
 switch_rc=0
-if ! mise -C "${repo_root}" backends switch --dry-run --global >"${switch_out}" 2>"${switch_err}"; then
-	switch_rc=$?
-fi
+mise -C "${repo_root}" backends switch --dry-run --global >"${switch_out}" 2>"${switch_err}" || switch_rc=$?
 if [[ ${verbose} == "true" && -s ${switch_out} ]]; then
 	cat "${switch_out}"
 fi
@@ -74,9 +70,7 @@ rm -f "${switch_out}" "${switch_err}"
 audit_file="$(mktemp)"
 audit_err="$(mktemp)"
 audit_rc=0
-if ! mise -C "${HOME}" audit --json >"${audit_file}" 2>"${audit_err}"; then
-	audit_rc=$?
-fi
+mise -C "${HOME}" audit --json >"${audit_file}" 2>"${audit_err}" || audit_rc=$?
 if [[ ! -s ${audit_file} ]]; then
 	printf 'FAIL  mise-audit: empty output (rc=%d): %s\n' "${audit_rc}" "$(cat "${audit_err}")" >&2
 	fail_count=$((fail_count + 1))
@@ -94,9 +88,7 @@ rm -f "${audit_file}" "${audit_err}"
 uv_file="$(mktemp)"
 uv_err="$(mktemp)"
 uv_rc=0
-if ! uv --directory "${repo_root}" audit --locked --preview-features audit-command,json-output --output-format json >"${uv_file}" 2>"${uv_err}"; then
-	uv_rc=$?
-fi
+uv --directory "${repo_root}" audit --locked --preview-features audit-command,json-output --output-format json >"${uv_file}" 2>"${uv_err}" || uv_rc=$?
 if [[ ${verbose} == "true" && -s ${uv_file} ]]; then
 	cat "${uv_file}"
 fi
@@ -187,9 +179,7 @@ if command -v zcode >/dev/null 2>&1; then
 	zcode_err="$(mktemp)"
 	zcode_out=""
 	zcode_rc=0
-	if ! zcode_out="$(ZCODE_CLI_SETTINGS_FILE="${repo_root}/unix/home/.zcode/cli/setting.json" zcode doctor --json </dev/null 2>"${zcode_err}")"; then
-		zcode_rc=$?
-	fi
+	zcode_out="$(ZCODE_CLI_SETTINGS_FILE="${repo_root}/unix/home/.zcode/cli/setting.json" zcode doctor --json </dev/null 2>"${zcode_err}")" || zcode_rc=$?
 	if [[ ${verbose} == "true" && -n ${zcode_out} ]]; then
 		printf '%s\n' "${zcode_out}"
 	fi

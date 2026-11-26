@@ -21,17 +21,18 @@ if [[ $upgrade == true ]]; then
 fi
 ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
 [[ $(uname -sm) == "Linux x86_64" ]]
-mise_ver="2026.11.14"
-packslip_ver="v1.11.5"
-packslip_sha="926bdf0536385f017321ac06d046edde21d624e1a2f9871545b3b14ecfeb1364"
-if [[ ! -x /usr/local/bin/mise || $(/usr/local/bin/mise --version | awk '{print $1}') != "$mise_ver" ]]; then
+MISE_VER="2026.11.14"
+PACKSLIP_VER="v1.11.5"
+PACKSLIP_SHA256_LINUX_X64="926bdf0536385f017321ac06d046edde21d624e1a2f9871545b3b14ecfeb1364"
+PACKSLIP_MISE_PIN="ps1_nlhmwtfeufglxv5myvwvronk7a"
+if [[ ! -x /usr/local/bin/mise || $(/usr/local/bin/mise --version | awk '{print $1}') != "$MISE_VER" ]]; then
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' EXIT
-	curl -fsSLo "$tmp/packslip" "https://github.com/jdx/packslip/releases/download/$packslip_ver/packslip-$packslip_ver-linux-x64"
-	printf '%s  %s\n' "$packslip_sha" "$tmp/packslip" | sha256sum -c -
+	curl -fsSLo "$tmp/packslip" "https://github.com/jdx/packslip/releases/download/$PACKSLIP_VER/packslip-$PACKSLIP_VER-linux-x64"
+	printf '%s  %s\n' "$PACKSLIP_SHA256_LINUX_X64" "$tmp/packslip" | sha256sum -c -
 	chmod 0755 "$tmp/packslip"
-	sudo -n "$tmp/packslip" install github.com/jdx/mise --version "$mise_ver" \
-		--pin ps1_nlhmwtfeufglxv5myvwvronk7a --system --bin-dir /usr/local/bin --force
+	sudo -n "$tmp/packslip" install github.com/jdx/mise --version "$MISE_VER" \
+		--pin "$PACKSLIP_MISE_PIN" --system --bin-dir /usr/local/bin --force
 fi
 REMOTE
 exec mise run pc:sync --host "$host"
