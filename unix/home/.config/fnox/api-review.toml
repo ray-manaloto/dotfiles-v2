@@ -1,0 +1,23 @@
+#:schema https://fnox.jdx.dev/schema.json
+# Checkout-scoped credentials for the historical review replay.
+
+import = ["./shared.toml"]
+
+[proxy]
+egress = "strict"
+
+[[proxy.rules]]
+secret = "OPENAI_REVIEW_API_KEY"
+domain = "api.openai.com"
+methods = ["POST"]
+paths = ["/v1/files", "/v1/batches", "/v1/decisions", "/v1/responses"]
+header = "authorization"
+placeholder = "fnox-placeholder-openai-review"
+
+[[proxy.rules]]
+secret = "OPENAI_REVIEW_API_KEY"
+domain = "api.openai.com"
+methods = ["GET"]
+paths = ["/v1/batches/*", "/v1/files/*/content"]
+header = "authorization"
+placeholder = "fnox-placeholder-openai-review"

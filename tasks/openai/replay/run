@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#MISE description="Replay merged PRs through the OpenAI reviewer under a $15 hard cap"
+#USAGE arg "<phase>" help="Collect, submit, poll, gather evidence, or finish a replay" {
+#USAGE   choices "prepare" "submit" "poll" "evidence" "finish" "regrade"
+#USAGE }
+#USAGE flag "--allow-private" help="Authorize private repository patches in prepare, submit, evidence, finish, or regrade"
+#USAGE flag "--cached-only" help="Use cached results only in finish or regrade"
+#USAGE flag "--retry-reserved" help="Authorize another charged attempt in submit, finish, or regrade"
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "${root}"
+export PYTHONPATH="${root}/tasks/openai/replay:${root}/.github/openai-review:${root}/unix/home/.config/mise/lib"
+cmd=("${root}/.venv/bin/python" -B tasks/openai/replay/run.py "${usage_phase:?}")
+if [[ ${usage_allow_private:-false} == true ]]; then
+	cmd+=(--allow-private)
+fi
+if [[ ${usage_retry_reserved:-false} == true ]]; then
+	cmd+=(--retry-reserved)
+fi
+if [[ ${usage_cached_only:-false} == true ]]; then
+	cmd+=(--cached-only)
+	exec "${cmd[@]}"
+fi
+if [[ ${usage_phase} == prepare || ${usage_phase} == evidence ]]; then
+	exec "${cmd[@]}"
+fi
+
+if [[ ${usage_phase} != poll ]]; then
+	"${cmd[@]}" --visibility-only
+	cmd+=(--visibility-checked)
+fi
+exec fnox -c "${root}/unix/home/.config/fnox/api-review.toml" -P api-review --no-defaults --non-interactive proxy run -- "${cmd[@]}"

@@ -138,6 +138,7 @@ from .herdr_roll_schema import (
     Timing,
 )
 from .mcp_policy_schema import Decision, Harness, Kind, McpPolicy, McpPolicyEntry
+from .openai_replay_schema import ReplaySpend
 from .pc_hub_schema import (
     AgentsViewOffloadOutcome,
     PcHubCheckState,
@@ -300,6 +301,7 @@ __all__ = [
     "ProposalStatus",
     "ProvenanceRef",
     "ReceiptRecord",
+    "ReplaySpend",
     "RetentionClass",
     "ReturnEntry",
     "ReviewVerdict",

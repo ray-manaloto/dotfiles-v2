@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.dotfiles.dev/openai_replay.schema.json",
+  "title": "ReplaySpend",
+  "description": "One durable reservation or metered result in a review replay.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reserved_microusd"],
+  "properties": {
+    "reserved_microusd": { "type": "integer", "minimum": 0 },
+    "actual_microusd": { "type": ["integer", "null"], "minimum": 0 },
+    "input_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+    "cached_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+    "cache_write_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+    "output_tokens": { "type": "integer", "minimum": 0, "default": 0 }
+  }
+}
