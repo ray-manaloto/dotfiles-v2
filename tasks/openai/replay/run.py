@@ -13,7 +13,7 @@ import review
 import triage
 from filelock import FileLock
 from grade import grade, grade_context, production_scores
-from inputs import LOGGER, collect, read_json, write_json
+from inputs import LOGGER, collect, read_json, require_private_opt_in, write_json
 from reporting import render
 from spend import meter
 
@@ -146,15 +146,16 @@ def main():
     parser.add_argument(
         "phase", choices=["prepare", "submit", "poll", "evidence", "finish", "regrade"]
     )
+    parser.add_argument("--allow-private", action="store_true")
     parser.add_argument("--cached-only", action="store_true")
     parser.add_argument("--retry-reserved", action="store_true")
     args = parser.parse_args()
     if args.cached_only and args.phase not in {"finish", "regrade"}:
         parser.error("--cached-only requires finish or regrade.")
     if args.retry_reserved and (
-        args.cached_only or args.phase not in {"submit", "finish"}
+        args.cached_only or args.phase not in {"submit", "finish", "regrade"}
     ):
-        parser.error("--retry-reserved requires a live submit or finish.")
+        parser.error("--retry-reserved requires a live submit, finish, or regrade.")
     plan_id = os.environ.get("PLAN_ID", "")
     plan_root = (ROOT / ".planning" / plan_id).resolve()
     if (
@@ -168,7 +169,13 @@ def main():
     configure_logging(jsonl_path=cache / "replay.log")
     with FileLock(cache / "replay.lock", timeout=0):
         schema = read_json(review.FINDINGS_SCHEMA)
-        rows = collect(cache, cached_only=args.phase != "prepare")
+        rows = collect(
+            cache, cached_only=args.phase != "prepare", allow_private=args.allow_private
+        )
+        if not args.cached_only and args.phase in {"submit", "finish", "regrade"}:
+            require_private_opt_in(
+                (row for row in rows if "data" in row), allow_private=args.allow_private
+            )
         requests = batch.prepare(rows, schema)
         estimate = batch.estimate(requests, schema, triage.MAX_REQUEST_BYTES)
         write_json(cache / "estimate.json", estimate)
@@ -210,7 +217,7 @@ def main():
             regrade=regrade,
         )
         if regrade:
-            independent.regrade(cache, key, records)
+            independent.regrade(cache, key, records, retry_reserved=args.retry_reserved)
             return
         report = ROOT / "tasks/openai/replay/report.md"
         report.write_text(

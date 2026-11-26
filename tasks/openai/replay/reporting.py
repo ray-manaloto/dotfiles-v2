@@ -103,6 +103,10 @@ def independent_section(summary, grid):
             "[OpenAI API pricing](https://developers.openai.com/api/docs/pricing)",
         ]
     )
+    if amount := summary.get("unreconciled"):
+        lines.append(
+            f"Unreconciled independent reservations still count against the cap: {money(amount)}."
+        )
     if unmetered:
         lines.append(f"Usage was unavailable for {unmetered} responses.")
     if (
@@ -158,6 +162,9 @@ def render(
         + ".",
         f"Production patch checks admitted **{passed}** and declined **{sum(decline.values())}**.",
         f"Successfully parsed **{response_counts['parsed']}** Batch reviews.",
+        "",
+        "Live replay requires `--allow-private` to send private repository patches or "
+        "evidence to OpenAI. Cache-only report reproduction reads local receipts.",
         "",
         "## Spend",
         "",

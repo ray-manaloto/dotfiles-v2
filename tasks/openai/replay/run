@@ -3,14 +3,18 @@
 #USAGE arg "<phase>" help="Collect, submit, poll, gather evidence, or finish a replay" {
 #USAGE   choices "prepare" "submit" "poll" "evidence" "finish" "regrade"
 #USAGE }
+#USAGE flag "--allow-private" help="Authorize private repository patches in prepare, submit, finish, or regrade"
 #USAGE flag "--cached-only" help="Use cached results only in finish or regrade"
-#USAGE flag "--retry-reserved" help="Authorize another charged attempt in submit or finish"
+#USAGE flag "--retry-reserved" help="Authorize another charged attempt in submit, finish, or regrade"
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
 cd "${root}"
 export PYTHONPATH="${root}/tasks/openai/replay:${root}/.github/openai-review:${root}/unix/home/.config/mise/lib"
 cmd=("${root}/.venv/bin/python" -B tasks/openai/replay/run.py "${usage_phase:?}")
+if [[ ${usage_allow_private:-false} == true ]]; then
+	cmd+=(--allow-private)
+fi
 if [[ ${usage_retry_reserved:-false} == true ]]; then
 	cmd+=(--retry-reserved)
 fi

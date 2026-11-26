@@ -4,6 +4,8 @@ Batch status is **completed**. Collected **161** merged PRs. dotfiles-v2 32, kno
 Production patch checks admitted **114** and declined **47**.
 Successfully parsed **114** Batch reviews.
 
+Live replay requires `--allow-private` to send private repository patches or evidence to OpenAI. Cache-only report reproduction reads local receipts.
+
 ## Spend
 
 - Pre-submit upper estimate $13.194583, comprising Batch $5.818327 and Decisions $7.376256.

@@ -104,25 +104,35 @@ def report_result(receipt):
     }
 
 
-def regrade(cache, key, records):
+def regrade(cache, key, records, *, retry_reserved=False):
     rows, total_rejected = cohort(records)
     reservations = {
-        path.name: read_json(path)["reserved"]
-        for path in cache.glob("independent-*-*.json")
+        path: read_json(path) for path in cache.glob("independent-*-*.json")
     }
-    estimate = sum(reservations.values())
+    estimate = sum(receipt["reserved"] for receipt in reservations.values())
+    unreconciled = sum(
+        receipt["reserved"]
+        for receipt in reservations.values()
+        if "result" not in receipt
+    )
     prepared = []
     for item in rows:
         ident = item["id"]
         receipt = cache / f"independent-{ident}.json"
-        if receipt.exists():
-            cached = read_json(receipt)
-            if "result" not in cached:
-                raise RuntimeError("Unreconciled independent request reservation.")
-            prepared.append((item, receipt, cached, None))
+        attempt = 0
+        while receipt in reservations and "result" not in reservations[receipt]:
+            attempt += 1
+            receipt = cache / f"independent-{ident}-retry-{attempt}.json"
+        if receipt in reservations:
+            prepared.append((item, receipt, reservations[receipt], None))
             continue
         if key is None:
             raise RuntimeError("Cached independent response is missing.")
+        if attempt and not retry_reserved:
+            raise RuntimeError(
+                "An independent request already has a reservation. "
+                "Use --retry-reserved to charge another attempt."
+            )
         path = cache / f"evidence-{ident}.json"
         body = payload({**item, "evidence": read_json(path) if path.is_file() else {}})
         guard = {"reserved": upper(body)}
@@ -149,6 +159,7 @@ def regrade(cache, key, records):
         cache / "independent-summary.json",
         {
             "estimate": estimate,
+            "unreconciled": unreconciled,
             "seed": SEED,
             "total_rejected": total_rejected,
             "rows": measured,

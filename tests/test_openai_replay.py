@@ -1,6 +1,7 @@
 """Exercise replay changes with local fixtures and fake providers."""
 
 import importlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,10 @@ def replay_modules(monkeypatch):
     ]
 
 
-def test_collect_persists_oversized_decline(tmp_path, monkeypatch, replay_modules):
+@pytest.mark.parametrize("private", [False, True])
+def test_collect_persists_oversized_decline(
+    tmp_path, monkeypatch, replay_modules, private
+):
     inputs, *_ = replay_modules
     review = inputs.review
     repo = inputs.REPOS[0]
@@ -25,7 +29,7 @@ def test_collect_persists_oversized_decline(tmp_path, monkeypatch, replay_module
     pr = {
         "merged": True,
         "base": {
-            "repo": {"full_name": repo, "default_branch": "main"},
+            "repo": {"full_name": repo, "default_branch": "main", "private": private},
             "ref": "main",
             "sha": "a" * 40,
         },
@@ -51,12 +55,20 @@ def test_collect_persists_oversized_decline(tmp_path, monkeypatch, replay_module
         }.__getitem__,
     )
 
-    row = inputs.collect_one(tmp_path, repo, 123)
+    if private:
+        with pytest.raises(RuntimeError, match="--allow-private"):
+            inputs.collect_one(tmp_path, repo, 123)
+        assert not list(tmp_path.glob("pr-*.json"))
+
+    row = inputs.collect_one(tmp_path, repo, 123, allow_private=private)
 
     assert "data" not in row
     assert row["decline"] == "No reviewable files remain after patch checks."
     assert row["skipped"] == {"oversized": 1}
-    assert inputs.collect_one(tmp_path, repo, 123) == row
+    assert inputs.collect_one(tmp_path, repo, 123, allow_private=private) == row
+    if private:
+        with pytest.raises(RuntimeError, match="--allow-private"):
+            inputs.collect_one(tmp_path, repo, 123)
 
 
 def test_missing_line_has_no_patch_excerpt(replay_modules):
@@ -182,3 +194,79 @@ def test_regrade_rebuilds_summary_from_receipt(tmp_path, monkeypatch, replay_mod
     assert len(sent) == 1
     assert path.read_bytes() == first
     assert inputs.read_json(path)["rows"][0]["verdict"] == "defect"
+
+
+def test_regrade_retry_keeps_ambiguous_attempt_charged(
+    tmp_path, monkeypatch, replay_modules
+):
+    inputs, *_ = replay_modules
+    independent = importlib.import_module("independent")
+    rows = [
+        {
+            "id": "0-123-finding",
+            "scores": (0.91, 0.0),
+            "luna": "incorrect",
+            "finding": {"claim": "fixture claim"},
+            "prior": [],
+        }
+    ]
+    replies = iter(
+        (None, {"model": "gpt-6-sol", "status": "incomplete", "usage": None})
+    )
+
+    def respond(*_args, **_kwargs):
+        reply = next(replies)
+        if reply is None:
+            raise independent.review.ReviewError("Fake transport failure.")
+        return reply
+
+    monkeypatch.setattr(independent.review, "request_json", respond)
+    with pytest.raises(independent.review.ReviewError):
+        independent.regrade(tmp_path, "placeholder", rows)
+    first = tmp_path / "independent-0-123-finding.json"
+    reservation = inputs.read_json(first)
+    cost = reservation["reserved"]
+    with pytest.raises(RuntimeError, match="--retry-reserved"):
+        independent.regrade(tmp_path, "placeholder", rows)
+    monkeypatch.setattr(independent, "CAP", 2 * cost - 1)
+    with pytest.raises(RuntimeError, match="added"):
+        independent.regrade(tmp_path, "placeholder", rows, retry_reserved=True)
+
+    monkeypatch.setattr(independent, "CAP", 2 * cost)
+    independent.regrade(tmp_path, "placeholder", rows, retry_reserved=True)
+    independent.regrade(tmp_path, None, rows)
+    summary = inputs.read_json(tmp_path / "independent-summary.json")
+
+    assert inputs.read_json(first) == reservation
+    assert summary["estimate"] == 2 * cost
+    assert summary["unreconciled"] == cost
+
+
+@pytest.mark.parametrize("phase", ["submit", "finish", "regrade"])
+@pytest.mark.parametrize("privacy", [{"private": True}, {}], ids=["private", "legacy"])
+def test_sending_phases_refuse_private_or_unverified_inputs(
+    tmp_path, monkeypatch, replay_modules, phase, privacy
+):
+    _, _, batch, _ = replay_modules
+    run = importlib.import_module("run")
+    plan = tmp_path / ".planning" / "fixture"
+    plan.mkdir(parents=True)
+    (plan / "task_plan.md").touch()
+    monkeypatch.setenv("PLAN_ID", plan.name)
+    monkeypatch.setattr(run, "ROOT", tmp_path)
+    monkeypatch.setattr(run, "configure_logging", lambda **_: None)
+    monkeypatch.setattr(run, "collect", lambda *_, **__: [{"data": "[]", **privacy}])
+
+    def stop_after_privacy_check(*_args):
+        raise ValueError("Validation reached request preparation.")
+
+    monkeypatch.setattr(batch, "prepare", stop_after_privacy_check)
+    monkeypatch.setattr(sys, "argv", ["run.py", phase])
+    # Restore the caller's umask, which the CLI normally sets for its own process.
+    monkeypatch.setattr(run.os, "umask", lambda _: None)
+    with pytest.raises(RuntimeError, match="--allow-private"):
+        run.main()
+
+    monkeypatch.setattr(sys, "argv", ["run.py", phase, "--allow-private"])
+    with pytest.raises(ValueError, match="Validation reached request preparation"):
+        run.main()

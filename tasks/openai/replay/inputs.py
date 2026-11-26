@@ -59,11 +59,21 @@ def merged_inventory():
         yield from ((repo, number) for number in sorted(numbers))
 
 
-def collect_one(cache, repo, number):
+def require_private_opt_in(rows, *, allow_private):
+    if not allow_private and any(row.get("private") is not False for row in rows):
+        raise RuntimeError(
+            "Replay includes private repositories or unverified visibility. "
+            "Pass --allow-private to authorize sending their patches to OpenAI."
+        )
+
+
+def collect_one(cache, repo, number, *, allow_private=False):
     identifier = f"{REPOS.index(repo)}-{number}"
     path = cache / f"pr-{identifier}.json"
     if path.exists():
-        return read_json(path)
+        row = read_json(path)
+        require_private_opt_in([row], allow_private=allow_private)
+        return row
     endpoint = f"repos/{repo}/pulls/{number}"
     pr = github(endpoint)
     if not (
@@ -80,7 +90,9 @@ def collect_one(cache, repo, number):
         "merge": pr["merge_commit_sha"],
         "merged_at": pr["merged_at"],
         "default_branch": pr["base"]["repo"]["default_branch"],
+        "private": pr["base"]["repo"].get("private"),
     }
+    require_private_opt_in([row], allow_private=allow_private)
     count = pr["changed_files"]
     if pr["base"]["ref"] != row["default_branch"]:
         row["decline"] = "non-default-base-branch"
@@ -110,7 +122,7 @@ def collect_one(cache, repo, number):
     return row
 
 
-def collect(cache: Path, *, cached_only=False):
+def collect(cache: Path, *, cached_only=False, allow_private=False):
     manifest = cache / "inventory.json"
     if cached_only:
         if not manifest.exists():
@@ -123,6 +135,10 @@ def collect(cache: Path, *, cached_only=False):
     if not manifest.exists():
         write_json(manifest, refs)
     with ThreadPoolExecutor(max_workers=4) as workers:
-        rows = list(workers.map(lambda ref: collect_one(cache, *ref), refs))
+        rows = list(
+            workers.map(
+                lambda ref: collect_one(cache, *ref, allow_private=allow_private), refs
+            )
+        )
     LOGGER.info("github_inventory_cached", prs=len(rows))
     return rows

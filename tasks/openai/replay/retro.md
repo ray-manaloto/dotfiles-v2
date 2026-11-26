@@ -14,7 +14,7 @@ have separate 48-hour expirations.
 A pre-submit estimate reserves the full review output allowance and a bounded
 triage and grading pass for every possible finding. A durable reservation
 blocks automatic retries after an ambiguous request. Pass `--retry-reserved`
-to `submit` or `finish` to explicitly authorize another attempt. Each attempt
+to `submit`, `finish`, or `regrade` to explicitly authorize another attempt. Each attempt
 counts against the cap, including earlier reservations without usage receipts.
 An ambiguous Batch submission may have created a separate billable batch.
 
@@ -25,7 +25,9 @@ tokens, including cache reads and writes. Output tokens carry no charge.
 ## Reproduce
 
 Run from a linked worktree with an active plan and a provisioned Python
-environment. Each phase reuses the same plan's ignored replay cache.
+environment. Each phase reuses the same plan's ignored replay cache. See the
+[replay README](README.md) for the private-repository opt-in required in the
+historical cohort.
 
 1. `mise run openai:replay:run prepare` fetches PR inputs and estimates spend.
 2. `mise run openai:replay:run submit` uploads the review requests and creates the batch.
