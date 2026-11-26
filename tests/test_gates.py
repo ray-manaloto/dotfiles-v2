@@ -2016,7 +2016,7 @@ def test_config_hygiene_flag_fetch_edge_cases(tmp_path, monkeypatch) -> None:
     dockerfile = tmp_path / "docker" / "ubuntu" / "Dockerfile"
     dockerfile.parent.mkdir(parents=True)
     dockerfile.write_text(
-        "# DO_NOT_TRACK=1 is fine in a comment\nRUN DO_NOT_TRACK=1 true\nENV container=docker \\\n    DISABLE_TELEMETRY=1\nENV DISABLE_GROWTHBOOK 1\n"
+        '# DO_NOT_TRACK=1 is fine in a comment\nRUN DO_NOT_TRACK=1 true\nENV container=docker \\\n    DISABLE_TELEMETRY=1\nENV DISABLE_GROWTHBOOK 1\nENV\tCLAUDE_CODE_DISABLE_SHIP=1\nENV EXAMPLE="env DO_NOT_TRACK=1 api_runner"\n'
     )
     monkeypatch.setattr(
         doc_mod,
@@ -2037,6 +2037,9 @@ def test_config_hygiene_flag_fetch_edge_cases(tmp_path, monkeypatch) -> None:
         "docker/ubuntu/Dockerfile" in e and "DISABLE_GROWTHBOOK" in e for e in errors
     ), errors
     assert not any("Dockerfile" in e and "DO_NOT_TRACK" in e for e in errors), errors
+    assert any("Dockerfile" in e and "CLAUDE_CODE_DISABLE_SHIP" in e for e in errors), (
+        errors
+    )
 
 
 def test_config_hygiene_flag_fetch_shell_and_extra_configs(tmp_path) -> None:

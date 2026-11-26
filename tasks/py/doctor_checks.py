@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1665,9 +1666,6 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
                     continue
                 errors.append(f"config-hygiene: {rel} [env] sets {name}; {msg}")
     # Only ENV instructions persist into containers (RUN-scoped `NAME=1 cmd` is fine); both `ENV K=V` and `ENV K V`.
-    env_re = re.compile(
-        r"(?:^|\s)(" + "|".join(sorted(_FLAG_FETCH_KILLERS)) + r")(?:=|\s)"
-    )
     for dockerfile in sorted(repo_root.glob("docker/**/Dockerfile*")):
         try:
             text = dockerfile.read_text(encoding="utf-8")
@@ -1685,7 +1683,21 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
             for ln in logical.splitlines()
             if re.match(r"ENV\s", ln.strip(), re.IGNORECASE)
         ]
-        for name in sorted({m for ln in env_lines for m in env_re.findall(" " + ln)}):
+        keys: set[str] = set()
+        for ln in env_lines:
+            try:
+                args = shlex.split(ln)
+            except ValueError:
+                args = ln.split()
+            if not args:
+                continue
+            # `ENV K=V K2="a b"` sets only the keys; legacy `ENV K V` sets the first word.
+            keys |= (
+                {a.split("=", 1)[0] for a in args if "=" in a}
+                if "=" in args[0]
+                else {args[0]}
+            )
+        for name in sorted(keys & _FLAG_FETCH_KILLERS):
             errors.append(
                 f"config-hygiene: {dockerfile.relative_to(repo_root).as_posix()} sets {name}; {msg}"
             )
