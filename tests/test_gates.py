@@ -1975,6 +1975,16 @@ def test_claude_mcp_status_settled_rides_out_transient_auth(
     assert sleeps == [5.0, 5.0]
 
     sleeps.clear()
+    expired = lib.time.monotonic()  # budget already spent: report without retrying
+    assert (
+        lib.claude_mcp_status_settled(
+            "claude", "x", sleep=sleeps.append, deadline=expired
+        )
+        == "! Needs authentication"
+    )
+    assert sleeps == []
+
+    sleeps.clear()
     monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: None)
     assert lib.claude_mcp_status_settled("claude", "x", sleep=sleeps.append) is None
     assert sleeps == []  # unregistered / hung CLI is never retried
