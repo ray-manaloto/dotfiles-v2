@@ -1757,6 +1757,7 @@ def _reviewer_repo(tmp_path: Path, mutate=None) -> Path:
 def test_reviewer_plugins_repo_scope_passes_on_real_tree(monkeypatch, tmp_path) -> None:
     doc_mod = _load_task_module("doctor_checks")
     monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    monkeypatch.delenv("CI", raising=False)
     errs, msg = doc_mod.check_reviewer_plugins(_reviewer_repo(tmp_path))
     assert errs == [] and msg.startswith("DOTFILES_DOCTOR_SCOPE=repo:")
 
@@ -1922,3 +1923,52 @@ def test_mise_lock_integrity_accepts_pypi_uv_lock_dir(
     errs = doc_mod.check_mise_lock_integrity(tmp_path)
     assert not any("platforms." in e or "Unreferenced" in e for e in errs), errs
     assert any("uv.lock" in e for e in errs) is (not with_uv_lock), errs
+
+
+def test_config_hygiene_allows_backend_for_tools_not_in_registry(
+    monkeypatch, tmp_path
+) -> None:
+    """Short-name rule applies only when a registry entry exists; PyPI/GitHub-only tools never block."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[tools]\n"pipx:repowise" = "0.62.0"\n"github:example/notinregistry" = "1.0.0"\nhk = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        doc_mod,
+        "_load_mise_registry_map",
+        lambda: {"aqua:jdx/hk": ("hk", ["aqua:jdx/hk"])},
+    )
+    errs = doc_mod.check_config_hygiene(tmp_path)
+    assert not any("canonical mise registry short name" in e for e in errs), errs
+
+
+def test_repowise_fallback_rejects_values_repowise_reads_as_enabled(tmp_path) -> None:
+    """`enabled: disabled` is not a repowise FALSY spelling, so it must not count as guarded."""
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    assert not lib._guarded_fallback("distill:\n  commands:\n    enabled: disabled\n")
+    assert lib._guarded_fallback("distill:\n  commands:\n    permission: deny\n")
+
+
+def test_reviewer_plugins_lib_parses_on_python39() -> None:
+    """Hooks/bootstrap may run under /usr/bin/python3 (3.9): no PEP 758 bare-tuple excepts."""
+    import ast
+
+    src = (
+        Path(__file__).resolve().parents[1]
+        / "unix/home/.config/mise/lib/reviewer_plugins.py"
+    ).read_text(encoding="utf-8")
+    ast.parse(src, feature_version=(3, 9))
+
+
+def test_repowise_telemetry_reads_persistent_consent(tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    home = tmp_path / "home"
+    assert lib.repowise_telemetry_enabled(home) is True
+    (home / ".repowise").mkdir(parents=True)
+    (home / ".repowise" / "platform.json").write_text('{"telemetry_enabled": false}')
+    assert lib.repowise_telemetry_enabled(home) is False

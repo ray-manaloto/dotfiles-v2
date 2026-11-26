@@ -41,9 +41,19 @@ def _run(argv: list[str], timeout: int = 180) -> tuple[int, str]:
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:  # fmt: skip
         return 1, str(exc)
+    if proc.returncode != 0:
+        return proc.returncode, (proc.stderr or proc.stdout).strip()
     return proc.returncode, proc.stdout
+
+
+def _result(label: str, rc: int, out: str) -> str:
+    """One sync log line; failures carry the command's last error line."""
+    if rc == 0:
+        return f"{label}: rc=0"
+    tail = out.strip().splitlines()[-1][:200] if out.strip() else ""
+    return f"{label}: rc={rc} {tail}".rstrip()
 
 
 def _json(argv: list[str]) -> object:
@@ -196,13 +206,16 @@ def _helper(py: str, mode: str, repo: Path) -> bool | None:
             if proc.returncode == 0
             else None
         )
-    except OSError, subprocess.TimeoutExpired, ValueError, KeyError:
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):  # fmt: skip
         return None
 
 
 def _guarded_fallback(text: str) -> bool:
     """Stdlib approximation when the repowise CLI is absent: any indent, quoted booleans, comments."""
-    off = r"[\"']?(false|off|no|0|deny|disable|disabled|none)[\"']?\s*(#.*)?$"
+    off = r"[\"']?(false|off|no|0)[\"']?\s*(#.*)?$"  # repowise parse_flag FALSY
+    perm_off = (
+        r"[\"']?(off|deny|disable|disabled|none|false)[\"']?\s*(#.*)?$"  # _OFF_VALUES
+    )
     lines = [ln.rstrip("\r") for ln in text.splitlines()]
     in_distill = in_commands = False
     distill_indent = commands_indent = -1
@@ -236,7 +249,7 @@ def _guarded_fallback(text: str) -> bool:
                 commands_indent = indent
             if indent == commands_indent and (
                 re.fullmatch(r"enabled:\s*" + off, key, re.I)
-                or re.fullmatch(r"permission:\s*" + off, key, re.I)
+                or re.fullmatch(r"permission:\s*" + perm_off, key, re.I)
             ):
                 return True
     return False
@@ -278,7 +291,7 @@ def apply_guard(repo: Path, py: str | None = None) -> str:
 
 
 def default_roots(home: Path) -> list[Path]:
-    return [home / "dev"]
+    return [home / "dev", home / ".codex" / "worktrees"]
 
 
 # --- sync / check -------------------------------------------------------------------------
@@ -292,63 +305,65 @@ def sync(manifest: dict, home: Path) -> list[str]:
         plugins, mps = claude_state(claude)
         for name, src in spec.get("marketplaces", {}).items():
             if name not in mps:
-                rc, _ = _run([claude, "plugin", "marketplace", "add", src])
-                log.append(f"claude marketplace add {src}: rc={rc}")
+                rc, out = _run([claude, "plugin", "marketplace", "add", src])
+                log.append(_result(f"claude marketplace add {src}", rc, out))
         for pid in spec.get("plugins", []):
             if pid not in plugins:
-                rc, _ = _run([claude, "plugin", "install", pid])
-                log.append(f"claude plugin install {pid}: rc={rc}")
+                rc, out = _run([claude, "plugin", "install", pid])
+                log.append(_result(f"claude plugin install {pid}", rc, out))
+        plugins, _ = claude_state(claude)
+        missing = [p for p in spec.get("plugins", []) if p not in plugins]
         for name in spec.get("retired_mcps", []):
-            if claude_mcp_status(claude, name) is not None:
-                rc, _ = _run([claude, "mcp", "remove", "--scope", "user", name])
-                log.append(f"claude mcp remove {name}: rc={rc}")
+            if missing:
+                log.append(
+                    f"claude keep {name}: replacement plugins missing {missing}: rc=1"
+                )
+            elif claude_mcp_status(claude, name) is not None:
+                rc, out = _run([claude, "mcp", "remove", "--scope", "user", name])
+                log.append(_result(f"claude mcp remove {name}", rc, out))
     codex = _bin("codex", home)
     if codex and "codex" in manifest:
         spec = manifest["codex"]
         installed, mps = codex_state(codex)
         for name, src in spec.get("marketplaces", {}).items():
             if name not in mps:
-                rc, _ = _run([codex, "plugin", "marketplace", "add", src])
-                log.append(f"codex marketplace add {src}: rc={rc}")
+                rc, out = _run([codex, "plugin", "marketplace", "add", src])
+                log.append(_result(f"codex marketplace add {src}", rc, out))
         for pid in spec.get("plugins", []):
             if pid not in installed:
-                rc, _ = _run([codex, "plugin", "add", pid])
-                log.append(f"codex plugin add {pid}: rc={rc}")
+                rc, out = _run([codex, "plugin", "add", pid])
+                log.append(_result(f"codex plugin add {pid}", rc, out))
     agy = _bin("agy", home)
     if agy and "agy" in manifest:
         have = agy_state(agy)
         for name, target in manifest["agy"].get("plugins", {}).items():
             if name not in have:
-                rc, _ = _run([agy, "plugin", "install", target])
-                log.append(f"agy plugin install {target}: rc={rc}")
+                rc, out = _run([agy, "plugin", "install", target])
+                log.append(_result(f"agy plugin install {target}", rc, out))
     repowise = _bin("repowise", home)
-    if repowise and repowise_telemetry_enabled(repowise):
+    if repowise and repowise_telemetry_enabled(home):
         # Persistent opt-out: Codex starts MCP servers with a cleared env, so DO_NOT_TRACK never reaches them.
-        rc, _ = _run([repowise, "telemetry", "disable"])
-        log.append(f"repowise telemetry disable: rc={rc}")
+        rc, out = _run(
+            [repowise, "telemetry", "disable"],
+        )
+        log.append(_result("repowise telemetry disable", rc, out))
     log.extend(apply_guard(r) for r in repowise_repos(default_roots(home)))
     return log
 
 
-def repowise_telemetry_enabled(repowise: str) -> bool:
-    """True unless `repowise telemetry status` reports the persistent opt-out (env vars ignored)."""
-    env = {k: v for k, v in os.environ.items() if k not in _TELEMETRY_ENV}
+def repowise_telemetry_enabled(home: Path) -> bool:
+    """True unless repowise's persistent consent (~/.repowise/platform.json) is off.
+
+    Read the file directly: `repowise telemetry status` is itself instrumented, and Codex starts MCP
+    servers with a cleared env, so only the persisted opt-out covers every harness.
+    """
     try:
-        out = subprocess.run(
-            [repowise, "telemetry", "status"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-            env=env,
-        ).stdout
-    except OSError, subprocess.TimeoutExpired:
+        state = json.loads(
+            (home / ".repowise" / "platform.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):  # fmt: skip
         return True
-    return re.search(r"^Telemetry:\s*disabled", out, re.M) is None
-
-
-_TELEMETRY_ENV = ("DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED", "REPOWISE_OFFLINE")
+    return not (isinstance(state, dict) and state.get("telemetry_enabled") is False)
 
 
 def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list[str]:
@@ -389,7 +404,7 @@ def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list
             if n not in have
         ]
     repowise = _bin("repowise", home)
-    if repowise and repowise_telemetry_enabled(repowise):
+    if repowise and repowise_telemetry_enabled(home):
         errors.append("repowise telemetry enabled (run `repowise telemetry disable`)")
     errors += [
         f"repowise rewrite not disabled: {r}/.repowise/config.yaml (run `mise run repowise:guard`)"
@@ -406,10 +421,17 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check")
     g = sub.add_parser("guard")
     g.add_argument("repos", nargs="*", type=Path)
+    g.add_argument(
+        "--under", type=Path, help="also guard every indexed repo below this folder"
+    )
     args = ap.parse_args(argv)
     home = Path.home()
     if args.cmd == "guard":
-        repos = [p.resolve() for p in args.repos] or repowise_repos(default_roots(home))
+        repos = [p.resolve() for p in args.repos]
+        if args.under:
+            under = args.under.resolve()
+            repos += [under, *repowise_repos([under])]
+        repos = sorted(set(repos)) or repowise_repos(default_roots(home))
         out = [apply_guard(r) for r in repos if (r / ".repowise").is_dir()]
         _emit(out, "repowise: no indexed repos")
         return 1 if any(o.startswith("MANUAL") for o in out) else 0

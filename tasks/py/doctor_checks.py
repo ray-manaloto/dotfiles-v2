@@ -1605,7 +1605,9 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
 
     reg_map, short_to_backends = _normalize_registry_entries(raw_reg_map)
 
-    # 1, 2, 3, 4 & 6. Registry canonical short names, hyphenated npm prerelease, wrapper checks, and dotfiles paths across config*.toml
+    # 1, 2, 3, 4 & 6. Registry canonical short names, hyphenated npm prerelease, wrapper checks, and dotfiles paths across config*.toml.
+    # Short-name rule: a backend-qualified key is an error only when `mise registry` already maps it to a
+    # short name (so upstream can switch backends). Tools absent from the registry keep an explicit backend.
     for cfg_file in sorted(mise_dir.glob("config*.toml")):
         cfg_data = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
         rel = cfg_file.relative_to(repo_root).as_posix()

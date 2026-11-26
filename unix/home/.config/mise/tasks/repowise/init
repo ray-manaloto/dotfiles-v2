@@ -12,4 +12,5 @@ lib="$(cd "$(dirname "$0")/../.." && pwd)/lib/reviewer_plugins.py"
 mkdir -p "${repo}/.repowise"
 python3 -I -B "${lib}" guard "${repo}"
 DO_NOT_TRACK=1 REPOWISE_TELEMETRY_DISABLED=1 repowise init "$@" "${repo}"
-python3 -I -B "${lib}" guard "${repo}"
+# repowise may redirect to a child repo (e.g. a folder holding one repo): guard every index under it.
+python3 -I -B "${lib}" guard --under "${repo}"
