@@ -152,6 +152,15 @@ from .pc_hub_schema import (
     PcHubTarget,
     PcHubValidationOutcome,
 )
+from .responses_agent_schema import (
+    CodingEditArgs,
+    CodingError,
+    CodingFileArgs,
+    CodingRequest,
+    CodingResponse,
+    CodingUsage,
+    Model,
+)
 
 __all__ = [
     "AgentsViewOffloadOutcome",
@@ -178,6 +187,12 @@ __all__ = [
     "CodexTrustResponse",
     "CodexTrustReturnCode",
     "CodexTrustReturnEntry",
+    "CodingEditArgs",
+    "CodingError",
+    "CodingFileArgs",
+    "CodingRequest",
+    "CodingResponse",
+    "CodingUsage",
     "CommonEnvelopeDefs",
     "CommonErrorCode",
     "CommonReturnCode",
@@ -259,6 +274,7 @@ __all__ = [
     "MiseInventory",
     "MiseSkillEntry",
     "MiseToolEntry",
+    "Model",
     "PcHubCheckState",
     "PcHubErrorCode",
     "PcHubErrorEntry",
