@@ -193,7 +193,10 @@ def parse_result(
         output_tokens=_opt_int(usage_raw.get("output_tokens")),
     )
     text = event.get("result")
-    subtype = str(event.get("subtype") or "")
+    subtype = event.get("subtype")
+    # Only bounded protocol labels belong in loggable diagnostics.
+    if not isinstance(subtype, str) or not re.fullmatch(r"[a-z_]{1,64}", subtype):
+        subtype = "unknown"
     error: ApiRunnerErrorEntry | None = None
     if "budget" in subtype:
         error = ApiRunnerErrorEntry(
@@ -203,7 +206,7 @@ def parse_result(
         error = ApiRunnerErrorEntry(
             code=ApiRunnerErrorCode.ERR_MODEL_ERROR,
             # Never copy result text: it can hold prompt/review content that is logged.
-            message=subtype or "error",
+            message=subtype,
         )
     return usage, (str(text) if text is not None else None), error
 

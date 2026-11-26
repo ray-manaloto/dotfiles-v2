@@ -22,6 +22,25 @@ from dotfiles_py.generated.api_runner_schema import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+@pytest.mark.parametrize(
+    "subtype",
+    [
+        "error_budget\nunexpected detail",
+        "sk" + "-ant" + "-EXAMPLE123",
+        "budget" + "_" * 59,
+        ["error_max_budget_usd"],
+        None,
+    ],
+)
+def test_invalid_result_subtype_is_never_logged_or_classified_as_budget(subtype):
+    _, _, error = runner.parse_result({"subtype": subtype})
+
+    assert error is not None
+    assert error.code == ApiRunnerErrorCode.ERR_MODEL_ERROR
+    assert error.message == "unknown"
+
+
 FAKE = """#!{python}
 import json, os, sys
 prompt = sys.stdin.read()

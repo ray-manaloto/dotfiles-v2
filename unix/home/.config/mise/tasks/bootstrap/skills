@@ -80,18 +80,20 @@ mise skills sync --global --prune
 
 # Install the official agentsview skill for the cross-harness ~/.agents/skills root only.
 # Never pass `--harness claude`: that generates the MCP-only agentsview-search-conversations skill.
-# [wrappers.agentsview] makes `command -v` succeed even when its ~/.local/bin target is not
-# applied yet (e.g. CI `mise install` without dotfiles); skip only in that case so real
-# agentsview failures still fail this task.
-av_ok=false
-if command -v agentsview >/dev/null 2>&1; then
-	if [[ -e "${HOME}/.local/bin/agentsview" ]]; then
-		av_ok=true
-	else
-		echo "WARN: ~/.local/bin/agentsview (wrapper target) is not applied; skipping agentsview skill install" >&2
-	fi
+# A mise dispatch shim can shadow a working PATH entry before its dotfile target is applied.
+av_bin="$(command -v agentsview || true)"
+if [[ ${av_bin} == */command-wrappers/bin/agentsview && ! -x ${HOME}/.local/bin/agentsview ]]; then
+	av_bin=""
+	while IFS= read -r candidate; do
+		if [[ ${candidate} != */command-wrappers/bin/agentsview && -x ${candidate} ]]; then
+			av_bin="${candidate}"
+			break
+		fi
+	done < <(type -aP agentsview)
 fi
-if [[ ${av_ok} == "true" ]]; then
+if [[ ! -x ${av_bin} ]]; then
+	echo "WARN: no executable agentsview found on PATH; skipping agentsview skill install" >&2
+else
 	av_skill="${agents_dir}/agentsview-finding-history"
 	if [[ -L ${av_skill} ]]; then
 		av_raw="$(readlink "${av_skill}" 2>/dev/null || true)"
@@ -113,7 +115,7 @@ if [[ ${av_ok} == "true" ]]; then
 			av_args+=(--server-token-file "${AGENTSVIEW_SKILLS_SERVER_TOKEN_FILE}")
 		fi
 	fi
-	if ! av_out="$(agentsview "${av_args[@]}" </dev/null 2>&1)"; then
+	if ! av_out="$("${av_bin}" "${av_args[@]}" </dev/null 2>&1)"; then
 		printf '%s\n' "${av_out}" >&2
 		echo "ERROR: agentsview skills install --harness agents failed" >&2
 		exit 1

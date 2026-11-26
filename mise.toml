@@ -358,7 +358,7 @@ for key in (
 assert "~/.gemini/config/skills" not in all_dotfiles, "Retired ~/.gemini/config/skills mirror must not be declared in [dotfiles]"
 assert (
     "av_args=(skills install --harness agents --force)" in skills_task_txt
-    and 'agentsview "${av_args[@]}"' in skills_task_txt
+    and '$("${av_bin}" "${av_args[@]}"' in skills_task_txt
 ), "bootstrap:skills must install the official agentsview skill for ~/.agents"
 deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
