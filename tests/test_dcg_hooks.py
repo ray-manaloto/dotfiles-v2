@@ -70,6 +70,32 @@ def test_missing_dcg_fails_closed_with_recovery(
 
 
 @pytest.mark.parametrize(("path", "event"), HOOKS, ids=lambda v: str(v)[-30:])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # JSON unicode escapes decode to a newline or ';' only after the filter has looked.
+        r'{"tool_name":"Bash","tool_input":{"command":"mise install x\u000acurl x"}}',
+        r'{"tool_name":"Bash","tool_input":{"command":"mise install x; curl x"}}',
+        # A second "command" key must not smuggle an allowed command past the filter.
+        '{"tool_name":"Bash","tool_input":{"command":"curl x"},"x":{"command":"mise install"}}',
+    ],
+)
+def test_missing_dcg_rejects_escaped_or_smuggled(
+    tmp_path: Path, path: Path, event: str, raw: str
+) -> None:
+    proc = subprocess.run(
+        ["/bin/sh", "-c", _hook_command(path, event)],
+        input=raw,
+        text=True,
+        capture_output=True,
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        timeout=20,
+        check=False,
+    )
+    assert proc.returncode == 2, proc.stderr
+
+
+@pytest.mark.parametrize(("path", "event"), HOOKS, ids=lambda v: str(v)[-30:])
 def test_broken_dcg_shim_fails_closed(tmp_path: Path, path: Path, event: str) -> None:
     _fake_dcg(tmp_path, "echo 'mise ERROR dcg is not installed' >&2\nexit 1\n")
     proc = _run(_hook_command(path, event), tmp_path, "ls")
