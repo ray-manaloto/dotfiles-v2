@@ -182,7 +182,8 @@ require_build_context_matches_ref() {
 		exit 1
 	fi
 	local_sha="$(git -C "${root}" rev-parse HEAD)"
-	remote_sha="$(git -C "${root}" rev-parse FETCH_HEAD)"
+	# ^{commit} peels annotated tags so --ref <tag> compares commits, not tag objects.
+	remote_sha="$(git -C "${root}" rev-parse 'FETCH_HEAD^{commit}')"
 	if [[ ${local_sha} != "${remote_sha}" ]]; then
 		echo "container:up: local HEAD ${local_sha} != origin/${ref} ${remote_sha}; push or check out '${ref}' so the image and /workspace match (or pass --allow-drift)" >&2
 		exit 1

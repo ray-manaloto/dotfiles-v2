@@ -177,14 +177,55 @@ from pathlib import Path
 cfg_path = Path(sys.argv[1])
 token = sys.argv[2]
 mac_ssh = sys.argv[3].strip()
-lines = cfg_path.read_text(encoding="utf-8").splitlines() if cfg_path.is_file() else []
+original = cfg_path.read_text(encoding="utf-8") if cfg_path.is_file() else ""
+lines = original.splitlines()
 
+
+def fail(msg: str) -> None:
+    sys.exit(f"hub:up: {cfg_path}: {msg}; left unchanged, edit it by hand")
+
+
+try:
+    before = tomllib.loads(original)
+except tomllib.TOMLDecodeError as exc:
+    fail(f"not valid TOML ({exc})")
 
 table_header = re.compile(r"""^\s*\[\[?\s*[A-Za-z0-9_.\"' -]+\s*\]\]?\s*(?:#.*)?$""")
 
 
-def is_header(line: str) -> bool:
-    return bool(table_header.match(line))
+def header_indices(rows: list[str]) -> list[int]:
+    # A `[x]` line is a header only outside multi-line strings and arrays.
+    found: list[int] = []
+    in_ml: str | None = None
+    depth = 0
+    for i, s in enumerate(rows):
+        if in_ml is None and depth == 0 and table_header.match(s):
+            found.append(i)
+            continue
+        j = 0
+        while j < len(s):
+            if in_ml:
+                k = s.find(in_ml, j)
+                if k < 0:
+                    break
+                in_ml, j = None, k + 3
+                continue
+            if s.startswith(('"""', "'''"), j):
+                in_ml, j = s[j : j + 3], j + 3
+                continue
+            c = s[j]
+            if c in "\"'":
+                j += 1
+                while j < len(s) and s[j] != c:
+                    j += 2 if c == '"' and s[j] == "\\" else 1
+            elif c == "#":
+                break
+            elif c == "[":
+                depth += 1
+            elif c == "]":
+                depth = max(0, depth - 1)
+            j += 1
+    return found
 
 
 def toml_str(value: str) -> str:
@@ -193,34 +234,61 @@ def toml_str(value: str) -> str:
 
 
 # Split into top-level keys (before the first table header) and tables.
-first_table = next((i for i, line in enumerate(lines) if is_header(line)), len(lines))
+starts = header_indices(lines)
+first_table = starts[0] if starts else len(lines)
 # Top-level auth_token/require_auth/host are owned by this script; table keys
 # (such as [[remote_hosts]] host) are left alone.
 owned = re.compile(r"^\s*(?:auth_token|require_auth|host)\s*=")
 preamble = [line for line in lines[:first_table] if not owned.match(line)]
-tables: list[list[str]] = []
-for line in lines[first_table:]:
-    if is_header(line) or not tables:
-        tables.append([])
-    tables[-1].append(line)
+tables = [lines[a:b] for a, b in zip(starts, [*starts[1:], len(lines)])]
 
 remote_hosts_header = re.compile(r"^\s*\[\[\s*remote_hosts\s*\]\]\s*(?:#.*)?$")
 
 
-def is_mac_remote_host(table: list[str]) -> bool:
+def is_mac(entry: dict) -> bool:
+    return entry.get("host") == "mac" or entry.get("destination") == mac_ssh
+
+
+def is_mac_table(table: list[str]) -> bool:
     if not remote_hosts_header.match(table[0]):
         return False
     try:
-        body = tomllib.loads("\n".join(table[1:]))
+        return is_mac(tomllib.loads("\n".join(table[1:])))
     except tomllib.TOMLDecodeError:
         return False
-    return body.get("host") == "mac" or body.get("destination") == mac_ssh
 
 
-# Drop any existing remote_hosts entry for the Mac (including entries a previous
-# rerun left without a host key) so the entry below is rewritten idempotently.
 if mac_ssh:
-    tables = [table for table in tables if not is_mac_remote_host(table)]
+    # Update the first Mac entry in place (keeping the owner's other keys such as
+    # interval) and drop duplicates, so reruns are idempotent.
+    managed = {"transport": toml_str("ssh"), "destination": toml_str(mac_ssh)}
+    kept: list[list[str]] = []
+    have_mac = False
+    for table in tables:
+        if not is_mac_table(table):
+            kept.append(table)
+            continue
+        if have_mac:
+            continue
+        have_mac = True
+        body = []
+        for line in table[1:]:
+            m = re.match(r"^\s*(transport|destination)\s*=", line)
+            body.append(f"{m.group(1)} = {managed.pop(m.group(1))}" if m and m.group(1) in managed else line)
+        head = [] if any(re.match(r"^\s*host\s*=", x) for x in body) else [f"host = {toml_str('mac')}"]
+        tail = [f"{k} = {v}" for k, v in managed.items()]
+        kept.append([table[0], *head, *body, *tail])
+    tables = kept
+    if not have_mac:
+        tables.append(
+            [
+                "[[remote_hosts]]",
+                f"host = {toml_str('mac')}",
+                'transport = "ssh"',
+                f"destination = {toml_str(mac_ssh)}",
+                'interval = "5m"',
+            ]
+        )
 
 out = [f"auth_token = {toml_str(token)}", "require_auth = true", *preamble]
 while out and not out[-1].strip():
@@ -229,19 +297,26 @@ for table in tables:
     while table and not table[-1].strip():
         table.pop()
     out.extend(["", *table])
-if mac_ssh:
-    out.extend(
-        [
-            "",
-            "[[remote_hosts]]",
-            f"host = {toml_str('mac')}",
-            'transport = "ssh"',
-            f"destination = {toml_str(mac_ssh)}",
-            'interval = "5m"',
-        ]
-    )
 text = "\n".join(out).rstrip() + "\n"
-tomllib.loads(text)
+try:
+    after = tomllib.loads(text)
+except tomllib.TOMLDecodeError as exc:
+    fail(f"rewrite would not parse ({exc}); remote_hosts must use [[remote_hosts]] tables")
+
+
+def unrelated(d: dict) -> dict:
+    # Everything this script does not own must survive the rewrite unchanged.
+    d = {k: v for k, v in d.items() if k not in ("auth_token", "require_auth", "host")}
+    hosts = d.get("remote_hosts")
+    if isinstance(hosts, list) and mac_ssh:
+        d["remote_hosts"] = [h for h in hosts if not (isinstance(h, dict) and is_mac(h))]
+    if not d.get("remote_hosts"):
+        d.pop("remote_hosts", None)
+    return d
+
+
+if unrelated(before) != unrelated(after):
+    fail("rewrite would change settings it does not own")
 cfg_path.write_text(text, encoding="utf-8")
 cfg_path.chmod(0o600)
 PY

@@ -643,8 +643,9 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
     assert "host" not in data
     assert data["port"] == 8080
     hosts = data["remote_hosts"]
-    assert [h.get("host") for h in hosts] == ["other", "mac"]
-    assert hosts[1]["destination"] == "me@mac"
+    # The Mac entry is repaired in place (keeping its position and interval).
+    assert [h.get("host") for h in hosts] == ["mac", "other"]
+    assert hosts[0]["destination"] == "me@mac"
     assert all("host" in h for h in hosts)
     assert cfg.stat().st_mode & 0o777 == 0o600
 
@@ -659,3 +660,50 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
     )
     hosts = tomllib.loads(cfg.read_text(encoding="utf-8"))["remote_hosts"]
     assert [(h["host"], h["destination"]) for h in hosts] == [("mac", "me@mac")]
+
+
+def test_hub_up_agentsview_config_rewrite_preserves_owner_content(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "rewrite.py"
+    script.write_text(_hub_up_agentsview_config_script(), encoding="utf-8")
+    cfg = tmp_path / "config.toml"
+
+    def run(text: str) -> subprocess.CompletedProcess[str]:
+        cfg.write_text(text, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "-I", "-B", str(script), str(cfg), "tok", "me@mac"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    # A bracketed line inside a multi-line string or array is not a table header.
+    assert run('motd = """\n[fake]\nx\n"""\ngrid = [\n [1],\n [2]\n]\n').returncode == 0
+    data = tomllib.loads(cfg.read_text(encoding="utf-8"))
+    assert data["motd"] == "[fake]\nx\n"
+    assert data["grid"] == [[1], [2]]
+
+    # A customised Mac entry keeps its own host name and extra keys.
+    assert (
+        run(
+            '[[remote_hosts]]\nhost = "box"\ndestination = "me@mac"\n'
+            'interval = "1m"\nuser_note = "keep"\n'
+        ).returncode
+        == 0
+    )
+    (host,) = tomllib.loads(cfg.read_text(encoding="utf-8"))["remote_hosts"]
+    assert host == {
+        "host": "box",
+        "destination": "me@mac",
+        "interval": "1m",
+        "user_note": "keep",
+        "transport": "ssh",
+    }
+
+    # Shapes the rewrite cannot handle fail closed and leave the file untouched.
+    for bad in ('remote_hosts = [{host = "x"}]\n', "auth_token = \n"):
+        result = run(bad)
+        assert result.returncode != 0
+        assert "left unchanged" in result.stderr
+        assert cfg.read_text(encoding="utf-8") == bad
