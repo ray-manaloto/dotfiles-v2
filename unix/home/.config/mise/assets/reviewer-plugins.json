@@ -23,7 +23,12 @@
       "greptile-plugin": "greptileai/skills",
       "repowise": "repowise-dev/repowise"
     },
-    "plugins": ["codex@repowise", "graphify@graphify", "greptile@greptile-plugin"]
+    "plugins": [
+      "coderabbit@openai-curated",
+      "codex@repowise",
+      "graphify@graphify",
+      "greptile@greptile-plugin"
+    ]
   },
   "agy": {
     "plugins": {

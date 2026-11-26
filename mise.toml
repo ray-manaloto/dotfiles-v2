@@ -400,6 +400,11 @@ depends = "py-deps-fresh"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
 hint = "Inspect trust drift with `mise run codex:hook-trust --check --json`. Review changed user hooks before approving them in Codex /hooks. The `--repair` mode is for plugins."
 
+[doctor.checks.codex-marketplaces]
+description = "Codex uses only allowlisted Codex-native plugin marketplaces and the ChatGPT desktop Claude importer stays off"
+run = "python3 -I -B tasks/py/doctor_checks.py codex-marketplaces"
+hint = "Allowlist: unix/home/.config/mise/assets/codex/marketplaces.json. Remove strays with `codex plugin remove <id>` / `codex plugin marketplace remove <name>`, keep ChatGPT desktop 'Keep imports in sync' off, and run `mise dot apply` to re-pin the import item types."
+
 [doctor.checks.mise-binary-integrity]
 description = "Compiled mise install binaries are hardened (0555/a-w) and dcg guardrails/hooks are configured"
 run = "python3 -I -B tasks/py/doctor_checks.py mise-binary-integrity"
