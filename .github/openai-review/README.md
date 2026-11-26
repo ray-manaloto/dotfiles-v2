@@ -38,6 +38,19 @@ summary and artifact include a shadow range from 0.0 up to 1.0 as described
 in the runbook.
 Neither review job checks out or executes PR code. Required reviews still apply.
 
+## Sync to knowledge-base-v2
+
+Edit shared scripts, schemas, the prompt, and their tests here. Run
+`mise run openai-review:sync-kb <kb-checkout>` with the root of a linked KB
+worktree, then run KB's checks before committing the mirror. KB keeps its
+own `repo.json`, workflows, and Responses generator.
+
+`mise run openai-review:check-kb-sync` compares the shared files with KB main
+using read-only GitHub API requests. It prints a skip reason when KB is
+unreadable. The check is for local use.
+
+## Private review
+
 If the repository is private, the run refuses to send patches unless you tick
 **allow_private_diff** for that run. The script checks both the visibility in
 the dispatch event and the current visibility GitHub returns with the PR, so a
@@ -63,7 +76,8 @@ missing, the script refuses to send patches.
   still reviewed, but its text is scanned. Edits near the fake-secret fixtures in
   `test_review.py` always fail closed, so they need a human review.
 - **Size limits:** the reviewer skips oversized, unavailable, and incomplete
-  patches. It sends the reviewable files in GitHub file order up to the
-  serialized patch budget and lists the remaining reviewable files as
+  patches. It starts with the first file that fits the serialized patch
+  budget and follows GitHub file order until the next file would exceed it.
+  It lists files that fall outside the budget as
   `over-budget`. When no files fit or the file-count cap is exceeded, the run
   reports the reason and succeeds without a findings artifact.

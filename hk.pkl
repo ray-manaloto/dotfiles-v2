@@ -61,6 +61,9 @@ local const githubActionsGroup = helpers.lintSteps()["github-actions"] as Group
 local const hygieneGroup = picked["hygiene"] as Group
 local const miseGroup = picked["mise"] as Group
 local const oxfmtStep = picked["oxfmt"] as Step
+// KB validates these mirrored schemas with jq. Both repositories enforce the same bytes.
+local const openaiReviewSchemas =
+  List(".github/openai-review/findings.schema.json", ".github/openai-review/repo.schema.json")
 local const tombiGroup = picked["tombi"] as Group
 local const typosStep = picked["typos"] as Step
 
@@ -101,7 +104,14 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     }
   }
   ["oxfmt"] = (oxfmtStep) {
-    exclude = (oxfmtStep.exclude ?? List()) + List("**/*.yml", "**/*.yaml") + lockfileExcludes
+    exclude =
+      (oxfmtStep.exclude ?? List())
+        + List("**/*.yml", "**/*.yaml")
+        + lockfileExcludes
+        + openaiReviewSchemas
+  }
+  ["openai-review-schema-format"] = (Builtins.jq) {
+    glob = openaiReviewSchemas
   }
   ["typos"] = (typosStep) {
     exclude = (typosStep.exclude ?? List()) + lockfileExcludes

@@ -1,3 +1,4 @@
+# Source of truth: ray-manaloto/dotfiles-v2 .github/openai-review/; edit there and sync.
 """Offline tests. No secrets, runners, package installs, or network calls."""
 
 import json
@@ -9,6 +10,7 @@ from unittest.mock import Mock, call
 from unittest.mock import patch as mock_patch
 
 import review
+from autofix import MAX_FINDINGS_ARTIFACT_BYTES
 
 
 def pr():
@@ -70,6 +72,13 @@ def openai_ok(*findings):
 
 class ReviewTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(
+            mock_patch.dict(
+                review.REPO_CONFIG,
+                automatic_private_consent=None,
+                decline_channel="outputs",
+            )
+        )
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.summary = Path(self.directory.name) / "summary"
@@ -360,6 +369,11 @@ class ReviewTests(unittest.TestCase):
                 "generated-or-lockfile",
             ),
             (
+                {"filename": "nested/npm-shrinkwrap.json"},
+                "nested/npm-shrinkwrap.json",
+                "generated-or-lockfile",
+            ),
+            (
                 {"filename": "src/generated/output.py"},
                 "src/generated/output.py",
                 "generated-or-lockfile",
@@ -538,6 +552,93 @@ class ReviewTests(unittest.TestCase):
         self.assert_decline("No file fits within the patch size limit.", send)
         self.assertEqual(send.call_count, 3)
 
+    def test_later_first_fit_after_json_escaping_expands_a_patch(self):
+        patch = "@@ -1 +1 @@\n-old\n+" + "é" * (review.MAX_PATCH_BYTES // 5)
+        data, skipped = review.patch_data(
+            [item(patch=patch), item(filename="small.py")]
+        )
+        self.assertEqual([row["path"] for row in json.loads(data)], ["small.py"])
+        self.assertEqual(skipped, [{"path": "src/file.cpp", "reason": "over-budget"}])
+
+    def test_skipped_path_metadata_fits_the_artifact_cap(self):
+        files = [item()]
+        for index in range(review.GITHUB_FILE_LIMIT - 1):
+            files.append(item(filename=f"{'é' * 280}/{index}.lock"))
+        _, skipped = review.patch_data(files)
+        self.assertEqual(len(skipped), review.GITHUB_FILE_LIMIT - 1)
+        self.assertEqual(skipped[0]["path"], "<path omitted: too long>")
+        self.assertLess(len(json.dumps(skipped)), MAX_FINDINGS_ARTIFACT_BYTES // 2)
+
+    def test_duplicate_file_is_a_fault(self):
+        revision = dict(pr(), changed_files=2)
+        send = Mock(side_effect=[revision, [item(), item()]])
+        with self.assertRaisesRegex(review.ReviewError, "duplicate PR file"):
+            review.run(self.env, send)
+        self.assertEqual(send.call_count, 2)
+
+    def test_automatic_revalidates_base_branch_and_head_repository(self):
+        initial = pr()
+        initial["head"]["repo"] = {"full_name": "example/repo"}
+        for live in (
+            dict(initial, base=dict(initial["base"], ref="another-branch")),
+            dict(initial, head=dict(initial["head"], repo=None)),
+        ):
+            with self.subTest(live=live):
+                send = Mock(side_effect=[initial, [item()], live])
+                self.assert_decline(
+                    "The PR changed during collection.",
+                    send,
+                    GITHUB_EVENT_NAME="pull_request_target",
+                    EXPECTED_HEAD="a" * 40,
+                    EXPECTED_BASE="b" * 40,
+                )
+                self.assertEqual(send.call_count, 3)
+
+    def test_private_automatic_requires_its_own_consent_and_writes_decline_artifacts(
+        self,
+    ):
+        initial = pr()
+        initial["base"]["repo"]["private"] = True
+        initial["head"]["repo"] = {"full_name": "example/repo"}
+        output = Path(self.directory.name) / "output"
+        env = dict(
+            self.env,
+            GITHUB_EVENT_NAME="pull_request_target",
+            EXPECTED_HEAD="a" * 40,
+            EXPECTED_BASE="b" * 40,
+            REPO_PRIVATE="true",
+            ALLOW_PRIVATE_DIFF="true",
+            REVIEW_API_KEY="",
+            REVIEW_OUTPUT_DIR=str(output),
+        )
+        with mock_patch.dict(
+            review.REPO_CONFIG,
+            automatic_private_consent="ALLOW_PRIVATE_AUTOMATIC",
+            decline_channel="artifact",
+        ):
+            send = Mock(return_value=initial)
+            review.run(env, send)
+            send.assert_called_once()
+            self.assertEqual(
+                json.loads((output / "decline.json").read_text()),
+                {"pr": "5", "head": "a" * 40, "base": "b" * 40, "declined": True},
+            )
+            self.assertIn(
+                "Private patches require explicit opt-in.",
+                (output / "comment.md").read_text(),
+            )
+            send = Mock(side_effect=[initial, [item()], initial, openai_ok()])
+            review.run(
+                dict(
+                    env,
+                    REVIEW_API_KEY=self.env["REVIEW_API_KEY"],
+                    ALLOW_PRIVATE_AUTOMATIC="true",
+                    REVIEW_OUTPUT_DIR="",
+                ),
+                send,
+            )
+            self.assertEqual(send.call_count, 4)
+
     def test_updated_pr_never_reaches_openai(self):
         moved = pr()
         moved["head"]["sha"] = "c" * 40
@@ -643,7 +744,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_secret_named_dirs_code_and_docs_are_reviewable(self):
         for name in (
-            "unix/home/.config/mise/tasks/secret/set",
+            "tasks/config/secret/set",
             "tasks/agent-secrets.sh",
             "docs/secrets.md",
             "tasks/py/password_rules.py",
@@ -656,7 +757,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_more_token_formats_are_blocked(self):
         for line in (
-            "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+            "-----BEGIN PGP " + "PRIVATE KEY BLOCK-----",
             "AS" + "IA" + "B" * 16,
             "sk" + "_live_" + "c" * 20,
             "url = postgres://" + "app:" + "longpassw0rd@db.example",
@@ -821,20 +922,6 @@ class RunnerCompatibilityTests(unittest.TestCase):
                 self.assertIn("    branches: [main]", trigger[1])
         self.assertFalse(expected)
 
-    def test_workflow_preserves_reviewer_exit_status_and_gates_decline_notes(self):
-        workflow = (
-            Path(__file__).resolve().parent.parent / "workflows/openai-pr-review.yml"
-        )
-        raw = workflow.read_text(encoding="utf-8")
-        job = raw.split("\n  review:\n", 1)[1].split("\n  comment:\n", 1)[0]
-        self.assertNotIn("continue-on-error", job)
-        self.assertIn("\n          python3 -B .github/openai-review/review.py\n", job)
-        self.assertIn(
-            "outputs.identity != '' && steps.review.outputs.decline_note == ''", job
-        )
-        self.assertIn("needs.review.outputs.decline_note != ''", raw)
-        self.assertIn('if [[ "${revision}" == "open ${DECLINE_HEAD}" ]]; then', raw)
-
     def test_openai_pr_workflows_keep_caching_disabled(self):
         workflows = Path(__file__).resolve().parent.parent / "workflows"
         for path in workflows.glob("openai-pr-*.y*ml"):
@@ -848,6 +935,19 @@ class RunnerCompatibilityTests(unittest.TestCase):
                     raw,
                 ):
                     self.assertEqual(value.strip().strip("'\"").lower(), "false")
+
+    def test_candidate_verifier_has_no_environment_or_secret_references(self):
+        workflow = (
+            Path(__file__).resolve().parent.parent / "workflows/openai-pr-autofix.yml"
+        )
+        raw = workflow.read_text(encoding="utf-8")
+        verify = re.search(r"^  verify:[^\n]*\n(.*?)(?=^  \S|\Z)", raw, re.S | re.M)
+        if verify is None:
+            self.fail("Expected a separate verify job.")
+        self.assertNotRegex(
+            verify[1], r"""(?m)(?:^\s*|[{,]\s*)['"]?environment['"]?\s*:"""
+        )
+        self.assertNotRegex(verify[1], r"\$\{\{[^}]*\bsecrets\b")
 
     def test_sources_parse_on_runner_python_312(self):
         # ubuntu-24.04's stock python3 is 3.12; the repo toolchain is newer.

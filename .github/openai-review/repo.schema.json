@@ -1,0 +1,64 @@
+{
+  "$comment": "Source of truth: ray-manaloto/dotfiles-v2 .github/openai-review/; edit there and sync.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "const": "./repo.schema.json"
+    },
+    "autofix_path_pattern": {
+      "pattern": "^(?:(?:(?:\\\\\\.)?[A-Za-z0-9_-]+/)+|\\(\\?:(?:(?:\\\\\\.)?[A-Za-z0-9_-]+/)+(?:\\|(?:(?:\\\\\\.)?[A-Za-z0-9_-]+/)+)+\\))(?:\\(\\?:\\[A-Za-z0-9_-\\]\\+/\\)\\*|\\(\\?:(?:(?:\\\\\\.)?[A-Za-z0-9_-]+/)+\\)\\?)?\\[A-Za-z0-9_-\\]\\+\\\\\\.py(?![\\s\\S])",
+      "type": "string"
+    },
+    "autofix_transport": {
+      "enum": [
+        "codex-action",
+        "responses"
+      ]
+    },
+    "automatic_private_consent": {
+      "enum": [
+        null,
+        "ALLOW_PRIVATE_AUTOMATIC"
+      ]
+    },
+    "decline_channel": {
+      "enum": [
+        "outputs",
+        "artifact"
+      ]
+    },
+    "protect_test_fixtures": {
+      "type": "boolean"
+    },
+    "protected_directory_components": {
+      "items": {
+        "pattern": "^[A-Za-z0-9_.-]+(?![\\s\\S])",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "protected_files": {
+      "items": {
+        "pattern": "^[A-Za-z0-9_.-]+(?![\\s\\S])",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "$schema",
+    "automatic_private_consent",
+    "decline_channel",
+    "autofix_transport",
+    "autofix_path_pattern",
+    "protected_files",
+    "protected_directory_components",
+    "protect_test_fixtures"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Compare canonical OpenAI review files with KB main"
+#USAGE about "Read-only check for local use"
+set -euo pipefail
+exec python3 -I -B "${MISE_PROJECT_ROOT:?}/tasks/py/openai_review_sync.py"

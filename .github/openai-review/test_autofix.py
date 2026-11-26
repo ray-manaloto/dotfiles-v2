@@ -1,16 +1,103 @@
+# Source of truth: ray-manaloto/dotfiles-v2 .github/openai-review/; edit there and sync.
 import json
 import os
+import runpy
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from autofix import allowed_path, git, prepare_prompt, stage_patch
+from autofix import (
+    MAX_FINDINGS_ARTIFACT_BYTES,
+    REPO_CONFIG,
+    allowed_path,
+    git,
+    prepare_prompt,
+    stage_patch,
+)
+from repo_config import AUTOFIX_PATH_SHAPE, load_repo_config
+
+
+class RepoPolicyTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "repo.json"
+        self.policy = dict(REPO_CONFIG)
+
+    def test_valid_policy_and_schema_agree_on_path_shape(self):
+        self.path.write_text(json.dumps(self.policy))
+        self.assertEqual(load_repo_config(self.path), self.policy)
+        schema = json.loads(Path(__file__).with_name("repo.schema.json").read_bytes())
+        self.assertEqual(
+            schema["properties"]["autofix_path_pattern"]["pattern"],
+            AUTOFIX_PATH_SHAPE.pattern,
+        )
+
+    def test_invalid_configs_are_rejected(self):
+        invalid_values = {
+            "$schema": ("wrong.json",),
+            "automatic_private_consent": (True, "always"),
+            "autofix_transport": ("unknown", []),
+            "decline_channel": ("unknown", None),
+            "protect_test_fixtures": (0, "true"),
+            "protected_files": (
+                [],
+                "conftest.py",
+                [0],
+                ["a.py", "a.py"],
+                ["nested/a.py"],
+            ),
+            "protected_directory_components": ([], [""], ["generated\n"]),
+            "autofix_path_pattern": (
+                None,
+                ".*",
+                r".*\.py",
+                r"tests/.*\.py",
+                r"tests/[A-Za-z0-9_-]+.py",
+                r"(?:tests/|.*)[A-Za-z0-9_-]+\.py",
+                r"tests/[",
+            ),
+        }
+        missing = dict(self.policy)
+        del missing["protected_files"]
+        invalid_policies = [None, missing, {**self.policy, "extra": True}]
+        invalid_policies.extend(
+            {**self.policy, key: value}
+            for key, values in invalid_values.items()
+            for value in values
+        )
+        for policy in invalid_policies:
+            with self.subTest(policy=policy):
+                self.path.write_text(json.dumps(policy))
+                with self.assertRaises(ValueError):
+                    load_repo_config(self.path)
+
+    def test_import_rejects_invalid_policy(self):
+        source = Path(__file__).with_name("repo_config.py")
+        module = self.path.with_name(source.name)
+        module.write_bytes(source.read_bytes())
+        self.path.write_text(json.dumps({**self.policy, "autofix_path_pattern": ".*"}))
+        with self.assertRaisesRegex(ValueError, "literal directory roots"):
+            runpy.run_path(str(module))
 
 
 class PatchTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch.dict(os.environ))
+        self.enterContext(
+            patch.dict(
+                os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1"
+            )
+        )
+        self.enterContext(
+            patch.dict(
+                REPO_CONFIG,
+                autofix_path_pattern=r"(?:tests/|lib/)(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.py",
+                protected_files=["conftest.py", "__init__.py", "tasks_py_loader.py"],
+                protected_directory_components=["generated"],
+                protect_test_fixtures=True,
+            )
+        )
         for variable in git(Path.cwd(), "rev-parse", "--local-env-vars").split():
             os.environ.pop(variable.decode("ascii"), None)
         directory = tempfile.TemporaryDirectory()
@@ -22,9 +109,9 @@ class PatchTests(unittest.TestCase):
         for name in (
             "tests/test_something.py",
             ".github/workflows/ci.yml",
-            "unix/home/.config/mise/mise.lock",
-            "unix/home/.config/mise/lib/generated/model.py",
-            "unix/home/.config/mise/lib/stuff.py",
+            "config/mise.lock",
+            "lib/generated/model.py",
+            "lib/stuff.py",
             "tests/conftest.py",
             "tests/helpers/__init__.py",
             "tests/tasks_py_loader.py",
@@ -50,13 +137,13 @@ class PatchTests(unittest.TestCase):
         git(self.repo, "restore", "--source=HEAD", "--staged", "--worktree", "--", ".")
 
     def test_existing_text_python_files_can_be_staged(self):
-        file = self.repo / "unix/home/.config/mise/lib/stuff.py"
+        file = self.repo / "lib/stuff.py"
         file.write_text("after\n")
         self.make_patch()
-        stage_patch(self.repo, self.patch, {"unix/home/.config/mise/lib/stuff.py"})
+        stage_patch(self.repo, self.patch, {"lib/stuff.py"})
         self.assertEqual(
             git(self.repo, "diff", "--cached", "--name-only"),
-            b"unix/home/.config/mise/lib/stuff.py\n",
+            b"lib/stuff.py\n",
         )
         self.assertEqual(file.read_text(), "before\n")
 
@@ -96,8 +183,8 @@ class PatchTests(unittest.TestCase):
     def test_protected_paths_are_rejected_before_worktree_changes(self):
         for name in (
             ".github/workflows/ci.yml",
-            "unix/home/.config/mise/mise.lock",
-            "unix/home/.config/mise/lib/generated/model.py",
+            "config/mise.lock",
+            "lib/generated/model.py",
             "tests/conftest.py",
             "tests/helpers/__init__.py",
             "tests/tasks_py_loader.py",
@@ -124,7 +211,7 @@ class PatchTests(unittest.TestCase):
             )
 
     def test_policy_allowed_path_outside_reviewed_targets_is_rejected(self):
-        skipped = "unix/home/.config/mise/lib/stuff.py"
+        skipped = "lib/stuff.py"
         self.assertTrue(allowed_path(skipped.encode("ascii")))
         (self.repo / skipped).write_text("after\n")
         self.make_patch()
@@ -198,9 +285,6 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(data["sources"], {"tests/test_something.py": "before\n"})
         self.assertEqual(data["findings"], findings[:1])
         self.assertNotIn("Shadow", prompt.read_text())
-        oversized = dict(
-            completed, skipped=[{"path": "s" * 64_000, "reason": "over-budget"}]
-        )
-        findings_path.write_text(json.dumps(dict(oversized, shadow=shadow)) + "\n")
+        findings_path.write_bytes(b" " * (MAX_FINDINGS_ARTIFACT_BYTES + 1))
         with self.assertRaisesRegex(ValueError, "artifact is too large"):
             prepare_prompt(findings_path, template, prompt, self.repo, "5", base, head)

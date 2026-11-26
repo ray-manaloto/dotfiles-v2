@@ -1,0 +1,10 @@
+{
+  "$schema": "./repo.schema.json",
+  "automatic_private_consent": null,
+  "decline_channel": "outputs",
+  "autofix_transport": "codex-action",
+  "autofix_path_pattern": "(?:tests/|unix/home/\\.config/mise/lib/)(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.py",
+  "protected_files": ["conftest.py", "__init__.py", "tasks_py_loader.py"],
+  "protected_directory_components": ["generated"],
+  "protect_test_fixtures": true
+}
