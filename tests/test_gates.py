@@ -2015,7 +2015,9 @@ def test_config_hygiene_flag_fetch_edge_cases(tmp_path, monkeypatch) -> None:
     bad.write_text("[env\n")
     dockerfile = tmp_path / "docker" / "ubuntu" / "Dockerfile"
     dockerfile.parent.mkdir(parents=True)
-    dockerfile.write_text("ENV container=docker \\\n    DISABLE_TELEMETRY=1\n")
+    dockerfile.write_text(
+        "# DO_NOT_TRACK=1 is fine in a comment\nRUN DO_NOT_TRACK=1 true\nENV container=docker \\\n    DISABLE_TELEMETRY=1\nENV DISABLE_GROWTHBOOK 1\n"
+    )
     monkeypatch.setattr(
         doc_mod,
         "_load_mise_registry_map",
@@ -2031,6 +2033,10 @@ def test_config_hygiene_flag_fetch_edge_cases(tmp_path, monkeypatch) -> None:
         "docker/ubuntu/Dockerfile" in e and "DISABLE_TELEMETRY" in e for e in errors
     ), errors
     assert any("failed to load `mise registry`" in e for e in errors), errors
+    assert any(
+        "docker/ubuntu/Dockerfile" in e and "DISABLE_GROWTHBOOK" in e for e in errors
+    ), errors
+    assert not any("Dockerfile" in e and "DO_NOT_TRACK" in e for e in errors), errors
 
 
 def test_real_global_env_keeps_ship_available() -> None:
@@ -2057,3 +2063,15 @@ def test_config_hygiene_rejects_auto_venv_on_path(tmp_path, monkeypatch) -> None
     (tmp_path / "mise.toml").write_text("[settings]\npython.uv_venv_auto = false\n")
     (mise_dir / "config.toml").write_text("[env]\nX = '1'\n")
     assert not any("venv" in e for e in doc_mod.check_config_hygiene(tmp_path))
+
+
+def test_config_hygiene_venv_guard_tolerates_odd_tables(tmp_path, monkeypatch) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        'settings = "x"\n[env]\nMISE_PYTHON_UV_VENV_AUTO = "source"\n'
+    )
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any("uv_venv_auto = 'source'" in e for e in errors), errors

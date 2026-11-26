@@ -1622,14 +1622,25 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
     for env_file in sorted(f for f in env_files if f.is_file()):
         rel = env_file.relative_to(repo_root).as_posix()
         try:
-            env_tbl = tomllib.loads(env_file.read_text(encoding="utf-8")).get("env")
+            cfg = tomllib.loads(env_file.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as exc:
             errors.append(
                 f"config-hygiene: {rel}: cannot parse for [env] flag-fetch check: {exc}"
             )
             continue
-        cfg = tomllib.loads(env_file.read_text(encoding="utf-8"))
-        uv_auto = cfg.get("settings", {}).get("python", {}).get("uv_venv_auto", False)
+        env_tbl = cfg.get("env")
+        settings = cfg.get("settings")
+        py_settings = settings.get("python") if isinstance(settings, dict) else None
+        uv_auto = (
+            py_settings.get("uv_venv_auto", False)
+            if isinstance(py_settings, dict)
+            else False
+        )
+        if (
+            isinstance(env_tbl, dict)
+            and str(env_tbl.get("MISE_PYTHON_UV_VENV_AUTO", "false")).lower() != "false"
+        ):
+            uv_auto = env_tbl["MISE_PYTHON_UV_VENV_AUTO"]
         if uv_auto not in (False, "false"):
             errors.append(
                 f"config-hygiene: {rel} sets python.uv_venv_auto = {uv_auto!r}; it puts the checkout's .venv/bin on "
@@ -1650,13 +1661,28 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
                 if env_tbl[name] is False:
                     continue
                 errors.append(f"config-hygiene: {rel} [env] sets {name}; {msg}")
-    env_re = re.compile(r"\b(" + "|".join(sorted(_FLAG_FETCH_KILLERS)) + r")=")
+    # Only ENV instructions persist into containers (RUN-scoped `NAME=1 cmd` is fine); both `ENV K=V` and `ENV K V`.
+    env_re = re.compile(
+        r"(?:^|\s)(" + "|".join(sorted(_FLAG_FETCH_KILLERS)) + r")(?:=|\s)"
+    )
     for dockerfile in sorted(repo_root.glob("docker/**/Dockerfile*")):
         try:
             text = dockerfile.read_text(encoding="utf-8")
         except OSError:
             continue
-        for name in sorted(set(env_re.findall(text))):
+        logical = re.sub(
+            r"\\\n",
+            " ",
+            "\n".join(
+                ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+            ),
+        )
+        env_lines = [
+            ln.strip()[4:]
+            for ln in logical.splitlines()
+            if ln.strip().upper().startswith("ENV ")
+        ]
+        for name in sorted({m for ln in env_lines for m in env_re.findall(" " + ln)}):
             errors.append(
                 f"config-hygiene: {dockerfile.relative_to(repo_root).as_posix()} sets {name}; {msg}"
             )
