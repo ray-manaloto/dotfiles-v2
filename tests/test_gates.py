@@ -2566,6 +2566,47 @@ def test_config_hygiene_flag_fetch_shell_and_extra_configs(tmp_path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("line", "expected_names"),
+    [
+        (
+            'export X="a b#c" DISABLE_TELEMETRY=1 DO_NOT_TRACK=1',
+            {"DISABLE_TELEMETRY", "DO_NOT_TRACK"},
+        ),
+        ("export X=a#b DISABLE_TELEMETRY=1", {"DISABLE_TELEMETRY"}),
+        ("declare -x X=1 DISABLE_TELEMETRY=1", {"DISABLE_TELEMETRY"}),
+        ("typeset -x X=1 DISABLE_TELEMETRY=1", {"DISABLE_TELEMETRY"}),
+        ('DISABLE_TELEMETRY="a b" # startup assignment', {"DISABLE_TELEMETRY"}),
+        ("DISABLE_TELEMETRY=1 command", set()),
+        ("export X=1; echo DISABLE_TELEMETRY=1", set()),
+        ('export X="unfinished DISABLE_TELEMETRY=1', {"DISABLE_TELEMETRY"}),
+        ('DISABLE_TELEMETRY="unfinished', {"DISABLE_TELEMETRY"}),
+        ('true;DISABLE_TELEMETRY="unfinished', {"DISABLE_TELEMETRY"}),
+        ("cd x; export DISABLE_TELEMETRY=1", {"DISABLE_TELEMETRY"}),
+        ("true && declare -x DO_NOT_TRACK=1", {"DO_NOT_TRACK"}),
+        ("true | typeset -x DISABLE_GROWTHBOOK=1", {"DISABLE_GROWTHBOOK"}),
+        ("cd x; # export DISABLE_TELEMETRY=1", set()),
+        ('echo ";" export DISABLE_TELEMETRY=1', set()),
+        ("export X=1 # DISABLE_TELEMETRY=1", set()),
+        ('export X="DISABLE_TELEMETRY=1"', set()),
+        ("typeset X=1 DISABLE_TELEMETRY=1", set()),
+    ],
+)
+def test_config_hygiene_flag_fetch_shell_assignments(
+    tmp_path: Path, line: str, expected_names: set[str]
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    home = tmp_path / "unix" / "home"
+    home.mkdir(parents=True)
+    (home / ".zshenv").write_text(f"{line}\n", encoding="utf-8")
+
+    errors = doc_mod._check_flag_fetch_env(tmp_path, home / ".config" / "mise")
+
+    assert len(errors) == len(expected_names)
+    for name in expected_names:
+        assert any(f".zshenv exports {name};" in error for error in errors)
+
+
 def test_real_global_env_keeps_ship_available() -> None:
     root = Path(__file__).resolve().parents[1]
     doc_mod = _load_task_module("doctor_checks")
