@@ -45,6 +45,29 @@ def resolve_state_dir(override: Path | None = None) -> Path:
     return base / "dotfiles-v2" / "api-runner"
 
 
+def _write_rejection(
+    *, model: ApiRunnerModel, cwd: Path, dry_run: bool, message: str
+) -> None:
+    """Schema-shaped ERR_INVALID_INPUT response for --json callers (no argv yet)."""
+    timestamp, ns = now_ns_pair()
+    resp = ApiRunnerResponse(
+        mode="review",
+        model=model,
+        cwd=str(cwd.resolve()),
+        dry_run=dry_run,
+        argv=[],
+        timestamp=timestamp,
+        timestamp_unix_ns=ns,
+        errors=[
+            ApiRunnerErrorEntry(
+                code=ApiRunnerErrorCode.ERR_INVALID_INPUT, message=message[:300]
+            )
+        ],
+        returns=[ReturnEntry(code=CommonReturnCode.RET_SKIPPED)],
+    )
+    sys.stdout.write(orjson.dumps(resp.model_dump(mode="json")).decode() + "\n")
+
+
 app = cyclopts.App(name="api-review", version_flags=())
 
 
@@ -78,6 +101,13 @@ def review(
     if claude_bin is None:
         if not dry_run:
             sys.stderr.write("api:review: claude CLI not found\n")
+            if json_out:
+                _write_rejection(
+                    model=model,
+                    cwd=cwd,
+                    dry_run=dry_run,
+                    message="claude CLI not found",
+                )
             return 2
         claude_bin = "claude"
     try:
@@ -92,7 +122,10 @@ def review(
             claude_bin=claude_bin,
         )
     except ValidationError as exc:
-        sys.stderr.write(f"api:review: invalid input: {exc.errors()[0]['msg']}\n")
+        msg = str(exc.errors()[0]["msg"])
+        sys.stderr.write(f"api:review: invalid input: {msg}\n")
+        if json_out:
+            _write_rejection(model=model, cwd=cwd, dry_run=dry_run, message=msg)
         return 2
     timestamp, ns = now_ns_pair()
     base = ApiRunnerResponse(

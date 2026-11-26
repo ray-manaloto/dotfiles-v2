@@ -335,3 +335,29 @@ def test_cli_json_reports_invalid_input(tmp_path, monkeypatch, capsys, fake_clau
     assert rc == 2
     resp = ApiRunnerResponse.model_validate_json(capsys.readouterr().out.strip())
     assert [e.code for e in resp.errors] == [ApiRunnerErrorCode.ERR_INVALID_INPUT]
+
+
+@pytest.mark.parametrize("opt", [["--max-turns", "0"], ["--max-budget-usd", "30"]])
+def test_cli_json_reports_rejected_numeric_option(
+    tmp_path, monkeypatch, capsys, fake_claude, opt
+):
+    monkeypatch.setattr(cli, "resolve_claude_bin", lambda: str(fake_claude))
+    prompt = tmp_path / "p.md"
+    prompt.write_text("x")
+    rc = cli.main(
+        [
+            "--prompt-file",
+            str(prompt),
+            "--cwd",
+            str(tmp_path),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--dry-run",
+            "--json",
+            *opt,
+        ]
+    )
+    assert rc == 2
+    resp = ApiRunnerResponse.model_validate_json(capsys.readouterr().out.strip())
+    assert [e.code for e in resp.errors] == [ApiRunnerErrorCode.ERR_INVALID_INPUT]
+    assert resp.argv == []
