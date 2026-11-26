@@ -2527,31 +2527,49 @@ def _codex_live_marketplace_errors(
     errors: list[str] = []
     allowed: Mapping[str, str] = policy["allowed"]
     names = set(allowed) | set(policy["builtin"])
-    desktop = live.get("desktop") or {}
-    if desktop.get("external-agent-import-sync-enabled") is not False:
+
+    def table(value: Any) -> Mapping[str, Any]:
+        return value if isinstance(value, Mapping) else {}
+
+    def norm(src: str) -> str:
+        s = src.strip().rstrip("/").lower()
+        s = re.sub(r"^git@github\.com:", "https://github.com/", s)
+        return s.removesuffix(".git")
+
+    desktop = table(live.get("desktop"))
+    sync = desktop.get("external-agent-import-sync-enabled")
+    if sync is True:
         errors.append(
-            "codex-marketplaces: ChatGPT desktop 'Keep imports in sync' is on "
-            "([desktop] external-agent-import-sync-enabled); turn it off in the app settings"
+            "codex-marketplaces: ChatGPT desktop 'Keep imports in sync' is on; "
+            "turn it off in the app settings, then run `mise dot apply`"
         )
-    types = desktop.get("external-agent-import-sync-item-types") or {}
+    elif sync is not False:
+        errors.append(
+            "codex-marketplaces: [desktop] external-agent-import-sync-enabled is not pinned false "
+            "(run `mise dot apply`)"
+        )
+    types = table(desktop.get("external-agent-import-sync-item-types"))
     on = sorted(k for k, v in types.items() if v is not False)
     if on:
         errors.append(
             f"codex-marketplaces: desktop import item types not off: {', '.join(on)} (run `mise dot apply`)"
         )
-    for name, spec in sorted((live.get("marketplaces") or {}).items()):
-        src = str((spec or {}).get("source", ""))
+    for name, spec in sorted(table(live.get("marketplaces")).items()):
+        src = str(table(spec).get("source", ""))
         if name not in names:
             errors.append(
                 f"codex-marketplaces: marketplace {name} ({src}) is not allowlisted; "
                 f"remove it with `codex plugin marketplace remove {name}`"
             )
-        elif name in allowed and src != allowed[name]:
+        elif name in allowed and norm(src) != norm(allowed[name]):
             errors.append(
                 f"codex-marketplaces: marketplace {name} source {src} != allowlisted {allowed[name]}"
             )
-    for pid in sorted(live.get("plugins") or {}):
-        mkt = pid.split("@", 1)[-1]
+    for pid in sorted(table(live.get("plugins"))):
+        if "@" not in pid:
+            errors.append(f"codex-marketplaces: plugin id {pid!r} names no marketplace")
+            continue
+        mkt = pid.split("@", 1)[1]
         if mkt not in names:
             errors.append(
                 f"codex-marketplaces: plugin {pid} comes from non-allowlisted marketplace {mkt}; "
