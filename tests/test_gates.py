@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2671,6 +2672,7 @@ def test_real_managed_claude_settings_keep_connectors_off() -> None:
     )
 
 
+@pytest.mark.skipif(shutil.which("lsof") is None, reason="lock scan needs lsof")
 def test_git_index_locks_requires_optional_locks_env_and_flags_stale_locks(
     tmp_path: Path,
 ) -> None:
