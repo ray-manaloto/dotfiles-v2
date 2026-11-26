@@ -3,7 +3,7 @@
 
 hk hands a pre-push step a single from_ref/to_ref pair, so a push of several refs
 (`git push origin a b`, or a delete plus an update) used to scan only one of them.
-This reads the full ref list git gives the pre-push hook (`{{hook_stdin}}`) and scans
+This reads the full ref list from stdin and scans
 the union of all pushed commits that the target remote does not have yet.
 
 Without hook input (`hk run pre-push` by hand, `--from-ref`), it falls back to the
@@ -18,6 +18,7 @@ import subprocess
 import sys
 
 BETTERLEAKS = ["betterleaks", "git", "--redact", "--verbose", "--no-banner"]
+MAX_LOG_OPTS_BYTES = 120 * 1024  # Leave room below Linux's 128 KiB per-argument limit.
 
 
 def is_zero(oid: str) -> bool:
@@ -75,8 +76,8 @@ def push_log_opts(hook_stdin: str, remote: str) -> list[str] | None:
     remote oids it replaces bound the scan, plus (for new refs or unfetched bases) the
     branch and tag tips the server holds.
     """
-    tips: list[str] = []
-    replaced: list[str] = []
+    tips: dict[str, None] = {}
+    replaced: dict[str, None] = {}
     new_refs = 0
     for raw in hook_stdin.splitlines():
         if not raw.strip():
@@ -85,18 +86,23 @@ def push_log_opts(hook_stdin: str, remote: str) -> list[str] | None:
         if len(fields) != 4:
             raise ValueError(f"unexpected pre-push line: {raw!r}")
         _local_ref, local_oid, _remote_ref, remote_oid = fields
+        if not all(
+            re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid)
+            for oid in (local_oid, remote_oid)
+        ):
+            raise ValueError(f"unexpected object ID in pre-push line: {raw!r}")
         if is_zero(local_oid):
             continue
-        tips.append(local_oid)
+        tips[local_oid] = None
         if is_zero(remote_oid):
             new_refs += 1
         else:
-            replaced.append(remote_oid)
+            replaced[remote_oid] = None
     if not tips:
         return None
     # A replaced remote oid we never fetched (e.g. before a force push) cannot bound the
     # scan; leaving it out only makes the scan wider.
-    known = known_commits(replaced)
+    known = known_commits(list(replaced))
     bases = [oid for oid in replaced if oid in known]
     # New refs (or unfetched bases) have no oid of their own to stop at, so bound them by
     # what the server holds now. Server oids we never fetched cannot bound anything.
@@ -124,34 +130,59 @@ def range_log_opts(from_ref: str, to_ref: str) -> list[str]:
     return [f"{from_ref}..{to_ref}"]
 
 
+def scan_with_betterleaks(opts: list[str]) -> int:
+    log_opts = " ".join(opts)
+    if len(log_opts.encode()) <= MAX_LOG_OPTS_BYTES:
+        return subprocess.run(
+            [*BETTERLEAKS, "--log-opts=" + log_opts], check=False
+        ).returncode
+
+    # Resolve the same revision set through Git's stdin, then scan bounded batches.
+    # Betterleaks' custom git log command does not forward stdin to Git.
+    commits = subprocess.run(
+        ["git", "rev-list", "--stdin"],
+        input="\n".join(opts) + "\n",
+        stdout=subprocess.PIPE,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    for start in range(0, len(commits), 1000):
+        batch = " ".join(commits[start : start + 1000])
+        result = subprocess.run(
+            [*BETTERLEAKS, "--log-opts=--no-walk " + batch], check=False
+        )
+        if result.returncode:
+            return result.returncode
+    return 0
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        sys.stderr.write("usage: push_leak_scan.py <hook_stdin> <hook_args>\n")
+    if len(argv) != 1:
+        sys.stderr.write(
+            "usage: push_leak_scan.py <hook_args> (ref updates on stdin)\n"
+        )
         return 2
-    hook_stdin, hook_args = argv
     # git passes `<remote name> <push url>`; the URL is where this push actually goes.
-    words = hook_args.split()
+    words = argv[0].split()
     remote = words[-1] if words else ""
     try:
+        hook_stdin = sys.stdin.read()
         if hook_stdin.strip():
             opts = push_log_opts(hook_stdin, remote)
         else:
             opts = range_log_opts(
                 os.environ.get("HK_FROM_REF", ""), os.environ.get("HK_TO_REF", "")
             )
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         sys.stderr.write(f"push-leak-scan: {exc}\n")
         return 2
     if opts is None:
         sys.stdout.write("push-leak-scan: push publishes no commits; nothing to scan\n")
         return 0
-    command = [*BETTERLEAKS, "--log-opts=" + " ".join(opts)]
-    sys.stdout.write("push-leak-scan: " + " ".join(command) + "\n")
-    sys.stdout.flush()
     try:
-        return subprocess.run(command, check=False).returncode
-    except OSError as exc:  # e.g. argument list too long on a huge --mirror push
-        sys.stderr.write(f"push-leak-scan: could not run betterleaks: {exc}\n")
+        return scan_with_betterleaks(opts)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        sys.stderr.write(f"push-leak-scan: could not scan pushed commits: {exc}\n")
         return 2
 
 
