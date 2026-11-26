@@ -9,6 +9,7 @@ import pytest
 BOOTSTRAP = (
     Path(__file__).resolve().parents[1] / "unix/home/.config/mise/tasks/bootstrap"
 )
+CONTAINER_UP = Path(__file__).resolve().parents[1] / "tasks/container/up"
 
 
 def write_executable(path, body):
@@ -119,3 +120,72 @@ def test_container_install_leaves_persistent_codex_state_intact(isolated_home):
     assert not binary.resolve().is_relative_to(state)
     assert old_binary.read_text().endswith("echo codex-old\n")
     assert (home / "installer-calls").read_text().splitlines() == ["invoked"]
+
+
+@pytest.mark.parametrize(
+    ("container", "volume", "backed_up", "status", "removed"),
+    [
+        ("absent", "", "false", 0, False),
+        ("present", "", "false", 1, False),
+        ("present", "", "true", 0, True),
+        ("present", "other-codex", "false", 1, False),
+        ("present", "dotfiles-v2-codex", "false", 0, True),
+        ("gone", "", "true", 1, False),
+        ("unreachable", "", "true", 1, False),
+    ],
+)
+def test_recreate_protects_legacy_codex_state(
+    tmp_path, container, volume, backed_up, status, removed
+):
+    docker = tmp_path / "docker"
+    write_executable(
+        docker,
+        """
+        case "$1 $2" in
+            'container ls')
+                test "$CONTAINER_STATE" != unreachable || exit 1
+                printf '%s\n' 'dotfiles-v2-other unrelated'
+                if [ "$CONTAINER_STATE" != absent ]; then
+                    printf '%s\n' 'dotfiles-v2 existing'
+                fi
+                ;;
+            'container inspect')
+                test "$5" = existing
+                test "$CONTAINER_STATE" != gone || exit 1
+                printf '%s\n' "$CODEX_VOLUME"
+                ;;
+            'rm -f')
+                test "$3" = existing
+                touch "$REMOVAL_LOG"
+                ;;
+            *) exit 1 ;;
+        esac
+        """,
+    )
+    removal_log = tmp_path / "removed"
+    # Load the task functions without running the build or contacting a guest.
+    functions = CONTAINER_UP.read_text().split('\nref="$(resolve_ref)"', 1)[0]
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            functions + '\nremove_container_for_recreate "$1"',
+            "bash",
+            str(docker),
+        ],
+        cwd=CONTAINER_UP.parents[2],
+        env={
+            "PATH": os.defpath,
+            "CONTAINER_STATE": container,
+            "CODEX_VOLUME": volume,
+            "usage_codex_state_backed_up": backed_up,
+            "REMOVAL_LOG": str(removal_log),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == status, result.stderr
+    assert removal_log.exists() is removed
+    if container == "present" and status == 1:
+        assert "--codex-state-backed-up" in result.stderr

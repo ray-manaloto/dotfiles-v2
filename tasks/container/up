@@ -6,12 +6,14 @@
 #USAGE flag "--tag <tag>" default="dotfiles-v2:dev" help="Docker image tag"
 #USAGE flag "--ref <ref>" help="Git branch or ref to check out in container workspace (default: current branch; must match local HEAD)"
 #USAGE flag "--allow-drift" help="Build even if the local tree is dirty or differs from origin/<ref> (image and /workspace may diverge)"
+#USAGE flag "--codex-state-backed-up" help="Allow replacing a legacy container after backing up or checking its Codex state"
 set -euo pipefail
 
 target="${usage_target:-pc}"
 host="${usage_host:-pc}"
 tag="${usage_tag:-dotfiles-v2:dev}"
 name="dotfiles-v2"
+codex_volume_format='{{range .Mounts}}{{if and .RW (eq .Type "volume") (eq .Destination "/home/dev/.codex")}}{{.Name}}{{end}}{{end}}'
 repo_url="https://github.com/ray-manaloto/dotfiles-v2.git"
 slug_repo="ray-manaloto/dotfiles-v2"
 root="$(git rev-parse --show-toplevel)"
@@ -154,7 +156,7 @@ needs_recreate() {
 	have_secrets_src="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/run/agent-secrets"}}{{.Source}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_board_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.config/board"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_claude_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.claude"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
-	have_codex_volume="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if and .RW (eq .Type "volume") (eq .Destination "/home/dev/.codex")}}{{.Name}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
+	have_codex_volume="$("${dcmd[@]}" container inspect --format "${codex_volume_format}" "${name}" 2>/dev/null || true)"
 	have_opencode_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.local/share/opencode"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_zcode_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.zcode"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	have_ts_dst="$("${dcmd[@]}" container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/dev/.local/state/tailscale"}}{{.Destination}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
@@ -162,6 +164,25 @@ needs_recreate() {
 	have_hostname="$("${dcmd[@]}" container inspect --format '{{.Config.Hostname}}' "${name}" 2>/dev/null || true)"
 	have_mise_env="$("${dcmd[@]}" container inspect --format '{{range .Config.Env}}{{if eq . "MISE_ENV=container"}}{{.}}{{end}}{{end}}' "${name}" 2>/dev/null || true)"
 	[[ ${have_image} != "${want_image}" || ${have_secrets_src} != "${want_keys}" || ${have_board_dst} != "/home/dev/.config/board" || ${have_claude_dst} != "/home/dev/.claude" || ${have_codex_volume} != "${name}-codex" || ${have_opencode_dst} != "/home/dev/.local/share/opencode" || ${have_zcode_dst} != "/home/dev/.zcode" || ${have_ts_dst} != "/home/dev/.local/state/tailscale" || ${have_init} != "true" || ${have_hostname} != "${want_hostname}" || ${have_mise_env} != "MISE_ENV=container" ]]
+}
+
+remove_container_for_recreate() {
+	local -a dcmd=("$@")
+	local container_id have_codex_volume
+	container_id="$("${dcmd[@]}" container ls --all --no-trunc --format '{{.Names}} {{.ID}}' |
+		awk -v name="${name}" '$1 == name {print $2}')" || return 1
+	if [[ -z ${container_id} ]]; then
+		return 0
+	fi
+	have_codex_volume="$("${dcmd[@]}" container inspect --format "${codex_volume_format}" "${container_id}")" || return 1
+	if [[ ${have_codex_volume} != "${name}-codex" && ${usage_codex_state_backed_up:-false} != "true" ]]; then
+		echo "container:up: ${name} does not use the writable ${name}-codex volume. Recreating it could discard Codex state." >&2
+		printf 'Inspect or back up /home/dev/.codex before retrying with --codex-state-backed-up. To copy it to a private directory, use:\n  ' >&2
+		printf '%q ' "${dcmd[@]}" cp "${name}:/home/dev/.codex/." >&2
+		printf '/path/to/private-backup/\n' >&2
+		return 1
+	fi
+	"${dcmd[@]}" rm -f "${container_id}" >/dev/null
 }
 
 # The image is built from the local tree (${root}) but Phase 2 bootstraps the
@@ -240,7 +261,7 @@ up_pc() {
 
 	want_image="$(DOCKER_HOST="ssh://${host}" docker image inspect --format '{{.Id}}' "${tag}")"
 	if needs_recreate "${want_image}" "${keys}" "${ts_hostname}" env "DOCKER_HOST=ssh://${host}" docker; then
-		DOCKER_HOST="ssh://${host}" docker rm -f "${name}" >/dev/null 2>&1 || true
+		remove_container_for_recreate env "DOCKER_HOST=ssh://${host}" docker || return 1
 		DOCKER_HOST="ssh://${host}" docker run -d \
 			--init \
 			--name "${name}" \
@@ -309,7 +330,7 @@ up_mac() {
 
 	want_image="$(env -u DOCKER_HOST docker --context desktop-linux image inspect --format '{{.Id}}' "${tag}")"
 	if needs_recreate "${want_image}" "${keys}" "${ts_hostname}" env -u DOCKER_HOST docker --context desktop-linux; then
-		env -u DOCKER_HOST docker --context desktop-linux rm -f "${name}" >/dev/null 2>&1 || true
+		remove_container_for_recreate env -u DOCKER_HOST docker --context desktop-linux || return 1
 		env -u DOCKER_HOST docker --context desktop-linux run -d \
 			--init \
 			--name "${name}" \
