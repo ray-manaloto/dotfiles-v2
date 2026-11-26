@@ -54,3 +54,18 @@ include_only = [
   "NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S",
   "OTEL_LOG_RAW_API_BODIES",
 ]
+
+# Use the canonical research skills and CLIs for these integrations.
+[plugins."context7@context7-marketplace"]
+enabled = false
+
+[plugins."exa@exa"]
+enabled = false
+
+[plugins."apify@apify"]
+enabled = false
+
+# Codex 0.172 requires a transport even for a disabled server.
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+enabled = false

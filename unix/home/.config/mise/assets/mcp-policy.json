@@ -1,0 +1,413 @@
+{
+  "$schema": "../../../../../schemas/mcp-policy.schema.json",
+  "entries": [
+    {
+      "name": "context7",
+      "kind": "server",
+      "harnesses": ["claude", "codex"],
+      "decision": "cli",
+      "reason": "Use the documented CLI and scoped proxy for docs lookup.",
+      "replacement": "ctx7 and find-docs"
+    },
+    {
+      "name": "plugin:context7:context7",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "cli",
+      "reason": "Use the same docs workflow for plugin-provided Context7.",
+      "replacement": "ctx7 and find-docs"
+    },
+    {
+      "name": "context7@context7-marketplace",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "cli",
+      "reason": "Context7 documentation is available through the pinned CLI.",
+      "replacement": "ctx7 and find-docs"
+    },
+    {
+      "name": "exa",
+      "kind": "server",
+      "harnesses": ["codex"],
+      "decision": "skill",
+      "reason": "The SDK skill provides Exa search without an MCP connection.",
+      "replacement": "exa-search"
+    },
+    {
+      "name": "exa@exa",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "skill",
+      "reason": "Use the canonical Exa SDK skill for research.",
+      "replacement": "exa-search"
+    },
+    {
+      "name": "firecrawl",
+      "kind": "server",
+      "harnesses": ["agy", "claude", "codex", "opencode"],
+      "decision": "cli",
+      "reason": "Run Firecrawl requests through the scoped research proxy.",
+      "replacement": "firecrawl CLI with fnox proxy run"
+    },
+    {
+      "name": "apify",
+      "kind": "server",
+      "harnesses": ["claude", "codex"],
+      "decision": "cli",
+      "reason": "Run Apify requests through the scoped research proxy.",
+      "replacement": "apify CLI with fnox proxy run"
+    },
+    {
+      "name": "plugin:apify:apify",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Claude already blocks this plugin MCP.",
+      "replacement": "apify CLI with fnox proxy run"
+    },
+    {
+      "name": "apify@apify",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "cli",
+      "reason": "Apify has a CLI for scoped proxy runs.",
+      "replacement": "apify CLI with fnox proxy run"
+    },
+    {
+      "name": "openaiDeveloperDocs",
+      "kind": "server",
+      "harnesses": ["codex"],
+      "decision": "skill",
+      "reason": "Use the OpenAI documentation skill and its manual workflow.",
+      "replacement": "openai-docs"
+    },
+    {
+      "name": "github",
+      "kind": "server",
+      "harnesses": ["agy", "claude", "codex", "opencode"],
+      "decision": "cli",
+      "reason": "Use GitHub CLI for GitHub operations.",
+      "replacement": "gh"
+    },
+    {
+      "name": "github@openai-curated",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "cli",
+      "reason": "GitHub operations use the CLI.",
+      "replacement": "gh"
+    },
+    {
+      "name": "openwiki",
+      "kind": "server",
+      "harnesses": ["agy", "claude", "codex"],
+      "decision": "keep",
+      "reason": "User-wide workspace-scoped OpenWiki lookup.",
+      "replacement": "openwiki CLI for non-workspace queries"
+    },
+    {
+      "name": "browse",
+      "kind": "server",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Browser access has no equivalent CLI workflow.",
+      "replacement": null
+    },
+    {
+      "name": "claude-in-chrome",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Browser integration has no equivalent CLI workflow.",
+      "replacement": null
+    },
+    {
+      "name": "computer-use",
+      "kind": "server",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Desktop integration has no equivalent CLI workflow.",
+      "replacement": null
+    },
+    {
+      "name": "node_repl",
+      "kind": "server",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Persistent JavaScript tool has no equivalent CLI workflow.",
+      "replacement": null
+    },
+    {
+      "name": "easel",
+      "kind": "server",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Interactive canvas has no equivalent CLI workflow.",
+      "replacement": null
+    },
+    {
+      "name": "browser@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Bundled browser integration.",
+      "replacement": null
+    },
+    {
+      "name": "chrome@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Bundled Chrome integration.",
+      "replacement": null
+    },
+    {
+      "name": "computer-use@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Bundled desktop integration.",
+      "replacement": null
+    },
+    {
+      "name": "unified-computer-use@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Bundled desktop and browser integration.",
+      "replacement": null
+    },
+    {
+      "name": "coderabbit@claude-plugins-official",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Declared CodeRabbit reviewer.",
+      "replacement": "coderabbit CLI for local review"
+    },
+    {
+      "name": "coderabbit@openai-curated",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "The published Codex plugin uses the CodeRabbit CLI and declares no MCP server for the Codex 0.172.0 tool allowlist.",
+      "replacement": "coderabbit CLI for local review"
+    },
+    {
+      "name": "plugin:coderabbit:coderabbit",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Declared CodeRabbit reviewer connection.",
+      "replacement": "coderabbit CLI for local review"
+    },
+    {
+      "name": "coderabbit",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "Declared CodeRabbit reviewer.",
+      "replacement": "coderabbit CLI for local review"
+    },
+    {
+      "name": "coderabbit",
+      "kind": "server",
+      "harnesses": ["agy", "codex"],
+      "decision": "keep",
+      "reason": "CodeRabbit reviewer connection for hosted reviews.",
+      "replacement": "coderabbit CLI for local review"
+    },
+    {
+      "name": "graphify@graphify",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Declared Graphify reviewer.",
+      "replacement": null
+    },
+    {
+      "name": "graphify",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "Declared Graphify reviewer.",
+      "replacement": null
+    },
+    {
+      "name": "graphify-opencode",
+      "kind": "plugin",
+      "harnesses": ["opencode"],
+      "decision": "keep",
+      "reason": "Declared Graphify reviewer.",
+      "replacement": null
+    },
+    {
+      "name": "plugin:graphify:graphify",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Declared Graphify reviewer connection.",
+      "replacement": null
+    },
+    {
+      "name": "graphify",
+      "kind": "server",
+      "harnesses": ["agy", "codex", "opencode"],
+      "decision": "keep",
+      "reason": "Graphify reviewer connection.",
+      "replacement": null
+    },
+    {
+      "name": "greptile@claude-plugins-official",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Declared Greptile reviewer.",
+      "replacement": "greptile review"
+    },
+    {
+      "name": "greptile@greptile-plugin",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Declared Greptile reviewer.",
+      "replacement": "greptile review"
+    },
+    {
+      "name": "plugin:greptile:greptile",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Declared Greptile reviewer connection.",
+      "replacement": "greptile review"
+    },
+    {
+      "name": "greptile",
+      "kind": "server",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Greptile reviewer connection.",
+      "replacement": "greptile review"
+    },
+    {
+      "name": "repowise@repowise",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Declared Repowise reviewer.",
+      "replacement": null
+    },
+    {
+      "name": "codex@repowise",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Declared Repowise reviewer.",
+      "replacement": null
+    },
+    {
+      "name": "plugin:repowise:repowise",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Declared Repowise reviewer connection.",
+      "replacement": null
+    },
+    {
+      "name": "repowise",
+      "kind": "server",
+      "harnesses": ["codex", "opencode"],
+      "decision": "keep",
+      "reason": "Repowise reviewer connection.",
+      "replacement": null
+    },
+    {
+      "name": "codex-app-tools@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "computer-history@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "messages@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "record-and-replay@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "codex-security@openai-curated",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "openai-developers@openai-curated",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "claude-flow",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Unmanaged third-party swarm MCP.",
+      "replacement": null
+    },
+    {
+      "name": "flow-nexus",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Unmanaged third-party swarm MCP.",
+      "replacement": null
+    },
+    {
+      "name": "package-search",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Unmanaged third-party swarm MCP.",
+      "replacement": null
+    },
+    {
+      "name": "ruv-swarm",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Unmanaged third-party swarm MCP.",
+      "replacement": null
+    },
+    {
+      "name": "claude.ai",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Keep Claude account connectors disabled.",
+      "replacement": null
+    }
+  ]
+}

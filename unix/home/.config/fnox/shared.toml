@@ -66,8 +66,6 @@ TAILSCALE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "TAILS
 inherits = ["doppler-auth"]
 
 [profiles.mcp.secrets]
-CONTEXT7_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "CONTEXT7_API_KEY", env = false, if_missing = "warn" }
-EXA_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "EXA_API_KEY", env = false, if_missing = "warn" }
 APIFY_TOKEN = { provider = "doppler_dotfiles_dev_personal", value = "APIFY_TOKEN", env = false, if_missing = "warn" }
 FIRECRAWL_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "FIRECRAWL_API_KEY", env = false, if_missing = "warn" }
 
@@ -115,8 +113,6 @@ ANTHROPIC_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "ANTHR
 [proxy]
 egress = "permissive"
 rules = [
-  { secret = "CONTEXT7_API_KEY", domain = "mcp.context7.com", header = "authorization", placeholder = "fnox-placeholder-context7-mcp" },
-  { secret = "EXA_API_KEY", domain = "mcp.exa.ai", header = "authorization", placeholder = "fnox-placeholder-exa-mcp" },
   { secret = "OPENROUTER_API_KEY", domain = "openrouter.ai", header = "authorization" },
   { secret = "APINEX_API_KEY", domain = "api.apinex.bond", header = "authorization" },
   { secret = "EXPERIENTIAL_API_KEY", domain = "api.experientiallabs.ai", header = "authorization" },

@@ -137,6 +137,7 @@ from .herdr_roll_schema import (
     TerminalSnapshot,
     Timing,
 )
+from .mcp_policy_schema import Decision, Harness, Kind, McpPolicy, McpPolicyEntry
 from .pc_hub_schema import (
     AgentsViewOffloadOutcome,
     PcHubCheckState,
@@ -182,6 +183,7 @@ __all__ = [
     "CommonErrorCode",
     "CommonReturnCode",
     "ContainerOciMetadata",
+    "Decision",
     "DepsAuditErrorCode",
     "DepsAuditErrorEntry",
     "DepsAuditModels",
@@ -225,6 +227,7 @@ __all__ = [
     "EnvelopeMetadata",
     "ErrorEntry",
     "GraphSnapshot",
+    "Harness",
     "HarnessKind",
     "HarnessMcpEntry",
     "HarnessPluginEntry",
@@ -249,6 +252,7 @@ __all__ = [
     "InventoryReturnCode",
     "InventoryReturnEntry",
     "InventoryTargetKind",
+    "Kind",
     "LearnErrorCode",
     "LearnErrorEntry",
     "LearnProposal",
@@ -256,6 +260,8 @@ __all__ = [
     "LearnReturnCode",
     "LearnReturnEntry",
     "LearnReviewRecord",
+    "McpPolicy",
+    "McpPolicyEntry",
     "MiseInventory",
     "MiseSkillEntry",
     "MiseToolEntry",

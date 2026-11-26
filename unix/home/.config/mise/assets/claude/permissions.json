@@ -6,6 +6,33 @@
     },
     {
       "serverName": "plugin:apify:apify"
+    },
+    {
+      "serverName": "context7"
+    },
+    {
+      "serverName": "plugin:context7:context7"
+    },
+    {
+      "serverName": "apify"
+    },
+    {
+      "serverName": "firecrawl"
+    },
+    {
+      "serverName": "github"
+    },
+    {
+      "serverName": "claude-flow"
+    },
+    {
+      "serverName": "flow-nexus"
+    },
+    {
+      "serverName": "package-search"
+    },
+    {
+      "serverName": "ruv-swarm"
     }
   ],
   "disableClaudeAiConnectors": true,
