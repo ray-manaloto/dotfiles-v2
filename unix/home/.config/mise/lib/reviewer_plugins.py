@@ -354,7 +354,11 @@ def sync(manifest: dict, home: Path) -> list[str]:
             [repowise, "telemetry", "disable"],
         )
         log.append(_result("repowise telemetry disable", rc, out))
-    log.extend(apply_guard(r) for r in repowise_repos(default_roots(home)))
+    for repo in repowise_repos(default_roots(home)):
+        try:
+            log.append(apply_guard(repo))
+        except OSError as exc:
+            log.append(f"{FAIL}repowise guard {repo}: {exc}")
     return log
 
 
