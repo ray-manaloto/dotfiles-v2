@@ -116,7 +116,7 @@ ANTHROPIC_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "ANTHR
 inherits = ["doppler-auth"]
 
 [profiles.api-coding.secrets]
-OPENAI_CODING_API_KEY = { provider = "doppler_dotfiles_dev_personal", env = false, if_missing = "error" }
+OPENAI_CODING_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "OPENAI_CODING_API_KEY", env = false, if_missing = "error" }
 
 [proxy]
 egress = "permissive"
