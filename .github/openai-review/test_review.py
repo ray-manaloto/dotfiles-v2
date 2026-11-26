@@ -159,6 +159,13 @@ class ReviewTests(unittest.TestCase):
                 )
                 self.assertEqual(review.error_type(exc), expected)
 
+    def test_truncated_http_error_body_is_safe(self):
+        import http.client
+
+        exc = Mock()  # stands in for an HTTPError whose body read is cut short
+        exc.read.side_effect = http.client.IncompleteRead(b"{")
+        self.assertEqual(review.error_type(exc), "")
+
     def test_path_and_variable_references_are_not_flagged(self):
         for patch in (
             '@@ -1 +1 @@\n-old\n+auth_token_file = "/run/agent-secrets/token"',

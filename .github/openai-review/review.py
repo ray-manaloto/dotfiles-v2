@@ -106,7 +106,7 @@ def error_type(exc):
     """Return a safe ` (error_type)` suffix from a JSON error body, or ``""``."""
     try:
         payload = json.loads(exc.read(4096))
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return ""
     err = payload.get("error") if isinstance(payload, dict) else None
     kind = err.get("type") if isinstance(err, dict) else None
