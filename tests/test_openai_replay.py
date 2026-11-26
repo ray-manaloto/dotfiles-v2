@@ -57,18 +57,23 @@ def test_collect_persists_oversized_decline(
 
     if private:
         with pytest.raises(RuntimeError, match="--allow-private"):
-            inputs.collect_one(tmp_path, repo, 123)
+            inputs.collect_one(tmp_path, repo, 123, private=private)
         assert not list(tmp_path.glob("pr-*.json"))
 
-    row = inputs.collect_one(tmp_path, repo, 123, allow_private=private)
+    row = inputs.collect_one(
+        tmp_path, repo, 123, private=private, allow_private=private
+    )
 
     assert "data" not in row
     assert row["decline"] == "No reviewable files remain after patch checks."
     assert row["skipped"] == {"oversized": 1}
-    assert inputs.collect_one(tmp_path, repo, 123, allow_private=private) == row
+    assert (
+        inputs.collect_one(tmp_path, repo, 123, private=private, allow_private=private)
+        == row
+    )
     if private:
         with pytest.raises(RuntimeError, match="--allow-private"):
-            inputs.collect_one(tmp_path, repo, 123)
+            inputs.collect_one(tmp_path, repo, 123, private=private)
 
 
 def test_missing_line_has_no_patch_excerpt(replay_modules):
@@ -117,6 +122,44 @@ def test_decisions_retry_respects_spend_cap(tmp_path, monkeypatch, replay_module
     assert grade.decisions(tmp_path, None, "finding", body) == result
     assert len(dispatches) == 2
     assert sorted(map(spend.charge, spend.totals(tmp_path))) == [2, cost]
+
+
+def test_decisions_distinguishes_payloads_and_preserves_old_charges(
+    tmp_path, monkeypatch, replay_modules
+):
+    inputs, grade, _, spend = replay_modules
+    calls = []
+    body = {"model": "fixture", "input": "evidence"}
+    changed = {**body, "input": "new evidence"}
+
+    def respond(_url, _key, *, body):
+        calls.append(body)
+        return {"usage": {"input_tokens": 12}, "fixture": body["input"]}
+
+    monkeypatch.setattr(grade.review, "request_json", respond)
+    result = grade.decisions(tmp_path, "placeholder", "finding", body)
+    assert (
+        grade.decisions(tmp_path, None, "finding", dict(reversed(list(body.items()))))
+        == result
+    )
+    fingerprint = inputs.payload_fingerprint(body)
+    path = tmp_path / f"decision-finding-{fingerprint}.json"
+    original = path.read_bytes()
+
+    for key in (None, "placeholder"):
+        with pytest.raises(grade.PayloadMismatch, match="payload changed"):
+            grade.decisions(tmp_path, key, "finding", changed)
+    assert calls == [body]
+
+    replacement = grade.decisions(
+        tmp_path, "placeholder", "finding", changed, retry_reserved=True
+    )
+    assert replacement != result
+    assert grade.decisions(tmp_path, None, "finding", changed) == replacement
+    assert path.read_bytes() == original
+    assert inputs.read_json(path)["fingerprint"] == fingerprint
+    assert calls == [body, changed]
+    assert list(map(spend.charge, spend.totals(tmp_path))) == [2, 2]
 
 
 def test_batch_late_retry_meters_only_successful_reservation(
@@ -195,6 +238,39 @@ def test_regrade_rebuilds_summary_from_receipt(tmp_path, monkeypatch, replay_mod
     assert path.read_bytes() == first
     assert inputs.read_json(path)["rows"][0]["verdict"] == "defect"
 
+    reporting = importlib.import_module("reporting")
+    summary = inputs.read_json(path)
+    assert summary["thresholds"] == {"proposed": [0.85, 0.0], "baseline": [0.85, 1.0]}
+    graded = [("defect", 0.91, 0.0, True)]
+    original_report = reporting.independent_section(summary, graded)
+    with monkeypatch.context() as context:
+        context.setattr(independent, "PROBABILITY", 0.95)
+        context.setattr(independent.triage, "MIN_PROBABILITY", 0.95)
+        independent.regrade(tmp_path, None, rows)
+        assert path.read_bytes() == first
+        assert reporting.independent_section(summary, graded) == original_report
+
+    original_path = tmp_path / "independent-0-123-finding.json"
+    original_receipt = original_path.read_bytes()
+    inputs.write_json(
+        tmp_path / "evidence-0-123-finding.json", {"merged_file_excerpt": "new context"}
+    )
+    for key in (None, "placeholder"):
+        with pytest.raises(RuntimeError, match="No matching independent receipt"):
+            independent.regrade(tmp_path, key, rows)
+    assert len(sent) == 1
+    independent.regrade(tmp_path, "placeholder", rows, retry_reserved=True)
+    independent.regrade(tmp_path, None, rows)
+    assert len(sent) == 2
+    assert original_path.read_bytes() == original_receipt
+    replacement = inputs.read_json(tmp_path / "independent-0-123-finding-retry-1.json")
+    original = inputs.read_json(original_path)
+    assert replacement["fingerprint"] != original["fingerprint"]
+    assert (
+        inputs.read_json(path)["estimate"]
+        == original["reserved"] + replacement["reserved"]
+    )
+
 
 def test_regrade_retry_keeps_ambiguous_attempt_charged(
     tmp_path, monkeypatch, replay_modules
@@ -242,11 +318,8 @@ def test_regrade_retry_keeps_ambiguous_attempt_charged(
     assert summary["unreconciled"] == cost
 
 
-@pytest.mark.parametrize("phase", ["submit", "finish", "regrade"])
-@pytest.mark.parametrize("privacy", [{"private": True}, {}], ids=["private", "legacy"])
-def test_sending_phases_refuse_private_or_unverified_inputs(
-    tmp_path, monkeypatch, replay_modules, phase, privacy
-):
+@pytest.fixture
+def replay_cli(tmp_path, monkeypatch, replay_modules):
     _, _, batch, _ = replay_modules
     run = importlib.import_module("run")
     plan = tmp_path / ".planning" / "fixture"
@@ -255,18 +328,80 @@ def test_sending_phases_refuse_private_or_unverified_inputs(
     monkeypatch.setenv("PLAN_ID", plan.name)
     monkeypatch.setattr(run, "ROOT", tmp_path)
     monkeypatch.setattr(run, "configure_logging", lambda **_: None)
-    monkeypatch.setattr(run, "collect", lambda *_, **__: [{"data": "[]", **privacy}])
+    monkeypatch.setattr(run.os, "umask", lambda _: None)
 
     def stop_after_privacy_check(*_args):
         raise ValueError("Validation reached request preparation.")
 
     monkeypatch.setattr(batch, "prepare", stop_after_privacy_check)
+    return run
+
+
+@pytest.mark.parametrize("phase", ["submit", "evidence", "finish", "regrade"])
+@pytest.mark.parametrize("private", [True, None], ids=["private", "unknown"])
+def test_live_phases_check_fresh_visibility(
+    monkeypatch, replay_modules, replay_cli, phase, private
+):
+    inputs, *_ = replay_modules
+    repo = inputs.REPOS[0]
+    reads = []
+
+    def github(endpoint):
+        reads.append(endpoint)
+        return {"full_name": repo, "private": private}
+
+    monkeypatch.setattr(inputs, "github", github)
+    monkeypatch.setattr(
+        replay_cli, "collect", lambda *_, **__: [{"repo": repo, "private": False}]
+    )
     monkeypatch.setattr(sys, "argv", ["run.py", phase])
-    # Restore the caller's umask, which the CLI normally sets for its own process.
-    monkeypatch.setattr(run.os, "umask", lambda _: None)
     with pytest.raises(RuntimeError, match="--allow-private"):
-        run.main()
+        replay_cli.main()
 
     monkeypatch.setattr(sys, "argv", ["run.py", phase, "--allow-private"])
     with pytest.raises(ValueError, match="Validation reached request preparation"):
-        run.main()
+        replay_cli.main()
+    assert reads == [f"repos/{repo}", f"repos/{repo}"]
+
+
+@pytest.mark.parametrize("phase", ["finish", "regrade"])
+@pytest.mark.parametrize("row", [{"private": True}, {}], ids=["private", "unknown"])
+def test_cache_only_checks_saved_visibility(
+    monkeypatch, replay_modules, replay_cli, phase, row
+):
+    inputs, *_ = replay_modules
+    monkeypatch.setattr(
+        inputs, "github", lambda *_: pytest.fail("cache-only attempted a GitHub read")
+    )
+    monkeypatch.setattr(replay_cli, "collect", lambda *_, **__: [row])
+    argv = ["run.py", phase, "--cached-only"]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(RuntimeError, match="--allow-private"):
+        replay_cli.main()
+
+    monkeypatch.setattr(sys, "argv", [*argv, "--allow-private"])
+    with pytest.raises(ValueError, match="Validation reached request preparation"):
+        replay_cli.main()
+
+
+def test_prepare_rechecks_visibility_before_using_cached_inputs(
+    tmp_path, monkeypatch, replay_modules
+):
+    inputs, *_ = replay_modules
+    repo = inputs.REPOS[0]
+    inputs.write_json(tmp_path / "inventory.json", [[repo, 123]])
+    path = tmp_path / "pr-0-123.json"
+    inputs.write_json(path, {"private": False})
+    monkeypatch.setattr(
+        inputs,
+        "github",
+        {
+            f"repos/{name}": {"full_name": name, "private": name == repo}
+            for name in inputs.REPOS
+        }.__getitem__,
+    )
+    with pytest.raises(RuntimeError, match="--allow-private"):
+        inputs.collect(tmp_path)
+    assert inputs.read_json(path) == {"private": False}
+    assert inputs.collect(tmp_path, allow_private=True) == [{"private": True}]
+    assert inputs.read_json(path) == {"private": True}

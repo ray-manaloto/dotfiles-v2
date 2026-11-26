@@ -39,13 +39,15 @@ def money(amount):
     return f"${amount / 1_000_000:.6f}"
 
 
-def independent_section(summary, grid):
+def independent_section(summary, graded):
     rows = summary["rows"]
     accepted = [row for row in rows if row["selected"]]
     held = [row for row in rows if not row["selected"]]
     baseline = [row for row in accepted if row["baseline"]]
     weight = summary["total_rejected"] / len(held) if held else 0
-    p, s = independent.PROBABILITY, independent.SEVERITY
+    snapshot = independent.saved_thresholds(summary)
+    p, s = snapshot["proposed"]
+    baseline_p, baseline_s = snapshot["baseline"]
     lines = [
         "## Independent re-grade",
         "",
@@ -70,7 +72,7 @@ def independent_section(summary, grid):
         )
 
     base_tp, base_fp, base_unknown = independent.breakdown(baseline, "verdict")
-    full = grid[p, s]
+    full = metrics(graded, p, s)
     pairs = [(row["luna"], row["verdict"]) for row in rows]
     resolved = [(a, b) for a, b in pairs if "insufficient-evidence" not in (a, b)]
     exact = sum(a == b for a, b in pairs)
@@ -109,11 +111,7 @@ def independent_section(summary, grid):
         )
     if unmetered:
         lines.append(f"Usage was unavailable for {unmetered} responses.")
-    if (
-        tp > base_tp
-        and (p, s) == (triage.MIN_PROBABILITY, 0.0)
-        and s < triage.MIN_SEVERITY
-    ):
+    if tp > base_tp and p == baseline_p and s < baseline_s:
         lines.extend(
             [
                 "",
@@ -276,7 +274,7 @@ def render(
     )
     summary = cache / "independent-summary.json"
     if summary.is_file():
-        lines.extend(["", *independent_section(read_json(summary), grid)])
+        lines.extend(["", *independent_section(read_json(summary), graded)])
     start_marker = "<!-- BEGIN REPLAY SPOT CHECKS -->"
     end_marker = "<!-- END REPLAY SPOT CHECKS -->"
     _, start, remainder = previous_report.partition(start_marker)

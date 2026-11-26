@@ -8,7 +8,7 @@ from collections import Counter
 import review
 import triage
 from grade import VERDICTS
-from inputs import LOGGER, read_json, write_json
+from inputs import LOGGER, payload_fingerprint, read_json, write_json
 from spend import token_bound
 
 MODEL = "gpt-6-sol"
@@ -73,14 +73,25 @@ def upper(body):
     return math.ceil(1.1 * (5 * token_bound(body) + 15 * MAX_OUTPUT))
 
 
-def cohort(records):
+HISTORICAL_THRESHOLDS = {"proposed": (0.85, 0.0), "baseline": (0.85, 1.0)}
+
+
+def saved_thresholds(summary):
+    return summary.get("thresholds", HISTORICAL_THRESHOLDS)
+
+
+def cohort(records, thresholds):
+    proposed_p, proposed_s = thresholds["proposed"]
+    baseline_p, baseline_s = thresholds["baseline"]
+    if baseline_p < proposed_p or baseline_s < proposed_s:
+        raise RuntimeError(
+            "The independent comparison requires the baseline to be a subset of the proposal."
+        )
     selected, rejected = [], []
     for row in sorted(records, key=lambda item: item["id"]):
         probability, severity = row["scores"]
-        proposed = probability >= PROBABILITY and severity >= SEVERITY
-        baseline = (
-            probability >= triage.MIN_PROBABILITY and severity >= triage.MIN_SEVERITY
-        )
+        proposed = probability >= proposed_p and severity >= proposed_s
+        baseline = probability >= baseline_p and severity >= baseline_s
         group = selected if proposed else rejected
         group.append({**row, "selected": proposed, "baseline": baseline})
     return selected + random.Random(SEED).sample(rejected, min(30, len(rejected))), len(
@@ -105,7 +116,14 @@ def report_result(receipt):
 
 
 def regrade(cache, key, records, *, retry_reserved=False):
-    rows, total_rejected = cohort(records)
+    summary_path = cache / "independent-summary.json"
+    thresholds = {
+        "proposed": (PROBABILITY, SEVERITY),
+        "baseline": (triage.MIN_PROBABILITY, triage.MIN_SEVERITY),
+    }
+    if key is None and summary_path.is_file():
+        thresholds = saved_thresholds(read_json(summary_path))
+    rows, total_rejected = cohort(records, thresholds)
     reservations = {
         path: read_json(path) for path in cache.glob("independent-*-*.json")
     }
@@ -119,23 +137,37 @@ def regrade(cache, key, records, *, retry_reserved=False):
     for item in rows:
         ident = item["id"]
         receipt = cache / f"independent-{ident}.json"
-        attempt = 0
-        while receipt in reservations and "result" not in reservations[receipt]:
-            attempt += 1
-            receipt = cache / f"independent-{ident}-retry-{attempt}.json"
-        if receipt in reservations:
-            prepared.append((item, receipt, reservations[receipt], None))
-            continue
-        if key is None:
-            raise RuntimeError("Cached independent response is missing.")
-        if attempt and not retry_reserved:
-            raise RuntimeError(
-                "An independent request already has a reservation. "
-                "Use --retry-reserved to charge another attempt."
-            )
         path = cache / f"evidence-{ident}.json"
         body = payload({**item, "evidence": read_json(path) if path.is_file() else {}})
-        guard = {"reserved": upper(body)}
+        fingerprint = payload_fingerprint(body)
+        attempt = 0
+        match = legacy = None
+        fingerprinted = False
+        while receipt in reservations:
+            saved = reservations[receipt]
+            if saved.get("fingerprint"):
+                fingerprinted = True
+            if "result" in saved:
+                if saved.get("fingerprint") == fingerprint:
+                    match = saved
+                    break
+                if "fingerprint" not in saved:
+                    legacy = saved
+            attempt += 1
+            receipt = cache / f"independent-{ident}-retry-{attempt}.json"
+        if key is None and not fingerprinted and match is None:
+            match = legacy
+        if match is not None:
+            prepared.append((item, receipt, match, None))
+            continue
+        if attempt and (key is None or not retry_reserved):
+            raise RuntimeError(
+                "No matching independent receipt for this payload. "
+                "Use live regrade with --retry-reserved to charge another attempt."
+            )
+        if key is None:
+            raise RuntimeError("Cached independent response is missing.")
+        guard = {"reserved": upper(body), "fingerprint": fingerprint}
         estimate += guard["reserved"]
         prepared.append((item, receipt, guard, body))
     if estimate > CAP:
@@ -156,11 +188,12 @@ def regrade(cache, key, records, *, retry_reserved=False):
             }
         )
     write_json(
-        cache / "independent-summary.json",
+        summary_path,
         {
             "estimate": estimate,
             "unreconciled": unreconciled,
             "seed": SEED,
+            "thresholds": thresholds,
             "total_rejected": total_rejected,
             "rows": measured,
         },

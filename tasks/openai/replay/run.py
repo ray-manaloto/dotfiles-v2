@@ -12,8 +12,15 @@ import independent
 import review
 import triage
 from filelock import FileLock
-from grade import grade, grade_context, production_scores
-from inputs import LOGGER, collect, read_json, require_private_opt_in, write_json
+from grade import PayloadMismatch, grade, grade_context, production_scores
+from inputs import (
+    LOGGER,
+    collect,
+    read_json,
+    refresh_visibility,
+    require_private_opt_in,
+    write_json,
+)
 from reporting import render
 from spend import meter
 
@@ -56,7 +63,16 @@ def prepare_evidence(cache, rows, requests, schema, result):
 
 
 def analyze(
-    cache, key, rows, requests, schema, result, *, retry_reserved=False, regrade=False
+    cache,
+    key,
+    rows,
+    requests,
+    schema,
+    result,
+    *,
+    retry_reserved=False,
+    regrade=False,
+    allow_legacy=False,
 ):
     output, expected = batch_reviews(requests, result)
     if result["status"] == "completed" and output.keys() == expected:
@@ -89,9 +105,17 @@ def analyze(
         counts["changed_line_candidates"] += len(eligible)
         try:
             scores, accepted = production_scores(
-                cache, key, row_id, eligible, patches, retry_reserved=retry_reserved
+                cache,
+                key,
+                row_id,
+                eligible,
+                patches,
+                retry_reserved=retry_reserved,
+                allow_legacy=allow_legacy,
             )
             counts["production_selected"] += len(accepted)
+        except PayloadMismatch:
+            raise
         except (
             review.ReviewError,
             triage.TriageError,
@@ -109,8 +133,16 @@ def analyze(
         for item in candidates:
             try:
                 label, context = grade(
-                    cache, key, row, item, prior, retry_reserved=retry_reserved
+                    cache,
+                    key,
+                    row,
+                    item,
+                    prior,
+                    retry_reserved=retry_reserved,
+                    allow_legacy=allow_legacy,
                 )
+            except PayloadMismatch:
+                raise
             except (
                 review.ReviewError,
                 RuntimeError,
@@ -146,6 +178,13 @@ def main():
     parser.add_argument(
         "phase", choices=["prepare", "submit", "poll", "evidence", "finish", "regrade"]
     )
+    visibility = parser.add_mutually_exclusive_group()
+    visibility.add_argument(
+        "--visibility-only", action="store_true", help=argparse.SUPPRESS
+    )
+    visibility.add_argument(
+        "--visibility-checked", action="store_true", help=argparse.SUPPRESS
+    )
     parser.add_argument("--allow-private", action="store_true")
     parser.add_argument("--cached-only", action="store_true")
     parser.add_argument("--retry-reserved", action="store_true")
@@ -172,10 +211,17 @@ def main():
         rows = collect(
             cache, cached_only=args.phase != "prepare", allow_private=args.allow_private
         )
-        if not args.cached_only and args.phase in {"submit", "finish", "regrade"}:
-            require_private_opt_in(
-                (row for row in rows if "data" in row), allow_private=args.allow_private
+        if args.cached_only:
+            require_private_opt_in(rows, allow_private=args.allow_private)
+        elif (
+            args.phase in {"submit", "evidence", "finish", "regrade"}
+            and not args.visibility_checked
+        ):
+            refresh_visibility(
+                (row["repo"] for row in rows), allow_private=args.allow_private
             )
+        if args.visibility_only:
+            return
         requests = batch.prepare(rows, schema)
         estimate = batch.estimate(requests, schema, triage.MAX_REQUEST_BYTES)
         write_json(cache / "estimate.json", estimate)
@@ -215,6 +261,7 @@ def main():
             result,
             retry_reserved=args.retry_reserved,
             regrade=regrade,
+            allow_legacy=args.cached_only,
         )
         if regrade:
             independent.regrade(cache, key, records, retry_reserved=args.retry_reserved)
@@ -244,7 +291,7 @@ if __name__ == "__main__":
         main()
     except (OSError, RuntimeError, review.ReviewError, *review.MALFORMED_ERRORS) as exc:
         # Provider response payloads and subprocess stderr can contain private evidence.
-        if type(exc) is RuntimeError:
+        if type(exc) in (RuntimeError, PayloadMismatch):
             LOGGER.error("replay_failed", reason=str(exc))
         else:
             LOGGER.error("replay_failed", error_type=type(exc).__name__)

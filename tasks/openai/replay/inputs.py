@@ -1,5 +1,6 @@
 """Read immutable merged PR patches through the production patch checks."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -42,6 +43,28 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def payload_fingerprint(body):
+    return hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def refresh_visibility(repos, *, allow_private):
+    rows = {}
+    for repo in sorted(set(repos)):
+        metadata = github(f"repos/{repo}")
+        if metadata.get("full_name") != repo:
+            raise RuntimeError("GitHub returned unexpected repository metadata.")
+        private = metadata.get("private")
+        if metadata.get("visibility") not in (None, "public"):
+            private = True
+        rows[repo] = private
+    require_private_opt_in(
+        ({"private": private} for private in rows.values()), allow_private=allow_private
+    )
+    return rows
+
+
 def merged_inventory():
     for repo in REPOS:
         pages = github(
@@ -67,12 +90,15 @@ def require_private_opt_in(rows, *, allow_private):
         )
 
 
-def collect_one(cache, repo, number, *, allow_private=False):
+def collect_one(cache, repo, number, *, private, allow_private=False):
     identifier = f"{REPOS.index(repo)}-{number}"
     path = cache / f"pr-{identifier}.json"
+    require_private_opt_in([{"private": private}], allow_private=allow_private)
     if path.exists():
         row = read_json(path)
-        require_private_opt_in([row], allow_private=allow_private)
+        if row.get("private") is not private:
+            row["private"] = private
+            write_json(path, row)
         return row
     endpoint = f"repos/{repo}/pulls/{number}"
     pr = github(endpoint)
@@ -90,9 +116,12 @@ def collect_one(cache, repo, number, *, allow_private=False):
         "merge": pr["merge_commit_sha"],
         "merged_at": pr["merged_at"],
         "default_branch": pr["base"]["repo"]["default_branch"],
-        "private": pr["base"]["repo"].get("private"),
+        "private": private,
     }
-    require_private_opt_in([row], allow_private=allow_private)
+    # Recheck the PR metadata in case visibility changed after preflight.
+    require_private_opt_in([pr["base"]["repo"]], allow_private=allow_private)
+    if private is not True and pr["base"]["repo"].get("private") is not False:
+        row["private"] = pr["base"]["repo"].get("private")
     count = pr["changed_files"]
     if pr["base"]["ref"] != row["default_branch"]:
         row["decline"] = "non-default-base-branch"
@@ -131,13 +160,17 @@ def collect(cache: Path, *, cached_only=False, allow_private=False):
             read_json(cache / f"pr-{REPOS.index(repo)}-{number}.json")
             for repo, number in read_json(manifest)
         ]
+    visibility = refresh_visibility(REPOS, allow_private=allow_private)
     refs = read_json(manifest) if manifest.exists() else list(merged_inventory())
     if not manifest.exists():
         write_json(manifest, refs)
     with ThreadPoolExecutor(max_workers=4) as workers:
         rows = list(
             workers.map(
-                lambda ref: collect_one(cache, *ref, allow_private=allow_private), refs
+                lambda ref: collect_one(
+                    cache, *ref, private=visibility[ref[0]], allow_private=allow_private
+                ),
+                refs,
             )
         )
     LOGGER.info("github_inventory_cached", prs=len(rows))

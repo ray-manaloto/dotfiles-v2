@@ -38,11 +38,13 @@ historical cohort.
 6. `mise run openai:replay:run regrade` grades the proposed selection and a
    seeded sample of up to 30 rejects with GPT-6 Sol under a separate $10 cap.
    It uses cached Batch, triage, Luna grade, and follow-up evidence.
-7. `mise run openai:replay:run --cached-only finish` rebuilds the aggregate
-   report with the independent comparison and preserves the spot-check block.
+7. `mise run openai:replay:run --allow-private --cached-only finish` rebuilds
+   the aggregate report with the independent comparison and preserves the
+   spot-check block.
 
-Add `--cached-only` to `regrade` to rebuild the independent summary from
-saved Sol responses. Both cached-only phases run without the credential proxy.
+Pass `--allow-private --cached-only` to `regrade` to rebuild the independent
+summary from saved Sol responses. Both cache-only phases run without the
+credential proxy.
 
 The later-change window uses up to 20 commits touching the same path, ordered
 oldest first, from the default branch tip captured by the evidence phase.
