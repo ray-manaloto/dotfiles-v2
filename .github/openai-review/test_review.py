@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, call
+from unittest.mock import patch as mock_patch
 
 import review
 
@@ -85,6 +86,27 @@ class ReviewTests(unittest.TestCase):
             "GITHUB_STEP_SUMMARY": str(self.summary),
         }
 
+    def assert_decline(self, reason, send, *, head="a" * 40, **overrides):
+        output = Path(self.directory.name) / "output"
+        job_output = Path(self.directory.name) / "job-output"
+        env = dict(
+            self.env, GITHUB_OUTPUT=str(job_output), REVIEW_OUTPUT_DIR=str(output)
+        )
+        env.update(overrides)
+        with (
+            mock_patch.object(review.os, "environ", env),
+            mock_patch.object(review, "request_json", send),
+        ):
+            self.assertIsNone(review.main())
+        note = f"not reviewed: {reason}"
+        self.assertIn(note, self.summary.read_text())
+        self.assertIn("OpenAI usage", self.summary.read_text())
+        self.assertEqual(
+            job_output.read_text().splitlines()[-2:],
+            [f"decline_head={head}", f"decline_note={note}"],
+        )
+        self.assertFalse(output.exists())
+
     def test_sends_patches_only_and_escapes_summary(self):
         output = Path(self.directory.name) / "output"
         proposed = openai_ok(finding(), finding(id="F2", line=2))
@@ -131,8 +153,9 @@ class ReviewTests(unittest.TestCase):
         pull = pr()
         pull["head"]["repo"] = {"full_name": "fork/repo"}
         send = Mock(return_value=pull)
-        with self.assertRaises(review.ReviewError):
-            review.run(env, send)
+        self.assert_decline(
+            "The PR closed, moved, or does not match the event.", send, **env
+        )
         send.assert_called_once()
 
     def test_forged_autofix_commit_marker_does_not_skip_automatic_review(self):
@@ -201,21 +224,17 @@ class ReviewTests(unittest.TestCase):
         # 1.2M fresh * $2 + 0.8M cached * $0.10 + 0.2M out * $10 + 2M luna * $0.10
         self.assertEqual(review.usage_cost(usage), 4.68)
 
-    def test_triage_failure_writes_untriaged_candidates_and_note(self):
-        output = Path(self.directory.name) / "output"
+    def test_triage_failure_writes_note_with_usage_and_no_findings(self):
+        proposed = dict(openai_ok(finding()), usage={"input_tokens": 42})
         for error in (
             review.triage.TriageError("bad answer"),
             review.ReviewError("HTTP 503"),
         ):
             with self.subTest(error=error):
-                send = Mock(
-                    side_effect=[pr(), [item()], pr(), openai_ok(finding()), error]
-                )
-                review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
-                payload = json.loads((output / "findings.json").read_text())
-                self.assertEqual(payload["triage"], "unavailable")
-                self.assertEqual(payload["findings"], [finding()])
-                self.assertIn("Triage unavailable", (output / "comment.md").read_text())
+                send = Mock(side_effect=[pr(), [item()], pr(), proposed, error])
+                self.assert_decline("Triage unavailable.", send)
+                self.assertIn('"input_tokens": 42', self.summary.read_text())
+                self.assertNotIn("HTTP 503", self.summary.read_text())
 
     def test_findings_reject_duplicate_ids_and_non_integer_locations(self):
         schema = json.loads(review.FINDINGS_SCHEMA.read_text())
@@ -256,12 +275,11 @@ class ReviewTests(unittest.TestCase):
             item(patch='@@ -1 +1 @@\n-old\n+"apiKey": "syntheticValue1234"'),
         ):
             with self.subTest(path=bad["filename"]):
-                send = Mock(side_effect=[pr(), [bad]])
-                with self.assertRaisesRegex(
-                    review.ReviewError, "No reviewable files remain"
-                ):
-                    review.run(self.env, send)
-                self.assertEqual(send.call_count, 2)
+                send = Mock(side_effect=[pr(), [bad], pr()])
+                self.assert_decline(
+                    "No reviewable files remain after patch checks.", send
+                )
+                self.assertEqual(send.call_count, 3)
 
     def test_skip_reasons(self):
         for overrides, path, reason in (
@@ -405,33 +423,114 @@ class ReviewTests(unittest.TestCase):
 
     def test_too_many_reviewable_files_are_not_sent(self):
         files = [item(filename=f"{i}.py") for i in range(review.MAX_FILES + 1)]
-        send = Mock(side_effect=[dict(pr(), changed_files=len(files)), files])
-        with self.assertRaisesRegex(review.ReviewError, "reviewable file limit"):
-            review.run(self.env, send)
-        self.assertEqual(send.call_count, 2)
+        revision = dict(pr(), changed_files=len(files))
+        send = Mock(side_effect=[revision, files, revision])
+        self.assert_decline("The PR exceeds the reviewable file limit.", send)
+        self.assertEqual(send.call_count, 3)
+
+    def test_github_file_listing_cap_declines_before_fetching_patches(self):
+        send = Mock(return_value=dict(pr(), changed_files=review.GITHUB_FILE_LIMIT + 1))
+        self.assert_decline("The PR exceeds the GitHub file listing limit.", send)
+        send.assert_called_once()
 
     def test_incomplete_later_file_page_prevents_review(self):
         files = [item(filename=f"{i}.lock") for i in range(31)]
-        send = Mock(side_effect=[dict(pr(), changed_files=32), files, []])
+        revision = dict(pr(), changed_files=32)
+        send = Mock(side_effect=[revision, files, [], revision])
         with self.assertRaisesRegex(review.ReviewError, "incomplete file list"):
             review.run(self.env, send)
-        self.assertEqual(send.call_count, 3)
+        self.assertEqual(send.call_count, 4)
 
-    def test_reviewable_patches_still_obey_the_combined_size_limit(self):
-        patch = "@@ -1 +1 @@\n-old\n+" + "z" * (review.MAX_PATCH_BYTES // 2)
-        with self.assertRaisesRegex(review.ReviewError, "patch size limit"):
-            review.patch_data(
-                [item(patch=patch), item(filename="other.py", patch=patch)]
-            )
+    def test_combined_size_limit_reviews_a_prefix_and_lists_over_budget_skips(self):
+        output = Path(self.directory.name) / "output"
+        patch_text = "@@ -1 +1 @@\n-old\n+" + "z" * (review.MAX_PATCH_BYTES // 2)
+        marker = "over budget content"
+        files = [
+            item(patch=patch_text),
+            item(filename="other.py", patch=patch_text + marker),
+            item(filename="small.py"),
+            item(filename=".env"),
+        ]
+        revision = dict(pr(), changed_files=len(files))
+        send = Mock(side_effect=[revision, files, revision, openai_ok()])
+        review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
+        data = send.call_args.kwargs["body"]["input"]
+        self.assertLessEqual(len(data.encode()), review.MAX_PATCH_BYTES)
+        self.assertEqual([row["path"] for row in json.loads(data)], ["src/file.cpp"])
+        artifact = (output / "findings.json").read_text()
+        self.assertEqual(
+            json.loads(artifact)["skipped"],
+            [
+                {"path": "other.py", "reason": "over-budget"},
+                {"path": "small.py", "reason": "over-budget"},
+                {"path": "<redacted path>", "reason": "sensitive-path"},
+            ],
+        )
+        for text in (
+            data,
+            artifact,
+            self.summary.read_text(),
+            (output / "comment.md").read_text(),
+        ):
+            self.assertNotIn(marker, text)
+            self.assertNotIn(".env", text)
+
+    def test_serialization_overhead_can_decline_all_files(self):
+        patch_text = "@@ -1 +1 @@\n-old\n+" + "z" * (review.MAX_PATCH_BYTES - 40)
+        send = Mock(side_effect=[pr(), [item(patch=patch_text)], pr()])
+        self.assert_decline("No file fits within the patch size limit.", send)
+        self.assertEqual(send.call_count, 3)
 
     def test_updated_pr_never_reaches_openai(self):
         moved = pr()
         moved["head"]["sha"] = "c" * 40
-        send = Mock(side_effect=[pr(), [item()], moved])
-        with self.assertRaises(review.ReviewError):
-            review.run(self.env, send)
-        self.assertEqual(send.call_count, 3)
-        self.assertFalse(self.summary.exists())
+        for files in ([item()], []):
+            with self.subTest(files=files):
+                send = Mock(side_effect=[pr(), files, moved])
+                self.assert_decline("The PR changed during collection.", send)
+                self.assertEqual(send.call_count, 3)
+
+    def test_mismatched_event_keeps_original_head_for_note(self):
+        pull = pr()
+        pull["head"] = {"sha": "c" * 40, "repo": {"full_name": "example/repo"}}
+        send = Mock(return_value=pull)
+        self.assert_decline(
+            "The PR closed, moved, or does not match the event.",
+            send,
+            GITHUB_EVENT_NAME="pull_request_target",
+            EXPECTED_HEAD="a" * 40,
+            EXPECTED_BASE="b" * 40,
+        )
+        send.assert_called_once()
+
+    def test_genuine_faults_fail_at_the_entry_point(self):
+        malformed = item()
+        del malformed["additions"]
+        for responses, overrides, error in (
+            ([review.ReviewError("GitHub returned HTTP 503.")], {}, "HTTP 503"),
+            ([pr(), [malformed]], {}, "API response was invalid"),
+            ([], {"REVIEW_API_KEY": ""}, "Set OPENAI_REVIEW_API_KEY"),
+        ):
+            with self.subTest(error=error):
+                with (
+                    mock_patch.object(
+                        review.os, "environ", dict(self.env, **overrides)
+                    ),
+                    mock_patch.object(
+                        review, "request_json", Mock(side_effect=responses)
+                    ),
+                    self.assertRaisesRegex(SystemExit, error),
+                ):
+                    review.main()
+                self.assertFalse(self.summary.exists())
+        with (
+            mock_patch.object(review.os, "environ", self.env),
+            mock_patch.object(
+                review, "request_json", Mock(side_effect=RuntimeError("unexpected"))
+            ),
+            self.assertRaisesRegex(RuntimeError, "unexpected"),
+        ):
+            review.main()
 
     def test_review_output_quoting_key_names_is_kept(self):
         text = "Finding: auth_token = some_long_identifier should come from a file."
@@ -538,7 +637,13 @@ class ReviewTests(unittest.TestCase):
                     env.pop("REPO_PRIVATE")
                 else:
                     env["REPO_PRIVATE"] = private
-                if blocked:
+                if private == "true" and blocked:
+                    send = Mock(return_value=pr())
+                    self.assert_decline(
+                        "Private patches require explicit opt-in.", send, **env
+                    )
+                    send.assert_called_once()
+                elif blocked:
                     send = Mock()
                     with self.assertRaises(review.ReviewError):
                         review.run(env, send)
@@ -553,12 +658,13 @@ class ReviewTests(unittest.TestCase):
         made_private["base"]["repo"]["private"] = True
         unknown = pr()
         del unknown["base"]["repo"]["private"]
-        for live in (made_private, unknown):
-            with self.subTest(private=live["base"]["repo"].get("private")):
-                send = Mock(side_effect=[live])
-                with self.assertRaises(review.ReviewError):
-                    review.run(dict(self.env, REVIEW_PROVIDER="claude"), send)
-                self.assertEqual(send.call_count, 1)
+        send = Mock(return_value=made_private)
+        self.assert_decline("Private patches require explicit opt-in.", send)
+        send.assert_called_once()
+        send = Mock(return_value=unknown)
+        with self.assertRaises(review.ReviewError):
+            review.run(dict(self.env, REVIEW_PROVIDER="claude"), send)
+        send.assert_called_once()
         send = Mock(side_effect=[made_private, [item()], made_private, claude_ok()])
         review.run(
             dict(self.env, REVIEW_PROVIDER="claude", ALLOW_PRIVATE_DIFF="true"), send
@@ -657,6 +763,20 @@ class RunnerCompatibilityTests(unittest.TestCase):
                 self.assertEqual(events, expected.pop(path.name, None))
                 self.assertIn("    branches: [main]", trigger[1])
         self.assertFalse(expected)
+
+    def test_workflow_preserves_reviewer_exit_status_and_gates_decline_notes(self):
+        workflow = (
+            Path(__file__).resolve().parent.parent / "workflows/openai-pr-review.yml"
+        )
+        raw = workflow.read_text(encoding="utf-8")
+        job = raw.split("\n  review:\n", 1)[1].split("\n  comment:\n", 1)[0]
+        self.assertNotIn("continue-on-error", job)
+        self.assertIn("\n          python3 -B .github/openai-review/review.py\n", job)
+        self.assertIn(
+            "outputs.identity != '' && steps.review.outputs.decline_note == ''", job
+        )
+        self.assertIn("needs.review.outputs.decline_note != ''", raw)
+        self.assertIn('if [[ "${revision}" == "open ${DECLINE_HEAD}" ]]; then', raw)
 
     def test_openai_pr_workflows_keep_caching_disabled(self):
         workflows = Path(__file__).resolve().parent.parent / "workflows"

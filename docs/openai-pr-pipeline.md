@@ -21,10 +21,11 @@ lines in the diff. Decisions receives the candidates and the same patch
 evidence. A candidate passes at a defect probability of at least 0.85 and a
 severity score of at least 1.0 on the zero-based low-to-critical scale.
 The `findings.json` artifact records the PR, base, head, and accepted findings.
-If Decisions is unavailable, the artifact and advisory comment retain the
-untriaged candidates with a "Triage unavailable" note, and autofix skips
-that result. A separate job without an OpenAI key posts sanitized text if
-the PR still matches. Review is advisory and does not change required checks.
+When triage is unavailable or the review declines, the job succeeds and
+writes a short `not reviewed` reason without a findings artifact. A separate
+job without an OpenAI key posts the reason if the PR is still open at the
+intended head. API and configuration errors outside the triage fallback
+still fail the review job.
 
 ## Autofix
 
