@@ -94,7 +94,8 @@ last30days_config_dir = "{{ [xdg_config_home, 'last30days'] | join_path }}"
 last30days_memory_dir = "{% if os() == 'macos' %}{{ [xdg_data_home, 'last30days', 'briefings.noindex'] | join_path }}{% else %}{{ [xdg_data_home, 'last30days', 'briefings'] | join_path }}{% endif %}"
 
 [env]
-DO_NOT_TRACK = "1"
+# Never set DO_NOT_TRACK / DISABLE_TELEMETRY here: Claude Code skips feature-flag fetching and
+# drops /ship and /steward (config-hygiene enforces this). Repowise uses its own opt-out below.
 GIT_TERMINAL_PROMPT = "0"
 LAST30DAYS_CONFIG_DIR = "{{ vars.last30days_config_dir }}"
 LAST30DAYS_MEMORY_DIR = "{{ vars.last30days_memory_dir }}"

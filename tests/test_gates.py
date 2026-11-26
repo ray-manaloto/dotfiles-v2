@@ -1972,3 +1972,160 @@ def test_repowise_telemetry_reads_persistent_consent(tmp_path) -> None:
     (home / ".repowise").mkdir(parents=True)
     (home / ".repowise" / "platform.json").write_text('{"telemetry_enabled": false}')
     assert lib.repowise_telemetry_enabled(home) is False
+
+
+def test_config_hygiene_rejects_global_flag_fetch_killers(
+    tmp_path, monkeypatch
+) -> None:
+    """DO_NOT_TRACK et al. in global mise [env] drop /ship and /steward from every new Claude session."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[env]\nDO_NOT_TRACK = "1"\nREPOWISE_TELEMETRY_DISABLED = "1"\n'
+    )
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any("DO_NOT_TRACK" in e and "/ship" in e for e in errors), errors
+    assert not any("REPOWISE_TELEMETRY_DISABLED" in e for e in errors), errors
+    frag = mise_dir / "conf.d" / "x" / "mise.toml"
+    frag.parent.mkdir(parents=True)
+    frag.write_text('[env]\nDISABLE_TELEMETRY = "1"\n')
+    (tmp_path / "mise.toml").write_text('[env]\nCLAUDE_CODE_DISABLE_SHIP = "1"\n')
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any(
+        "conf.d/x/mise.toml" in e and "DISABLE_TELEMETRY" in e for e in errors
+    ), errors
+    assert any(
+        e.startswith("config-hygiene: mise.toml") and "CLAUDE_CODE_DISABLE_SHIP" in e
+        for e in errors
+    ), errors
+
+
+def test_config_hygiene_flag_fetch_edge_cases(tmp_path, monkeypatch) -> None:
+    """`= false` unsets (allowed); FEATURE_FLAGS, Dockerfile ENV and unparsable fragments are reported."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[env]\nDO_NOT_TRACK = false\nCLAUDE_CODE_DISABLE_FEATURE_FLAGS = "1"\n'
+    )
+    bad = mise_dir / "conf.d" / "bad" / "mise.toml"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("[env\n")
+    dockerfile = tmp_path / "docker" / "ubuntu" / "Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text(
+        '# DO_NOT_TRACK=1 is fine in a comment\nRUN DO_NOT_TRACK=1 true\nENV container=docker \\\n    DISABLE_TELEMETRY=1\nENV DISABLE_GROWTHBOOK 1\nENV\tCLAUDE_CODE_DISABLE_SHIP=1\nENV EXAMPLE="env DO_NOT_TRACK=1 api_runner"\n'
+    )
+    monkeypatch.setattr(
+        doc_mod,
+        "_load_mise_registry_map",
+        lambda: (_ for _ in ()).throw(OSError("no mise")),
+    )
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert not any("DO_NOT_TRACK" in e for e in errors), errors
+    assert any("CLAUDE_CODE_DISABLE_FEATURE_FLAGS" in e for e in errors), errors
+    assert any("conf.d/bad/mise.toml" in e and "cannot parse" in e for e in errors), (
+        errors
+    )
+    assert any(
+        "docker/ubuntu/Dockerfile" in e and "DISABLE_TELEMETRY" in e for e in errors
+    ), errors
+    assert any("failed to load `mise registry`" in e for e in errors), errors
+    assert any(
+        "docker/ubuntu/Dockerfile" in e and "DISABLE_GROWTHBOOK" in e for e in errors
+    ), errors
+    assert not any("Dockerfile" in e and "DO_NOT_TRACK" in e for e in errors), errors
+    assert any("Dockerfile" in e and "CLAUDE_CODE_DISABLE_SHIP" in e for e in errors), (
+        errors
+    )
+
+
+def test_config_hygiene_flag_fetch_shell_and_extra_configs(tmp_path) -> None:
+    """Managed shell exports, dotted/flat mise configs and `ENV<TAB>` are caught; command prefixes are not."""
+    doc_mod = _load_task_module("doctor_checks")
+    home = tmp_path / "unix" / "home"
+    mise_dir = home / ".config" / "mise"
+    (mise_dir / "conf.d").mkdir(parents=True)
+    (mise_dir / "conf.d" / "flat.toml").write_text('[env]\nDO_NOT_TRACK = "1"\n')
+    (tmp_path / ".mise.toml").write_text('[env]\nDISABLE_TELEMETRY = "1"\n')
+    (home / ".zshenv").write_text(
+        "export DO_NOT_TRACK=1\nDISABLE_GROWTHBOOK=1 some-cmd\n"
+    )
+    zrc = home / ".config" / "zsh" / ".zshrc.d" / "50-x.zsh"
+    zrc.parent.mkdir(parents=True)
+    zrc.write_text("# export CLAUDE_CODE_DISABLE_SHIP=1\nCLAUDE_CODE_DISABLE_SHIP=1\n")
+    dockerfile = tmp_path / "docker" / "x" / "Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("ENV\tDO_NOT_TRACK=1\n")
+    errors = doc_mod._check_flag_fetch_env(tmp_path, mise_dir)
+    assert any("conf.d/flat.toml" in e and "DO_NOT_TRACK" in e for e in errors), errors
+    assert any(".mise.toml" in e and "DISABLE_TELEMETRY" in e for e in errors), errors
+    assert any(".zshenv exports DO_NOT_TRACK" in e for e in errors), errors
+    assert not any("DISABLE_GROWTHBOOK" in e for e in errors), errors
+    assert any("50-x.zsh exports CLAUDE_CODE_DISABLE_SHIP" in e for e in errors), errors
+    assert any("docker/x/Dockerfile" in e and "DO_NOT_TRACK" in e for e in errors), (
+        errors
+    )
+
+
+def test_real_global_env_keeps_ship_available() -> None:
+    root = Path(__file__).resolve().parents[1]
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = root / "unix" / "home" / ".config" / "mise"
+    assert doc_mod._check_flag_fetch_env(root, mise_dir) == []
+
+
+def test_config_hygiene_rejects_auto_venv_on_path(tmp_path, monkeypatch) -> None:
+    """uv_venv_auto / [env] _.python.venv put .venv/bin on PATH, which blocks the /ship watch."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text('[env]\n_.python.venv = { path = ".venv" }\n')
+    (tmp_path / "mise.toml").write_text('[settings]\npython.uv_venv_auto = "source"\n')
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any(
+        e.startswith("config-hygiene: mise.toml") and "uv_venv_auto" in e
+        for e in errors
+    ), errors
+    assert any("config.toml [env] _.python.venv" in e for e in errors), errors
+    (tmp_path / "mise.toml").write_text("[settings]\npython.uv_venv_auto = false\n")
+    (mise_dir / "config.toml").write_text("[env]\nX = '1'\n")
+    assert not any("venv" in e for e in doc_mod.check_config_hygiene(tmp_path))
+
+
+def test_config_hygiene_venv_guard_tolerates_odd_tables(tmp_path, monkeypatch) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        'settings = "x"\n[env]\nMISE_PYTHON_UV_VENV_AUTO = "source"\n'
+    )
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any("uv_venv_auto = 'source'" in e for e in errors), errors
+
+
+def test_no_repo_skills_allows_claude_runtime_state(tmp_path) -> None:
+    """/ship watch timers create .claude/scheduled_tasks.lock; only skill dirs may fail the check."""
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    cmd = tomllib.loads((root / "mise.toml").read_text(encoding="utf-8"))["doctor"][
+        "checks"
+    ]["no-repo-skills"]["run"]
+
+    def run() -> int:
+        return subprocess.run(["bash", "-c", cmd], cwd=tmp_path, check=False).returncode
+
+    assert run() == 0
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "scheduled_tasks.lock").write_text("")
+    assert run() == 0
+    (tmp_path / ".claude" / "skills").mkdir()
+    assert run() != 0
+    (tmp_path / ".claude" / "skills").rmdir()
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
+    assert run() != 0
