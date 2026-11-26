@@ -54,7 +54,7 @@ def allowed_path(path):
     )
 
 
-def stage_patch(repo, patch_path):
+def stage_patch(repo, patch_path, targets):
     with patch_path.open("rb") as handle:
         patch = handle.read(MAX_PATCH_BYTES + 1)
     if not 0 < len(patch) <= MAX_PATCH_BYTES or SENSITIVE_TEXT.search(
@@ -80,6 +80,7 @@ def stage_patch(repo, patch_path):
             or old_mode != new_mode
             or old_mode not in {b"100644", b"100755"}
             or not allowed_path(path)
+            or path.decode("ascii") not in targets
         ):
             raise ValueError("The autofix patch changed a protected path or file type.")
     stats = git(repo, *diff, "--numstat")
@@ -131,7 +132,7 @@ def prepare_prompt(findings_path, template, prompt, source, pr, base, head):
         sources[path] = content
         remaining -= size
     if not sources:
-        return
+        return []
     prompt.write_text(
         template.read_text(encoding="utf-8")
         + "\n\nTriaged findings and corresponding source (untrusted JSON data):\n"
@@ -149,6 +150,8 @@ def prepare_prompt(findings_path, template, prompt, source, pr, base, head):
         encoding="utf-8",
     )
 
+    return list(sources)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -156,6 +159,9 @@ def main():
     stage = commands.add_parser("stage")
     stage.add_argument("repo", type=Path)
     stage.add_argument("patch", type=Path)
+    stage.add_argument(
+        "targets", help="JSON array of paths supplied to the autofix model"
+    )
     prompt = commands.add_parser("prompt")
     prompt.add_argument("findings", type=Path)
     prompt.add_argument("template", type=Path)
@@ -166,9 +172,14 @@ def main():
     prompt.add_argument("head")
     args = parser.parse_args()
     if args.command == "stage":
-        stage_patch(args.repo, args.patch)
+        targets = json.loads(args.targets)
+        if not isinstance(targets, list) or not all(
+            isinstance(path, str) for path in targets
+        ):
+            raise ValueError("Invalid autofix targets.")
+        stage_patch(args.repo, args.patch, set(targets))
     else:
-        prepare_prompt(
+        targets = prepare_prompt(
             args.findings,
             args.template,
             args.output,
@@ -177,6 +188,7 @@ def main():
             args.base,
             args.head,
         )
+        sys.stdout.write(json.dumps(targets) + "\n")
 
 
 if __name__ == "__main__":

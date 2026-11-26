@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from autofix import git, prepare_prompt, stage_patch
+from autofix import allowed_path, git, prepare_prompt, stage_patch
 
 
 class PatchTests(unittest.TestCase):
@@ -53,7 +53,7 @@ class PatchTests(unittest.TestCase):
         file = self.repo / "unix/home/.config/mise/lib/stuff.py"
         file.write_text("after\n")
         self.make_patch()
-        stage_patch(self.repo, self.patch)
+        stage_patch(self.repo, self.patch, {"unix/home/.config/mise/lib/stuff.py"})
         self.assertEqual(
             git(self.repo, "diff", "--cached", "--name-only"),
             b"unix/home/.config/mise/lib/stuff.py\n",
@@ -70,7 +70,7 @@ class PatchTests(unittest.TestCase):
         git(bare, "fetch", "--no-tags", self.repo.as_uri(), head)
         git(bare, "update-ref", "HEAD", head)
         git(bare, "read-tree", "HEAD")
-        stage_patch(bare, self.patch)
+        stage_patch(bare, self.patch, {path})
         tree = git(bare, "write-tree").decode().strip()
         commit = (
             git(
@@ -108,7 +108,7 @@ class PatchTests(unittest.TestCase):
                 path.write_text("after\n")
                 self.make_patch()
                 with self.assertRaisesRegex(ValueError, "protected path"):
-                    stage_patch(self.repo, self.patch)
+                    stage_patch(self.repo, self.patch, {name})
                 self.assertEqual(path.read_text(), "before\n")
                 git(self.repo, "restore", "--staged", "--", ".")
 
@@ -117,7 +117,19 @@ class PatchTests(unittest.TestCase):
         (self.repo / ".github/workflows/ci.yml").write_text("after\n")
         self.make_patch()
         with self.assertRaisesRegex(ValueError, "protected path"):
-            stage_patch(self.repo, self.patch)
+            stage_patch(
+                self.repo,
+                self.patch,
+                {"tests/test_something.py", ".github/workflows/ci.yml"},
+            )
+
+    def test_policy_allowed_path_outside_reviewed_targets_is_rejected(self):
+        skipped = "unix/home/.config/mise/lib/stuff.py"
+        self.assertTrue(allowed_path(skipped.encode("ascii")))
+        (self.repo / skipped).write_text("after\n")
+        self.make_patch()
+        with self.assertRaisesRegex(ValueError, "protected path"):
+            stage_patch(self.repo, self.patch, {"tests/test_something.py"})
 
     def test_new_file_and_symlink_replacement_fail(self):
         new = self.repo / "tests/test_new.py"
@@ -125,14 +137,14 @@ class PatchTests(unittest.TestCase):
         git(self.repo, "add", "--", "tests/test_new.py")
         self.make_patch()
         with self.assertRaisesRegex(ValueError, "protected path"):
-            stage_patch(self.repo, self.patch)
+            stage_patch(self.repo, self.patch, {"tests/test_new.py"})
         git(self.repo, "restore", "--source=HEAD", "--staged", "--worktree", "--", ".")
         existing = self.repo / "tests/test_something.py"
         existing.unlink()
         existing.symlink_to("../.github/workflows/ci.yml")
         self.make_patch()
         with self.assertRaisesRegex(ValueError, "protected path"):
-            stage_patch(self.repo, self.patch)
+            stage_patch(self.repo, self.patch, {"tests/test_something.py"})
 
     def test_prompt_contains_only_eligible_committed_source(self):
         root = self.patch.parent
@@ -161,7 +173,10 @@ class PatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No triaged findings"):
             prepare_prompt(findings_path, template, prompt, self.repo, "5", base, head)
         findings_path.write_text(json.dumps(dict(payload, triage="completed")))
-        prepare_prompt(findings_path, template, prompt, self.repo, "5", base, head)
+        targets = prepare_prompt(
+            findings_path, template, prompt, self.repo, "5", base, head
+        )
+        self.assertEqual(targets, ["tests/test_something.py"])
         data = json.loads(prompt.read_text().split("\n", 3)[3])
         self.assertEqual(data["sources"], {"tests/test_something.py": "before\n"})
         self.assertEqual(data["findings"], findings[:1])

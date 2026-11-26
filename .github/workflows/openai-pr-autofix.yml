@@ -122,6 +122,7 @@ jobs:
     environment: openai-pr-fix
     outputs:
       patch: ${{ steps.upload.outputs.artifact-id }}
+      targets: ${{ steps.prompt.outputs.targets }}
     steps:
       - name: Check out trusted prompt and helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -146,8 +147,9 @@ jobs:
         env:
           SOURCE: trusted/.github/openai-review
         run: |
-          python3 -B "${SOURCE}/autofix.py" prompt "${RUNNER_TEMP}/triage/findings.json" \
-            "${SOURCE}/autofix-prompt.md" "${RUNNER_TEMP}/codex-prompt.md" source "${PR_NUMBER}" "${BASE_SHA}" "${HEAD_SHA}"
+          targets="$(python3 -B "${SOURCE}/autofix.py" prompt "${RUNNER_TEMP}/triage/findings.json" \
+            "${SOURCE}/autofix-prompt.md" "${RUNNER_TEMP}/codex-prompt.md" source "${PR_NUMBER}" "${BASE_SHA}" "${HEAD_SHA}")"
+          printf 'targets=%s\n' "${targets}" >> "${GITHUB_OUTPUT}"
           rm -rf -- source
           mkdir -- "${RUNNER_TEMP}/codex-workspace"
           if [[ -s "${RUNNER_TEMP}/codex-prompt.md" ]]; then
@@ -217,8 +219,10 @@ jobs:
           artifact-ids: ${{ needs.generate.outputs.patch }}
           path: ${{ runner.temp }}/patch
       - name: Validate and apply the patch
+        env:
+          AUTOFIX_TARGETS: ${{ needs.generate.outputs.targets }}
         run: |
-          python3 -B trusted/.github/openai-review/autofix.py stage candidate "${RUNNER_TEMP}/patch/codex.patch"
+          python3 -B trusted/.github/openai-review/autofix.py stage candidate "${RUNNER_TEMP}/patch/codex.patch" "${AUTOFIX_TARGETS}"
           git -C candidate restore --worktree -- .
       - name: Set up mise
         uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78  # v5.3.0
@@ -268,7 +272,9 @@ jobs:
           artifact-ids: ${{ needs.generate.outputs.patch }}
           path: ${{ runner.temp }}/patch
       - name: Validate and stage the verified patch
-        run: python3 -B trusted/.github/openai-review/autofix.py stage candidate "${RUNNER_TEMP}/patch/codex.patch"
+        env:
+          AUTOFIX_TARGETS: ${{ needs.generate.outputs.targets }}
+        run: python3 -B trusted/.github/openai-review/autofix.py stage candidate "${RUNNER_TEMP}/patch/codex.patch" "${AUTOFIX_TARGETS}"
       - name: Check App configuration
         id: app-config
         env:
