@@ -35,9 +35,11 @@ test "$CODEX_INSTALL_DIR" = "$HOME/.local/bin"
 case "$PATH" in "$CODEX_INSTALL_DIR:"*) ;; *) exit 1 ;; esac
 if read -r unexpected; then exit 1; fi
 printf '%s\n' invoked >> "$HOME/installer-calls"
-mkdir -p "$CODEX_INSTALL_DIR"
-printf '%s\n' '#!/bin/sh' 'test "$1" = --version && echo codex-test' > "$CODEX_INSTALL_DIR/codex"
-chmod +x "$CODEX_INSTALL_DIR/codex"
+release_bin="${CODEX_HOME:-$HOME/.codex}/packages/standalone/current/bin"
+mkdir -p "$CODEX_INSTALL_DIR" "$release_bin"
+printf '%s\n' '#!/bin/sh' 'test "$1" = --version && echo codex-test' > "$release_bin/codex"
+chmod +x "$release_bin/codex"
+ln -sf "$release_bin/codex" "$CODEX_INSTALL_DIR/codex"
 INSTALLER
 """,
     )
@@ -97,3 +99,23 @@ def test_headless_login_delegates_and_propagates_exit_status(isolated_home):
     result = run_task("codex-device-login", env)
     assert result.returncode == 13, result.stderr
     assert not result.stdout
+
+
+def test_container_install_leaves_persistent_codex_state_intact(isolated_home):
+    home, env = isolated_home
+    state = home / ".codex"
+    old_binary = state / "packages/standalone/current/bin/codex"
+    write_executable(old_binary, "echo codex-old\n")
+    binary = home / ".local/bin/codex"
+    binary.parent.mkdir(parents=True)
+    binary.symlink_to(old_binary)
+    env["container"] = "docker"
+    env["CODEX_HOME"] = str(state)
+
+    for _ in range(2):
+        result = run_task("codex", env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "codex-test\n"
+    assert not binary.resolve().is_relative_to(state)
+    assert old_binary.read_text().endswith("echo codex-old\n")
+    assert (home / "installer-calls").read_text().splitlines() == ["invoked"]

@@ -140,8 +140,14 @@ fi
 if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --cask codex >/dev/null 2>&1; then
   /opt/homebrew/bin/brew uninstall --force --cask codex </dev/null
 fi
-if [[ -e /opt/homebrew/bin/codex || -L /opt/homebrew/bin/codex ]]; then
-  echo "unexpected /opt/homebrew/bin/codex still present after brew uninstall" >&2
+if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --formula codex >/dev/null 2>&1; then
+  /opt/homebrew/bin/brew uninstall --force --formula codex </dev/null
+fi
+if [[ -L /opt/homebrew/bin/codex && ! -e /opt/homebrew/bin/codex ]]; then
+  rm -f /opt/homebrew/bin/codex
+fi
+if [[ -e /opt/homebrew/bin/codex ]]; then
+  echo "unexpected /opt/homebrew/bin/codex still present after Homebrew cleanup; inspect and remove the unmanaged entry" >&2
   exit 1
 fi
 have=""
