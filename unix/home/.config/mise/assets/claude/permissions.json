@@ -1,10 +1,4 @@
 {
-  "deniedMcpServers": [
-    {
-      "serverUrl": "https://mcp.apify.com/*"
-    }
-  ],
-  "disableClaudeAiConnectors": true,
   "permissions": {
     "allow": [
       "Bash(hc read *)",
