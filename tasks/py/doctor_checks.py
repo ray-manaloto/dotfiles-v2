@@ -1916,9 +1916,6 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
             errors.append(
                 f"config-hygiene: {dockerfile.relative_to(repo_root).as_posix()} sets {name}; {msg}"
             )
-    # Managed shell startup files export into every session; a bare `NAME=1 cmd` prefix stays command-scoped.
-    killers = "|".join(sorted(_FLAG_FETCH_KILLERS))
-    sh_re = re.compile(rf"^\s*(?:export\s+({killers})=|({killers})=\S*\s*(?:#.*)?$)")
     home = repo_root / "unix" / "home"
     shell_files = {
         *home.glob(".zshenv"),
@@ -1930,9 +1927,34 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
             lines = sh_file.read_text(encoding="utf-8").splitlines()
         except OSError, UnicodeDecodeError:
             continue
-        names = {
-            a or b for ln in lines if (m := sh_re.match(ln)) for a, b in [m.groups()]
-        }
+        names: set[str] = set()
+        for line in lines:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+            lexer.whitespace_split = True
+            # A hash inside a shell word is literal. Stop at a comment token instead.
+            lexer.commenters = ""
+            words: list[str] = []
+            try:
+                for word in lexer:
+                    if word.startswith(("#", ";", "&", "|")):
+                        break
+                    words.append(word)
+            except ValueError:
+                continue
+            if words[:1] == ["export"]:
+                assignments = words[1:]
+            elif words[:2] in (["declare", "-x"], ["typeset", "-x"]):
+                assignments = words[2:]
+            elif all(re.match(r"[a-zA-Z_][a-zA-Z0-9_]*=", word) for word in words):
+                # Bare assignments may be exported by allexport or an attribute set
+                # in an earlier sourced file. Command-prefix assignments stay scoped.
+                assignments = words
+            else:
+                continue
+            names.update(
+                _FLAG_FETCH_KILLERS
+                & {word.partition("=")[0] for word in assignments if "=" in word}
+            )
         for name in sorted(names):
             errors.append(
                 f"config-hygiene: {sh_file.relative_to(repo_root).as_posix()} exports {name}; {msg}"
