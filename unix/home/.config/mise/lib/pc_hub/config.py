@@ -324,7 +324,7 @@ def render_systemd_units(
     board_server_mjs: str = "",
 ) -> dict[str, str]:
     """Render user-level systemd unit definitions for pc Hub services."""
-    av_exec = agentsview_bin or f"{home_dir}/.local/share/mise/shims/agentsview"
+    av_exec = agentsview_bin or f"{home_dir}/.local/bin/agentsview"
     qmd_exec = qmd_bin or f"{home_dir}/.local/bin/qmd"
     board_mjs = board_server_mjs or f"{home_dir}/.config/mise/assets/board/server.mjs"
     board_port = DEFAULT_PORTS["vercel_board"]
