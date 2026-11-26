@@ -242,7 +242,10 @@ owned = re.compile(r"^\s*(?:auth_token|require_auth|host)\s*=")
 preamble = [line for i, line in enumerate(lines[:first_table]) if not (clean[i] and owned.match(line))]
 tables = [lines[a:b] for a, b in zip(starts, [*starts[1:], len(lines)])]
 
-remote_hosts_header = re.compile(r"^\s*\[\[\s*remote_hosts\s*\]\]\s*(?:#.*)?$")
+# Bare, "quoted" and 'literal' spellings name the same array of tables.
+remote_hosts_header = re.compile(
+    r"""^\s*\[\[\s*(?:remote_hosts|"remote_hosts"|'remote_hosts')\s*\]\]\s*(?:#.*)?$"""
+)
 
 
 def is_mac(entry: dict) -> bool:

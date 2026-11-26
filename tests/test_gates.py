@@ -458,6 +458,31 @@ def test_tier1_tier2_offline_gates_catch_regressions(monkeypatch) -> None:
         for rel in ("tasks/vm/up", "tasks/pc/up", ".github/workflows/ci.yml"):
             (root / rel).unlink()
 
+        # The workflow scanner reads the step's own with.version in any key order.
+        scan = doc_mod._mise_action_with_version
+        with_first = [
+            "      - with:",
+            "          version: 2026.11.14",
+            "        uses: jdx/mise-action@abc",
+        ]
+        assert scan(with_first, 2) == "2026.11.14"
+        env_decoy = [
+            "      - uses: jdx/mise-action@abc",
+            "        env:",
+            "          version: 2026.11.14",
+            "        with:",
+            "          version: 2026.11.13",
+        ]
+        assert scan(env_decoy, 0) == "2026.11.13"
+        next_step = [
+            "      - name: mise",
+            "        uses: jdx/mise-action@abc",
+            "      - run: echo",
+            "        with:",
+            "          version: 2026.11.14",
+        ]
+        assert scan(next_step, 1) is None
+
         # config-hygiene catches non-canonical short name (with zero opt-out exceptions across config*.toml),
         # missing prerelease, programs.json, and raw .. traversal
         mise_dir = root / "unix" / "home" / ".config" / "mise"

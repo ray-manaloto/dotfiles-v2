@@ -71,13 +71,23 @@
     },
     {
       customType: "regex",
-      description: "Updates mise version mentions in AGENTS.md",
+      description: "Updates prose `mise YYYY.N.N` mentions in AGENTS.md (the image reference has its own manager below)",
       managerFilePatterns: ["/^AGENTS\\.md$/"],
       datasourceTemplate: "github-releases",
       depNameTemplate: "mise",
       packageNameTemplate: "jdx/mise",
       extractVersionTemplate: "^v(?<version>.+)$",
-      matchStrings: ["mise[ :](?<currentValue>[0-9]{4}\\.[0-9]+\\.[0-9]+)"],
+      matchStrings: ["mise (?<currentValue>[0-9]{4}\\.[0-9]+\\.[0-9]+)"],
+    },
+    {
+      customType: "regex",
+      description: "Updates the digest-pinned ghcr.io/jdx/mise image reference in AGENTS.md (version and digest together)",
+      managerFilePatterns: ["/^AGENTS\\.md$/"],
+      datasourceTemplate: "docker",
+      depNameTemplate: "ghcr.io/jdx/mise",
+      matchStrings: [
+        "ghcr\\.io/jdx/mise:(?<currentValue>[0-9]{4}\\.[0-9]+\\.[0-9]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+      ],
     },
   ],
   packageRules: [

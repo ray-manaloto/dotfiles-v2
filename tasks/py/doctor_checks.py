@@ -1557,6 +1557,51 @@ def check_dockerignore_secret_guard(repo_root: Path) -> list[str]:
     return errors
 
 
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _mise_action_with_version(lines: list[str], uses_idx: int) -> str | None:
+    """Return `with.version` of the workflow step whose `uses:` is on `uses_idx`.
+
+    Keys of a step mapping may come in any order, so this reads the whole step
+    block and only accepts `version:` directly under that step's `with:`.
+    """
+    start = uses_idx
+    while start >= 0 and not re.match(r"^\s*-\s", lines[start]):
+        start -= 1
+    if start < 0:
+        return None
+    item = re.match(r"^(\s*)-\s+", lines[start])
+    assert item is not None
+    item_indent, key_indent = len(item.group(1)), item.end()
+    end = start + 1
+    while end < len(lines) and (
+        not lines[end].strip() or _indent(lines[end]) > item_indent
+    ):
+        end += 1
+    block = lines[start:end]
+    for i, row in enumerate(block):
+        row_key = row[key_indent:] if i else row[item.end() :]
+        if (i and _indent(row) != key_indent) or not re.match(
+            r"with:\s*(?:#.*)?$", row_key
+        ):
+            continue
+        child_indent = None
+        for child in block[i + 1 :]:
+            if not child.strip():
+                continue
+            if _indent(child) <= key_indent:
+                break
+            child_indent = child_indent or _indent(child)
+            if _indent(child) != child_indent:
+                continue
+            m = re.match(r"^\s*version:\s*['\"]?([0-9]{4}\.[0-9]+\.[0-9]+)", child)
+            if m:
+                return m.group(1)
+    return None
+
+
 def check_mise_version_parity(repo_root: Path) -> list[str]:
     """Verify pinned mise versions match across Dockerfile, vm:up, pc:up, env:doctor, CI workflows, AGENTS.md, and configs."""
     errors: list[str] = []
@@ -1616,21 +1661,7 @@ def check_mise_version_parity(repo_root: Path) -> list[str]:
             for idx, line in enumerate(lines):
                 if "jdx/mise-action@" not in line:
                     continue
-                step_indent = len(line) - len(line.lstrip(" -"))
-                found = None
-                for follow in lines[idx + 1 :]:
-                    stripped = follow.strip()
-                    if stripped and (
-                        stripped.startswith("- ")
-                        or len(follow) - len(follow.lstrip()) < step_indent
-                    ):
-                        break
-                    vm_match = re.match(
-                        r"^\s*version:\s*['\"]?([0-9]{4}\.[0-9]+\.[0-9]+)", follow
-                    )
-                    if vm_match:
-                        found = vm_match.group(1)
-                        break
+                found = _mise_action_with_version(lines, idx)
                 rel = f"{wf.relative_to(repo_root)}:{idx + 1}"
                 if found:
                     observed[rel] = found

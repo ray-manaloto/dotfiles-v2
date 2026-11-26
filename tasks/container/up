@@ -171,7 +171,7 @@ require_build_context_matches_ref() {
 		echo "container:up: --allow-drift set; image is built from the local tree and may differ from origin/${ref}" >&2
 		return 0
 	fi
-	dirty="$(git -C "${root}" status --porcelain 2>/dev/null)"
+	dirty="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null)"
 	if [[ -n ${dirty} ]]; then
 		echo "container:up: working tree has uncommitted or untracked changes; the image build would diverge from origin/${ref}. Commit and push, or stash, first (or pass --allow-drift):" >&2
 		printf '%s\n' "${dirty}" >&2
