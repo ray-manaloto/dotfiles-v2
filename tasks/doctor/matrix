@@ -35,6 +35,8 @@ if [[ -n ${zsh_bin} ]]; then
 	report "env -i zsh -lc (clean login)" "${clean_env[@]}" "${zsh_bin}" -lc "${doctor_cmd}" _ "${repo_root}"
 	report "env -i zsh -lic (clean interactive)" "${clean_env[@]}" "${zsh_bin}" -lic "${doctor_cmd}" _ "${repo_root}" </dev/null
 else
+	# Hosts without zsh (some containers) can only run the first variant; say so rather than claim all four.
+	skipped=3
 	echo "zsh not found: skipped the three login-shell variants" >&2
 fi
 
@@ -42,4 +44,8 @@ if [[ ${failed} -ne 0 ]]; then
 	echo "doctor:matrix: at least one shell failed; for details run: mise run doctor:explain <check>" >&2
 	exit 1
 fi
-echo "doctor:matrix: all shells pass"
+if [[ ${skipped:-0} -ne 0 ]]; then
+	echo "doctor:matrix: 1 of 4 shells ran and passed (${skipped} skipped: no zsh)"
+else
+	echo "doctor:matrix: all 4 shells pass"
+fi
