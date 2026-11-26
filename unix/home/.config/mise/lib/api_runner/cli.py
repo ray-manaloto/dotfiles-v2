@@ -35,7 +35,7 @@ from dotfiles_py.time_ns import now_ns_pair
 
 def resolve_state_dir(override: Path | None = None) -> Path:
     if override is not None:
-        return override
+        return override.expanduser().resolve()
     xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
     base = (
         Path(os.path.expanduser(xdg_state))
@@ -116,6 +116,23 @@ def review(
         sys.stderr.write(f"api:review: invalid input: {exc}\n")
         if entry is not None:
             log.warning("api_review_rejected", error=entry)
+        if json_out:
+            rejected = base.model_copy(
+                update={
+                    "dry_run": dry_run,
+                    "errors": [
+                        entry
+                        or ApiRunnerErrorEntry(
+                            code=ApiRunnerErrorCode.ERR_INVALID_INPUT,
+                            message=str(exc)[:300],
+                        )
+                    ],
+                    "returns": [ReturnEntry(code=CommonReturnCode.RET_SKIPPED)],
+                }
+            )
+            sys.stdout.write(
+                orjson.dumps(rejected.model_dump(mode="json")).decode() + "\n"
+            )
         return 2
 
     if dry_run:

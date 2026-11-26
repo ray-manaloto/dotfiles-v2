@@ -1803,3 +1803,35 @@ def test_claude_mcps_live_not_required_off_mac(monkeypatch, tmp_path) -> None:
     _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
     errs, msg = doc_mod.check_claude_mcps(tmp_path)
     assert errs == [] and "not the Mac host" in msg
+
+
+def test_claude_mcps_rejects_malformed_entry_next_to_valid(
+    monkeypatch, tmp_path
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    _claude_mcps_repo(
+        tmp_path,
+        '\t"graphify-reviews|https://api.graphify.com/mcp"\n'
+        '\t"graphify|http://localhost:8000/mcp"\n',
+    )
+    errs, _ = doc_mod.check_claude_mcps(tmp_path)
+    assert any("malformed SERVERS entry" in e for e in errs)
+
+
+def test_claude_mcps_not_connected_fails(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
+    home = tmp_path / "home"
+    claude = home / ".local/bin/claude"
+    claude.parent.mkdir(parents=True)
+    claude.write_text(
+        "#!/bin/sh\nprintf '%s:\\n  Status: \\342\\234\\227 Not Connected\\n  URL: https://api.graphify.com/mcp\\n' \"$3\"\n"
+    )
+    claude.chmod(0o755)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    errs, _ = doc_mod.check_claude_mcps(tmp_path)
+    assert errs and "Not Connected" in errs[0]

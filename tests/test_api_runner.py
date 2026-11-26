@@ -42,8 +42,8 @@ else:
           "mcp_servers": mcp}})
 if mode == "hang":
     import time; time.sleep(30)
-subtype = "error_max_budget_usd" if mode == "budget" else "success"
-emit({{"type": "result", "subtype": subtype, "is_error": mode == "budget",
+subtype = {{"budget": "error_max_budget_usd", "model_error": "error_during_execution"}}.get(mode, "success")
+emit({{"type": "result", "subtype": subtype, "is_error": mode in ("budget", "model_error"),
       "total_cost_usd": 0.0123, "num_turns": 2, "duration_ms": 1500,
       "usage": {{"input_tokens": 100, "output_tokens": 20}}, "result": "REVIEW BODY"}})
 """
@@ -293,3 +293,45 @@ def test_no_proxy_is_never_forwarded(tmp_path, fake_claude):
     )
     child_env = json.loads((tmp_path / "record.json").read_text())["env"]
     assert "NO_PROXY" not in child_env and "no_proxy" not in child_env
+
+
+def test_budget_cap_never_rounds_up(tmp_path, fake_claude):
+    argv = runner.build_argv(make_spec(tmp_path, fake_claude, max_budget_usd=1.999))
+    assert argv[argv.index("--max-budget-usd") + 1] == "1.99"
+
+
+def test_model_error_message_excludes_result_text(tmp_path, fake_claude):
+    env = parent_env(tmp_path, "model_error")
+    out = runner.run(
+        make_spec(tmp_path, fake_claude), "PROMPT", env, popen=_popen_with(env)
+    )
+    assert [e.code for e in out.guard_errors] == [ApiRunnerErrorCode.ERR_MODEL_ERROR]
+    assert "REVIEW BODY" not in str(out.guard_errors[0].message or "")
+
+
+def test_relative_state_dir_is_resolved(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert (
+        cli.resolve_state_dir(Path("rel/state")) == (tmp_path / "rel/state").resolve()
+    )
+
+
+def test_cli_json_reports_invalid_input(tmp_path, monkeypatch, capsys, fake_claude):
+    monkeypatch.setattr(cli, "resolve_claude_bin", lambda: str(fake_claude))
+    empty = tmp_path / "empty.md"
+    empty.write_text("   ")
+    rc = cli.main(
+        [
+            "--prompt-file",
+            str(empty),
+            "--cwd",
+            str(tmp_path),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--dry-run",
+            "--json",
+        ]
+    )
+    assert rc == 2
+    resp = ApiRunnerResponse.model_validate_json(capsys.readouterr().out.strip())
+    assert [e.code for e in resp.errors] == [ApiRunnerErrorCode.ERR_INVALID_INPUT]
