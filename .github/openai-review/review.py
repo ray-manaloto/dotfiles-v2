@@ -17,7 +17,10 @@ CLAUDE_MODEL = "claude-haiku-5-5"
 CLAUDE_ENDPOINT = "https://api.anthropic.com/v1/messages"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
 MAX_FILES = 30
+FILES_PER_PAGE = 31
+GITHUB_FILE_LIMIT = 3000
 MAX_PATCH_BYTES = 24000
+LOCKFILES = {"package-lock.json"}
 MAX_HTTP_BYTES = 4_000_000
 MAX_OUTPUT_TOKENS = 6000
 FINDINGS_SCHEMA = Path(__file__).with_name("findings.schema.json")
@@ -128,38 +131,82 @@ def error_type(exc):
     return ""
 
 
+def generated_or_lockfile(path):
+    parts = path.split("/")
+    return (
+        parts[-1] in LOCKFILES
+        or parts[-1].endswith(".lock")
+        or "generated" in parts[:-1]
+    )
+
+
+def skip_reason(name, old, item):
+    if any(
+        SENSITIVE_PATH.search(path) or SENSITIVE_TEXT.search(path)
+        for path in (name, old)
+    ):
+        return "sensitive-path"
+    if any(generated_or_lockfile(path) for path in (name, old)):
+        return "generated-or-lockfile"
+    patch = item.get("patch")
+    if not isinstance(patch, str) or not patch.startswith("@@ "):
+        return "missing-patch"
+    if len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
+        # Bound the input before running the content scanner.
+        return "oversized"
+    if SENSITIVE_TEXT.search(patch):
+        return "sensitive-text"
+    lines = patch.split("\n")
+    if (
+        sum(line.startswith("+") for line in lines) != item["additions"]
+        or sum(line.startswith("-") for line in lines) != item["deletions"]
+    ):
+        return "missing-patch"
+    return None
+
+
+def pr_files(send, pr_url, token, count):
+    for offset in range(0, count, FILES_PER_PAGE):
+        url = f"{pr_url}/files?per_page={FILES_PER_PAGE}"
+        if offset:
+            url += f"&page={offset // FILES_PER_PAGE + 1}"
+        files = send(url, token)
+        if not isinstance(files, list) or len(files) != min(
+            FILES_PER_PAGE, count - offset
+        ):
+            raise ReviewError("GitHub returned an incomplete file list.")
+        yield from files
+
+
 def patch_data(files):
-    if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
-        raise ReviewError("The PR exceeds the file limit or has no reviewable files.")
     patches = []
+    skipped = []
+    names = set()
     for item in files:
         name = item["filename"]
+        if not name or name in names:
+            raise ReviewError("GitHub returned an invalid file list.")
+        names.add(name)
         old = item.get("previous_filename", "")
-        patch = item.get("patch")
-        if SENSITIVE_PATH.search(name) or SENSITIVE_PATH.search(old):
-            raise ReviewError(
-                "A potentially sensitive path was detected. No API review was sent."
+        if reason := skip_reason(name, old, item):
+            skipped.append(
+                {
+                    "path": "<redacted path>" if reason == "sensitive-path" else name,
+                    "reason": reason,
+                }
             )
-        if isinstance(patch, str) and len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
-            # Size first, so the content regexes never scan oversized input.
-            raise ReviewError(
-                "The PR exceeds the patch size limit; split it for review."
-            )
-        if not patch or not patch.startswith("@@ ") or SENSITIVE_TEXT.search(patch):
-            raise ReviewError(
-                "An unavailable, non-text, or potentially sensitive patch was detected."
-            )
-        lines = patch.split("\n")
-        if (
-            sum(line.startswith("+") for line in lines) != item["additions"]
-            or sum(line.startswith("-") for line in lines) != item["deletions"]
-        ):
-            raise ReviewError("GitHub did not provide a complete patch.")
-        patches.append({"path": name, "previous_path": old, "patch": patch})
+        else:
+            if len(patches) == MAX_FILES:
+                raise ReviewError(
+                    "The PR exceeds the reviewable file limit; split it for review."
+                )
+            patches.append({"path": name, "previous_path": old, "patch": item["patch"]})
+    if not patches:
+        raise ReviewError("No reviewable files remain after patch checks.")
     data = json.dumps(patches, ensure_ascii=True, separators=(",", ":"))
     if len(data.encode("utf-8")) > MAX_PATCH_BYTES:
         raise ReviewError("The PR exceeds the patch size limit; split it for review.")
-    return data
+    return data, skipped
 
 
 def identity(pr, repo, branch, allow_private):
@@ -270,15 +317,29 @@ def parse_findings(text, schema):
     return findings
 
 
-def safe_comment(number, head, findings, triage_status):
-    def safe_cell(value):
-        # The body is sent as data, never to runner stdout. Prevent embedded
-        # Markdown/HTML and notification mentions even inside the pre block.
-        return html.escape(" ".join(value.split()).replace("@", "＠"))
+def safe_cell(value):
+    # Prevent embedded Markdown/HTML and mentions even inside the pre block.
+    return html.escape(" ".join(value.split()).replace("@", "＠"))
 
+
+def skipped_section(skipped):
+    if not skipped:
+        return ""
+    body = f"### Skipped files ({len(skipped)})\n\n<pre>\n"
+    for item in skipped:
+        row = f"{safe_cell(item['path'])} ({item['reason']})\n"
+        if len((body + row).encode("utf-8")) > 12_000:
+            body += "Additional skipped files omitted from this summary.\n"
+            break
+        body += row
+    return body + "</pre>\n\n"
+
+
+def safe_comment(number, head, findings, triage_status, skipped):
     heading = f"## Advisory OpenAI review for #{number}\n\nHead: `{head}`\n\n"
     if triage_status == "unavailable":
         heading += "Triage unavailable. These candidates are untriaged and ineligible for autofix.\n\n"
+    heading += skipped_section(skipped)
     if not findings:
         return heading + "No findings passed triage.\n"
     rows = []
@@ -453,13 +514,12 @@ def run(env, send=request_json):
         )
     ):
         raise ReviewError("The same-repository PR moved or does not match the event.")
-    if not 1 <= count <= MAX_FILES:
-        raise ReviewError("The PR exceeds the file limit or has no reviewable files.")
-    files = send(pr_url + "/files?per_page=31", gh_token)
-    data = patch_data(files)
-    if len(files) != count or identity(
-        send(pr_url, gh_token), repo, branch, allow_private
-    ) != (
+    if count > GITHUB_FILE_LIMIT:
+        raise ReviewError(
+            "The PR exceeds the GitHub file listing limit; split it for review."
+        )
+    data, skipped = patch_data(pr_files(send, pr_url, gh_token, count))
+    if identity(send(pr_url, gh_token), repo, branch, allow_private) != (
         base,
         head,
         count,
@@ -485,7 +545,7 @@ def run(env, send=request_json):
         except (triage.TriageError, ReviewError):
             findings = candidates
             triage_status = "unavailable"
-        comment = safe_comment(number, head, findings, triage_status)
+        comment = safe_comment(number, head, findings, triage_status, skipped)
         if output_dir := env.get("REVIEW_OUTPUT_DIR"):
             output = Path(output_dir)
             output.mkdir(parents=True, exist_ok=True)
@@ -497,6 +557,7 @@ def run(env, send=request_json):
                         "base": base,
                         "triage": triage_status,
                         "findings": findings,
+                        "skipped": skipped,
                         "usage": usage,
                         "cost_usd": usage_cost(usage),
                     }
@@ -507,7 +568,7 @@ def run(env, send=request_json):
             (output / "comment.md").write_text(comment, encoding="utf-8")
     else:
         review = html.escape(model_review(provider, key, data, send))
-        comment = f"## Advisory PR review: #{number}\n\nHead: `{head}`\n\n<pre>{review}</pre>\n"
+        comment = f"## Advisory PR review: #{number}\n\nHead: `{head}`\n\n{skipped_section(skipped)}<pre>{review}</pre>\n"
     cost = {"usage": usage, "cost_usd": usage_cost(usage)}
     with Path(env["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
         summary.write(comment)

@@ -235,7 +235,7 @@ class ReviewTests(unittest.TestCase):
                     review.run(dict(self.env, **overrides), send)
                 send.assert_not_called()
 
-    def test_blocks_sensitive_binary_incomplete_and_large_patches(self):
+    def test_all_skipped_aborts_without_calling_a_model(self):
         for bad in (
             item(filename=".env"),
             item(previous_filename="tls.key"),
@@ -257,9 +257,172 @@ class ReviewTests(unittest.TestCase):
         ):
             with self.subTest(path=bad["filename"]):
                 send = Mock(side_effect=[pr(), [bad]])
-                with self.assertRaises(review.ReviewError):
+                with self.assertRaisesRegex(
+                    review.ReviewError, "No reviewable files remain"
+                ):
                     review.run(self.env, send)
                 self.assertEqual(send.call_count, 2)
+
+    def test_skip_reasons(self):
+        for overrides, path, reason in (
+            ({"patch": None}, "src/file.cpp", "missing-patch"),
+            ({"patch": "Binary files differ"}, "src/file.cpp", "missing-patch"),
+            ({"additions": 2}, "src/file.cpp", "missing-patch"),
+            (
+                {"patch": "@@ -1 +1 @@\n-old\n+" + "z" * review.MAX_PATCH_BYTES},
+                "src/file.cpp",
+                "oversized",
+            ),
+            ({"filename": "mise.lock"}, "mise.lock", "generated-or-lockfile"),
+            (
+                {"filename": "nested/other.lock"},
+                "nested/other.lock",
+                "generated-or-lockfile",
+            ),
+            (
+                {"filename": "nested/package-lock.json"},
+                "nested/package-lock.json",
+                "generated-or-lockfile",
+            ),
+            (
+                {"filename": "src/generated/output.py"},
+                "src/generated/output.py",
+                "generated-or-lockfile",
+            ),
+            (
+                {"previous_filename": "src/generated/output.py"},
+                "src/file.cpp",
+                "generated-or-lockfile",
+            ),
+            ({"filename": "nested/.env"}, "<redacted path>", "sensitive-path"),
+            (
+                {"previous_filename": "nested/tls.key"},
+                "<redacted path>",
+                "sensitive-path",
+            ),
+            (
+                {"patch": "@@ -1 +1 @@\n-old\n+password = 'syntheticValue1234'"},
+                "src/file.cpp",
+                "sensitive-text",
+            ),
+        ):
+            with self.subTest(reason=reason, path=path):
+                data, skipped = review.patch_data(
+                    [item(filename="normal.py"), item(**overrides)]
+                )
+                self.assertEqual(
+                    [entry["path"] for entry in json.loads(data)], ["normal.py"]
+                )
+                self.assertEqual(skipped, [{"path": path, "reason": reason}])
+
+    def test_mixed_pr_reviews_fourteen_files_and_skips_the_large_lockfile(self):
+        output = Path(self.directory.name) / "output"
+        normal = [item(filename=f"src/file_{i}.py") for i in range(14)]
+        lockfile = item(filename="uv.lock", patch="@@ -1 +1 @@\n-old\n+" + "z" * 99_758)
+        revision = dict(pr(), changed_files=15)
+        send = Mock(side_effect=[revision, [*normal, lockfile], revision, openai_ok()])
+        review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
+        body = send.call_args_list[3].kwargs["body"]
+        self.assertEqual(
+            [patch["path"] for patch in json.loads(body["input"])],
+            [row["filename"] for row in normal],
+        )
+        self.assertNotIn("uv.lock", json.dumps(body))
+        self.assertIn(
+            "uv.lock (generated-or-lockfile)", (output / "comment.md").read_text()
+        )
+        self.assertEqual(
+            json.loads((output / "findings.json").read_text())["skipped"],
+            [{"path": "uv.lock", "reason": "generated-or-lockfile"}],
+        )
+
+    def test_skipped_content_never_reaches_requests_or_outputs(self):
+        output = Path(self.directory.name) / "output"
+        secret = "gh" + "p_" + "x" * 25
+        skipped_path = "tests/test_skipped.py"
+        hidden_path = "nested/.env.private"
+        revision = dict(pr(), changed_files=3)
+        decisions = {
+            "answers": [
+                {"type": "predicate", "name": "F1_defect", "probability": 0.91},
+                {"type": "score", "name": "F1_severity", "score": 2.0},
+            ]
+        }
+        send = Mock(
+            side_effect=[
+                revision,
+                [
+                    item(),
+                    item(filename=skipped_path, patch=f"@@ -1 +1 @@\n-old\n+{secret}"),
+                    item(filename=hidden_path),
+                ],
+                revision,
+                openai_ok(
+                    finding(),
+                    finding(id="F2", file=skipped_path),
+                    finding(id="F3", file=hidden_path),
+                ),
+                decisions,
+            ]
+        )
+        self.assertIsNone(
+            review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
+        )
+        self.assertEqual(send.call_count, 5)
+        for request in send.call_args_list[3:]:
+            serialized = json.dumps(request.kwargs["body"])
+            for excluded in (secret, hidden_path, skipped_path):
+                self.assertNotIn(excluded, serialized)
+        comment = (output / "comment.md").read_text()
+        artifact = (output / "findings.json").read_text()
+        for result in (comment, artifact, self.summary.read_text()):
+            self.assertNotIn(secret, result)
+            self.assertNotIn(hidden_path, result)
+        self.assertIn("&lt;redacted path&gt; (sensitive-path)", comment)
+        self.assertEqual(json.loads(artifact)["findings"], [finding()])
+        self.assertEqual(
+            json.loads(artifact)["skipped"],
+            [
+                {"path": skipped_path, "reason": "sensitive-text"},
+                {"path": "<redacted path>", "reason": "sensitive-path"},
+            ],
+        )
+
+    def test_skipped_files_do_not_count_toward_the_reviewable_file_limit(self):
+        output = Path(self.directory.name) / "output"
+        first_page = [item(filename=f"locks/{i}.lock") for i in range(31)]
+        revision = dict(pr(), changed_files=32)
+        send = Mock(side_effect=[revision, first_page, [item()], revision, openai_ok()])
+        review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
+        self.assertTrue(send.call_args_list[2].args[0].endswith("?per_page=31&page=2"))
+        body = send.call_args.kwargs["body"]
+        self.assertEqual(
+            [row["path"] for row in json.loads(body["input"])], ["src/file.cpp"]
+        )
+        self.assertEqual(
+            len(json.loads((output / "findings.json").read_text())["skipped"]), 31
+        )
+
+    def test_too_many_reviewable_files_are_not_sent(self):
+        files = [item(filename=f"{i}.py") for i in range(review.MAX_FILES + 1)]
+        send = Mock(side_effect=[dict(pr(), changed_files=len(files)), files])
+        with self.assertRaisesRegex(review.ReviewError, "reviewable file limit"):
+            review.run(self.env, send)
+        self.assertEqual(send.call_count, 2)
+
+    def test_incomplete_later_file_page_prevents_review(self):
+        files = [item(filename=f"{i}.lock") for i in range(31)]
+        send = Mock(side_effect=[dict(pr(), changed_files=32), files, []])
+        with self.assertRaisesRegex(review.ReviewError, "incomplete file list"):
+            review.run(self.env, send)
+        self.assertEqual(send.call_count, 3)
+
+    def test_reviewable_patches_still_obey_the_combined_size_limit(self):
+        patch = "@@ -1 +1 @@\n-old\n+" + "z" * (review.MAX_PATCH_BYTES // 2)
+        with self.assertRaisesRegex(review.ReviewError, "patch size limit"):
+            review.patch_data(
+                [item(patch=patch), item(filename="other.py", patch=patch)]
+            )
 
     def test_updated_pr_never_reaches_openai(self):
         moved = pr()
@@ -356,8 +519,9 @@ class ReviewTests(unittest.TestCase):
 
     def test_oversized_patch_is_rejected_before_content_scan(self):
         big = item(patch="@@ -1 +1 @@\n-old\n+" + "a" * (review.MAX_PATCH_BYTES + 1))
-        with self.assertRaisesRegex(review.ReviewError, "patch size limit"):
-            review.patch_data([big])
+        data, skipped = review.patch_data([item(filename="normal.py"), big])
+        self.assertEqual(len(json.loads(data)), 1)
+        self.assertEqual(skipped[0]["reason"], "oversized")
 
     def test_private_repo_requires_explicit_opt_in(self):
         for private, allow, blocked in (
