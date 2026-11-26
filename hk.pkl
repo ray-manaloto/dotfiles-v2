@@ -320,24 +320,20 @@ hooks {
       }
       ["betterleaks-commits"] = (Builtins.betterleaks) {
         scan = "commits"
-        // hk passes one ref range per push. When that ref is a branch delete, to_ref is the all-zero
-        // OID and `{{from_ref}}..{{to_ref}}` is an invalid range, yet the same push may update other
-        // refs. So scan every local commit (all refs, HEAD included) that no remote has yet instead
-        // of skipping. Refs come from HK_FROM_REF/HK_TO_REF, never `{{...}}` templates, so a ref
-        // name is never shell code. CommandSpec keeps the builtin's `effect = "read"` for `--safe`.
+        // hk passes a step one from_ref/to_ref per push, so `git push origin a b` (or a delete plus
+        // an update) scanned only one ref. push_leak_scan.py reads every line git gives the hook
+        // and scans all pushed commits the target remote lacks. A structured Command passes the
+        // hook input as single arguments (no shell); `effect = "read"` keeps it under `hk --safe`.
         check = new CommandSpec {
           command = new Command {
             argv =
               List(
-                "sh",
-                "-c",
-                #"""
-                set -- betterleaks git --redact --verbose --no-banner
-                case "${HK_TO_REF:?}" in
-                  *[!0]*) exec "$@" --log-opts="${HK_FROM_REF:?}..${HK_TO_REF}" ;;
-                  *) exec "$@" --log-opts="--all --not --remotes" ;;
-                esac
-                """#,
+                "python3",
+                "-I",
+                "-B",
+                "tasks/py/push_leak_scan.py",
+                "{{hook_stdin}}",
+                "{{hook_args}}",
               )
           }
           effect = "read"
