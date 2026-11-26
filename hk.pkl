@@ -8,6 +8,12 @@ import "package://github.com/jdx/hk/releases/download/v2.14.0/hk@2.14.0#/Builtin
 
 recheck_after_fix = true
 
+// Read-only git commands in steps (e.g. the destroyed-symlinks builtin's `git status`) take an
+// optional index.lock to refresh the index. With fail_fast, hk kills in-flight steps when one
+// fails, and a killed `git status` leaves a 0-byte index.lock that blocks every later commit.
+// GIT_OPTIONAL_LOCKS=0 makes those commands skip the optional lock; required writes still lock.
+env { ["GIT_OPTIONAL_LOCKS"] = "0" }
+
 // Exclude lockfiles only from formatting/content/secret/hygiene steps so integrity & gate steps still run.
 local const lockfileExcludes =
   List(
