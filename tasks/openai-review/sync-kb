@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Copy canonical OpenAI review files to a linked KB worktree"
+#USAGE arg "<kb-checkout>" help="Root directory of a knowledge-base-v2 linked worktree"
+set -euo pipefail
+exec python3 -I -B "${MISE_PROJECT_ROOT:?}/tasks/py/openai_review_sync.py" "${usage_kb_checkout:?}"

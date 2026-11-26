@@ -1,3 +1,4 @@
+# Source of truth: ray-manaloto/dotfiles-v2 .github/openai-review/; edit there and sync.
 """Review bounded GitHub file patches as data. Never check out or execute a PR."""
 
 import html
@@ -11,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 import triage
+from repo_config import REPO_CONFIG
 
 MODEL = "gpt-6.2-sol"
 CLAUDE_MODEL = "claude-haiku-5-5"
@@ -20,7 +22,8 @@ MAX_FILES = 30
 FILES_PER_PAGE = 31
 GITHUB_FILE_LIMIT = 3000
 MAX_PATCH_BYTES = 24000
-LOCKFILES = {"package-lock.json"}
+MAX_SKIPPED_PATH_BYTES = 512
+LOCKFILES = {"package-lock.json", "npm-shrinkwrap.json"}
 MAX_HTTP_BYTES = 4_000_000
 MAX_OUTPUT_TOKENS = 6000
 FINDINGS_SCHEMA = Path(__file__).with_name("findings.schema.json")
@@ -200,7 +203,6 @@ def patch_data(files):
         if (
             not isinstance(name, str)
             or not name
-            or name in names
             or not isinstance(old, str)
             or (patch is not None and not isinstance(patch, str))
             or any(
@@ -209,10 +211,14 @@ def patch_data(files):
             )
         ):
             raise ReviewError("GitHub returned an invalid file list.")
+        if name in names:
+            raise ReviewError("GitHub returned a duplicate PR file.")
         names.add(name)
         reason = skip_reason(name, old, item)
         if reason is None:
             reviewable += 1
+            if reviewable > MAX_FILES:
+                raise ReviewDeclined("The PR exceeds the reviewable file limit.")
             if not over_budget:
                 entry = json.dumps(
                     {"path": name, "previous_path": old, "patch": patch},
@@ -224,40 +230,40 @@ def patch_data(files):
                     patches.append(entry)
                     size += entry_size
                     continue
-                over_budget = True
+                over_budget = bool(patches)
             reason = "over-budget"
-        skipped.append(
-            {
-                "path": "<redacted path>" if reason == "sensitive-path" else name,
-                "reason": reason,
-            }
-        )
-    if reviewable > MAX_FILES:
-        raise ReviewDeclined("The PR exceeds the reviewable file limit.")
+        if reason == "sensitive-path":
+            name = "<redacted path>"
+        elif len(json.dumps(name)) > MAX_SKIPPED_PATH_BYTES:
+            name = "<path omitted: too long>"
+        skipped.append({"path": name, "reason": reason})
     if not patches:
-        if over_budget:
+        if reviewable:
             raise ReviewDeclined("No file fits within the patch size limit.")
         raise ReviewDeclined("No reviewable files remain after patch checks.")
     return "[" + ",".join(patches) + "]", skipped
 
 
-def identity(pr, repo, branch):
+def identity(pr, repo):
     if pr["base"]["repo"]["full_name"] != repo:
         raise ReviewError("The PR must be in this repository.")
-    if pr["base"]["ref"] != branch:
-        raise ReviewError("The PR must target the default branch.")
     private = pr["base"]["repo"].get("private")
     if not isinstance(private, bool):
         raise ReviewError("Repository visibility is unknown; refusing to send patches.")
     base, head, count = pr["base"]["sha"], pr["head"]["sha"], pr["changed_files"]
     if not SHA.fullmatch(head) or not SHA.fullmatch(base):
         raise ReviewError("Invalid GitHub revision SHA.")
-    if type(count) is not int or count < 0 or pr["state"] not in ("open", "closed"):
+    if (
+        type(count) is not int
+        or count < 0
+        or pr["state"] not in ("open", "closed")
+        or not isinstance(pr["base"]["ref"], str)
+    ):
         raise ReviewError("Invalid GitHub PR metadata.")
     return base, head, count, private
 
 
-def response_text(result):
+def response_text(result, *, preserve_whitespace=False):
     if result.get("status") != "completed":
         raise ReviewError("OpenAI did not return a completed review.")
     texts = [
@@ -267,14 +273,14 @@ def response_text(result):
         for part in item.get("content", [])
         if part.get("type") == "output_text"
     ]
-    return checked_text(texts)
+    return checked_text(texts, preserve_whitespace=preserve_whitespace)
 
 
-def checked_text(texts):
-    text = "\n".join(texts).strip()
-    if not text or SENSITIVE_OUTPUT.search(text):
+def checked_text(texts, *, preserve_whitespace=False):
+    text = "\n".join(texts)
+    if not text.strip() or SENSITIVE_OUTPUT.search(text):
         raise ReviewError("Review was empty or contained potentially sensitive text.")
-    return text
+    return text if preserve_whitespace else text.strip()
 
 
 def claude_text(result):
@@ -409,13 +415,15 @@ def metered(send, usage):
             row = usage.setdefault(
                 model, {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
             )
-            details = raw.get("input_tokens_details") or {}
+            details = raw.get("input_tokens_details")
+            if not isinstance(details, dict):
+                details = {}
             for name, value in (
                 ("input_tokens", raw.get("input_tokens")),
                 ("cached_tokens", details.get("cached_tokens")),
                 ("output_tokens", raw.get("output_tokens")),
             ):
-                if isinstance(value, int) and value >= 0:
+                if type(value) is int and value >= 0:
                     row[name] += value
         return result
 
@@ -488,7 +496,7 @@ def model_review(provider, key, data, send, schema=None):
                                 "schema": {
                                     name: value
                                     for name, value in schema.items()
-                                    if name != "$schema"
+                                    if name not in {"$schema", "$comment"}
                                 },
                             }
                         }
@@ -523,11 +531,15 @@ def run(env, send=None):
     repo_private = env.get("REPO_PRIVATE")
     if repo_private not in {"true", "false"}:
         raise ReviewError("Repository visibility is unknown; refusing to send patches.")
-    allow_private = not automatic and env.get("ALLOW_PRIVATE_DIFF") == "true"
+    consent = (
+        REPO_CONFIG["automatic_private_consent"] if automatic else "ALLOW_PRIVATE_DIFF"
+    )
+    allow_private = consent is not None and env.get(consent) == "true"
+    private_decline = repo_private == "true" and not allow_private
     provider = env.get("REVIEW_PROVIDER", "openai")
     if provider not in {"openai", "claude"}:
         raise ReviewError("Unsupported review provider.")
-    if not env.get("REVIEW_API_KEY"):
+    if not private_decline and not env.get("REVIEW_API_KEY"):
         secret = (
             "ANTHROPIC_REVIEW_API_KEY"
             if provider == "claude"
@@ -547,18 +559,23 @@ def run(env, send=None):
     gh_token = env["GITHUB_TOKEN"]
     pr_url = f"https://api.github.com/repos/{repo}/pulls/{number}"
     pr = send(pr_url, gh_token)
-    base, head, count, private = identity(pr, repo, branch)
+    base, head, count, private = identity(pr, repo)
+    note_base = expected_base if automatic else base
     note_head = expected_head if automatic else head
     try:
-        if pr["state"] != "open" or (
-            automatic
-            and (
-                (pr["head"]["repo"] is None or pr["head"]["repo"]["full_name"] != repo)
-                or (base, head) != (expected_base, expected_head)
+        if (
+            pr["state"] != "open"
+            or pr["base"]["ref"] != branch
+            or (
+                automatic
+                and (
+                    (pr["head"].get("repo") or {}).get("full_name") != repo
+                    or (base, head) != (expected_base, expected_head)
+                )
             )
         ):
             raise ReviewDeclined("The PR closed, moved, or does not match the event.")
-        if (repo_private == "true" or private) and not allow_private:
+        if private_decline or (private and not allow_private):
             raise ReviewDeclined("Private patches require explicit opt-in.")
         if count > GITHUB_FILE_LIMIT:
             raise ReviewDeclined("The PR exceeds the GitHub file listing limit.")
@@ -568,8 +585,13 @@ def run(env, send=None):
         except (IncompleteFileList, ReviewDeclined) as exc:
             collection_error = exc
         live = send(pr_url, gh_token)
-        live_base, live_head, live_count, live_private = identity(live, repo, branch)
-        if live["state"] != "open" or (live_base, live_head) != (base, head):
+        live_base, live_head, live_count, live_private = identity(live, repo)
+        if (
+            live["state"] != "open"
+            or live["base"]["ref"] != branch
+            or (live_base, live_head) != (base, head)
+            or (automatic and (live["head"].get("repo") or {}).get("full_name") != repo)
+        ):
             raise ReviewDeclined("The PR changed during collection.")
         if live_private and not allow_private:
             raise ReviewDeclined("Private patches require explicit opt-in.")
@@ -580,7 +602,7 @@ def run(env, send=None):
         if collection_error is not None:
             raise collection_error
     except ReviewDeclined as exc:
-        write_decline(env, note_head, str(exc), usage)
+        write_decline(env, number, note_base, note_head, str(exc), usage)
         return
     key = env["REVIEW_API_KEY"]
     shadow = []
@@ -600,7 +622,7 @@ def run(env, send=None):
                 candidates, patches, key, send
             )
         except (triage.TriageError, ReviewError):
-            write_decline(env, head, "Triage unavailable.", usage)
+            write_decline(env, number, base, head, "Triage unavailable.", usage)
             return
         shadow = [
             {
@@ -638,12 +660,22 @@ def run(env, send=None):
     write_summary(env, comment + shadow_section(shadow), usage)
 
 
-def write_decline(env, head, reason, usage):
+def write_decline(env, number, base, head, reason, usage):
     note = f"not reviewed: {reason}"
     write_summary(env, note, usage)
-    if env.get("REVIEW_PROVIDER", "openai") == "openai" and (
-        output := env.get("GITHUB_OUTPUT")
-    ):
+    if env.get("REVIEW_PROVIDER", "openai") != "openai":
+        return
+    if REPO_CONFIG["decline_channel"] == "artifact":
+        if output_dir := env.get("REVIEW_OUTPUT_DIR"):
+            directory = Path(output_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "decline.json").write_text(
+                json.dumps({"pr": number, "base": base, "head": head, "declined": True})
+                + "\n",
+                encoding="utf-8",
+            )
+            (directory / "comment.md").write_text(note + "\n", encoding="utf-8")
+    elif output := env.get("GITHUB_OUTPUT"):
         with Path(output).open("a", encoding="utf-8") as stream:
             stream.write(f"decline_head={head}\ndecline_note={note}\n")
 

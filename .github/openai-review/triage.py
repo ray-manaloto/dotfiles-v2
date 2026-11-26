@@ -1,3 +1,4 @@
+# Source of truth: ray-manaloto/dotfiles-v2 .github/openai-review/; edit there and sync.
 """Evaluate review candidates against the same bounded patch evidence."""
 
 import json

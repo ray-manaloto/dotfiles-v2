@@ -8,6 +8,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Expected commit when dispatched by the autofix workflow
+        required: false
+        type: string
 
 permissions: {}
 
@@ -30,6 +35,15 @@ jobs:
       MISE_CONFIG_DIR: ${{ github.workspace }}/unix/home/.config/mise
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
+      - name: Verify the dispatched commit
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_sha != '' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          if [[ "${GITHUB_SHA}" != "${EXPECTED_SHA}" ]]; then
+            printf '%s\n' 'The dispatched commit differs from the autofix commit.' >&2
+            exit 1
+          fi
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

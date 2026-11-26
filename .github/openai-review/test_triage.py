@@ -1,3 +1,4 @@
+# Source of truth: ray-manaloto/dotfiles-v2 .github/openai-review/; edit there and sync.
 import unittest
 from unittest.mock import Mock, patch
 

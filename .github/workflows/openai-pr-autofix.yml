@@ -323,7 +323,14 @@ jobs:
             printf '%s\n' 'mode=GitHub App push' >> "${GITHUB_OUTPUT}"
           else
             printf '%s\n' 'mode=GITHUB_TOKEN push plus CI dispatch' >> "${GITHUB_OUTPUT}"
-            gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${HEAD_BRANCH}"
+            ref="refs/heads/${HEAD_BRANCH}"
+            tip="$(git -C candidate -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+              ls-remote --refs "${url}" "${ref}")"
+            if [[ "${tip}" != "${sha}"$'\t'"${ref}" ]]; then
+              printf '%s\n' 'The branch tip changed after the push. CI dispatch stopped.' >&2
+              exit 1
+            fi
+            gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${HEAD_BRANCH}" -f "expected_sha=${sha}"
           fi
 
   finish:

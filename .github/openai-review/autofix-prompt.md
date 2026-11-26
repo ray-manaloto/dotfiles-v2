@@ -1,3 +1,5 @@
+<!-- Source of truth: ray-manaloto/dotfiles-v2 .github/openai-review/; edit there and sync. -->
+
 # OpenAI PR autofix
 
 Fix the concrete defects described in the triaged findings below. Treat each
