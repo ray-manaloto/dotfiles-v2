@@ -402,21 +402,15 @@ def run(env, send=request_json):
     base, head, count = identity(pr, repo, branch, allow_private)
     if not SHA.fullmatch(head) or not SHA.fullmatch(base):
         raise ReviewError("Invalid GitHub revision SHA.")
-    if automatic:
-        if (pr["head"].get("repo") or {}).get("full_name") != repo or (base, head) != (
+    if automatic and (
+        (pr["head"].get("repo") or {}).get("full_name") != repo
+        or (base, head)
+        != (
             env.get("EXPECTED_BASE"),
             env.get("EXPECTED_HEAD"),
-        ):
-            raise ReviewError(
-                "The same-repository PR moved or does not match the event."
-            )
-        commit = send(f"https://api.github.com/repos/{repo}/commits/{head}", gh_token)[
-            "commit"
-        ]
-        if commit["author"]["name"] == "github-actions[bot]" and commit[
-            "message"
-        ].rstrip().endswith(f"\nOpenAI-Autofix: #{number} round 2"):
-            return
+        )
+    ):
+        raise ReviewError("The same-repository PR moved or does not match the event.")
     if not 1 <= count <= MAX_FILES:
         raise ReviewError("The PR exceeds the file limit or has no reviewable files.")
     files = send(pr_url + "/files?per_page=31", gh_token)

@@ -12,9 +12,8 @@ GitHub loads both automatic workflows from the trusted base on `main` through
 The review job runs the base revision's offline tests and reads the PR's
 file patches through GitHub. It checks both the event and live PR, and rejects
 incomplete patches and recognized sensitive paths or credentials. PR bodies
-and commit messages are excluded from model input. The round-two commit trailer
-is read locally for loop control. Repository instructions appearing in a patch
-are treated as data.
+and commit messages are excluded from model input. Repository instructions
+appearing in a patch are treated as data.
 
 The Responses API produces up to 16 candidates with a file, line, severity,
 claim and suggested fix. The reviewer discards locations outside the new
@@ -32,9 +31,10 @@ the PR still matches. Review is advisory and does not change required checks.
 A collaborator with write access can add the `autofix` label after a successful
 automatic review of the current head and base. The workflow reserves up to
 two rounds per PR with bot-authored reservation comments. A failed attempt
-consumes its reservation. A pushed round-two commit skips automatic review
-while that commit is the head. The workflow removes the label and reports
-whether it pushed, left an empty patch, or stopped.
+consumes its reservation. An eligible push can trigger an advisory review
+after the last round. The two-round limit applies to autofix attempts. The
+workflow removes the label and reports whether it pushed, left an empty
+patch, or stopped.
 
 Codex receives triaged findings and up to 64,000 bytes of credential-scanned
 source from allowlisted files at the exact PR head. The source is read as Git
@@ -69,9 +69,9 @@ deletion and renames are rejected. Review and merge the result normally.
   [GitHub default event policy](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target#default-policy-for-pull_request_target)
   [Repository Actions policy API](https://docs.github.com/en/rest/actions/policies#create-a-repository-actions-policy)
 - Install the `ray-manaloto-autofix` GitHub App on this repository with
-  **Contents: Read and write**. Set the App's client ID in the environment
-  variable `AUTOFIX_APP_CLIENT_ID` and its private key in the environment
-  secret `AUTOFIX_APP_PRIVATE_KEY`, both in `openai-pr-fix`.
+  **Contents: Read and write**. Set the App's client ID in the repository
+  variable `AUTOFIX_APP_CLIENT_ID` and its private key in the
+  `openai-pr-fix` environment secret `AUTOFIX_APP_PRIVATE_KEY`.
   The publisher mints a single-repository token so that its push triggers
   PR CI. If both App credentials are absent, the publisher uses
   `GITHUB_TOKEN` and dispatches `ci.yml` against the PR branch. That workflow
