@@ -41,12 +41,36 @@ def known_commits(oids: list[str]) -> set[str]:
     return {oids[i] for i, kind in enumerate(answers) if kind == "commit"}
 
 
+def server_oids(remote: str) -> list[str]:
+    """Branch and tag oids the push target holds right now (`git ls-remote`).
+
+    Local tracking refs can be stale (a server branch deleted without `fetch --prune`),
+    so they must not decide what counts as already published. Raises if the server
+    cannot be listed, which blocks the push rather than scanning too little.
+    """
+    result = subprocess.run(
+        ["git", "ls-remote", "--heads", "--tags", "--", remote],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"git ls-remote {remote} failed: {result.stderr.strip()}")
+    oids: list[str] = []
+    for row in result.stdout.splitlines():
+        oid = row.split("\t", 1)[0].strip()
+        if oid and oid not in oids:
+            oids.append(oid)
+    return oids
+
+
 def push_log_opts(hook_stdin: str, remote: str) -> list[str] | None:
     """git-log arguments covering every commit the push publishes, or None if it publishes none.
 
     Each hook line is ``<local ref> <local oid> <remote ref> <remote oid>``. Deletes
     (all-zero local oid) publish nothing. Every other local oid is a tip to scan; the
-    remote oids it replaces, and the target remote's tracking refs, bound the scan.
+    remote oids it replaces bound the scan, plus (for new refs or unfetched bases) the
+    branch and tag tips the server holds.
     """
     tips: list[str] = []
     replaced: list[str] = []
@@ -71,13 +95,15 @@ def push_log_opts(hook_stdin: str, remote: str) -> list[str] | None:
     # scan; leaving it out only makes the scan wider.
     known = known_commits(replaced)
     bases = [oid for oid in replaced if oid in known]
-    opts = [*tips, "--not", *bases]
     # New refs (or unfetched bases) have no oid of their own to stop at, so bound them by
-    # what the target remote's tracking refs already hold. Updates of known refs skip this,
-    # so a stale tracking ref cannot hide their commits.
-    if remote and (new_refs or len(bases) < len(replaced)):
-        opts.append(f"--remotes={remote}")
-    return opts
+    # what the server holds now. Server oids we never fetched cannot bound anything.
+    if new_refs or len(bases) < len(replaced):
+        if not remote:
+            raise ValueError("pre-push input has new refs but no remote to list")
+        listed = server_oids(remote)
+        on_server = known_commits(listed)
+        bases += [oid for oid in listed if oid in on_server and oid not in bases]
+    return [*tips, "--not", *bases]
 
 
 def range_log_opts(from_ref: str, to_ref: str) -> list[str]:
@@ -98,7 +124,9 @@ def main(argv: list[str]) -> int:
         sys.stderr.write("usage: push_leak_scan.py <hook_stdin> <hook_args>\n")
         return 2
     hook_stdin, hook_args = argv
-    remote = hook_args.split()[0] if hook_args.split() else ""
+    # git passes `<remote name> <push url>`; the URL is where this push actually goes.
+    words = hook_args.split()
+    remote = words[-1] if words else ""
     try:
         if hook_stdin.strip():
             opts = push_log_opts(hook_stdin, remote)
