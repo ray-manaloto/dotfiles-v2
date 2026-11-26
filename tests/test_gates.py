@@ -2007,7 +2007,8 @@ def test_mcp_policy_managed_servers(monkeypatch, tmp_path, server, decision) -> 
     errors, message = doc_mod.check_mcp_policy(tmp_path)
     assert private_value not in "\n".join(errors)
     if decision is None:
-        assert errors == [] and "repo" in message
+        assert errors == []
+        assert message.endswith(": MCP policy checked against managed configurations")
     else:
         assert len(errors) == 1
         assert f"{server!r} has decision {decision}; fix with" in errors[0]
