@@ -137,6 +137,8 @@ finding directly at `path:line`, and merge deduplicated confirmed findings.
 
 ## Context7 docs lookup
 
-When looking up library, framework, SDK, API, or CLI syntax/configuration, call
-Context7 `resolve-library-id` first and run focused `query-docs` calls per
-concept rather than relying on stale memory or generic web search.
+When looking up library, framework, SDK, API, or CLI syntax/configuration, use
+the `find-docs` skill: resolve the library with the `ctx7` CLI
+(`ctx7 library <name>`) first, then run focused `ctx7 docs <id> "<topic>"` calls
+per concept rather than relying on stale memory or generic web search. The
+Context7 MCP servers are denied by `mcp-policy.json`.
