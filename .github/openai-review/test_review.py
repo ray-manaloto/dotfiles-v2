@@ -12,7 +12,11 @@ import review
 def pr():
     return {
         "state": "open",
-        "base": {"repo": {"full_name": "example/repo"}, "ref": "main", "sha": "b" * 40},
+        "base": {
+            "repo": {"full_name": "example/repo", "private": False},
+            "ref": "main",
+            "sha": "b" * 40,
+        },
         "head": {"sha": "a" * 40},
         "changed_files": 1,
     }
@@ -239,6 +243,32 @@ class ReviewTests(unittest.TestCase):
                     send = Mock(side_effect=[pr(), [item()], pr(), claude_ok()])
                     review.run(dict(env, REVIEW_PROVIDER="claude"), send)
                     self.assertEqual(send.call_count, 4)
+
+    def test_live_visibility_overrides_stale_event_payload(self):
+        made_private = pr()
+        made_private["base"]["repo"]["private"] = True
+        unknown = pr()
+        del unknown["base"]["repo"]["private"]
+        for live in (made_private, unknown):
+            with self.subTest(private=live["base"]["repo"].get("private")):
+                send = Mock(side_effect=[live])
+                with self.assertRaises(review.ReviewError):
+                    review.run(dict(self.env, REVIEW_PROVIDER="claude"), send)
+                self.assertEqual(send.call_count, 1)
+        send = Mock(side_effect=[made_private, [item()], made_private, claude_ok()])
+        review.run(
+            dict(self.env, REVIEW_PROVIDER="claude", ALLOW_PRIVATE_DIFF="true"), send
+        )
+        self.assertEqual(send.call_count, 4)
+
+    def test_quoted_json_secret_keys_are_blocked(self):
+        for line in (
+            '{"pass' + 'word":"syntheticValue1234"}',
+            "{'client_" + "secret': 'syntheticValue1234'}",
+        ):
+            with self.subTest(line=line[:12]):
+                self.assertIsNotNone(review.SENSITIVE_TEXT.search(line))
+                self.assertIsNotNone(review.SENSITIVE_OUTPUT.search(line))
 
     def test_non_object_api_response_maps_to_safe_message(self):
         for provider in ("claude", "openai"):

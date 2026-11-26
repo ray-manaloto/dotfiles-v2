@@ -38,9 +38,10 @@ run summary with the head it reviewed. The advisory result does not replace
 any required review.
 
 If the repository is private, the run refuses to send patches unless you tick
-**allow_private_diff** for that run. The workflow passes the repository's
-visibility to the script. If the visibility is missing, the script refuses to
-send patches.
+**allow_private_diff** for that run. The script checks both the visibility in
+the dispatch event and the current visibility GitHub returns with the PR, so a
+re-run after the repository turns private is still gated. If either value is
+missing, the script refuses to send patches.
 
 ## Data and cost
 

@@ -10,7 +10,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-MODEL = "gpt-5-mini-2025-08-07"
+# gpt-5-mini-2025-08-07 shuts down 2026-12-11; this is its listed replacement.
+MODEL = "gpt-6.1-terra"
 CLAUDE_MODEL = "claude-haiku-5-5"
 CLAUDE_ENDPOINT = "https://api.anthropic.com/v1/messages"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
@@ -38,7 +39,7 @@ STRICT_SECRETS = (
     r"|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35})\b"
     # Credentials embedded in a URL (scheme://user:password@host).
     r"|://[^/\s:@]{1,64}:[^/\s@]{8,}@"
-    r"""|\b(?:password|client_secret|api_key|access_token)\s*[:=]\s*["']?[A-Za-z0-9_+./=-]{12,}"""
+    r"""|\b(?:password|client_secret|api_key|access_token)["']?\s*[:=]\s*["']?[A-Za-z0-9_+./=-]{12,}"""
 )
 SENSITIVE_TEXT = re.compile(
     STRICT_SECRETS
@@ -149,11 +150,20 @@ def patch_data(files):
     return data
 
 
-def identity(pr, repo, branch):
+def identity(pr, repo, branch, allow_private):
     if pr["state"] != "open" or pr["base"]["repo"]["full_name"] != repo:
         raise ReviewError("The PR must be open in this repository.")
     if pr["base"]["ref"] != branch:
         raise ReviewError("The PR must target the default branch.")
+    # The event payload's visibility is frozen at dispatch (and reused on
+    # re-runs), so also gate on the live value GitHub returns with the PR.
+    private = pr["base"]["repo"].get("private")
+    if not isinstance(private, bool):
+        raise ReviewError("Repository visibility is unknown; refusing to send patches.")
+    if private and not allow_private:
+        raise ReviewError(
+            "Private patches are disabled; confirm explicitly for this run."
+        )
     return pr["base"]["sha"], pr["head"]["sha"], pr["changed_files"]
 
 
@@ -248,7 +258,8 @@ def run(env, send=request_json):
     repo_private = env.get("REPO_PRIVATE")
     if repo_private not in {"true", "false"}:
         raise ReviewError("Repository visibility is unknown; refusing to send patches.")
-    if repo_private == "true" and env.get("ALLOW_PRIVATE_DIFF") != "true":
+    allow_private = env.get("ALLOW_PRIVATE_DIFF") == "true"
+    if repo_private == "true" and not allow_private:
         raise ReviewError(
             "Private patches are disabled; confirm explicitly for this run."
         )
@@ -264,14 +275,16 @@ def run(env, send=request_json):
         raise ReviewError(f"Set {secret} in the protected review environment.")
     gh_token = env["GITHUB_TOKEN"]
     pr_url = f"https://api.github.com/repos/{repo}/pulls/{number}"
-    base, head, count = identity(send(pr_url, gh_token), repo, branch)
+    base, head, count = identity(send(pr_url, gh_token), repo, branch, allow_private)
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise ReviewError("Invalid GitHub head SHA.")
     if not 1 <= count <= MAX_FILES:
         raise ReviewError("The PR exceeds the file limit or has no reviewable files.")
     files = send(pr_url + "/files?per_page=31", gh_token)
     data = patch_data(files)
-    if len(files) != count or identity(send(pr_url, gh_token), repo, branch) != (
+    if len(files) != count or identity(
+        send(pr_url, gh_token), repo, branch, allow_private
+    ) != (
         base,
         head,
         count,
