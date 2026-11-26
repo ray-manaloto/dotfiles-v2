@@ -44,6 +44,10 @@ read -r state pr_branch pr_base pr_head merge_commit first_commit_at <<<"${info}
 
 # 2. The post-task-learn review for this worktree is recorded (the learn step is part of landing).
 plan_id="$(sed -n 's/^PLAN_ID *= *"\(.*\)"/\1/p' mise.local.toml 2>/dev/null | head -1 || true)"
+plan_id="${plan_id:-${PLAN_ID:-}}"
+if [[ -z ${plan_id} ]] && compgen -G ".planning/*/" >/dev/null; then
+	refuse "PLAN_ID is unknown (no mise.local.toml) but .planning/ holds: $(find .planning -mindepth 1 -maxdepth 1 -type d | tr '\n' ' '); restore mise.local.toml or move those plan files first"
+fi
 reviews="${XDG_STATE_HOME:-${HOME}/.local/state}/agy-learn/reviews.jsonl"
 if [[ -z ${usage_skip_learn_check:-} ]]; then
 	if ! python3 -I -B -c '
@@ -59,7 +63,8 @@ except (OSError, ValueError):
 # Either way the review must be newer than the first commit of the PR, so an old review cannot satisfy a new landing.
 def mine(r):
     same = r.get("plan_id") == plan_id if plan_id else r.get("worktree_slug") == slug
-    return same and int(r.get("timestamp_unix_ns") or 0) >= since_ns
+    done = r.get("outcome") in ("proposed", "no_new_proposals", "applied")  # not owing_learn
+    return same and done and int(r.get("timestamp_unix_ns") or 0) >= since_ns
 sys.exit(0 if any(mine(r) for r in rows) else 1)
 ' "${reviews}" "${plan_id}" "${slug}" "${first_commit_at}"; then
 		refuse "no post-task-learn review recorded for ${slug} (PLAN_ID ${plan_id:-unset}) since the first commit of #${pr}; run the post-task-learn skill (mise run learn:record-review --worktree-slug ${slug} --plan-id ${plan_id:-<id>} ...); only the owner may approve --skip-learn-check"
@@ -82,11 +87,13 @@ echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_ro
 # worktree and its branch (the branch is merged, so `branch -d` is safe).
 if [[ -n ${plan_id} && -d .planning/${plan_id} ]]; then
 	mkdir -p "${main_root}/.planning"
-	cp -R ".planning/${plan_id}" "${main_root}/.planning/" && echo "pr:land: kept plan files in ${main_root}/.planning/${plan_id}"
+	cp -R ".planning/${plan_id}" "${main_root}/.planning/" ||
+		refuse "could not copy .planning/${plan_id} to ${main_root}/.planning/; worktree left in place"
+	echo "pr:land: kept plan files in ${main_root}/.planning/${plan_id}"
 fi
 cd "${main_root}"
 MISE_YES=1 mise run -q worktree:rm "${slug}" </dev/null
 echo "pr:land: removed worktree ${slug} and branch ${branch}"
 
 # 5. Read-only learn ledger health (owing reviews, escalations, already-shipped proposals).
-MISE_YES=1 mise run -q learn:heal --check </dev/null || echo "pr:land: WARNING: learn:heal --check reported issues; read them" >&2
+MISE_YES=1 mise run -q learn:heal --check --repo "${main_root}" </dev/null || echo "pr:land: WARNING: learn:heal --check reported issues; read them" >&2
