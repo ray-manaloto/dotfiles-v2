@@ -38,6 +38,7 @@ fzf = "0.75.0"
 "github:microsoft/vcpkg-tool" = { version = "2026-10-29", additional_asset_patterns = [
   "vcpkg-standalone-bundle.tar.gz",
 ], rename_exe = "vcpkg", platforms = { macos-arm64 = { asset_pattern = "vcpkg-macos" }, linux-x64 = { asset_pattern = "vcpkg-glibc" }, linux-arm64 = { asset_pattern = "vcpkg-glibc-arm64" } } }
+"github:openai/openai-cli" = { version = "1.57.0", bin = "openai", platforms = { macos-arm64 = { asset_pattern = "openai_*_macos_arm64.zip" }, linux-arm64 = { asset_pattern = "openai_*_linux_arm64.tar.gz" }, linux-x64 = { asset_pattern = "openai_*_linux_amd64.tar.gz" } } }
 ghalint = "1.6.0"
 github-cli = "2.105.0"
 hadolint = "2.15.1"
@@ -99,6 +100,8 @@ last30days_memory_dir = "{% if os() == 'macos' %}{{ [xdg_data_home, 'last30days'
 GIT_TERMINAL_PROMPT = "0"
 LAST30DAYS_CONFIG_DIR = "{{ vars.last30days_config_dir }}"
 LAST30DAYS_MEMORY_DIR = "{{ vars.last30days_memory_dir }}"
+# mise manages OpenAI CLI upgrades.
+OPENAI_CLI_NO_AUTO_UPDATE = "1"
 REPOWISE_TELEMETRY_DISABLED = "1"
 UV_SYSTEM_CERTS = "1"
 VCPKG_DISABLE_METRICS = "1"
@@ -420,6 +423,7 @@ mode = "0700"
 description = "Install idempotent native AI harness CLIs"
 depends = [
   "bootstrap:claude",
+  "bootstrap:codex",
   "bootstrap:reviewer-plugins",
   "bootstrap:herdr-app",
   "bootstrap:herdr-core",

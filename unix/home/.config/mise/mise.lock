@@ -631,6 +631,48 @@ url = "https://github.com/microsoft/vcpkg-tool/releases/download/2026-10-29/vcpk
 url_api = "https://api.github.com/repos/microsoft/vcpkg-tool/releases/assets/690264684"
 provenance = "github-attestations"
 
+[[tools."github:openai/openai-cli"]]
+version = "1.57.0"
+backend = "github:openai/openai-cli"
+specifiers = ["1.57.0"]
+
+[tools."github:openai/openai-cli".options]
+asset_pattern = "openai_*_linux_arm64.tar.gz"
+
+[tools."github:openai/openai-cli"."platforms.linux-arm64"]
+checksum = "sha256:35b1a3a001017189f786d7f0fec2e5e13bd1ee5d0328d501ba1c48c6e8c07eaf"
+url = "https://github.com/openai/openai-cli/releases/download/v1.57.0/openai_1.57.0_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/openai/openai-cli/releases/assets/789321479"
+provenance = "github-attestations"
+
+[[tools."github:openai/openai-cli"]]
+version = "1.57.0"
+backend = "github:openai/openai-cli"
+specifiers = ["1.57.0"]
+
+[tools."github:openai/openai-cli".options]
+asset_pattern = "openai_*_linux_amd64.tar.gz"
+
+[tools."github:openai/openai-cli"."platforms.linux-x64"]
+checksum = "sha256:a52f32a36b110ffc5aac092a1bf39434f2f468506eebe45481470f901d7e3b62"
+url = "https://github.com/openai/openai-cli/releases/download/v1.57.0/openai_1.57.0_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/openai/openai-cli/releases/assets/789321477"
+provenance = "github-attestations"
+
+[[tools."github:openai/openai-cli"]]
+version = "1.57.0"
+backend = "github:openai/openai-cli"
+specifiers = ["1.57.0"]
+
+[tools."github:openai/openai-cli".options]
+asset_pattern = "openai_*_macos_arm64.zip"
+
+[tools."github:openai/openai-cli"."platforms.macos-arm64"]
+checksum = "sha256:4f788d4f9645c8b45bc0ae8827bc0db11bc244be91e9444acdf961fb9fa34aa0"
+url = "https://github.com/openai/openai-cli/releases/download/v1.57.0/openai_1.57.0_macos_arm64.zip"
+url_api = "https://api.github.com/repos/openai/openai-cli/releases/assets/789321586"
+provenance = "github-attestations"
+
 [[tools.hadolint]]
 version = "2.15.1"
 backend = "aqua:hadolint/hadolint"
