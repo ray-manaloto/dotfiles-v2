@@ -1592,6 +1592,119 @@ def test_normalize_path_for_mise_doctor_shim_and_activated_modes(monkeypatch) ->
         )
 
 
+def test_mise_doctor_clean_strips_mise_env_path_entries(monkeypatch) -> None:
+    """mise's own `[env]._.path` dirs (apple-bin, llvm, lldb) never fail a non-activated shell."""
+    _, doc_mod = _load_doctor_checks()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        repo_root = root / "workspace"
+        home = root / "home"
+        data_dir = root / "opt" / "mise"
+        shims_dir = data_dir / "shims"
+        mise_bin_dir = root / "bin"
+        apple_bin = home / ".config" / "mise" / "apple-bin"
+        llvm_bin = root / "brew" / "opt" / "llvm" / "bin"
+        local_bin = home / ".local" / "bin"
+        for d in (shims_dir, mise_bin_dir, apple_bin, llvm_bin, local_bin):
+            d.mkdir(parents=True)
+        fake_mise = mise_bin_dir / "mise"
+        fake_mise.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake_mise.chmod(0o755)
+
+        raw_path = os.pathsep.join(
+            [
+                str(local_bin),
+                str(apple_bin),
+                str(llvm_bin),
+                "/opt/homebrew/bin",
+                str(shims_dir),
+                str(mise_bin_dir),
+                "/usr/bin",
+            ]
+        )
+        entries = frozenset(
+            {os.path.normpath(str(apple_bin)), os.path.normpath(str(llvm_bin))}
+        )
+        # Only mise-declared entries go; a real bug (/opt/homebrew/bin, ~/.local/bin before shims) stays.
+        assert doc_mod._normalize_path_for_mise_doctor(
+            raw_path, {"MISE_DATA_DIR": str(data_dir)}, repo_root, home, entries
+        ) == os.pathsep.join(
+            [
+                str(local_bin),
+                "/opt/homebrew/bin",
+                str(shims_dir),
+                str(mise_bin_dir),
+                "/usr/bin",
+            ]
+        )
+
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("MISE_SHELL", raising=False)
+        monkeypatch.delenv("__MISE_DIFF", raising=False)
+        monkeypatch.setenv("MISE_DATA_DIR", str(data_dir))
+        monkeypatch.setenv("PATH", raw_path)
+        calls: list[tuple[list[str], dict[str, str]]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((list(cmd), dict(kwargs.get("env") or {})))
+            if "env" in cmd:
+                out = {
+                    "PATH": os.pathsep.join(
+                        [str(apple_bin), str(llvm_bin), "/usr/bin", "/bin"]
+                    )
+                }
+            else:
+                out = {"errors": [], "warnings": []}
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(out), stderr=""
+            )
+
+        monkeypatch.setattr(doc_mod.subprocess, "run", fake_run)
+        errs, _ = doc_mod.check_mise_doctor_clean(repo_root)
+        assert errs == []
+        probe_cmd, probe_env = calls[0]
+        assert probe_cmd[1:] == ["-C", str(Path.home()), "env", "--json"]
+        assert probe_env["PATH"] == os.pathsep.join(["/usr/bin", "/bin"])
+        assert calls[-1][1]["PATH"] == os.pathsep.join(
+            [
+                str(local_bin),
+                "/opt/homebrew/bin",
+                str(shims_dir),
+                str(mise_bin_dir),
+                "/usr/bin",
+            ]
+        )
+
+        # A failed probe falls back to strict mode: foreign shadow warnings still fail.
+        def failing_run(cmd, **kwargs):
+            if "env" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="not json", stderr="boom"
+                )
+            out = {
+                "errors": [],
+                "warnings": ["mise shims are shadowed by executables earlier in PATH"],
+            }
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(out), stderr=""
+            )
+
+        monkeypatch.setattr(doc_mod.subprocess, "run", failing_run)
+        assert doc_mod._mise_env_path_entries(dict(os.environ), home) == frozenset()
+        errs, _ = doc_mod.check_mise_doctor_clean(repo_root)
+        assert any("shadowed" in e for e in errs)
+        monkeypatch.setattr(doc_mod.subprocess, "run", fake_run)
+
+        # Activated shells skip the probe entirely.
+        calls.clear()
+        monkeypatch.setenv("MISE_SHELL", "zsh")
+        errs, _ = doc_mod.check_mise_doctor_clean(repo_root)
+        assert errs == []
+        assert all("env" not in cmd for cmd, _ in calls)
+        # The doctor run uses the resolved mise binary, so stripping its dir cannot lose it.
+        assert calls[-1][0][0] == str(fake_mise)
+
+
 def test_vm_up_normalizes_usr_local_bin_ownership_for_packslip() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     vm_up = (repo_root / "tasks" / "vm" / "up").read_text(encoding="utf-8")

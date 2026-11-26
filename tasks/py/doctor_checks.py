@@ -737,10 +737,45 @@ def _strip_git_core_from_path(path_value: str, git_exec_path: str = "") -> str:
     return os.pathsep.join(kept)
 
 
+def _mise_env_path_entries(env: Mapping[str, str], home: Path) -> frozenset[str]:
+    """PATH entries mise itself adds (`[env]._.path`, tool bins, wrappers), from `mise env --json` on a bare PATH."""
+    mise_bin = shutil.which("mise", path=env.get("PATH"))
+    if not mise_bin:
+        return frozenset()
+    base = ("/usr/bin", "/bin")
+    probe_env = {k: v for k, v in env.items() if k not in ("MISE_SHELL", "__MISE_DIFF")}
+    probe_env["PATH"] = os.pathsep.join(base)
+    try:
+        proc = subprocess.run(
+            [mise_bin, "-C", str(home), "env", "--json"],
+            capture_output=True,
+            text=True,
+            env=probe_env,
+            stdin=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+        data = json.loads(proc.stdout) if proc.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):  # fmt: skip
+        return frozenset()
+    mise_path = data.get("PATH") if isinstance(data, dict) else None
+    if not isinstance(mise_path, str):
+        return frozenset()
+    return frozenset(
+        os.path.normpath(entry)
+        for entry in mise_path.split(os.pathsep)
+        if entry and os.path.normpath(entry) not in base
+    )
+
+
 def _normalize_path_for_mise_doctor(
-    path_value: str, env: Mapping[str, str], repo_root: Path, home: Path
+    path_value: str,
+    env: Mapping[str, str],
+    repo_root: Path,
+    home: Path,
+    mise_env_entries: frozenset[str] = frozenset(),
 ) -> str:
-    """Strip shim-mode `mise` task-injected tool/wrapper/repo-venv prefixes when `shims` stays in PATH."""
+    """Strip shim-mode `mise` task-injected tool/wrapper/repo-venv and mise `[env]._.path` prefixes when `shims` stays in PATH."""
     cleaned = _strip_git_core_from_path(path_value, env.get("GIT_EXEC_PATH", ""))
     if env.get("MISE_SHELL") or env.get("__MISE_DIFF"):
         return cleaned
@@ -777,6 +812,7 @@ def _normalize_path_for_mise_doctor(
                 or candidate.startswith(installs_prefixes)
                 or candidate in wrappers_dirs
                 or candidate in venv_dirs
+                or candidate in mise_env_entries
             ):
                 return True
         return False
@@ -791,11 +827,19 @@ def check_mise_doctor_clean(repo_root: Path | None = None) -> tuple[list[str], s
     home = Path.home()
     root = repo_root if repo_root is not None else Path(__file__).resolve().parents[2]
     env = dict(os.environ)
+    # Resolve mise before PATH normalization can drop the directory that holds it.
+    mise_cmd = shutil.which("mise", path=env.get("PATH")) or "mise"
     if "PATH" in env:
-        env["PATH"] = _normalize_path_for_mise_doctor(env["PATH"], env, root, home)
+        activated = bool(env.get("MISE_SHELL") or env.get("__MISE_DIFF"))
+        mise_env_entries = (
+            frozenset() if activated else _mise_env_path_entries(env, home)
+        )
+        env["PATH"] = _normalize_path_for_mise_doctor(
+            env["PATH"], env, root, home, mise_env_entries
+        )
     try:
         proc = subprocess.run(
-            ["mise", "-C", str(home), "doctor", "--json"],
+            [mise_cmd, "-C", str(home), "doctor", "--json"],
             capture_output=True,
             text=True,
             env=env,
