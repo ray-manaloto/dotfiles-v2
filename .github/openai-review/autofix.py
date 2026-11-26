@@ -22,6 +22,10 @@ ALLOWED_PATH = re.compile(
 SECRET_PATH = re.compile(rb"secret|credential|password", re.IGNORECASE)
 IMPORT_HOOKS = {b"conftest.py", b"__init__.py", b"tasks_py_loader.py"}
 MAX_SOURCE_BYTES = 64_000
+MAX_FINDINGS_ARTIFACT_BYTES = 64_000
+# Up to 16 shadow rows with bounded 1024/400-character path/title fields.
+# JSON escapes can take 12 bytes per character.
+MAX_SHADOW_BYTES = 16 * (12 * (1024 + 400) + 64)
 
 
 def git(repo, *args, data=None):
@@ -89,11 +93,19 @@ def stage_patch(repo, patch_path, targets):
 
 
 def prepare_prompt(findings_path, template, prompt, source, pr, base, head):
+    limit = MAX_FINDINGS_ARTIFACT_BYTES + MAX_SHADOW_BYTES
     with findings_path.open("rb") as handle:
-        data = handle.read(64_001)
-    if len(data) > 64_000:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
         raise ValueError("The findings artifact is too large.")
     payload = json.loads(data)
+    if "shadow" in payload:
+        payload.pop("shadow")
+        core_size = len(json.dumps(payload).encode("utf-8")) + 1
+    else:
+        core_size = len(data)
+    if core_size > MAX_FINDINGS_ARTIFACT_BYTES:
+        raise ValueError("The findings artifact is too large.")
     findings = payload["findings"]
     if (
         (payload["pr"], payload["base"], payload["head"])

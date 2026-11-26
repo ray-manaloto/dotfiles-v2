@@ -172,7 +172,24 @@ class PatchTests(unittest.TestCase):
         findings_path.write_text(json.dumps(dict(payload, triage="unavailable")))
         with self.assertRaisesRegex(ValueError, "No triaged findings"):
             prepare_prompt(findings_path, template, prompt, self.repo, "5", base, head)
-        findings_path.write_text(json.dumps(dict(payload, triage="completed")))
+        shadow = [
+            {
+                "path": "tests/test_something.py",
+                "line": 1,
+                "title": "Shadow " + "a" * 390,
+            }
+        ] * 2
+        findings_path.write_text(
+            json.dumps(dict(payload, triage="completed", findings=[], shadow=shadow))
+        )
+        with self.assertRaisesRegex(ValueError, "No triaged findings"):
+            prepare_prompt(findings_path, template, prompt, self.repo, "5", base, head)
+        self.assertFalse(prompt.exists())
+        payload["skipped"] = [{"path": "s" * 63_000, "reason": "over-budget"}]
+        completed = dict(payload, triage="completed")
+        self.assertLess(len(json.dumps(completed).encode()), 64_000)
+        findings_path.write_text(json.dumps(dict(completed, shadow=shadow)) + "\n")
+        self.assertGreater(findings_path.stat().st_size, 64_000)
         targets = prepare_prompt(
             findings_path, template, prompt, self.repo, "5", base, head
         )
@@ -180,3 +197,10 @@ class PatchTests(unittest.TestCase):
         data = json.loads(prompt.read_text().split("\n", 3)[3])
         self.assertEqual(data["sources"], {"tests/test_something.py": "before\n"})
         self.assertEqual(data["findings"], findings[:1])
+        self.assertNotIn("Shadow", prompt.read_text())
+        oversized = dict(
+            completed, skipped=[{"path": "s" * 64_000, "reason": "over-budget"}]
+        )
+        findings_path.write_text(json.dumps(dict(oversized, shadow=shadow)) + "\n")
+        with self.assertRaisesRegex(ValueError, "artifact is too large"):
+            prepare_prompt(findings_path, template, prompt, self.repo, "5", base, head)

@@ -6,6 +6,8 @@ ENDPOINT = "https://api.openai.com/v1/decisions"
 MODEL = "gpt-6-luna"
 MIN_PROBABILITY = 0.85
 MIN_SEVERITY = 1.0
+# The 2026-11-26 replay calibration supports observing the lower threshold.
+SHADOW_MIN_SEVERITY = 0.0
 MAX_REQUEST_BYTES = 64_000
 LEVELS = [
     {"label": "low", "description": "Minor defect with a limited impact."},
@@ -23,8 +25,13 @@ class TriageError(Exception):
 
 
 def select(findings, patches, key, send):
+    posted, _ = partition(findings, patches, key, send)
+    return posted
+
+
+def partition(findings, patches, key, send):
     if not findings:
-        return []
+        return [], []
     questions = []
     for finding in findings:
         identifier = finding["id"]
@@ -94,9 +101,15 @@ def select(findings, patches, key, send):
         ):
             raise TriageError("Decisions returned an invalid answer.")
         values[name] = value
-    return [
-        finding
-        for finding in findings
-        if values[f"{finding['id']}_defect"] >= MIN_PROBABILITY
-        and values[f"{finding['id']}_severity"] >= MIN_SEVERITY
-    ]
+    posted = []
+    shadow = []
+    for finding in findings:
+        identifier = finding["id"]
+        if values[f"{identifier}_defect"] < MIN_PROBABILITY:
+            continue
+        severity = values[f"{identifier}_severity"]
+        if severity >= MIN_SEVERITY:
+            posted.append(finding)
+        elif severity >= SHADOW_MIN_SEVERITY:
+            shadow.append(finding)
+    return posted, shadow
