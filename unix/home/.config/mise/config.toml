@@ -32,7 +32,7 @@ fd = "10.5.2"
 fnox = { version = "1.50.0", workflow = "release.yml", minimum_release_age = "0s" }
 fzf = "0.75.0"
 "github:0xMassi/webclaw" = { version = "0.7.5", minimum_release_age = "0s" }
-"github:Dicklesworthstone/destructive_command_guard" = { version = "0.17.1", bin = "dcg", platforms = { macos-arm64 = { asset_pattern = "dcg-aarch64-apple-darwin.tar.xz" }, linux-arm64 = { asset_pattern = "dcg-aarch64-unknown-linux-gnu.tar.xz" }, linux-x64 = { asset_pattern = "dcg-x86_64-unknown-linux-musl.tar.xz" } } }
+"github:Dicklesworthstone/destructive_command_guard" = { version = "0.17.2", bin = "dcg", platforms = { macos-arm64 = { asset_pattern = "dcg-aarch64-apple-darwin.tar.xz" }, linux-arm64 = { asset_pattern = "dcg-aarch64-unknown-linux-gnu.tar.xz" }, linux-x64 = { asset_pattern = "dcg-x86_64-unknown-linux-musl.tar.xz" } } }
 "github:agent-sh/agnix" = { version = "0.61.0", minimum_release_age = "0s" }
 "github:kenn-io/agentsview" = { version = "0.48.0", minimum_release_age = "0s" }
 "github:microsoft/vcpkg-tool" = { version = "2026-10-29", additional_asset_patterns = [

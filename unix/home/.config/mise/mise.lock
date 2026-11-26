@@ -481,46 +481,46 @@ url = "https://github.com/0xMassi/webclaw/releases/download/v0.7.5/webclaw-v0.7.
 url_api = "https://api.github.com/repos/0xMassi/webclaw/releases/assets/783434826"
 
 [[tools."github:Dicklesworthstone/destructive_command_guard"]]
-version = "0.17.1"
+version = "0.17.2"
 backend = "github:Dicklesworthstone/destructive_command_guard"
-specifiers = ["0.17.1"]
+specifiers = ["0.17.2"]
 
 [tools."github:Dicklesworthstone/destructive_command_guard".options]
 asset_pattern = "dcg-aarch64-unknown-linux-gnu.tar.xz"
 
 [tools."github:Dicklesworthstone/destructive_command_guard"."platforms.linux-arm64"]
-checksum = "sha256:cbbe946405249bc376dafdc41c2d9e97ca5f1ea15a81bf28e9c0053cb0acc15c"
+checksum = "sha256:1cd59892eb7c9541026979b18d1d64cd4c62f9c923b3eb7cd106f7505fe27620"
 checksum_source = "mise-versions"
-url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.1/dcg-aarch64-unknown-linux-gnu.tar.xz"
-url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/783362443"
+url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.2/dcg-aarch64-unknown-linux-gnu.tar.xz"
+url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/793676855"
 
 [[tools."github:Dicklesworthstone/destructive_command_guard"]]
-version = "0.17.1"
+version = "0.17.2"
 backend = "github:Dicklesworthstone/destructive_command_guard"
-specifiers = ["0.17.1"]
+specifiers = ["0.17.2"]
 
 [tools."github:Dicklesworthstone/destructive_command_guard".options]
 asset_pattern = "dcg-x86_64-unknown-linux-musl.tar.xz"
 
 [tools."github:Dicklesworthstone/destructive_command_guard"."platforms.linux-x64"]
-checksum = "sha256:34ede837d5ef03df1fd98769718a6f6eaacaf6fca01d2455281567ccd2e1afde"
+checksum = "sha256:c393d4d56b8c481dea38456e4f8829b4bb563c6f6fb541457374ac4be9928db4"
 checksum_source = "mise-versions"
-url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.1/dcg-x86_64-unknown-linux-musl.tar.xz"
-url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/783362543"
+url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.2/dcg-x86_64-unknown-linux-musl.tar.xz"
+url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/793676917"
 
 [[tools."github:Dicklesworthstone/destructive_command_guard"]]
-version = "0.17.1"
+version = "0.17.2"
 backend = "github:Dicklesworthstone/destructive_command_guard"
-specifiers = ["0.17.1"]
+specifiers = ["0.17.2"]
 
 [tools."github:Dicklesworthstone/destructive_command_guard".options]
 asset_pattern = "dcg-aarch64-apple-darwin.tar.xz"
 
 [tools."github:Dicklesworthstone/destructive_command_guard"."platforms.macos-arm64"]
-checksum = "sha256:a096296cf64e813a82c911717c9b2d4b252a78583539ac472401409d16bd9be9"
+checksum = "sha256:4c3354600beea99096227b0ff75add73a3a33a7fc0a3de4aa04853502e3e9093"
 checksum_source = "mise-versions"
-url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.1/dcg-aarch64-apple-darwin.tar.xz"
-url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/783362360"
+url = "https://github.com/Dicklesworthstone/destructive_command_guard/releases/download/v0.17.2/dcg-aarch64-apple-darwin.tar.xz"
+url_api = "https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/assets/793676837"
 
 [[tools."github:agent-sh/agnix"]]
 version = "0.61.0"

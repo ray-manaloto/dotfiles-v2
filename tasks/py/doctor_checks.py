@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -1557,6 +1558,74 @@ def check_dockerignore_secret_guard(repo_root: Path) -> list[str]:
     return errors
 
 
+_OPTIONAL_LOCKS_ENV = re.compile(
+    r'^env\s*\{\s*\["GIT_OPTIONAL_LOCKS"\]\s*=\s*"0"\s*\}', re.MULTILINE
+)
+
+
+def check_git_index_locks(
+    repo_root: Path, *, now: float | None = None, max_age_s: int = 120
+) -> list[str]:
+    """Keep hk read-only git calls lock-free and name stale `index.lock` files in any worktree.
+
+    hk's fail_fast kills in-flight steps; a killed `git status` used to leave a 0-byte
+    index.lock that blocked every later commit (fixed by `GIT_OPTIONAL_LOCKS=0`, jdx/hk#1911).
+    A lock older than ``max_age_s`` that no process has open is reported with its path.
+    """
+    errors: list[str] = []
+    hk_pkl = repo_root / "hk.pkl"
+    if hk_pkl.is_file() and not _OPTIONAL_LOCKS_ENV.search(
+        hk_pkl.read_text(encoding="utf-8")
+    ):
+        errors.append(
+            'git-index-locks: hk.pkl must keep top-level `env { ["GIT_OPTIONAL_LOCKS"] = "0" }` '
+            "(fail_fast kills a step's `git status` mid-refresh and strands index.lock)"
+        )
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+    out = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    if out.returncode != 0:
+        return errors
+    common = Path(out.stdout.strip())
+    locks = [
+        common / "index.lock",
+        *sorted((common / "worktrees").glob("*/index.lock")),
+    ]
+    now = time.time() if now is None else now
+    lsof = shutil.which("lsof")
+    for lock in locks:
+        try:
+            age = now - lock.stat().st_mtime
+        except OSError:
+            continue
+        if age < max_age_s:
+            continue
+        if (
+            lsof
+            and subprocess.run(
+                [lsof, "-t", str(lock)], capture_output=True, text=True, check=False
+            ).stdout.strip()
+        ):
+            continue
+        errors.append(
+            f"git-index-locks: stale {lock} ({int(age)}s old, no process has it open); "
+            f"confirm no git command is running in that worktree, then remove it: rm {lock}"
+        )
+    return errors
+
+
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
@@ -2912,6 +2981,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("usage-lint")
     sub.add_parser("pitchfork-config")
     sub.add_parser("dockerignore-secret-guard")
+    sub.add_parser("git-index-locks")
     sub.add_parser("mise-version-parity")
     sub.add_parser("config-hygiene")
     p_audit = sub.add_parser("mise-audit-fixable")
@@ -2964,6 +3034,12 @@ def main(argv: list[str] | None = None) -> int:
             "pitchfork-config",
             check_pitchfork_config(repo_root),
             "pitchfork config valid",
+        )
+    if args.cmd == "git-index-locks":
+        return _report(
+            "git-index-locks",
+            check_git_index_locks(repo_root),
+            "hk read-only git calls skip optional locks; no stale index.lock",
         )
     if args.cmd == "dockerignore-secret-guard":
         return _report(
