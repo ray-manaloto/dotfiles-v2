@@ -1,0 +1,15 @@
+#:schema https://fnox.jdx.dev/schema.json
+# Used by the checkout's api:code task. Resolve only the dedicated coding key.
+
+import = ["./shared.toml"]
+
+[proxy]
+egress = "strict"
+
+[[proxy.rules]]
+secret = "OPENAI_CODING_API_KEY"
+domain = "api.openai.com"
+methods = ["POST"]
+paths = ["/v1/responses"]
+header = "authorization"
+placeholder = "fnox-placeholder-openai-coding"

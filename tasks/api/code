@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+#MISE description="Run a bounded local coding agent on OpenAI Responses (issue #2)"
+#USAGE flag "--worktree <path>" required=#true help="Git worktree root"
+#USAGE flag "--prompt-file <path>" required=#true help="Local task prompt file"
+#USAGE flag "--files <paths>" required=#true help="Comma-separated worktree-relative files the agent may read and edit"
+#USAGE flag "--dry-run" help="Validate scope and report the request caps without credentials or network"
+#USAGE flag "--credit-confirmed" help="Attest available linked credits and verified no paid fallback"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]]; then
+	echo "api:code: missing checkout Python environment; run 'mise deps uv'" >&2
+	exit 1
+fi
+
+caller_cwd="${MISE_ORIGINAL_CWD:-${PWD}}"
+abspath() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "${caller_cwd}" "$1" ;; esac }
+cmd=("${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from responses_agent.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}")
+cmd+=(--worktree "$(abspath "${usage_worktree:?}")" --prompt-file "$(abspath "${usage_prompt_file:?}")" --files "${usage_files:?}")
+
+unset OPENAI_LOG
+export OPENAI_AGENTS_DISABLE_TRACING=1
+export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=1
+export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=1
+if [[ ${usage_dry_run:-false} == "true" ]]; then
+	exec "${cmd[@]}" --dry-run
+fi
+if [[ ${usage_credit_confirmed:-false} != "true" ]]; then
+	exec "${cmd[@]}"
+fi
+zizmor_bin="$(mise which zizmor)"
+fnox_cfg="${repo_root}/unix/home/.config/fnox/api-coding.toml"
+exec fnox --non-interactive -c "${fnox_cfg}" -P api-coding --no-defaults proxy run -- \
+	"${cmd[@]}" --credit-confirmed --zizmor "${zizmor_bin}"
