@@ -13,6 +13,7 @@ HK_FROM_REF..HK_TO_REF range. Stdlib only.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 
@@ -55,7 +56,9 @@ def server_oids(remote: str) -> list[str]:
         check=False,
     )
     if result.returncode != 0:
-        raise ValueError(f"git ls-remote {remote} failed: {result.stderr.strip()}")
+        # The push URL (and git's stderr) may embed credentials; never echo them.
+        detail = re.sub(r"://[^/@\s]*@", "://", result.stderr.strip())
+        raise ValueError(f"git ls-remote of the push target failed: {detail}")
     oids: list[str] = []
     for row in result.stdout.splitlines():
         oid = row.split("\t", 1)[0].strip()
@@ -116,6 +119,8 @@ def range_log_opts(from_ref: str, to_ref: str) -> list[str]:
         raise ValueError("no pre-push input and no HK_FROM_REF/HK_TO_REF range")
     if is_zero(to_ref):
         return ["--all", "--not", "--remotes"]
+    if is_zero(from_ref):  # a new ref: no old tip, so bound by what any remote holds
+        return [to_ref, "--not", "--remotes"]
     return [f"{from_ref}..{to_ref}"]
 
 

@@ -70,5 +70,25 @@ def test_malformed_hook_line_fails_closed() -> None:
 def test_fallback_range_and_delete() -> None:
     assert scan.range_log_opts("origin/main", "HEAD") == ["origin/main..HEAD"]
     assert scan.range_log_opts("origin/main", Z40) == ["--all", "--not", "--remotes"]
+    assert scan.range_log_opts(Z40, "HEAD") == ["HEAD", "--not", "--remotes"]
     with pytest.raises(ValueError):
         scan.range_log_opts("", "")
+
+
+PASSWORD = "not" + "-a-real-one"
+URL = "https://user:" + PASSWORD + "@example.invalid/r.git"
+
+
+def test_ls_remote_error_never_echoes_url_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Failed:
+        returncode = 128
+        stdout = ""
+        stderr = f"fatal: unable to access '{URL}/'"
+
+    monkeypatch.undo()  # drop the fake server_oids so the real one runs
+    monkeypatch.setattr(scan.subprocess, "run", lambda *a, **k: Failed())
+    with pytest.raises(ValueError) as err:
+        scan.server_oids(URL)
+    assert PASSWORD not in str(err.value)
