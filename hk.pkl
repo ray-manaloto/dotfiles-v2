@@ -299,7 +299,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
   }
   ["no-core-worktree"] = new Step {
     check =
-      #"test -z "$(git config --file "$(git rev-parse --git-common-dir)/config" --get-all core.worktree)" || { echo 'core.worktree is set in shared .git/config' >&2; exit 1; }"#
+      #"c="$(git rev-parse --git-common-dir)/config"; test -z "$(git config --file "$c" --get-all core.worktree)" || { echo 'core.worktree is set in shared .git/config' >&2; exit 1; }; test "$(git config --file "$c" --type=bool --get core.bare || echo false)" = false || { echo 'core.bare=true in shared .git/config breaks the main checkout; run: git --git-dir=<main>/.git config core.bare false' >&2; exit 1; }"#
   }
 }
 

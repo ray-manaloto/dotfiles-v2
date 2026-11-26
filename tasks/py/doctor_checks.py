@@ -2566,7 +2566,11 @@ def _codex_live_marketplace_errors(
             errors.append(
                 f"codex-marketplaces: marketplace {name} source {src} != allowlisted {allowed[name]}"
             )
-    for pid in sorted(table(live.get("plugins"))):
+    plugins = table(live.get("plugins"))
+    for pid in sorted(plugins):
+        # A disabled stub (e.g. mcp-policy's `[plugins."apify@apify"] enabled = false`) loads nothing.
+        if table(plugins[pid]).get("enabled") is False:
+            continue
         if "@" not in pid:
             errors.append(f"codex-marketplaces: plugin id {pid!r} names no marketplace")
             continue
