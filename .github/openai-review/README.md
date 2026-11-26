@@ -55,6 +55,9 @@ send patches.
   path and content checks block common credential files and token formats,
   such as `.netrc`, `.npmrc`, `dot_*`/`private_dot_*` sources, `npm_`, `glpat-`,
   `AIza` and `*token=` literals. They are a precaution, not a guarantee. A
-  matching patch fails closed, with no partial send.
+  matching patch fails closed, with no partial send. A secret-named directory
+  or a script or doc about secrets (`tasks/secret/`, `agent-secrets.sh`) is
+  still reviewed, but its text is scanned. Edits near the fake-secret fixtures in
+  `test_review.py` always fail closed, so they need a human review.
 - **Size limits:** oversized, unavailable or incomplete patches fail rather
   than being silently truncated.

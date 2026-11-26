@@ -1,6 +1,7 @@
 """Review bounded GitHub file patches as data. Never check out or execute a PR."""
 
 import html
+import http.client
 import json
 import os
 import re
@@ -20,35 +21,40 @@ FOCUS = "bootstrap idempotency, platform compatibility, pinned dependencies, and
 SENSITIVE_PATH = re.compile(
     r"(^|/)(\.env(?:\.[^/]+)?|\.ssh|\.aws|\.?netrc|\.?npmrc|\.?pypirc"
     r"|(?:private_)?dot_(?:env|ssh|aws|netrc|npmrc|pypirc)[^/]*"
-    r"|[^/]*(?:secret|credential|password)"
-    r"[^/]*|[^/]+\.(?:pem|p12|pfx|key|kdbx|tfstate))($|/)",
+    r"|[^/]+\.(?:pem|p12|pfx|key|kdbx|tfstate))($|/)"
+    # Secret-named files, but not directories (tasks/secret/set) or code and docs
+    # about secrets (agent-secrets.sh, secrets.md); their text is still scanned.
+    r"|(^|/)[^/]*(?:secret|credential|password)[^/]*"
+    r"(?<!\.sh)(?<!\.py)(?<!\.md)(?<!\.ts)(?<!\.js)(?<!\.go)(?<!\.rs)$",
     re.IGNORECASE,
 )
-SENSITIVE_TEXT = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{16,}"
+# Strict token formats, checked on both patches and model output.
+STRICT_SECRETS = (
+    r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+    r"|\b(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{16,}"
     r"|sk-ant-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}"
-    r"|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{36}"
+    r"|A[KS]IA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{36}"
+    r"|[rs]k_(?:live|test)_[A-Za-z0-9]{16,}"
     r"|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35})\b"
+    # Credentials embedded in a URL (scheme://user:password@host).
+    r"|://[^/\s:@]{1,64}:[^/\s@]{8,}@"
     r"""|\b(?:password|client_secret|api_key|access_token)\s*[:=]\s*["']?[A-Za-z0-9_+./=-]{12,}"""
+)
+SENSITIVE_TEXT = re.compile(
+    STRICT_SECRETS
     # Broader key names (auth_token=, _authToken=, secret:, apikey=) with a
     # token-shaped literal: path-free, starts alphanumeric, and has a digit and a
     # lowercase letter. `token_file = "/run/..."`, `${VAR}`, `secret = "ENV_NAME"`
-    # and `x_token = obj.method` lines still pass.
-    r"""|(?:\w*token|\w*secret|api[-_]?key|passwd)["']?\s*[:=]\s*["']?"""
+    # and `x_token = obj.method` lines still pass. The {0,40} prefix bound keeps
+    # the scan linear on long attacker-controlled lines.
+    + r"""|(?:\w{0,40}token|\w{0,40}secret|api[-_]?key|passwd)["']?\s*[:=]\s*["']?"""
     r"(?=[A-Za-z0-9_+.=-]*[0-9])(?-i:(?=[A-Za-z0-9_+.=-]*[a-z]))"
     r"[A-Za-z0-9][A-Za-z0-9_+.=-]{11,}",
     re.IGNORECASE,
 )
 # Model output skips only the broad *token/*secret/apikey pattern, so a finding
 # that quotes such a key name does not discard the whole review.
-SENSITIVE_OUTPUT = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{16,}"
-    r"|sk-ant-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}"
-    r"|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{36}"
-    r"|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35})\b"
-    r"""|\b(?:password|client_secret|api_key|access_token)\s*[:=]\s*["']?[A-Za-z0-9_+./=-]{12,}""",
-    re.IGNORECASE,
-)
+SENSITIVE_OUTPUT = re.compile(STRICT_SECRETS, re.IGNORECASE)
 
 
 # Shape errors from unexpected API JSON; mapped to a safe message in __main__.
@@ -92,7 +98,7 @@ def request_json(url, token, *, body=None):
         raise ReviewError(
             f"{service} returned HTTP {exc.code}{error_type(exc)}. No retries were made."
         ) from None
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         raise ReviewError(f"{service} request or JSON decoding failed.") from None
 
 
@@ -120,6 +126,11 @@ def patch_data(files):
         if SENSITIVE_PATH.search(name) or SENSITIVE_PATH.search(old):
             raise ReviewError(
                 "A potentially sensitive path was detected. No API review was sent."
+            )
+        if isinstance(patch, str) and len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
+            # Size first, so the content regexes never scan oversized input.
+            raise ReviewError(
+                "The PR exceeds the patch size limit; split it for review."
             )
         if not patch or not patch.startswith("@@ ") or SENSITIVE_TEXT.search(patch):
             raise ReviewError(
@@ -198,7 +209,7 @@ def model_review(provider, key, data, send):
                 key,
                 body={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 1800,
+                    "max_tokens": 4000,
                     "system": instructions,
                     "messages": [{"role": "user", "content": data}],
                 },
@@ -254,6 +265,8 @@ def run(env, send=request_json):
     gh_token = env["GITHUB_TOKEN"]
     pr_url = f"https://api.github.com/repos/{repo}/pulls/{number}"
     base, head, count = identity(send(pr_url, gh_token), repo, branch)
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ReviewError("Invalid GitHub head SHA.")
     if not 1 <= count <= MAX_FILES:
         raise ReviewError("The PR exceeds the file limit or has no reviewable files.")
     files = send(pr_url + "/files?per_page=31", gh_token)
@@ -266,8 +279,6 @@ def run(env, send=request_json):
         raise ReviewError(
             "The PR changed during collection, or GitHub returned an incomplete file list."
         )
-    if not re.fullmatch(r"[0-9a-f]{40}", head):
-        raise ReviewError("Invalid GitHub head SHA.")
     review = html.escape(model_review(provider, env["REVIEW_API_KEY"], data, send))
     with Path(env["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
         summary.write(

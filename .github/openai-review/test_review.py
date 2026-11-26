@@ -171,6 +171,43 @@ class ReviewTests(unittest.TestCase):
             with self.subTest(patch=patch):
                 self.assertIsNone(review.SENSITIVE_TEXT.search(patch))
 
+    def test_secret_named_dirs_code_and_docs_are_reviewable(self):
+        for name in (
+            "unix/home/.config/mise/tasks/secret/set",
+            "tasks/agent-secrets.sh",
+            "docs/secrets.md",
+            "tasks/py/password_rules.py",
+        ):
+            with self.subTest(name=name):
+                self.assertIsNone(review.SENSITIVE_PATH.search(name))
+        for name in ("config/db_password.txt", "credentials.json", "app/secrets"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(review.SENSITIVE_PATH.search(name))
+
+    def test_more_token_formats_are_blocked(self):
+        for line in (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+            "AS" + "IA" + "B" * 16,
+            "sk" + "_live_" + "c" * 20,
+            "url = postgres://" + "app:" + "longpassw0rd@db.example",
+        ):
+            with self.subTest(line=line[:12]):
+                self.assertIsNotNone(review.SENSITIVE_TEXT.search(line))
+                self.assertIsNotNone(review.SENSITIVE_OUTPUT.search(line))
+
+    def test_long_line_scan_stays_linear(self):
+        import time
+
+        line = "@@ -1 +1 @@\n-old\n+" + "a" * (review.MAX_PATCH_BYTES - 40)
+        start = time.monotonic()
+        self.assertIsNone(review.SENSITIVE_TEXT.search(line))
+        self.assertLess(time.monotonic() - start, 1.0)
+
+    def test_oversized_patch_is_rejected_before_content_scan(self):
+        big = item(patch="@@ -1 +1 @@\n-old\n+" + "a" * (review.MAX_PATCH_BYTES + 1))
+        with self.assertRaisesRegex(review.ReviewError, "patch size limit"):
+            review.patch_data([big])
+
     def test_private_repo_requires_explicit_opt_in(self):
         for private, allow, blocked in (
             ("true", "false", True),
@@ -222,7 +259,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(key, self.env["REVIEW_API_KEY"])
         body = send.call_args.kwargs["body"]
         self.assertEqual(body["model"], review.CLAUDE_MODEL)
-        self.assertEqual(body["max_tokens"], 1800)
+        self.assertEqual(body["max_tokens"], 4000)
         self.assertNotIn("tools", body)
         self.assertEqual(body["messages"][0]["role"], "user")
         self.assertEqual(
