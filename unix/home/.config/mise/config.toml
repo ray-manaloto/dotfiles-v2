@@ -179,6 +179,7 @@ exclude = ["*"]
 "~/.config/dcg/packs/mise-protect.yaml" = { main_checkout = true }
 "~/.config/fnox/api-coding.toml" = { main_checkout = true }
 "~/.config/fnox/api-credit.toml" = { main_checkout = true }
+"~/.config/fnox/api-review.toml" = { main_checkout = true }
 "~/.config/fnox/config.headless.toml" = { main_checkout = true }
 "~/.config/fnox/config.toml" = { main_checkout = true }
 "~/.config/fnox/mcp.toml" = { main_checkout = true }

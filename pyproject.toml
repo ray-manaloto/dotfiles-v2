@@ -94,7 +94,7 @@ ignore = ["E501", "RUF001"]
 
 [tool.ty.environment]
 python-version = "3.15"
-root = ["unix/home/.config/mise/lib", "."]
+root = ["unix/home/.config/mise/lib", ".github/openai-review", "."]
 
 [tool.uv]
 package = false
