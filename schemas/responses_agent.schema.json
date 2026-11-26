@@ -37,6 +37,17 @@
         "new": { "type": "string", "maxLength": 8192 }
       }
     },
+    "CodingTestArgs": { "type": "object", "additionalProperties": false },
+    "CodingArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["patch", "results", "summary"],
+      "properties": {
+        "patch": { "type": "string", "minLength": 1 },
+        "results": { "type": "string", "minLength": 1 },
+        "summary": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] }
+      }
+    },
     "CodingUsage": {
       "type": "object",
       "additionalProperties": false,
@@ -67,9 +78,12 @@
         "dry_run",
         "max_turns",
         "max_output_tokens_per_request",
+        "max_output_tokens_per_run",
         "timeout_seconds",
         "elapsed_ms",
         "usage",
+        "target_commit",
+        "artifacts",
         "errors",
         "returns"
       ],
@@ -81,11 +95,19 @@
         "dry_run": { "type": "boolean" },
         "max_turns": { "type": "integer", "minimum": 1 },
         "max_output_tokens_per_request": { "type": "integer", "minimum": 1 },
+        "max_output_tokens_per_run": { "type": "integer", "minimum": 1 },
         "timeout_seconds": { "type": "integer", "minimum": 1 },
         "elapsed_ms": { "type": "integer", "minimum": 0 },
         "usage": {
           "anyOf": [{ "$ref": "#/$defs/CodingUsage" }, { "type": "null" }]
         },
+        "target_commit": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[a-f0-9]{40}([a-f0-9]{24})?$" },
+            { "type": "null" }
+          ]
+        },
+        "artifacts": { "anyOf": [{ "$ref": "#/$defs/CodingArtifacts" }, { "type": "null" }] },
         "errors": { "type": "array", "items": { "$ref": "#/$defs/CodingError" } },
         "returns": {
           "type": "array",

@@ -6,6 +6,7 @@ import asyncio
 import json
 import ssl
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from urllib.parse import urlsplit
 
 import httpx2
@@ -19,7 +20,7 @@ from agents import (
     RunHooks,
     Runner,
 )
-from agents.items import ModelResponse
+from agents.items import ModelResponse, TResponseInputItem
 from agents.tool_context import ToolContext
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
@@ -27,6 +28,7 @@ from pydantic import BaseModel, ValidationError
 from dotfiles_py.generated.responses_agent_schema import (
     CodingEditArgs,
     CodingFileArgs,
+    CodingTestArgs,
     CodingUsage,
 )
 from responses_agent.worktree import ScopeError, Worktree
@@ -38,11 +40,17 @@ KEY_NAME = "OPENAI_CODING_API_KEY"
 PLACEHOLDER = "fnox-placeholder-openai-coding"
 MAX_TURNS = 10
 MAX_OUTPUT_TOKENS = 2048
+MAX_RUN_OUTPUT_TOKENS = 4096
+MIN_REQUEST_OUTPUT_TOKENS = 16
 TIMEOUT_SECONDS = 120
 
 
 class CredentialError(ValueError):
     """The intended fnox proxy credential is missing."""
+
+
+class OutputBudgetError(RuntimeError):
+    """The SDK cannot safely continue within the output token budget."""
 
 
 class UsageTracker(RunHooks[None]):
@@ -51,15 +59,41 @@ class UsageTracker(RunHooks[None]):
         self.input_tokens = 0
         self.output_tokens = 0
 
+    async def on_llm_start(
+        self,
+        context: RunContextWrapper[None],
+        agent: Agent[None],
+        system_prompt: str | None,
+        input_items: list[TResponseInputItem],
+    ) -> None:
+        if MAX_RUN_OUTPUT_TOKENS - self.output_tokens < MIN_REQUEST_OUTPUT_TOKENS:
+            raise OutputBudgetError("The coding run exhausted its total output budget.")
+
     async def on_llm_end(
         self,
         context: RunContextWrapper[None],
         agent: Agent[None],
         response: ModelResponse,
     ) -> None:
+        allowance = min(MAX_OUTPUT_TOKENS, MAX_RUN_OUTPUT_TOKENS - self.output_tokens)
         self.requests += response.usage.requests
         self.input_tokens += response.usage.input_tokens
         self.output_tokens += response.usage.output_tokens
+        if response.usage.input_tokens < 1 or response.usage.requests != 1:
+            raise OutputBudgetError(
+                "OpenAI Responses did not report usable token counts."
+            )
+        if response.usage.output_tokens > allowance:
+            raise OutputBudgetError(
+                "OpenAI Responses exceeded the requested output cap."
+            )
+        # The SDK resolves settings before on_llm_start. Set the next turn's limit here.
+        agent.model_settings = replace(
+            agent.model_settings,
+            max_tokens=min(
+                MAX_OUTPUT_TOKENS, MAX_RUN_OUTPUT_TOKENS - self.output_tokens
+            ),
+        )
 
     def snapshot(self) -> CodingUsage | None:
         if not self.requests:
@@ -150,6 +184,9 @@ def coding_tools(worktree: Worktree) -> list[FunctionTool]:
     async def lint(args: CodingFileArgs) -> str:
         return await worktree.lint(args.path)
 
+    async def test_reviewer(_args: CodingTestArgs) -> str:
+        return await worktree.test_reviewer()
+
     return [
         make_tool(
             "read_file", "Read an approved file.", CodingFileArgs, read, claim_call
@@ -159,6 +196,13 @@ def coding_tools(worktree: Worktree) -> list[FunctionTool]:
             "Replace one exact occurrence of old text in an approved file.",
             CodingEditArgs,
             edit,
+            claim_call,
+        ),
+        make_tool(
+            "test_reviewer",
+            "Run the approved offline reviewer unittest suite with fixed arguments.",
+            CodingTestArgs,
+            test_reviewer,
             claim_call,
         ),
         make_tool(
@@ -173,7 +217,7 @@ def coding_tools(worktree: Worktree) -> list[FunctionTool]:
 
 async def run(
     worktree: Worktree, prompt: str, client: httpx2.AsyncClient, tracker: UsageTracker
-) -> None:
+) -> str:
     client.event_hooks["request"].append(enforce_route)
     async with (
         AsyncOpenAI(
@@ -201,7 +245,7 @@ async def run(
             ),
             tools=list(coding_tools(worktree)),
         )
-        await Runner.run(
+        result = await Runner.run(
             agent,
             prompt,
             max_turns=MAX_TURNS,
@@ -210,3 +254,4 @@ async def run(
                 tracing_disabled=True, trace_include_sensitive_data=False
             ),
         )
+        return result.final_output_as(str, raise_if_incorrect_type=True)

@@ -55,6 +55,25 @@ class CodingEditArgs(BaseModel):
     new: Annotated[StrictStr, Field(max_length=8192)]
 
 
+class CodingTestArgs(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        frozen=True,
+    )
+
+
+class CodingArtifacts(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        frozen=True,
+    )
+    patch: Annotated[StrictStr, Field(min_length=1)]
+    results: Annotated[StrictStr, Field(min_length=1)]
+    summary: Annotated[str, StringConstraints(min_length=1, strict=True)] | None
+
+
 class CodingUsage(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -103,8 +122,17 @@ class CodingResponse(BaseModel):
     dry_run: StrictBool
     max_turns: Annotated[StrictInt, Field(ge=1)]
     max_output_tokens_per_request: Annotated[StrictInt, Field(ge=1)]
+    max_output_tokens_per_run: Annotated[StrictInt, Field(ge=1)]
     timeout_seconds: Annotated[StrictInt, Field(ge=1)]
     elapsed_ms: Annotated[StrictInt, Field(ge=0)]
     usage: CodingUsage | None
+    target_commit: (
+        Annotated[
+            str,
+            StringConstraints(pattern=r"^[a-f0-9]{40}([a-f0-9]{24})?$", strict=True),
+        ]
+        | None
+    )
+    artifacts: CodingArtifacts | None
     errors: list[CodingError]
     returns: list[envelope_schema.ReturnEntry]

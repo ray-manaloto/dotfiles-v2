@@ -153,11 +153,13 @@ from .pc_hub_schema import (
     PcHubValidationOutcome,
 )
 from .responses_agent_schema import (
+    CodingArtifacts,
     CodingEditArgs,
     CodingError,
     CodingFileArgs,
     CodingRequest,
     CodingResponse,
+    CodingTestArgs,
     CodingUsage,
     Model,
 )
@@ -187,11 +189,13 @@ __all__ = [
     "CodexTrustResponse",
     "CodexTrustReturnCode",
     "CodexTrustReturnEntry",
+    "CodingArtifacts",
     "CodingEditArgs",
     "CodingError",
     "CodingFileArgs",
     "CodingRequest",
     "CodingResponse",
+    "CodingTestArgs",
     "CodingUsage",
     "CommonEnvelopeDefs",
     "CommonErrorCode",

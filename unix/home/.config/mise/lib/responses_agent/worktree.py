@@ -7,9 +7,12 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
+from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import BinaryIO
 from uuid import uuid4
 
@@ -18,25 +21,61 @@ MAX_LINT_BYTES = 4096
 LINT_SECONDS = 10
 CHILD_ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "NO_COLOR": "1"}
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_RESERVED_FILES = {"mise.toml", "hk.pkl", ".gitattributes", ".gitmodules"}
+# The only executable target code is the reviewed hk-config #6 suite and its module.
+_REVIEW_TEST_FILES = {
+    "review.py": "e09b0d9f316dbfc204e284f9c9cdbebe0d1688072fb4fc3e01f5984c6a459ed2",
+    "test_review.py": "9635c15248f27cc14645787ee70cda906dbc7e861f7273451c66e410ba7cf725",
+}
 
 
 class ScopeError(ValueError):
     """The requested operation exceeds the local tool policy."""
 
 
-def check_worktree(root: Path) -> Path:
-    root = root.resolve(strict=True)
+def git(root: Path, *args: str) -> bytes:
     result = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        ["git", "-C", str(root), "-c", "core.fsmonitor=false", *args],
         env=CHILD_ENV,
         capture_output=True,
-        text=True,
         timeout=5,
         check=False,
     )
-    if result.returncode or Path(result.stdout.rstrip("\n")) != root:
-        raise ScopeError("Select the root of a Git worktree.")
-    return root
+    if result.returncode:
+        raise ScopeError("A required Git inspection failed.")
+    return result.stdout
+
+
+def check_worktree(root: Path) -> str:
+    details = (
+        git(
+            root,
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+            "HEAD",
+        )
+        .decode()
+        .splitlines()
+    )
+    if len(details) != 4:
+        raise ScopeError("Could not identify the Git worktree and commit.")
+    toplevel, git_dir, common_dir, commit = details
+    if Path(toplevel) != root or Path(git_dir).resolve() == Path(common_dir).resolve():
+        raise ScopeError("Select the root of a disposable linked Git worktree.")
+    if git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() != b"HEAD":
+        raise ScopeError("The disposable worktree must have a detached HEAD.")
+    if git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    ):
+        raise ScopeError("The disposable worktree must be clean at the start.")
+    return commit
 
 
 def bounded_text(stream: BinaryIO, limit: int) -> str:
@@ -50,10 +89,20 @@ def bounded_text(stream: BinaryIO, limit: int) -> str:
 
 
 class Worktree:
-    def __init__(self, root_fd: int, files: list[str], zizmor: Path | None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        root_fd: int,
+        commit: str,
+        files: list[str],
+        zizmor: Path | None,
+    ) -> None:
+        self.root = root
         self.root_fd = root_fd
+        self.commit = commit
         self.files = frozenset(files)
         self.zizmor = zizmor
+        self.results: list[str] = []
         for path in files:
             if any(
                 not re.fullmatch(r"[A-Za-z0-9_.][A-Za-z0-9_.-]*", part)
@@ -61,7 +110,27 @@ class Worktree:
                 for part in path.split("/")
             ):
                 raise ScopeError("Approve canonical, worktree-relative file paths.")
+            if Path(path).name.casefold() in _RESERVED_FILES:
+                raise ScopeError("Repository control files cannot be approved.")
+            if not git(root, "ls-files", "--", path):
+                raise ScopeError("Only tracked files can be approved.")
             self.read(path)
+
+    def patch(self) -> bytes:
+        if git(self.root, "rev-parse", "HEAD").decode().strip() != self.commit:
+            raise ScopeError("The target commit changed during the run.")
+        return git(
+            self.root,
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--no-color",
+            "--binary",
+            self.commit,
+            "--",
+            *sorted(self.files),
+        )
 
     @contextmanager
     def _parent(self, path: str) -> Generator[tuple[int, str]]:
@@ -130,15 +199,66 @@ class Worktree:
         source = self.read(path).encode("utf-8")
         if self.zizmor is None:
             raise ScopeError("The managed zizmor executable is unavailable.")
+        return await self._check(
+            f"zizmor ({path})",
+            str(self.zizmor),
+            "--offline",
+            "--no-config",
+            "--pedantic",
+            "--strict-collection",
+            "--",
+            "-",
+            source=source,
+        )
+
+    async def test_reviewer(self) -> str:
+        # Copy only verified Git blobs. Do not import from the model's editable tree.
+        with TemporaryDirectory(prefix="responses-review-tests-") as directory:
+            for name, expected in _REVIEW_TEST_FILES.items():
+                data = git(
+                    self.root,
+                    "show",
+                    "--no-textconv",
+                    f"{self.commit}:.github/openai-review/{name}",
+                )
+                if sha256(data).hexdigest() != expected:
+                    raise ScopeError(
+                        "This worktree does not contain the approved reviewer suite."
+                    )
+                (Path(directory) / name).write_bytes(data)
+            return await self._check(
+                "reviewer unittest",
+                sys.executable,
+                "-I",
+                "-B",
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                directory,
+                "-p",
+                "test_review.py",
+            )
+
+    async def _check(self, label: str, *argv: str, source: bytes = b"") -> str:
+        try:
+            result = await self._check_output(*argv, source=source)
+        except TimeoutError:
+            result = "Stopped after exceeding the command's time limit."
+        except asyncio.CancelledError:
+            self.results.append(f"{label}: Cancelled before a result was available.")
+            raise
+        except OSError:
+            result = "Could not start or read the command."
+        output = f"{label}: {result}"
+        self.results.append(output)
+        return output
+
+    @staticmethod
+    async def _check_output(*argv: str, source: bytes) -> str:
         async with asyncio.timeout(LINT_SECONDS):
             process = await asyncio.create_subprocess_exec(
-                str(self.zizmor),
-                "--offline",
-                "--no-config",
-                "--pedantic",
-                "--strict-collection",
-                "--",
-                "-",
+                *argv,
                 cwd="/",
                 env=CHILD_ENV,
                 stdin=asyncio.subprocess.PIPE,
@@ -153,8 +273,8 @@ class Worktree:
                     await process.stdout.readexactly(MAX_LINT_BYTES + 1)
                 except asyncio.IncompleteReadError as error:
                     code = await process.wait()
-                    return f"zizmor exit {code}\n{error.partial.decode('utf-8', errors='replace')}"
-                return "Lint stopped after exceeding its output limit."
+                    return f"exit {code}\n{error.partial.decode('utf-8', errors='replace')}"
+                return "Stopped after exceeding the command's output limit."
             finally:
                 if process.returncode is None:
                     with suppress(ProcessLookupError):
@@ -169,13 +289,14 @@ class Worktree:
 def open_worktree(
     root: Path, files: list[str], zizmor: Path | None
 ) -> Generator[Worktree]:
-    root = check_worktree(root)
+    root = root.resolve(strict=True)
+    commit = check_worktree(root)
     if zizmor is not None:
         zizmor = zizmor.resolve(strict=True)
         if zizmor.is_relative_to(root) or not zizmor.is_file():
             raise ScopeError("Use the managed zizmor executable outside the worktree.")
     fd = os.open(root, _DIR_FLAGS)
     try:
-        yield Worktree(fd, files, zizmor)
+        yield Worktree(root, fd, commit, files, zizmor)
     finally:
         os.close(fd)
