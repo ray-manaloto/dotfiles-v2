@@ -8,6 +8,9 @@ if [[ $# -gt 0 && ${1} != -* ]]; then
 fi
 repo="$(cd "${target}" && pwd)"
 lib="$(cd "$(dirname "$0")/../.." && pwd)/lib/reviewer_plugins.py"
+# Remember whether an index dir already existed, so cleanup never touches user settings.
+created_stub=0
+[[ -e "${repo}/.repowise" ]] || created_stub=1
 # Write the guard first so the rewrite is never live, even if init is interrupted.
 mkdir -p "${repo}/.repowise"
 python3 -I -B "${lib}" guard "${repo}"
@@ -15,7 +18,7 @@ DO_NOT_TRACK=1 REPOWISE_TELEMETRY_DISABLED=1 repowise init "$@" "${repo}"
 # repowise may redirect to a child repo (e.g. a folder holding one repo): guard every index under it.
 python3 -I -B "${lib}" guard --under "${repo}"
 # If it did redirect, drop the parent stub created above (it only ever held the guard config).
-if [[ "$(ls -A "${repo}/.repowise")" == "config.yaml" ]] && grep -q "dotfiles-v2 repowise guard" "${repo}/.repowise/config.yaml" && find "${repo}" -mindepth 2 -maxdepth 4 -type d -name .repowise -print -quit | grep -q .; then
+if [[ ${created_stub} == 1 && "$(ls -A "${repo}/.repowise")" == "config.yaml" ]] && find "${repo}" -mindepth 2 -maxdepth 4 -type d -name .repowise -print -quit | grep -q .; then
 	rm -f "${repo}/.repowise/config.yaml"
 	rmdir "${repo}/.repowise"
 fi

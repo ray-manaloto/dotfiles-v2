@@ -2013,3 +2013,41 @@ def test_reviewer_sync_keeps_retired_mcp_until_replacements_installed(
     assert not any(a[:3] == ["claude", "mcp", "remove"] for a in calls)
     assert lib.sync_failed(log)
     assert any("keep graphify-reviews" in ln for ln in log)
+
+
+@pytest.mark.parametrize("pre_existing", [False, True])
+def test_repowise_init_cleans_only_its_own_parent_stub(tmp_path, pre_existing) -> None:
+    """When repowise redirects to a child repo, drop the parent stub only if this run created it."""
+    import shutil as _sh
+
+    root = Path(__file__).resolve().parents[1]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "repowise"
+    # Fake `repowise init <args> <dir>`: index the single child repo instead of <dir>.
+    fake.write_text(
+        '#!/bin/sh\nfor a; do last="$a"; done\nmkdir -p "$last/app/.repowise" && touch "$last/app/.repowise/wiki.db"\n'
+    )
+    fake.chmod(0o755)
+    work = tmp_path / "work"
+    (work / "app").mkdir(parents=True)
+    if pre_existing:
+        (work / ".repowise").mkdir()
+        (work / ".repowise" / "config.yaml").write_text("embedder: local\n")
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+    }
+    task = root / "unix/home/.config/mise/tasks/repowise/init"
+    subprocess.run(
+        [_sh.which("bash") or "bash", str(task), str(work)],
+        check=True,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert (work / "app" / ".repowise" / "config.yaml").is_file()
+    if pre_existing:
+        assert "embedder: local" in (work / ".repowise" / "config.yaml").read_text()
+    else:
+        assert not (work / ".repowise").exists()
