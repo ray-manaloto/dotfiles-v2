@@ -1763,6 +1763,7 @@ def test_claude_mcps_rejects_name_in_prune_list(monkeypatch, tmp_path) -> None:
 
 def test_claude_mcps_live_requires_connected(monkeypatch, tmp_path) -> None:
     doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
     _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
@@ -1785,9 +1786,20 @@ def test_claude_mcps_live_requires_connected(monkeypatch, tmp_path) -> None:
 
 def test_claude_mcps_live_skips_without_claude(monkeypatch, tmp_path) -> None:
     doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
     _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
     errs, msg = doc_mod.check_claude_mcps(tmp_path)
     assert errs == [] and "not installed" in msg
+
+
+def test_claude_mcps_live_not_required_off_mac(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.setattr(doc_mod.sys, "platform", "linux")
+    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
+    errs, msg = doc_mod.check_claude_mcps(tmp_path)
+    assert errs == [] and "not the Mac host" in msg

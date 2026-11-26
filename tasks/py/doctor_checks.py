@@ -2388,7 +2388,12 @@ def check_claude_mcps(repo_root: Path) -> tuple[list[str], str]:
         return errors, _skip_reason(
             f"{len(servers)} declared Claude MCP(s) well-formed; live status not probed"
         ) if not errors else ""
-    claude = Path.home() / ".local/bin/claude"
+    home = Path.home()
+    # OAuth sign-in is per host and needs a browser; only the Mac host is required
+    # to stay Connected (VM/containers/pc register the server but may not sign in).
+    if sys.platform != "darwin" or (home / ".config/dotfiles-v2/vm-env.sh").is_file():
+        return [], "not the Mac host; live MCP status not required"
+    claude = home / ".local/bin/claude"
     if not claude.is_file():
         return [], f"{claude} not installed on this host; live MCP status not probed"
     for name, url in servers:
