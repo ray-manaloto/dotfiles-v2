@@ -123,7 +123,7 @@ if ! tart exec "${VM_NAME}" true >/dev/null 2>&1; then
 	fi
 fi
 
-# Remove any pre-installed Homebrew mise and install pinned mise v2026.11.14 via packslip v1.11.5.
+# Remove Homebrew drift before running the native installers.
 tart exec -i "${VM_NAME}" env \
 	MISE_VER="${MISE_VER}" \
 	PACKSLIP_VER="${PACKSLIP_VER}" \
@@ -135,6 +135,19 @@ if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --versions mis
 fi
 if [[ -e /opt/homebrew/bin/mise ]]; then
   echo "unexpected /opt/homebrew/bin/mise still present after brew uninstall" >&2
+  exit 1
+fi
+if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --cask codex >/dev/null 2>&1; then
+  /opt/homebrew/bin/brew uninstall --force --cask codex </dev/null
+fi
+if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --formula codex >/dev/null 2>&1; then
+  /opt/homebrew/bin/brew uninstall --force --formula codex </dev/null
+fi
+if [[ -L /opt/homebrew/bin/codex && ! -e /opt/homebrew/bin/codex ]]; then
+  rm -f /opt/homebrew/bin/codex
+fi
+if [[ -e /opt/homebrew/bin/codex ]]; then
+  echo "unexpected /opt/homebrew/bin/codex still present after Homebrew cleanup; inspect and remove the unmanaged entry" >&2
   exit 1
 fi
 have=""
@@ -203,12 +216,6 @@ export MISE_YES=1
   --force-dotfiles --yes
 /usr/local/bin/mise -E macos,vm -C "${HOME}" run host:prune --apply
 /usr/local/bin/mise -E macos,vm -C "${HOME}" run host:prune-codex-otel --apply
-if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --cask codex >/dev/null 2>&1; then
-  codex_raw="$(codex --version </dev/null 2>/dev/null || true)"
-  if python3 -c 'import re, sys; m = re.search(r"(\d+)\.(\d+)\.(\d+)", sys.argv[1]); sys.exit(0 if m and tuple(map(int, m.groups())) < (0, 171, 0) else 1)' "${codex_raw}"; then
-    /opt/homebrew/bin/brew upgrade --cask codex </dev/null
-  fi
-fi
 /usr/local/bin/mise -C "${HOME}/dev/dotfiles-v2" deps uv
 GUEST
 

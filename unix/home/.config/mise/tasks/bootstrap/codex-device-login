@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="Start native Codex device authorization for a headless guest"
+#USAGE after_long_help "Enable device code authorization in ChatGPT, then approve the one-time code from a separate browser."
+set -euo pipefail
+
+codex="${HOME}/.local/bin/codex"
+if [[ ! -x ${codex} ]]; then
+	echo "Run mise run bootstrap:codex before starting Codex device authorization." >&2
+	exit 1
+fi
+
+# Codex displays the one-time code and manages its own credential store.
+exec "${codex}" login --device-auth </dev/null

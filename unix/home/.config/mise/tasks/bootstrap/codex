@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#MISE description="Install or optionally upgrade native Codex CLI idempotently"
+#USAGE flag "--upgrade" help="Upgrade the native Codex CLI to the latest stable release"
+#USAGE flag "--dry-run" help="Report whether Codex would be installed or upgraded without making changes"
+set -euo pipefail
+
+bin_dir="${HOME}/.local/bin"
+install_home="${CODEX_HOME:-${HOME}/.codex}"
+if [[ ${container:-} == "docker" ]]; then
+	# The runtime Codex home is a volume. Keep the image's CLI outside it.
+	install_home="${HOME}/.local/share/codex-cli"
+fi
+
+action="keep"
+if [[ ! -x "${bin_dir}/codex" ]]; then
+	action="install"
+elif [[ ${container:-} == "docker" ]] &&
+	[[ "$(readlink "${bin_dir}/codex")" != "${install_home}/packages/standalone/current/"* ]]; then
+	action="install"
+elif [[ ${usage_upgrade:-false} == "true" ]]; then
+	action="upgrade"
+fi
+
+if [[ ${usage_dry_run:-false} == "true" ]]; then
+	printf 'bootstrap:codex: would %s %s\n' "${action}" "${bin_dir}/codex"
+	exit 0
+fi
+
+if [[ ${action} != "keep" ]]; then
+	script="$(mktemp)"
+	trap 'rm -f "${script}"' EXIT
+	curl -fsSLo "${script}" https://chatgpt.com/codex/install.sh
+	CODEX_HOME="${install_home}" CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR="${bin_dir}" PATH="${bin_dir}:${PATH}" \
+		sh "${script}" --release latest </dev/null
+fi
+"${bin_dir}/codex" --version </dev/null

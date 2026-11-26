@@ -56,6 +56,7 @@ owner = "dev"
 group = "dev"
 mode = "0700"
 
+# Docker initializes the Codex named volume from this dev-owned directory.
 [bootstrap.directories."/home/dev/.codex"]
 owner = "dev"
 group = "dev"

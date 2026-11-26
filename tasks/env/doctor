@@ -312,6 +312,10 @@ sm="$(uname -sm)"
 test "${sm}" = "Darwin arm64"
 test ! -e /opt/homebrew/bin/mise
 ! /opt/homebrew/bin/brew list --versions mise >/dev/null 2>&1
+if [[ -e /opt/homebrew/bin/codex || -L /opt/homebrew/bin/codex ]]; then
+  echo "Tart VM has Codex drift at /opt/homebrew/bin/codex; run vm:up for Homebrew cleanup." >&2
+  exit 1
+fi
 mv="$(/usr/local/bin/mise --version | awk '{print $1}')"
 test "$(printf '%s\n%s\n' "2026.11.14" "${mv}" | sort -V | head -n 1)" = "2026.11.14"
 test -L "${HOME}/.config/mise"
