@@ -1938,6 +1938,7 @@ def test_reviewer_plugins_live_reports_unconnected_mcp(monkeypatch, tmp_path) ->
         lib, "claude_state", lambda _c: (set(manifest["claude"]["plugins"]), set())
     )
     statuses = {"plugin:graphify:graphify": "! Needs authentication"}
+    monkeypatch.setattr(lib.time, "sleep", lambda _s: None)
     monkeypatch.setattr(
         lib,
         "claude_mcp_status",
@@ -1946,6 +1947,54 @@ def test_reviewer_plugins_live_reports_unconnected_mcp(monkeypatch, tmp_path) ->
     errs, _ = doc_mod.check_reviewer_plugins(root)
     assert any("plugin:graphify:graphify not Connected" in e for e in errs), errs
     assert not any("Not Connected" in e or "coderabbit" in e for e in errs)
+
+
+def test_claude_mcp_status_settled_rides_out_transient_auth(
+    tmp_path, monkeypatch
+) -> None:
+    """A brief "Needs authentication" that settles to Connected is not reported; a persistent one is."""
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    sleeps: list[float] = []
+    seq = iter(["! Needs authentication", "\u2714 Connected"])
+    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: next(seq))
+    assert (
+        lib.claude_mcp_status_settled("claude", "x", sleep=sleeps.append)
+        == "\u2714 Connected"
+    )
+    assert sleeps == [5.0]
+
+    sleeps.clear()
+    monkeypatch.setattr(
+        lib, "claude_mcp_status", lambda _c, _n: "! Needs authentication"
+    )
+    assert (
+        lib.claude_mcp_status_settled("claude", "x", sleep=sleeps.append)
+        == "! Needs authentication"
+    )
+    assert sleeps == [5.0, 5.0]
+
+    sleeps.clear()
+    expired = lib.time.monotonic()  # budget already spent: report without retrying
+    assert (
+        lib.claude_mcp_status_settled(
+            "claude", "x", sleep=sleeps.append, deadline=expired
+        )
+        == "! Needs authentication"
+    )
+    assert sleeps == []
+
+    sleeps.clear()
+    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: None)
+    assert lib.claude_mcp_status_settled("claude", "x", sleep=sleeps.append) is None
+    assert sleeps == []  # unregistered / hung CLI is never retried
+
+    sleeps.clear()
+    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: "\u2714 Connected")
+    assert lib.is_connected(
+        lib.claude_mcp_status_settled("claude", "x", sleep=sleeps.append)
+    )
+    assert sleeps == []
 
 
 def test_is_connected_rejects_not_connected(tmp_path) -> None:

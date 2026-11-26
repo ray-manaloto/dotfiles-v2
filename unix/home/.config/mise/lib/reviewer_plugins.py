@@ -19,6 +19,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 MISE_DIR = Path(__file__).resolve().parent.parent
@@ -110,6 +112,37 @@ def claude_mcp_status(claude: str, name: str) -> str | None:
         return None
     m = re.search(r"^\s*Status:\s*(.+?)\s*$", out, re.M)
     return m.group(1) if m else ""
+
+
+# Total time all MCP status retries in one check() may spend (doctor timeout is 420s).
+MCP_RETRY_BUDGET_S = 60.0
+
+
+def claude_mcp_status_settled(
+    claude: str,
+    name: str,
+    attempts: int = 3,
+    delay: float = 5.0,
+    sleep: Callable[[float], None] | None = None,
+    deadline: float | None = None,
+) -> str | None:
+    """Re-read a non-Connected status so a brief reconnect ("Needs authentication") never reads as a sign-in task.
+
+    Retries stop at `deadline` (a `time.monotonic()` value) so slow lookups across several
+    servers stay inside the doctor timeout.
+    """
+    sleep = sleep or time.sleep
+    status = claude_mcp_status(claude, name)
+    for _ in range(attempts - 1):
+        # None/"" = unregistered or `claude mcp get` failed/timed out: not transient, and
+        # retrying a hung CLI would blow the doctor timeout. Only a reported status is re-read.
+        if not status or is_connected(status):
+            break
+        if deadline is not None and time.monotonic() + delay >= deadline:
+            break
+        sleep(delay)
+        status = claude_mcp_status(claude, name)
+    return status
 
 
 def is_connected(status: str | None) -> bool:
@@ -379,8 +412,11 @@ def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list
             if p not in plugins
         ]
         if require_connected:
+            retry_deadline = time.monotonic() + MCP_RETRY_BUDGET_S
             for name in spec.get("connected_mcps", []):
-                status = claude_mcp_status(claude, name)
+                status = claude_mcp_status_settled(
+                    claude, name, deadline=retry_deadline
+                )
                 if not is_connected(status):
                     errors.append(
                         f"claude MCP {name} not Connected (status: {status or 'missing'})"
