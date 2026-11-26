@@ -1,7 +1,8 @@
-# Manual PR review (OpenAI or Claude)
+# PR review workflows
 
-Two `workflow_dispatch`-only workflows send one PR's GitHub file patches to a
-model API for an advisory review. They share `review.py`:
+These workflows share `review.py` to send one PR's GitHub file patches to a
+model API for an advisory review. See the [OpenAI pipeline runbook](../../docs/openai-pr-pipeline.md)
+for automatic reviews, triage, autofix, and environment setup.
 
 | Workflow | Provider | Environment | Secret |
 | --- | --- | --- | --- |
@@ -13,12 +14,10 @@ to use.
 
 ## Setup
 
-After merging to the default branch, create the GitHub Actions environment for
-each workflow you use. Restrict deployments to the default **branch** only, add
-no tag rules, and disable bypass where your plan allows. Add the secret to that
-environment only. Do not add a repository-wide secret. Anyone who can modify
-the trusted branch can ultimately change workflows on that branch, so keep its
-protection and review policies in place.
+Create the GitHub Actions environment for each workflow you use. Restrict the
+Claude environment to the default branch and both OpenAI environments to the
+`main` branch before adding credentials. Store the secrets in their
+environments. Keep branch protection and review in place.
 
 For Claude, create the API key in a dedicated Claude Console workspace, so the
 key is scoped to one workspace. The reviewer sends the key as
@@ -31,11 +30,10 @@ unscoped key fails with an HTTP error.
 ## Running
 
 In **Actions → OpenAI PR review** (or **Claude PR review**) **→ Run workflow**,
-leave the default branch selected and enter an open PR number. Only GitHub file
-patches (with paths) are sent. There is no PR checkout or PR code execution,
-no comments, no merge approval, and no automatic runs. A review appears in the
-run summary with the head it reviewed. The advisory result does not replace
-any required review.
+leave the default branch selected and enter an open PR number. Both reviewers
+send GitHub file patches with paths and write the exact reviewed head in the
+run summary. OpenAI also triages candidates and posts the result to the PR.
+Neither review job checks out or executes PR code. Required reviews still apply.
 
 If the repository is private, the run refuses to send patches unless you tick
 **allow_private_diff** for that run. The script checks both the visibility in
@@ -45,7 +43,8 @@ missing, the script refuses to send patches.
 
 ## Data and cost
 
-- **OpenAI:** one Responses API request with storage disabled.
+- **OpenAI:** one Responses API request with storage disabled and up to one
+  Decisions API request for the candidates in the diff.
 - **Claude:** one Messages API request. It does not use Claude Code Action or
   an OpenAI fallback.
 - **Cost:** neither workflow checks credit eligibility or balance, and neither

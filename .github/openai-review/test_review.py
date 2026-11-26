@@ -1,10 +1,11 @@
 """Offline tests. No secrets, runners, package installs, or network calls."""
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import review
 
@@ -40,6 +41,32 @@ def item(**overrides):
     return dict(out, **overrides)
 
 
+def finding(**overrides):
+    result = {
+        "id": "F1",
+        "file": "src/file.cpp",
+        "line": 1,
+        "severity": "high",
+        "claim": "<img src=x> Fix the boundary.\n::error::do not execute @someone",
+        "suggested_fix": "Restore the original boundary.",
+    }
+    return dict(result, **overrides)
+
+
+def openai_ok(*findings):
+    return {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": json.dumps({"findings": findings})}
+                ],
+            }
+        ],
+    }
+
+
 class ReviewTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -59,31 +86,109 @@ class ReviewTests(unittest.TestCase):
         }
 
     def test_sends_patches_only_and_escapes_summary(self):
-        output = {
-            "status": "completed",
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "output_text", "text": "<img src=x> Fix the boundary."}
-                    ],
-                }
-            ],
+        output = Path(self.directory.name) / "output"
+        proposed = openai_ok(finding(), finding(id="F2", line=2))
+        decisions = {
+            "answers": [
+                {"type": "predicate", "name": "F1_defect", "probability": 0.91},
+                {"type": "score", "name": "F1_severity", "score": 2.0},
+            ]
         }
-        send = Mock(side_effect=[pr(), [item()], pr(), output])
-        review.run(self.env, send)
-        self.assertEqual(send.call_count, 4)
-        endpoint, secret = send.call_args.args
+        send = Mock(side_effect=[pr(), [item()], pr(), proposed, decisions])
+        review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
+        self.assertEqual(send.call_count, 5)
+        request = send.call_args_list[3]
+        endpoint, secret = request.args
         self.assertEqual(endpoint, "https://api.openai.com/v1/responses")
         self.assertEqual(secret, self.env["REVIEW_API_KEY"])
-        body = send.call_args.kwargs["body"]
+        body = request.kwargs["body"]
         self.assertEqual(json.loads(body["input"])[0]["path"], "src/file.cpp")
         self.assertFalse(body["store"])
         self.assertNotIn("tools", body)
         self.assertNotIn(self.env["GITHUB_TOKEN"], json.dumps(body))
+        self.assertTrue(body["text"]["format"]["strict"])
+        self.assertEqual(body["text"]["format"]["schema"]["type"], "object")
         summary = self.summary.read_text()
         self.assertIn("&lt;img src=x&gt;", summary)
+        self.assertNotIn("\n::error::", summary)
+        self.assertNotIn("@someone", summary)
         self.assertIn("a" * 40, summary)
+        self.assertEqual(
+            json.loads((output / "findings.json").read_text())["findings"], [finding()]
+        )
+        self.assertEqual((output / "comment.md").read_text(), summary)
+
+    def test_automatic_review_requires_same_repo(self):
+        env = dict(
+            self.env,
+            GITHUB_EVENT_NAME="pull_request_target",
+            EXPECTED_HEAD="a" * 40,
+            EXPECTED_BASE="b" * 40,
+        )
+        pull = pr()
+        pull["head"]["repo"] = {"full_name": "fork/repo"}
+        send = Mock(return_value=pull)
+        with self.assertRaises(review.ReviewError):
+            review.run(env, send)
+        send.assert_called_once()
+
+    def test_forged_autofix_commit_marker_does_not_skip_automatic_review(self):
+        output = Path(self.directory.name) / "output"
+        pull = pr()
+        pull["head"]["repo"] = {"full_name": "example/repo"}
+        head = pull["head"]["sha"]
+        base = pull["base"]["sha"]
+        env = dict(
+            self.env,
+            GITHUB_EVENT_NAME="pull_request_target",
+            EXPECTED_HEAD=head,
+            EXPECTED_BASE=base,
+            REVIEW_OUTPUT_DIR=str(output),
+        )
+        repo_url = "https://api.github.com/repos/example/repo"
+        pr_url = f"{repo_url}/pulls/5"
+        responses = {
+            pr_url: pull,
+            f"{pr_url}/files?per_page=31": [item()],
+            review.OPENAI_ENDPOINT: openai_ok(),
+        }
+        responses[f"{repo_url}/commits/{head}"] = {
+            "commit": {
+                "author": {"name": "github-actions[bot]"},
+                "message": "Fix\n\nOpenAI-Autofix: #5 round 2\n",
+            }
+        }
+        send = Mock(side_effect=lambda url, *args, **kwargs: responses[url])
+        review.run(env, send)
+        self.assertIn(
+            call(f"{pr_url}/files?per_page=31", env["GITHUB_TOKEN"]),
+            send.call_args_list,
+        )
+        self.assertEqual(
+            json.loads((output / "findings.json").read_text())["head"], head
+        )
+
+    def test_triage_failure_writes_untriaged_candidates_and_note(self):
+        output = Path(self.directory.name) / "output"
+        for error in (
+            review.triage.TriageError("bad answer"),
+            review.ReviewError("HTTP 503"),
+        ):
+            with self.subTest(error=error):
+                send = Mock(
+                    side_effect=[pr(), [item()], pr(), openai_ok(finding()), error]
+                )
+                review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
+                payload = json.loads((output / "findings.json").read_text())
+                self.assertEqual(payload["triage"], "unavailable")
+                self.assertEqual(payload["findings"], [finding()])
+                self.assertIn("Triage unavailable", (output / "comment.md").read_text())
+
+    def test_findings_reject_duplicate_ids_and_non_integer_locations(self):
+        schema = json.loads(review.FINDINGS_SCHEMA.read_text())
+        for findings in ([finding(), finding()], [finding(line=True)]):
+            with self.subTest(findings=findings), self.assertRaises(review.ReviewError):
+                review.parse_findings(json.dumps({"findings": findings}), schema)
 
     def test_ref_and_number_checks_before_network(self):
         for overrides in (
@@ -157,10 +262,12 @@ class ReviewTests(unittest.TestCase):
             (b'{"error": {"type": "Bad Type!"}}', ""),
             (b"not json", ""),
         ):
-            with self.subTest(body=body):
-                exc = urllib.error.HTTPError(
+            with (
+                self.subTest(body=body),
+                urllib.error.HTTPError(
                     "u", 401, "m", email.message.Message(), io.BytesIO(body)
-                )
+                ) as exc,
+            ):
                 self.assertEqual(review.error_type(exc), expected)
 
     def test_truncated_http_error_body_is_safe(self):
@@ -335,10 +442,46 @@ class ReviewTests(unittest.TestCase):
 
 
 class RunnerCompatibilityTests(unittest.TestCase):
+    def test_credential_workflows_have_only_default_branch_triggers(self):
+        workflows = Path(__file__).resolve().parent.parent / "workflows"
+        expected = {
+            "openai-pr-review.yml": {"pull_request_target", "workflow_dispatch"},
+            "openai-pr-autofix.yml": {"pull_request_target"},
+        }
+        for path in workflows.glob("*.y*ml"):
+            raw = path.read_text(encoding="utf-8")
+            if not re.search(r"^\s*environment: openai-pr-(review|fix)\s*$", raw, re.M):
+                continue
+            with self.subTest(workflow=path.name):
+                trigger = re.search(r"^on:\n((?: .+\n)+)", raw, re.M)
+                if trigger is None:
+                    self.fail("Credential workflows require an explicit event block.")
+                events = set(re.findall(r"^  ([a-z_]+):", trigger[1], re.M))
+                self.assertEqual(events, expected.pop(path.name, None))
+                self.assertIn("    branches: [main]", trigger[1])
+        self.assertFalse(expected)
+
+    def test_openai_pr_workflows_keep_caching_disabled(self):
+        workflows = Path(__file__).resolve().parent.parent / "workflows"
+        for path in workflows.glob("openai-pr-*.y*ml"):
+            with self.subTest(workflow=path.name):
+                raw = path.read_text(encoding="utf-8")
+                self.assertNotRegex(
+                    raw, r"(?im)^\s*(?:-\s*)?uses:\s*['\"]?actions/cache[@/]"
+                )
+                for value in re.findall(
+                    r"(?im)^\s*['\"]?(?:cache|cache-enabled|enable-cache)['\"]?\s*:\s*([^#\r\n]+)",
+                    raw,
+                ):
+                    self.assertEqual(value.strip().strip("'\"").lower(), "false")
+
     def test_sources_parse_on_runner_python_312(self):
         # ubuntu-24.04's stock python3 is 3.12; the repo toolchain is newer.
         import ast
 
-        for name in ("review.py", "test_review.py"):
-            source = (Path(__file__).parent / name).read_text(encoding="utf-8")
-            ast.parse(source, filename=name, feature_version=(3, 12))
+        for path in Path(__file__).parent.glob("*.py"):
+            ast.parse(
+                path.read_text(encoding="utf-8"),
+                filename=str(path),
+                feature_version=(3, 12),
+            )
