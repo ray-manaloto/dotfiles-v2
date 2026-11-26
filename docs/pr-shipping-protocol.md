@@ -47,7 +47,13 @@ Single writer: one agent owns a worktree until its PR merges or closes.
 6. **Merge** after `pr:ship` prints READY: re-run `hk check --all` on that exact head with a clean tree, then
    `gh pr merge N --merge --match-head-commit <sha> --author-email <owner noreply>` (the form the owner's auto-mode policy
    allows; `pr:ship` prints the exact command with the owner's GitHub noreply address). A moved head makes the merge fail closed.
-7. **After merge**: fast-forward the main checkout (`git merge --ff-only origin/main`) and verify the change is live.
+7. **Learn**: run the `post-task-learn` skill for the worktree and record its review
+   (`mise run learn:record-review --worktree-slug <slug> --plan-id <PLAN_ID> ...`, `no_new_proposals` with provenance when
+   nothing survives). The retro is this step: corrections, failed attempts and bot findings become ledger proposals.
+8. **Land** (no owner prompt): `mise run pr:land` from the merged worktree. It refuses unless the PR is MERGED at the
+   worktree's exact head, the tree is clean and the learn review from step 7 is recorded; then it fast-forwards the main
+   checkout, checks the merge commit is on `main`, removes the worktree and its `wt/*` branch with `worktree:rm`, and runs
+   `learn:heal --check`. Verify the change is live afterwards.
 
 ## Preconditions kept by guards
 
@@ -58,6 +64,7 @@ Single writer: one agent owns a worktree until its PR merges or closes.
 | No checkout `.venv` on PATH (`python.uv_venv_auto = false`; tasks use `uv run` or `.venv/bin/python`) | `config-hygiene` |
 | Claude Code runtime state under `.claude/` (for example `scheduled_tasks.lock`) never fails a check; only `.claude/skills` and `.agents/skills` are forbidden at the repository root | `no-repo-skills` |
 | Repository auto-merge stays off | `pr:ship` preflight |
+| A merged worktree is landed only after its learn review is recorded and nothing unshipped remains | `pr:land` |
 
 Scope telemetry opt-outs to the one command that needs them (for example `DO_NOT_TRACK=1 repowise init`), never globally.
 

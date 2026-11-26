@@ -120,6 +120,7 @@ case "${verdict}" in
 GREEN)
 	echo "pr:ship: READY #${pr} at ${head:0:7}. Re-run hk on this exact head, then merge with:"
 	echo "  gh pr merge ${pr} -R ${repo} --merge --match-head-commit ${head} --author-email ${author_email}"
+	echo "pr:ship: after the merge: record the post-task-learn review, then run 'mise run pr:land' here (no owner prompt)"
 	;;
 RED)
 	echo "pr:ship: RED: fix, re-gate, commit, and re-run pr:ship" >&2
