@@ -188,9 +188,23 @@ require_build_context_matches_ref() {
 		echo "container:up: local HEAD ${local_sha} != origin/${ref} ${remote_sha}; push or check out '${ref}' so the image and /workspace match (or pass --allow-drift)" >&2
 		exit 1
 	fi
+	# Check out exactly this commit in /workspace, even if '${ref}' moves during the build.
+	workspace_sha="${local_sha}"
+}
+
+# Pin the workspace checkout to the commit the guard verified (fails closed if
+# that commit is gone from origin); with --allow-drift, follow origin/<ref>.
+pin_workspace_cmd() {
+	local dir="$1"
+	if [[ -n ${workspace_sha} ]]; then
+		printf "git -C '%s' -c core.hooksPath=/dev/null checkout -q -B '%s' '%s'" "${dir}" "${ref}" "${workspace_sha}"
+	else
+		printf 'true'
+	fi
 }
 
 ref="$(resolve_ref)"
+workspace_sha=""
 require_build_context_matches_ref
 apt_cache_url="$(resolve_apt_cache_url || true)"
 inventory_state_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/dotfiles-v2/inventory"
@@ -215,7 +229,7 @@ up_pc() {
 	mv -f "${meta_tmp}" "${meta_file}"
 
 	ssh -o BatchMode=yes "${host}" \
-		"mkdir -p '${remote_home}/dev/containers' && if [ -d '${remote_dir}/.git' ]; then git -C '${remote_dir}' -c core.hooksPath=/dev/null fetch -q origin '${ref}' && git -C '${remote_dir}' -c core.hooksPath=/dev/null checkout -q -B '${ref}' 'origin/${ref}'; else git -c core.hooksPath=/dev/null clone -q -b '${ref}' '${repo_url}' '${remote_dir}'; fi"
+		"mkdir -p '${remote_home}/dev/containers' && if [ -d '${remote_dir}/.git' ]; then git -C '${remote_dir}' -c core.hooksPath=/dev/null fetch -q origin '${ref}' && git -C '${remote_dir}' -c core.hooksPath=/dev/null checkout -q -B '${ref}' 'origin/${ref}'; else git -c core.hooksPath=/dev/null clone -q -b '${ref}' '${repo_url}' '${remote_dir}'; fi && $(pin_workspace_cmd "${remote_dir}")"
 
 	keys="$(ssh -o BatchMode=yes "${host}" "${remote_home}/.local/bin/agent-secrets register '${name}' '${slug_repo}'")"
 	if ! ssh -o BatchMode=yes "${host}" "test -s '${keys}/claude-oauth-token'"; then
@@ -275,6 +289,9 @@ up_mac() {
 		git -C "${local_dir}" -c core.hooksPath=/dev/null checkout -q -B "${ref}" "origin/${ref}"
 	else
 		git -c core.hooksPath=/dev/null clone -q -b "${ref}" "${repo_url}" "${local_dir}"
+	fi
+	if [[ -n ${workspace_sha} ]]; then
+		git -C "${local_dir}" -c core.hooksPath=/dev/null checkout -q -B "${ref}" "${workspace_sha}"
 	fi
 
 	mkdir -p "${inventory_state_dir}"

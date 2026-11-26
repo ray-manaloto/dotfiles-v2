@@ -701,6 +701,19 @@ def test_hub_up_agentsview_config_rewrite_preserves_owner_content(
         "transport": "ssh",
     }
 
+    # A `destination =` line inside a multi-line string is data, not the key.
+    note = 'see\ndestination = "decoy"\n'
+    assert (
+        run(
+            '[[remote_hosts]]\nhost = "mac"\nuser_note = """\nsee\ndestination = "decoy"\n"""\n'
+            'destination = "old@mac"\n'
+        ).returncode
+        == 0
+    )
+    (host,) = tomllib.loads(cfg.read_text(encoding="utf-8"))["remote_hosts"]
+    assert host["user_note"] == note
+    assert host["destination"] == "me@mac"
+
     # Shapes the rewrite cannot handle fail closed and leave the file untouched.
     for bad in ('remote_hosts = [{host = "x"}]\n', "auth_token = \n"):
         result = run(bad)

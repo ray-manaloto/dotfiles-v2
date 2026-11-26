@@ -193,15 +193,14 @@ except tomllib.TOMLDecodeError as exc:
 table_header = re.compile(r"""^\s*\[\[?\s*[A-Za-z0-9_.\"' -]+\s*\]\]?\s*(?:#.*)?$""")
 
 
-def header_indices(rows: list[str]) -> list[int]:
-    # A `[x]` line is a header only outside multi-line strings and arrays.
-    found: list[int] = []
+def clean_starts(rows: list[str]) -> list[bool]:
+    # True when a line starts outside any multi-line string or array, i.e. it can
+    # hold a table header or a key; bracket or `key =` text inside values is data.
+    clean: list[bool] = []
     in_ml: str | None = None
     depth = 0
-    for i, s in enumerate(rows):
-        if in_ml is None and depth == 0 and table_header.match(s):
-            found.append(i)
-            continue
+    for s in rows:
+        clean.append(in_ml is None and depth == 0)
         j = 0
         while j < len(s):
             if in_ml:
@@ -225,7 +224,7 @@ def header_indices(rows: list[str]) -> list[int]:
             elif c == "]":
                 depth = max(0, depth - 1)
             j += 1
-    return found
+    return clean
 
 
 def toml_str(value: str) -> str:
@@ -234,12 +233,13 @@ def toml_str(value: str) -> str:
 
 
 # Split into top-level keys (before the first table header) and tables.
-starts = header_indices(lines)
+clean = clean_starts(lines)
+starts = [i for i, line in enumerate(lines) if clean[i] and table_header.match(line)]
 first_table = starts[0] if starts else len(lines)
 # Top-level auth_token/require_auth/host are owned by this script; table keys
 # (such as [[remote_hosts]] host) are left alone.
 owned = re.compile(r"^\s*(?:auth_token|require_auth|host)\s*=")
-preamble = [line for line in lines[:first_table] if not owned.match(line)]
+preamble = [line for i, line in enumerate(lines[:first_table]) if not (clean[i] and owned.match(line))]
 tables = [lines[a:b] for a, b in zip(starts, [*starts[1:], len(lines)])]
 
 remote_hosts_header = re.compile(r"^\s*\[\[\s*remote_hosts\s*\]\]\s*(?:#.*)?$")
@@ -272,10 +272,13 @@ if mac_ssh:
             continue
         have_mac = True
         body = []
-        for line in table[1:]:
-            m = re.match(r"^\s*(transport|destination)\s*=", line)
+        rows = table[1:]
+        row_clean = clean_starts(rows)
+        for line, at_key in zip(rows, row_clean):
+            m = re.match(r"^\s*(transport|destination)\s*=", line) if at_key else None
             body.append(f"{m.group(1)} = {managed.pop(m.group(1))}" if m and m.group(1) in managed else line)
-        head = [] if any(re.match(r"^\s*host\s*=", x) for x in body) else [f"host = {toml_str('mac')}"]
+        has_host = any(ok and re.match(r"^\s*host\s*=", x) for x, ok in zip(rows, row_clean))
+        head = [] if has_host else [f"host = {toml_str('mac')}"]
         tail = [f"{k} = {v}" for k, v in managed.items()]
         kept.append([table[0], *head, *body, *tail])
     tables = kept
@@ -315,8 +318,24 @@ def unrelated(d: dict) -> dict:
     return d
 
 
+def mac_entries(d: dict) -> list[dict]:
+    hosts = d.get("remote_hosts")
+    if not isinstance(hosts, list):
+        return []
+    return [h for h in hosts if isinstance(h, dict) and is_mac(h)]
+
+
 if unrelated(before) != unrelated(after):
     fail("rewrite would change settings it does not own")
+if mac_ssh:
+    # Exactly one Mac entry: the first prior one with only transport/destination
+    # (and a missing host) set, so owner keys inside it cannot change either.
+    prior = mac_entries(before)
+    expected = dict(prior[0]) if prior else {"interval": "5m"}
+    expected.setdefault("host", "mac")
+    expected.update(transport="ssh", destination=mac_ssh)
+    if mac_entries(after) != [expected]:
+        fail("rewrite would not update the Mac [[remote_hosts]] entry exactly")
 cfg_path.write_text(text, encoding="utf-8")
 cfg_path.chmod(0o600)
 PY
