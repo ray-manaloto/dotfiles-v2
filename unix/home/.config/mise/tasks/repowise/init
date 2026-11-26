@@ -14,3 +14,8 @@ python3 -I -B "${lib}" guard "${repo}"
 DO_NOT_TRACK=1 REPOWISE_TELEMETRY_DISABLED=1 repowise init "$@" "${repo}"
 # repowise may redirect to a child repo (e.g. a folder holding one repo): guard every index under it.
 python3 -I -B "${lib}" guard --under "${repo}"
+# If it did redirect, drop the parent stub created above (it only ever held the guard config).
+if [[ "$(ls -A "${repo}/.repowise")" == "config.yaml" ]] && find "${repo}" -mindepth 2 -maxdepth 4 -type d -name .repowise -print -quit | grep -q .; then
+	rm -f "${repo}/.repowise/config.yaml"
+	rmdir "${repo}/.repowise"
+fi

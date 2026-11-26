@@ -1972,3 +1972,44 @@ def test_repowise_telemetry_reads_persistent_consent(tmp_path) -> None:
     (home / ".repowise").mkdir(parents=True)
     (home / ".repowise" / "platform.json").write_text('{"telemetry_enabled": false}')
     assert lib.repowise_telemetry_enabled(home) is False
+
+
+@pytest.mark.parametrize(
+    ("rc", "failed"), [(0, False), (1, True), (-9, True), (130, True)]
+)
+def test_reviewer_sync_failure_detection(tmp_path, rc, failed) -> None:
+    """A CLI killed by a signal (negative rc) must count as a failed sync."""
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    line = lib._result("claude plugin install x@y", rc, "boom\nreal error")
+    assert lib.sync_failed([line, "ok: /tmp/rc=1-repo"]) is failed
+    if failed:
+        assert line.endswith("real error")
+    assert lib.sync_failed(["guarded: /home/u/dev/rc=5"]) is False
+
+
+def test_reviewer_sync_keeps_retired_mcp_until_replacements_installed(
+    monkeypatch, tmp_path
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(lib, "_bin", lambda n, _h: n if n == "claude" else None)
+    monkeypatch.setattr(
+        lib, "claude_state", lambda _c: (set(), {"graphify", "repowise"})
+    )
+    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: "✔ Connected")
+    monkeypatch.setattr(
+        lib, "_run", lambda argv, timeout=180: calls.append(argv) or (1, "nope")
+    )
+    monkeypatch.setattr(lib, "repowise_repos", lambda _r: [])
+    manifest = {
+        "claude": {
+            "plugins": ["graphify@graphify"],
+            "retired_mcps": ["graphify-reviews"],
+        }
+    }
+    log = lib.sync(manifest, tmp_path)
+    assert not any(a[:3] == ["claude", "mcp", "remove"] for a in calls)
+    assert lib.sync_failed(log)
+    assert any("keep graphify-reviews" in ln for ln in log)
