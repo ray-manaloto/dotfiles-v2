@@ -77,6 +77,14 @@ class ReviewError(Exception):
     """An error with safe-to-log text."""
 
 
+class IncompleteFileList(ReviewError):
+    """A short GitHub file page, possibly caused by a moving PR."""
+
+
+class ReviewDeclined(Exception):
+    """An expected reason to finish without a review."""
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     """Never forward authorization headers to a redirect destination."""
 
@@ -171,10 +179,10 @@ def pr_files(send, pr_url, token, count):
         if offset:
             url += f"&page={offset // FILES_PER_PAGE + 1}"
         files = send(url, token)
-        if not isinstance(files, list) or len(files) != min(
-            FILES_PER_PAGE, count - offset
-        ):
-            raise ReviewError("GitHub returned an incomplete file list.")
+        if not isinstance(files, list):
+            raise ReviewError("GitHub returned an invalid file list.")
+        if len(files) != min(FILES_PER_PAGE, count - offset):
+            raise IncompleteFileList("GitHub returned an incomplete file list.")
         yield from files
 
 
@@ -182,48 +190,71 @@ def patch_data(files):
     patches = []
     skipped = []
     names = set()
+    reviewable = 0
+    size = 2  # JSON array brackets
+    over_budget = False
     for item in files:
         name = item["filename"]
-        if not name or name in names:
+        old = item.get("previous_filename", "")
+        patch = item.get("patch")
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in names
+            or not isinstance(old, str)
+            or (patch is not None and not isinstance(patch, str))
+            or any(
+                type(item[key]) is not int or item[key] < 0
+                for key in ("additions", "deletions")
+            )
+        ):
             raise ReviewError("GitHub returned an invalid file list.")
         names.add(name)
-        old = item.get("previous_filename", "")
-        if reason := skip_reason(name, old, item):
-            skipped.append(
-                {
-                    "path": "<redacted path>" if reason == "sensitive-path" else name,
-                    "reason": reason,
-                }
-            )
-        else:
-            if len(patches) == MAX_FILES:
-                raise ReviewError(
-                    "The PR exceeds the reviewable file limit; split it for review."
+        reason = skip_reason(name, old, item)
+        if reason is None:
+            reviewable += 1
+            if not over_budget:
+                entry = json.dumps(
+                    {"path": name, "previous_path": old, "patch": patch},
+                    ensure_ascii=True,
+                    separators=(",", ":"),
                 )
-            patches.append({"path": name, "previous_path": old, "patch": item["patch"]})
+                entry_size = len(entry) + bool(patches)  # ASCII and optional comma
+                if size + entry_size <= MAX_PATCH_BYTES:
+                    patches.append(entry)
+                    size += entry_size
+                    continue
+                over_budget = True
+            reason = "over-budget"
+        skipped.append(
+            {
+                "path": "<redacted path>" if reason == "sensitive-path" else name,
+                "reason": reason,
+            }
+        )
+    if reviewable > MAX_FILES:
+        raise ReviewDeclined("The PR exceeds the reviewable file limit.")
     if not patches:
-        raise ReviewError("No reviewable files remain after patch checks.")
-    data = json.dumps(patches, ensure_ascii=True, separators=(",", ":"))
-    if len(data.encode("utf-8")) > MAX_PATCH_BYTES:
-        raise ReviewError("The PR exceeds the patch size limit; split it for review.")
-    return data, skipped
+        if over_budget:
+            raise ReviewDeclined("No file fits within the patch size limit.")
+        raise ReviewDeclined("No reviewable files remain after patch checks.")
+    return "[" + ",".join(patches) + "]", skipped
 
 
-def identity(pr, repo, branch, allow_private):
-    if pr["state"] != "open" or pr["base"]["repo"]["full_name"] != repo:
-        raise ReviewError("The PR must be open in this repository.")
+def identity(pr, repo, branch):
+    if pr["base"]["repo"]["full_name"] != repo:
+        raise ReviewError("The PR must be in this repository.")
     if pr["base"]["ref"] != branch:
         raise ReviewError("The PR must target the default branch.")
-    # The event payload's visibility is frozen at dispatch (and reused on
-    # re-runs), so also gate on the live value GitHub returns with the PR.
     private = pr["base"]["repo"].get("private")
     if not isinstance(private, bool):
         raise ReviewError("Repository visibility is unknown; refusing to send patches.")
-    if private and not allow_private:
-        raise ReviewError(
-            "Private patches are disabled; confirm explicitly for this run."
-        )
-    return pr["base"]["sha"], pr["head"]["sha"], pr["changed_files"]
+    base, head, count = pr["base"]["sha"], pr["head"]["sha"], pr["changed_files"]
+    if not SHA.fullmatch(head) or not SHA.fullmatch(base):
+        raise ReviewError("Invalid GitHub revision SHA.")
+    if type(count) is not int or count < 0 or pr["state"] not in ("open", "closed"):
+        raise ReviewError("Invalid GitHub PR metadata.")
+    return base, head, count, private
 
 
 def response_text(result):
@@ -335,10 +366,8 @@ def skipped_section(skipped):
     return body + "</pre>\n\n"
 
 
-def safe_comment(number, head, findings, triage_status, skipped):
+def safe_comment(number, head, findings, skipped):
     heading = f"## Advisory OpenAI review for #{number}\n\nHead: `{head}`\n\n"
-    if triage_status == "unavailable":
-        heading += "Triage unavailable. These candidates are untriaged and ineligible for autofix.\n\n"
     heading += skipped_section(skipped)
     if not findings:
         return heading + "No findings passed triage.\n"
@@ -462,7 +491,9 @@ def model_review(provider, key, data, send, schema=None):
     )
 
 
-def run(env, send=request_json):
+def run(env, send=None):
+    if send is None:
+        send = request_json
     repo = env["GITHUB_REPOSITORY"]
     branch = env["DEFAULT_BRANCH"]
     number = env["PR_NUMBER"]
@@ -483,10 +514,6 @@ def run(env, send=request_json):
     if repo_private not in {"true", "false"}:
         raise ReviewError("Repository visibility is unknown; refusing to send patches.")
     allow_private = not automatic and env.get("ALLOW_PRIVATE_DIFF") == "true"
-    if repo_private == "true" and not allow_private:
-        raise ReviewError(
-            "Private patches are disabled; confirm explicitly for this run."
-        )
     provider = env.get("REVIEW_PROVIDER", "openai")
     if provider not in {"openai", "claude"}:
         raise ReviewError("Unsupported review provider.")
@@ -497,36 +524,54 @@ def run(env, send=request_json):
             else "OPENAI_REVIEW_API_KEY"
         )
         raise ReviewError(f"Set {secret} in the protected review environment.")
+    expected_base, expected_head = (
+        env.get("EXPECTED_BASE", ""),
+        env.get("EXPECTED_HEAD", ""),
+    )
+    if automatic and not (
+        SHA.fullmatch(expected_base) and SHA.fullmatch(expected_head)
+    ):
+        raise ReviewError("Invalid event revision SHA.")
     usage = {}
     send = metered(send, usage)
     gh_token = env["GITHUB_TOKEN"]
     pr_url = f"https://api.github.com/repos/{repo}/pulls/{number}"
     pr = send(pr_url, gh_token)
-    base, head, count = identity(pr, repo, branch, allow_private)
-    if not SHA.fullmatch(head) or not SHA.fullmatch(base):
-        raise ReviewError("Invalid GitHub revision SHA.")
-    if automatic and (
-        (pr["head"].get("repo") or {}).get("full_name") != repo
-        or (base, head)
-        != (
-            env.get("EXPECTED_BASE"),
-            env.get("EXPECTED_HEAD"),
-        )
-    ):
-        raise ReviewError("The same-repository PR moved or does not match the event.")
-    if count > GITHUB_FILE_LIMIT:
-        raise ReviewError(
-            "The PR exceeds the GitHub file listing limit; split it for review."
-        )
-    data, skipped = patch_data(pr_files(send, pr_url, gh_token, count))
-    if identity(send(pr_url, gh_token), repo, branch, allow_private) != (
-        base,
-        head,
-        count,
-    ):
-        raise ReviewError(
-            "The PR changed during collection, or GitHub returned an incomplete file list."
-        )
+    base, head, count, private = identity(pr, repo, branch)
+    note_head = expected_head if automatic else head
+    try:
+        if pr["state"] != "open" or (
+            automatic
+            and (
+                (pr["head"]["repo"] is None or pr["head"]["repo"]["full_name"] != repo)
+                or (base, head) != (expected_base, expected_head)
+            )
+        ):
+            raise ReviewDeclined("The PR closed, moved, or does not match the event.")
+        if (repo_private == "true" or private) and not allow_private:
+            raise ReviewDeclined("Private patches require explicit opt-in.")
+        if count > GITHUB_FILE_LIMIT:
+            raise ReviewDeclined("The PR exceeds the GitHub file listing limit.")
+        collection_error = None
+        try:
+            data, skipped = patch_data(pr_files(send, pr_url, gh_token, count))
+        except (IncompleteFileList, ReviewDeclined) as exc:
+            collection_error = exc
+        live = send(pr_url, gh_token)
+        live_base, live_head, live_count, live_private = identity(live, repo, branch)
+        if live["state"] != "open" or (live_base, live_head) != (base, head):
+            raise ReviewDeclined("The PR changed during collection.")
+        if live_private and not allow_private:
+            raise ReviewDeclined("Private patches require explicit opt-in.")
+        if live_count != count:
+            raise ReviewError(
+                "GitHub returned inconsistent file counts for one revision."
+            )
+        if collection_error is not None:
+            raise collection_error
+    except ReviewDeclined as exc:
+        write_decline(env, note_head, str(exc), usage)
+        return
     key = env["REVIEW_API_KEY"]
     if provider == "openai":
         schema = json.loads(FINDINGS_SCHEMA.read_text(encoding="utf-8"))
@@ -539,13 +584,12 @@ def run(env, send=request_json):
             )
             if finding["line"] in lines.get(finding["file"], set())
         ]
-        triage_status = "completed"
         try:
             findings = triage.select(candidates, patches, key, send)
         except (triage.TriageError, ReviewError):
-            findings = candidates
-            triage_status = "unavailable"
-        comment = safe_comment(number, head, findings, triage_status, skipped)
+            write_decline(env, head, "Triage unavailable.", usage)
+            return
+        comment = safe_comment(number, head, findings, skipped)
         if output_dir := env.get("REVIEW_OUTPUT_DIR"):
             output = Path(output_dir)
             output.mkdir(parents=True, exist_ok=True)
@@ -555,7 +599,7 @@ def run(env, send=request_json):
                         "pr": number,
                         "head": head,
                         "base": base,
-                        "triage": triage_status,
+                        "triage": "completed",
                         "findings": findings,
                         "skipped": skipped,
                         "usage": usage,
@@ -569,16 +613,34 @@ def run(env, send=request_json):
     else:
         review = html.escape(model_review(provider, key, data, send))
         comment = f"## Advisory PR review: #{number}\n\nHead: `{head}`\n\n{skipped_section(skipped)}<pre>{review}</pre>\n"
+    write_summary(env, comment, usage)
+
+
+def write_decline(env, head, reason, usage):
+    note = f"not reviewed: {reason}"
+    write_summary(env, note, usage)
+    if env.get("REVIEW_PROVIDER", "openai") == "openai" and (
+        output := env.get("GITHUB_OUTPUT")
+    ):
+        with Path(output).open("a", encoding="utf-8") as stream:
+            stream.write(f"decline_head={head}\ndecline_note={note}\n")
+
+
+def write_summary(env, comment, usage):
     cost = {"usage": usage, "cost_usd": usage_cost(usage)}
     with Path(env["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
         summary.write(comment)
         summary.write(f"\n\nOpenAI usage: `{json.dumps(cost, sort_keys=True)}`\n")
 
 
-if __name__ == "__main__":
+def main():
     try:
         run(os.environ)
     except (ReviewError, triage.TriageError) as exc:
         sys.exit(str(exc))
     except MALFORMED_ERRORS:
         sys.exit("Review configuration or API response was invalid.")
+
+
+if __name__ == "__main__":
+    main()

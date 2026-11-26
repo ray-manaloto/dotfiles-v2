@@ -59,5 +59,8 @@ missing, the script refuses to send patches.
   or a script or doc about secrets (`tasks/secret/`, `agent-secrets.sh`) is
   still reviewed, but its text is scanned. Edits near the fake-secret fixtures in
   `test_review.py` always fail closed, so they need a human review.
-- **Size limits:** oversized, unavailable or incomplete patches fail rather
-  than being silently truncated.
+- **Size limits:** the reviewer skips oversized, unavailable, and incomplete
+  patches. It sends the reviewable files in GitHub file order up to the
+  serialized patch budget and lists the remaining reviewable files as
+  `over-budget`. When no files fit or the file-count cap is exceeded, the run
+  reports the reason and succeeds without a findings artifact.
