@@ -190,6 +190,8 @@ EOF
 fi
 
 mise trust "${wt_dir}"
+# Provision the worktree .venv now; otherwise the first hk py-deps step fails "provider 'uv' is stale".
+(cd "${wt_dir}" && MISE_YES=1 mise deps uv) || echo "warn: mise deps uv failed in ${wt_dir}; run it there before hk check" >&2
 
 if command -v repotools >/dev/null 2>&1; then
 	(cd "${root}" && repotools trust)

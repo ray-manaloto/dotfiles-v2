@@ -191,7 +191,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
         "unix/home/.config/mise/locks/**",
       )
     check =
-      #"python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity && MISE_OFFLINE=1 MISE_CONFIG_DIR="$PWD/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global"#
+      #"python3 -I -B tasks/py/doctor_checks.py mise-lock-integrity && { out="$(MISE_OFFLINE=1 MISE_CONFIG_DIR="$PWD/unix/home/.config/mise" mise -C unix/home/.config/mise lock --check --global 2>&1)" && printf '%s\n' "$out" | head -1 || { printf '%s\n' "$out"; exit 1; }; }"#
   }
   ["usage-lint"] = new Step {
     glob = List("tasks/**", "unix/home/.config/mise/tasks/**")
