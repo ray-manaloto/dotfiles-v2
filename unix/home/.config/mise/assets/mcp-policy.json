@@ -322,6 +322,86 @@
       "replacement": null
     },
     {
+      "name": "codex-app-tools@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "computer-history@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "messages@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "record-and-replay@openai-bundled",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "codex-security@openai-curated",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "openai-developers@openai-curated",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Codex-provided MCP plugin without a CLI equivalent.",
+      "replacement": null
+    },
+    {
+      "name": "claude-flow",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Unmanaged third-party swarm MCP.",
+      "replacement": null
+    },
+    {
+      "name": "flow-nexus",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Unmanaged third-party swarm MCP.",
+      "replacement": null
+    },
+    {
+      "name": "package-search",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Unmanaged third-party swarm MCP.",
+      "replacement": null
+    },
+    {
+      "name": "ruv-swarm",
+      "kind": "server",
+      "harnesses": ["claude"],
+      "decision": "deny",
+      "reason": "Unmanaged third-party swarm MCP.",
+      "replacement": null
+    },
+    {
       "name": "claude.ai",
       "kind": "server",
       "harnesses": ["claude"],

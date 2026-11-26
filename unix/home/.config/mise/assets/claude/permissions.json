@@ -21,6 +21,18 @@
     },
     {
       "serverName": "github"
+    },
+    {
+      "serverName": "claude-flow"
+    },
+    {
+      "serverName": "flow-nexus"
+    },
+    {
+      "serverName": "package-search"
+    },
+    {
+      "serverName": "ruv-swarm"
     }
   ],
   "disableClaudeAiConnectors": true,
