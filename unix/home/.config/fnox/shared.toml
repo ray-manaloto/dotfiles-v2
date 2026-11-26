@@ -103,6 +103,15 @@ GROQ_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "GROQ_API_K
 AIHUBMIX_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "AIHUBMIX_API_KEY", env = false, if_missing = "warn" }
 CLOUDFLARE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "CLOUDFLARE_API_KEY", env = false, if_missing = "warn" }
 
+# Linked Claude Console API-credit runner (issue #3). Use only via
+# `fnox --non-interactive -c ~/.config/fnox/api-credit.toml -P api-credit --no-defaults proxy run -- mise run api:review ...`.
+# Doppler ANTHROPIC_RUNNER_API_KEY maps to ANTHROPIC_API_KEY so claude -p selects API-key auth.
+[profiles.api-credit]
+inherits = ["doppler-auth"]
+
+[profiles.api-credit.secrets]
+ANTHROPIC_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "ANTHROPIC_RUNNER_API_KEY", env = false, if_missing = "error" }
+
 [proxy]
 egress = "permissive"
 rules = [

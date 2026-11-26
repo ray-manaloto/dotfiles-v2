@@ -11,9 +11,11 @@ and C++26 workstation setup.
 - **Tool scope:** Root `mise.toml` stays tool-free (`no-project-tools` doctor
   check). User/global tools and skills live in
   `unix/home/.config/mise/config.toml` and `unix/home/.config/mise/mise.lock`.
-  All `[tools]` declarations MUST unconditionally use canonical
-  `mise registry` short names (zero backend opt-outs, enforced by `hk`
-  `config-hygiene` and `mise doctor project`).
+  When a tool has a `mise registry` entry, `[tools]` MUST use its canonical
+  short name (`hk`, not `packslip:github.com/jdx/hk`) so upstream can switch
+  backends; tools absent from the registry use an explicit backend
+  (`pipx:<pkg>`, `github:<owner>/<repo>`, `npm:<pkg>`) and never block adoption
+  (enforced by `hk` `config-hygiene` and `mise doctor project`).
 - **Day-1 3 environments:** `pc` (`ssh://pc`, `ubuntu:26.10` `amd64`), `mac`
   (`docker --context desktop-linux`, `ubuntu:26.10` `arm64`), and `vm` (Tart
   `dotfiles-v2-macos` `arm64`). Always run containers with `-e container=docker`

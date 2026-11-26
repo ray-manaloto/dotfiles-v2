@@ -1,0 +1,13 @@
+#:schema https://fnox.jdx.dev/schema.json
+# Claude Console API-credit runner overlay (issue #3); invoke via `mise run api:review` or:
+# `fnox --non-interactive -c ~/.config/fnox/api-credit.toml -P api-credit --no-defaults proxy run -- <cmd>`
+# Strict egress: the child can reach only api.anthropic.com, and only there does the proxy swap
+# the placeholder for the real key. Set the Console spend limit to the remaining credit balance.
+
+import = ["./shared.toml"]
+
+[proxy]
+egress = "strict"
+rules = [
+  { secret = "ANTHROPIC_API_KEY", domain = "api.anthropic.com", header = "x-api-key", placeholder = "fnox-placeholder-anthropic-runner" },
+]

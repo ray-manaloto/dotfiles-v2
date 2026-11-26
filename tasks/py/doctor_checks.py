@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -56,6 +57,22 @@ COMPILED_BINARY_MAGICS = (
 BINARY_HARDEN_SKIP_DIRS = frozenset(
     {"site-packages", "node_modules", ".venv", ".git", "__pycache__"}
 )
+
+
+def _live_host_skipped() -> bool:
+    """True when live-host probes must not run: CI runners, or pre-push repo scope.
+
+    The pre-push hook sets DOTFILES_DOCTOR_SCOPE=repo so a push depends only on the
+    branch; committed-file assertions in each check still run in that scope.
+    """
+    return (
+        bool(os.environ.get("CI")) or os.environ.get("DOTFILES_DOCTOR_SCOPE") == "repo"
+    )
+
+
+def _skip_reason(what: str) -> str:
+    scope = "CI" if os.environ.get("CI") else "DOTFILES_DOCTOR_SCOPE=repo"
+    return f"{scope}: {what}"
 
 
 def _git_tracked(repo_root: Path, *patterns: str) -> list[Path]:
@@ -271,6 +288,28 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                 fpath = aube_dir / required_file
                 if not fpath.is_file():
                     errors.append(f"Missing {fpath.relative_to(resolved_root)}")
+        elif any(isinstance(e.get("uv"), dict) for e in matching):
+            # pypi tools lock a uv dependency graph (locks/<tool>/<ver>~<hash>/{pyproject.toml,uv.lock})
+            # instead of per-platform download URLs.
+            uv_rel = next(
+                (
+                    str(e["uv"].get("path"))
+                    for e in matching
+                    if isinstance(e.get("uv"), dict) and e["uv"].get("path")
+                ),
+                "",
+            )
+            uv_dir = (mise_cfg_root / uv_rel).resolve(strict=False)
+            if not uv_rel or not uv_dir.is_relative_to(resolved_root):
+                errors.append(
+                    f"mise.lock invalid uv.path for {tool_name}@{want_ver}: {uv_rel!r}"
+                )
+                continue
+            referenced_aube_dirs.add(uv_dir)
+            for required_file in ("pyproject.toml", "uv.lock"):
+                fpath = uv_dir / required_file
+                if not fpath.is_file():
+                    errors.append(f"Missing {fpath.relative_to(resolved_root)}")
         else:
             allowed_os = _tool_os_list(spec)
             for plat in platforms:
@@ -442,8 +481,8 @@ def check_host_option_a(
     repo_root: Path, *, strict_host: bool = False
 ) -> tuple[list[str], str]:
     """Run Option A host checks (pre-cutover aware until `~/.config/mise` points to dotfiles-v2)."""
-    if os.environ.get("CI"):
-        return [], "CI: skipped live host Option A checks"
+    if _live_host_skipped():
+        return [], _skip_reason("skipped live host Option A checks")
 
     home = Path.home()
     is_cutover, resolved_mise = _is_dotfiles_v2_mise_cutover(home, repo_root=repo_root)
@@ -747,8 +786,8 @@ def _normalize_path_for_mise_doctor(
 
 def check_mise_doctor_clean(repo_root: Path | None = None) -> tuple[list[str], str]:
     """Verify `mise -C ~ doctor --json` reports 0 errors and 0 warnings."""
-    if os.environ.get("CI"):
-        return [], "CI: skipped live host mise-doctor-clean"
+    if _live_host_skipped():
+        return [], _skip_reason("skipped live host mise-doctor-clean")
     home = Path.home()
     root = repo_root if repo_root is not None else Path(__file__).resolve().parents[2]
     env = dict(os.environ)
@@ -950,8 +989,8 @@ def _collect_installed_bin_names(installs_dir: Path) -> set[str]:
 
 def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
     """Verify clean host shims, wrappers, plugins, pitchfork daemons, vb, local bins, opencode.jsonc, config.local.toml, and skills."""
-    if os.environ.get("CI"):
-        return [], "CI: skipped live host-hygiene"
+    if _live_host_skipped():
+        return [], _skip_reason("skipped live host-hygiene")
 
     home = Path.home()
     data_dir = Path(
@@ -1552,6 +1591,140 @@ def _load_mise_registry_map() -> dict[str, list[tuple[str, list[str]]]]:
     return by_backend
 
 
+# Env vars that make Claude Code skip feature-flag fetching (code.claude.com/docs/en/env-vars#features-that-need-feature-flag-fetching),
+# plus CLAUDE_CODE_DISABLE_SHIP. Set globally they silently remove /ship and /steward, so they may only be scoped to a single command.
+_FLAG_FETCH_KILLERS = frozenset(
+    {
+        "CLAUDE_CODE_DISABLE_FEATURE_FLAGS",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "CLAUDE_CODE_DISABLE_SHIP",
+        "DISABLE_GROWTHBOOK",
+        "DISABLE_TELEMETRY",
+        "DO_NOT_TRACK",
+    }
+)
+
+
+def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
+    """Reject global [env] / Dockerfile ENV entries that turn off Claude Code feature-flag fetching."""
+    errors: list[str] = []
+    msg = (
+        "it disables Claude Code feature-flag fetching and removes /ship and /steward from every new session "
+        "(scope it per command)"
+    )
+    # Global env files: user config*.toml, conf.d/<topic>/mise.toml fragments, and repo-root/doctor mise configs.
+    env_files = {
+        *mise_dir.glob("config*.toml"),
+        *mise_dir.glob("conf.d/**/mise.toml"),
+        *mise_dir.glob("conf.d/*.toml"),
+        *repo_root.glob("mise.toml"),
+        *repo_root.glob("mise.*.toml"),
+        *repo_root.glob(".mise.toml"),
+        *repo_root.glob(".mise.*.toml"),
+        *repo_root.glob("mise/doctor/mise.toml"),
+    }
+    for env_file in sorted(f for f in env_files if f.is_file()):
+        rel = env_file.relative_to(repo_root).as_posix()
+        try:
+            cfg = tomllib.loads(env_file.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            errors.append(
+                f"config-hygiene: {rel}: cannot parse for [env] flag-fetch check: {exc}"
+            )
+            continue
+        env_tbl = cfg.get("env")
+        settings = cfg.get("settings")
+        py_settings = settings.get("python") if isinstance(settings, dict) else None
+        uv_auto = (
+            py_settings.get("uv_venv_auto", False)
+            if isinstance(py_settings, dict)
+            else False
+        )
+        if (
+            isinstance(env_tbl, dict)
+            and str(env_tbl.get("MISE_PYTHON_UV_VENV_AUTO", "false")).lower() != "false"
+        ):
+            uv_auto = env_tbl["MISE_PYTHON_UV_VENV_AUTO"]
+        if uv_auto not in (False, "false"):
+            errors.append(
+                f"config-hygiene: {rel} sets python.uv_venv_auto = {uv_auto!r}; it puts the checkout's .venv/bin on "
+                "PATH, so /ship and /steward refuse to watch PRs (use `uv run` or .venv/bin/python in tasks)"
+            )
+        if (
+            isinstance(env_tbl, dict)
+            and isinstance(env_tbl.get("_"), dict)
+            and "python" in env_tbl["_"]
+        ):
+            errors.append(
+                f"config-hygiene: {rel} [env] _.python.venv activates a venv on PATH; /ship and /steward refuse to "
+                "watch PRs with a checkout dir on PATH (scope it to a task env instead)"
+            )
+        if isinstance(env_tbl, dict):
+            for name in sorted(_FLAG_FETCH_KILLERS & set(env_tbl)):
+                # mise `[env] NAME = false` unsets an inherited value, which is the safe direction.
+                if env_tbl[name] is False:
+                    continue
+                errors.append(f"config-hygiene: {rel} [env] sets {name}; {msg}")
+    # Only ENV instructions persist into containers (RUN-scoped `NAME=1 cmd` is fine); both `ENV K=V` and `ENV K V`.
+    for dockerfile in sorted(repo_root.glob("docker/**/Dockerfile*")):
+        try:
+            text = dockerfile.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        logical = re.sub(
+            r"\\\n",
+            " ",
+            "\n".join(
+                ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+            ),
+        )
+        env_lines = [
+            ln.strip()[4:]
+            for ln in logical.splitlines()
+            if re.match(r"ENV\s", ln.strip(), re.IGNORECASE)
+        ]
+        keys: set[str] = set()
+        for ln in env_lines:
+            try:
+                args = shlex.split(ln)
+            except ValueError:
+                args = ln.split()
+            if not args:
+                continue
+            # `ENV K=V K2="a b"` sets only the keys; legacy `ENV K V` sets the first word.
+            keys |= (
+                {a.split("=", 1)[0] for a in args if "=" in a}
+                if "=" in args[0]
+                else {args[0]}
+            )
+        for name in sorted(keys & _FLAG_FETCH_KILLERS):
+            errors.append(
+                f"config-hygiene: {dockerfile.relative_to(repo_root).as_posix()} sets {name}; {msg}"
+            )
+    # Managed shell startup files export into every session; a bare `NAME=1 cmd` prefix stays command-scoped.
+    killers = "|".join(sorted(_FLAG_FETCH_KILLERS))
+    sh_re = re.compile(rf"^\s*(?:export\s+({killers})=|({killers})=\S*\s*(?:#.*)?$)")
+    home = repo_root / "unix" / "home"
+    shell_files = {
+        *home.glob(".zshenv"),
+        *home.glob(".config/zsh/**/*"),
+        *mise_dir.glob("assets/**/*.sh"),
+    }
+    for sh_file in sorted(f for f in shell_files if f.is_file()):
+        try:
+            lines = sh_file.read_text(encoding="utf-8").splitlines()
+        except OSError, UnicodeDecodeError:
+            continue
+        names = {
+            a or b for ln in lines if (m := sh_re.match(ln)) for a, b in [m.groups()]
+        }
+        for name in sorted(names):
+            errors.append(
+                f"config-hygiene: {sh_file.relative_to(repo_root).as_posix()} exports {name}; {msg}"
+            )
+    return errors
+
+
 def check_config_hygiene(repo_root: Path) -> list[str]:
     """Validate registry short names, hyphenated npm prerelease, wrapper flags, programs.json, and [dotfiles] paths."""
     errors: list[str] = []
@@ -1560,14 +1733,18 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
     if not main_cfg_path.is_file():
         return ["config-hygiene: missing unix/home/.config/mise/config.toml"]
 
+    errors.extend(_check_flag_fetch_env(repo_root, mise_dir))
+
     try:
         raw_reg_map = _load_mise_registry_map()
     except (OSError, subprocess.SubprocessError) as exc:
-        return [f"config-hygiene: failed to load `mise registry`: {exc}"]
+        return [*errors, f"config-hygiene: failed to load `mise registry`: {exc}"]
 
     reg_map, short_to_backends = _normalize_registry_entries(raw_reg_map)
 
-    # 1, 2, 3, 4 & 6. Registry canonical short names, hyphenated npm prerelease, wrapper checks, and dotfiles paths across config*.toml
+    # 1, 2, 3, 4 & 6. Registry canonical short names, hyphenated npm prerelease, wrapper checks, and dotfiles paths across config*.toml.
+    # Short-name rule: a backend-qualified key is an error only when `mise registry` already maps it to a
+    # short name (so upstream can switch backends). Tools absent from the registry keep an explicit backend.
     for cfg_file in sorted(mise_dir.glob("config*.toml")):
         cfg_data = tomllib.loads(cfg_file.read_text(encoding="utf-8"))
         rel = cfg_file.relative_to(repo_root).as_posix()
@@ -1873,7 +2050,7 @@ def check_herdr_app_bundle() -> tuple[list[str], str]:
     """Verify macOS Herdr.app is in /Applications/Herdr.app with no duplicate ~/Applications/Herdr.app."""
     home = Path.home()
     if (
-        os.environ.get("CI")
+        _live_host_skipped()
         or sys.platform != "darwin"
         or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
     ):
@@ -1921,7 +2098,7 @@ def check_codex_hook_trust(
             ], ""
     home = Path.home()
     if (
-        os.environ.get("CI")
+        _live_host_skipped()
         or not (home / ".codex" / "config.toml").is_file()
         or not shutil.which("codex")
     ):
@@ -2108,7 +2285,7 @@ def check_mise_binary_integrity(repo_root: Path) -> tuple[list[str], str]:
                     f"mise-binary-integrity: invalid JSON in {rel_asset}: {exc}"
                 )
 
-    if not os.environ.get("CI"):
+    if not _live_host_skipped():
         home = Path.home()
         data_dir = Path(
             os.environ.get("MISE_DATA_DIR", str(home / ".local" / "share" / "mise"))
@@ -2178,7 +2355,7 @@ def check_agy_rc_health(
         return [f"agy-rc-health: missing executable {guard.relative_to(repo_root)}"], ""
     home = Path.home()
     if (
-        os.environ.get("CI")
+        _live_host_skipped()
         or sys.platform != "darwin"
         or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
     ):
@@ -2269,8 +2446,8 @@ def check_skills_6harness_parity(repo_root: Path) -> tuple[list[str], str]:
             errors.append(
                 f"skills-6harness-parity: missing executable {p.relative_to(repo_root)}"
             )
-    if os.environ.get("CI"):
-        return errors, "CI: repo-level 6-harness skill structure verified"
+    if _live_host_skipped():
+        return errors, _skip_reason("repo-level 6-harness skill structure verified")
 
     home = Path.home()
     is_cutover, _ = _is_dotfiles_v2_mise_cutover(home, repo_root=repo_root)
@@ -2346,6 +2523,200 @@ def check_skills_6harness_parity(repo_root: Path) -> tuple[list[str], str]:
     )
 
 
+def _load_reviewer_plugins_lib(repo_root: Path):
+    import importlib.util
+
+    path = repo_root / "unix/home/.config/mise/lib/reviewer_plugins.py"
+    spec = importlib.util.spec_from_file_location("reviewer_plugins", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_SHIP_SKILLS = ("ship-local", "steward")
+
+
+def _claude_settings_ship_errors(label: str, data: object) -> list[str]:
+    """Claude settings that remove /ship or /steward: flag-fetch killers in `env`, skill overrides, bundled skills off."""
+    if not isinstance(data, dict):
+        return []
+    errors: list[str] = []
+    env = data.get("env")
+    if isinstance(env, dict):
+        for name in sorted(_FLAG_FETCH_KILLERS & set(env)):
+            errors.append(
+                f"claude-ship-env: {label} env sets {name}; it turns off feature-flag fetching and removes /ship and /steward"
+            )
+    overrides = data.get("skillOverrides")
+    if isinstance(overrides, dict):
+        for skill in _SHIP_SKILLS:
+            if str(overrides.get(skill, "")).lower() == "off":
+                errors.append(
+                    f"claude-ship-env: {label} skillOverrides turns off {skill}"
+                )
+    if data.get("disableBundledSkills") is True:
+        errors.append(
+            f"claude-ship-env: {label} disableBundledSkills removes /ship and /steward"
+        )
+    return errors
+
+
+def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
+    """Managed Claude settings (repo) and the live host never disable /ship, /steward or feature-flag fetching."""
+    errors: list[str] = []
+    killer_key = re.compile(r'"(' + "|".join(sorted(_FLAG_FETCH_KILLERS)) + r')"\s*:')
+    managed = sorted(
+        {
+            *(repo_root / "unix/home/.config/mise/assets/claude").glob("**/*.json*"),
+            *(repo_root / "unix/home/.claude").glob("**/*.json"),
+        }
+    )
+    for path in managed:
+        rel = path.relative_to(repo_root).as_posix()
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".json":
+            try:
+                errors += _claude_settings_ship_errors(rel, json.loads(text))
+            except ValueError as exc:
+                errors.append(f"claude-ship-env: {rel}: invalid JSON: {exc}")
+        else:  # templates (.json.tera) are not JSON until rendered: match the same three settings textually
+            if m := killer_key.search(text):
+                errors.append(
+                    f"claude-ship-env: {rel} sets {m.group(1)}; it removes /ship and /steward"
+                )
+            for skill in _SHIP_SKILLS:
+                if re.search(rf'"{skill}"\s*:\s*"off"', text, re.I):
+                    errors.append(
+                        f"claude-ship-env: {rel} skillOverrides turns off {skill}"
+                    )
+            if re.search(r'"disableBundledSkills"\s*:\s*true', text):
+                errors.append(
+                    f"claude-ship-env: {rel} disableBundledSkills removes /ship and /steward"
+                )
+    if errors or _live_host_skipped():
+        return errors, (
+            _skip_reason(
+                f"{len(managed)} managed Claude settings files clean; live settings not probed"
+            )
+            if not errors
+            else ""
+        )
+    settings = Path.home() / ".claude/settings.json"
+    if settings.is_file():  # no settings file means nothing disables the ship skills
+        try:
+            errors += _claude_settings_ship_errors(
+                "~/.claude/settings.json",
+                json.loads(settings.read_text(encoding="utf-8")),
+            )
+        except (OSError, ValueError) as exc:
+            errors.append(
+                f"claude-ship-env: cannot read ~/.claude/settings.json: {exc}"
+            )
+    for name in sorted(_FLAG_FETCH_KILLERS & set(os.environ)):
+        errors.append(
+            f"claude-ship-env: this shell exports {name}; new Claude sessions started from it lose /ship and /steward"
+        )
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if venv and Path(venv).resolve().is_relative_to(repo_root.resolve()):
+        errors.append(
+            "claude-ship-env: a checkout venv is active (VIRTUAL_ENV); /ship and /steward refuse to watch"
+        )
+    return errors, "managed and live Claude settings keep /ship and /steward available"
+
+
+def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
+    """Declared reviewer-bot plugins are well-formed (repo) and installed/Connected (live Mac host)."""
+    errors: list[str] = []
+    mise_dir = repo_root / "unix/home/.config/mise"
+    for rel in (
+        "tasks/bootstrap/reviewer-plugins",
+        "tasks/repowise/guard",
+        "tasks/repowise/init",
+    ):
+        task = mise_dir / rel
+        if not task.is_file() or not os.access(task, os.X_OK):
+            errors.append(f"reviewer-plugins: missing executable {rel}")
+    try:
+        lib = _load_reviewer_plugins_lib(repo_root)
+        manifest = lib.load_manifest(mise_dir / "assets/reviewer-plugins.json")
+    except (OSError, ImportError, ValueError) as exc:
+        return [*errors, f"reviewer-plugins: cannot load manifest/lib: {exc}"], ""
+
+    pid_re = re.compile(r"[a-z0-9-]+@[a-z0-9-]+")
+    for harness in ("claude", "codex"):
+        spec = manifest.get(harness, {})
+        mps = spec.get("marketplaces", {})
+        for pid in spec.get("plugins", []):
+            if not pid_re.fullmatch(str(pid)):
+                errors.append(
+                    f"reviewer-plugins: {harness} plugin id {pid!r} is not name@marketplace"
+                )
+                continue
+            mkt = str(pid).split("@", 1)[1]
+            if mkt not in mps and mkt != "claude-plugins-official":
+                errors.append(
+                    f"reviewer-plugins: {harness} plugin {pid} has no declared marketplace {mkt}"
+                )
+    claude = manifest.get("claude", {})
+    for mcp in claude.get("connected_mcps", []):
+        plugin = str(mcp).split(":")[1] if str(mcp).startswith("plugin:") else ""
+        if not any(str(p).split("@")[0] == plugin for p in claude.get("plugins", [])):
+            errors.append(
+                f"reviewer-plugins: connected MCP {mcp} has no matching Claude plugin"
+            )
+    prune = mise_dir / "tasks/host/prune-mcps"
+    prune_txt = prune.read_text(encoding="utf-8") if prune.is_file() else ""
+    m = re.search(r"LEGACY_MCP_NAMES = frozenset\(\{(.*?)\}\)", prune_txt, re.S)
+    for name in claude.get("retired_mcps", []):
+        if not m or f'"{name}"' not in m.group(1):
+            errors.append(
+                f"reviewer-plugins: retired MCP {name} missing from host:prune-mcps LEGACY_MCP_NAMES"
+            )
+    oc_path = repo_root / "unix/home/.config/opencode/opencode.json"
+    try:
+        oc = json.loads(oc_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        oc = {}
+        errors.append(f"reviewer-plugins: cannot read opencode.json: {exc}")
+    oc_spec = manifest.get("opencode", {})
+    for plug in oc_spec.get("plugins", []):
+        if plug not in (oc.get("plugins") or []):
+            errors.append(f"reviewer-plugins: opencode.json plugins missing {plug}")
+    servers = (
+        ((oc.get("mcp") or {}).get("servers") or {})
+        if isinstance(oc.get("mcp"), dict)
+        else {}
+    )
+    for name in oc_spec.get("mcp_servers", []):
+        if name not in servers:
+            errors.append(f"reviewer-plugins: opencode.json mcp.servers missing {name}")
+
+    if errors or _live_host_skipped():
+        return errors, (
+            _skip_reason(
+                "reviewer-plugins manifest well-formed; live install/status not probed"
+            )
+            if not errors
+            else ""
+        )
+    home = Path.home()
+    # Installs + OAuth sign-ins are per host and need a browser; only the Mac host is required.
+    if sys.platform != "darwin" or (home / ".config/dotfiles-v2/vm-env.sh").is_file():
+        return [], "not the Mac host; live plugin status not required"
+    live = [f"reviewer-plugins: {e}" for e in lib.check(manifest, home)]
+    if live:
+        live.append(
+            "reviewer-plugins: fix with `mise run bootstrap:reviewer-plugins`; sign in via Claude /mcp -> <server> -> Authenticate"
+        )
+        return live, ""
+    return (
+        [],
+        "declared reviewer plugins installed across harnesses and Claude plugin MCPs Connected",
+    )
+
+
 def _report(label: str, errors: list[str], ok_msg: str) -> int:
     if errors:
         sys.stderr.write("\n".join(errors) + "\n")
@@ -2363,6 +2734,8 @@ def main(argv: list[str] | None = None) -> int:
     p_host.add_argument("--strict-host", action="store_true")
     sub.add_parser("mise-doctor-clean")
     sub.add_parser("host-hygiene")
+    sub.add_parser("reviewer-plugins")
+    sub.add_parser("claude-ship-env")
     sub.add_parser("jouet-rules")
     sub.add_parser("usage-lint")
     sub.add_parser("pitchfork-config")
@@ -2481,6 +2854,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "agy-rc-health":
         errs, msg = check_agy_rc_health(repo_root, strict_host=args.strict_host)
         return _report("agy-rc-health", errs, msg)
+    if args.cmd == "reviewer-plugins":
+        errs, msg = check_reviewer_plugins(repo_root)
+        return _report("reviewer-plugins", errs, msg)
+    if args.cmd == "claude-ship-env":
+        errs, msg = check_claude_ship_env(repo_root)
+        return _report("claude-ship-env", errs, msg)
     if args.cmd == "skills-6harness-parity":
         errs, msg = check_skills_6harness_parity(repo_root)
         return _report("skills-6harness-parity", errs, msg)

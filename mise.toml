@@ -16,7 +16,9 @@ private_user = "{{ env.USER | default(value='') }}"
 [settings]
 exec_auto_install = false
 experimental = true
-python.uv_venv_auto = "source"
+# Never auto-activate .venv: a checkout dir on PATH makes /ship and /steward refuse to watch PRs
+# (code.claude.com/docs/en/ship-command-troubleshooting). Tasks use `uv run` or .venv/bin/python explicitly.
+python.uv_venv_auto = false
 
 [secrets.fnox]
 profile = "infra"
@@ -126,9 +128,11 @@ run = "python3 -I -B tasks/py/doctor_checks.py config-hygiene"
 hint = "Check `unix/home/.config/mise/config*.toml` and `unix/home/.config/herdr-app/programs.json` against Tier 1/2 hygiene rules."
 
 [doctor.checks.no-repo-skills]
-description = "No duplicated repo-level .agents or .claude skill directories"
-run = "test ! -e .agents && test ! -e .claude"
-hint = "Remove .agents/ and .claude/ from the repository root."
+description = "No duplicated repo-level .agents/skills or .claude/skills directories"
+# Only skill dirs are forbidden: Claude Code writes runtime state under .claude/ (e.g. scheduled_tasks.lock for
+# /ship and /steward watch timers), so forbidding all of .claude/ blocked every watch's pre-push.
+run = "test ! -e .agents/skills && test ! -e .claude/skills"
+hint = "Remove .agents/skills/ and .claude/skills/ from the repository root; canonical skills live in unix/home/.agents/skills/."
 
 [doctor.checks.pwf-root-mode]
 description = "Committed .mode pins autonomous mode for planning-with-files"
@@ -199,7 +203,7 @@ hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-c
 
 [doctor.checks.host-gemini-sync]
 description = "Local ~/.gemini/config/ hooks, rules, skills, and hooks.json match unix/home/.gemini/config/ and [dotfiles]"
-run = "mise run host:sync-gemini --check"
+run = "sh tasks/py/host_check.sh mise run host:sync-gemini --check"
 hint = "Run 'mise run host:sync-gemini' to sync ~/.gemini/config/ hooks, rules, skills, and hooks.json on this host."
 
 [doctor.checks.native-harnesses]
@@ -374,7 +378,7 @@ hint = "Ensure unix/home/.config/mise/tasks/roll/* are executable, .venv is sync
 [doctor.checks.agy-learn-heal]
 description = "Self-healing agy-learn ledger and schemas pass read-only health check"
 depends = "py-deps-fresh"
-run = "mise run learn:heal --check --repo ."
+run = "sh tasks/py/host_check.sh mise run learn:heal --check --repo ."
 hint = "Inspect '$XDG_STATE_HOME/agy-learn/' via 'mise run learn:heal --check' and resolve any owing_learn or proposal bloat."
 
 [doctor.checks.herdr-app-bundle]
@@ -403,6 +407,17 @@ description = "pc Hub Compose, Caddyfile, SearXNG, mac-agent, and zero-OTel/zero
 depends = "py-deps-fresh"
 run = "mise run hub:doctor --offline"
 hint = "Inspect docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} and docker/mac-agent/compose.yaml with `mise run hub:doctor --offline`."
+
+[doctor.checks.claude-ship-env]
+description = "Managed and live Claude settings never disable feature-flag fetching, /ship or /steward (env, skillOverrides, disableBundledSkills, shell env, active checkout venv)"
+run = "python3 -I -B tasks/py/doctor_checks.py claude-ship-env"
+hint = "Remove the flagged env var / override; scope telemetry opt-outs to a single command. See docs/pr-shipping-protocol.md."
+
+[doctor.checks.reviewer-plugins]
+description = "Reviewer-bot plugins (Graphify, Greptile, CodeRabbit, Repowise) declared in assets/reviewer-plugins.json are installed in Claude/Codex/agy/OpenCode, Claude plugin MCPs Connected, and Repowise's Bash rewrite disabled in indexed repos"
+run = "python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"
+timeout = "420s"
+hint = "Run `mise run bootstrap:reviewer-plugins` (and `mise run repowise:guard`), then in Claude Code run /mcp -> <server> -> Authenticate."
 
 [doctor.checks.skills-6harness-parity]
 description = "Canonical ~/.agents/skills parity across Codex, OpenCode, AGY, Claude, ZCode, and Hermes"

@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/api_runner.schema.json",
+  "title": "ApiRunnerResponse",
+  "$ref": "#/$defs/ApiRunnerResponse",
+  "$defs": {
+    "ApiRunnerModel": {
+      "type": "string",
+      "description": "Closed allowlist of models the API-credit runner may request (never fable: it can bill usage credits).",
+      "enum": ["opus", "sonnet", "haiku"]
+    },
+    "ApiRunnerMode": {
+      "type": "string",
+      "description": "Closed runner tool modes.",
+      "enum": ["review"]
+    },
+    "ApiRunnerErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for api_runner operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_MISSING_CREDENTIAL",
+        "ERR_WRONG_AUTH_SOURCE",
+        "ERR_UNEXPECTED_TOOLS",
+        "ERR_BUDGET_EXCEEDED",
+        "ERR_COMMAND_FAILED",
+        "ERR_TIMEOUT",
+        "ERR_MODEL_ERROR"
+      ]
+    },
+    "ApiRunnerErrorEntry": {
+      "type": "object",
+      "description": "Typed api_runner domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ApiRunnerErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "ApiRunnerUsage": {
+      "type": "object",
+      "description": "Non-sensitive usage metadata from the claude -p result event.",
+      "additionalProperties": false,
+      "required": ["total_cost_usd", "num_turns", "duration_ms"],
+      "properties": {
+        "total_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "num_turns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_tokens": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        },
+        "output_tokens": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null
+        }
+      }
+    },
+    "ApiRunnerResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "model",
+        "cwd",
+        "dry_run",
+        "argv",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/ApiRunnerMode"
+        },
+        "model": {
+          "$ref": "#/$defs/ApiRunnerModel"
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "argv": {
+          "type": "array",
+          "description": "claude argv without the prompt text.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "api_key_source": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApiRunnerUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "result_path": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiRunnerErrorEntry"
+          }
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "common/envelope.schema.json#/$defs/ReturnEntry"
+          }
+        }
+      }
+    },
+    "ApiRunnerEffort": {
+      "type": "string",
+      "description": "Closed effort levels accepted by the runner.",
+      "enum": ["low", "medium", "high", "xhigh"]
+    },
+    "ApiRunnerSpec": {
+      "type": "object",
+      "description": "Validated inputs for one isolated claude -p run.",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "effort",
+        "cwd",
+        "max_turns",
+        "max_budget_usd",
+        "timeout_sec",
+        "config_dir",
+        "claude_bin"
+      ],
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/ApiRunnerModel"
+        },
+        "effort": {
+          "$ref": "#/$defs/ApiRunnerEffort"
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_turns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "max_budget_usd": {
+          "type": "number",
+          "maximum": 25,
+          "minimum": 0.01
+        },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7200
+        },
+        "config_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claude_bin": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ApiRunnerRunResult": {
+      "type": "object",
+      "description": "Result of one guarded claude -p run (the response envelope carries these as errors).",
+      "additionalProperties": false,
+      "required": ["guard_errors"],
+      "properties": {
+        "api_key_source": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApiRunnerUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "result_text": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "guard_errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApiRunnerErrorEntry"
+          }
+        }
+      }
+    }
+  }
+}

@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
 from tasks_py_loader import load_module
 
 
@@ -233,6 +234,8 @@ def test_schema_contract_check_nested_composites_and_doctor_multi_lock_entries(
         (fake_home / ".config").mkdir(parents=True)
         (fake_home / ".config" / "mise").symlink_to(v2_mise)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        # GitHub Actions sets CI=true, which makes check_host_option_a skip host checks.
+        monkeypatch.delenv("CI", raising=False)
 
         tasks_json = json.dumps(
             [
@@ -1712,3 +1715,684 @@ def test_doctor_checks_registry_aliases_and_container_lock_and_daemon_health(
             for e in h_errs
         )
         assert not any("_valid" in e for e in h_errs)
+
+
+def test_repo_scope_keeps_committed_file_checks(monkeypatch, tmp_path) -> None:
+    """Greptile PR #32: repo scope must skip only live-host probes, not repo assertions."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    assert doc_mod._live_host_skipped() is True
+    errs, _ = doc_mod.check_mise_binary_integrity(tmp_path)
+    assert any("missing unix/home/.config/dcg/config.toml" in e for e in errs)
+    host_errs, msg = doc_mod.check_host_option_a(tmp_path, strict_host=True)
+    assert host_errs == [] and msg.startswith("DOTFILES_DOCTOR_SCOPE=repo:")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "full")
+    assert doc_mod._live_host_skipped() is False
+
+
+def _reviewer_repo(tmp_path: Path, mutate=None) -> Path:
+    """Copy the real reviewer-plugins manifest/lib/tasks/opencode.json into a temp repo."""
+    import shutil as _sh
+
+    src = Path(__file__).resolve().parents[1]
+    rels = [
+        "unix/home/.config/mise/assets/reviewer-plugins.json",
+        "unix/home/.config/mise/lib/reviewer_plugins.py",
+        "unix/home/.config/mise/tasks/bootstrap/reviewer-plugins",
+        "unix/home/.config/mise/tasks/repowise/guard",
+        "unix/home/.config/mise/tasks/repowise/init",
+        "unix/home/.config/mise/tasks/host/prune-mcps",
+        "unix/home/.config/opencode/opencode.json",
+    ]
+    for rel in rels:
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _sh.copy2(src / rel, dst)
+    if mutate:
+        mutate(tmp_path)
+    return tmp_path
+
+
+def test_reviewer_plugins_repo_scope_passes_on_real_tree(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    monkeypatch.delenv("CI", raising=False)
+    errs, msg = doc_mod.check_reviewer_plugins(_reviewer_repo(tmp_path))
+    assert errs == [] and msg.startswith("DOTFILES_DOCTOR_SCOPE=repo:")
+
+
+@pytest.mark.parametrize(
+    ("edit", "needle"),
+    [
+        (lambda m: m["claude"]["plugins"].append("bad id"), "not name@marketplace"),
+        (
+            lambda m: m["codex"]["plugins"].append("x@nomkt"),
+            "no declared marketplace nomkt",
+        ),
+        (
+            lambda m: m["claude"]["connected_mcps"].append("plugin:ghost:ghost"),
+            "no matching Claude plugin",
+        ),
+        (
+            lambda m: m["claude"]["retired_mcps"].append("not-pruned"),
+            "missing from host:prune-mcps",
+        ),
+        (
+            lambda m: m["opencode"]["plugins"].append("other@1.0.0"),
+            "opencode.json plugins missing",
+        ),
+    ],
+)
+def test_reviewer_plugins_repo_scope_rejects_drift(
+    monkeypatch, tmp_path, edit, needle
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+
+    def mutate(root: Path) -> None:
+        mp = root / "unix/home/.config/mise/assets/reviewer-plugins.json"
+        data = json.loads(mp.read_text(encoding="utf-8"))
+        edit(data)
+        mp.write_text(json.dumps(data), encoding="utf-8")
+
+    errs, _ = doc_mod.check_reviewer_plugins(_reviewer_repo(tmp_path, mutate))
+    assert any(needle in e for e in errs), errs
+
+
+def test_reviewer_plugins_live_not_required_off_mac(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.setattr(doc_mod.sys, "platform", "linux")
+    errs, msg = doc_mod.check_reviewer_plugins(_reviewer_repo(tmp_path))
+    assert errs == [] and "not the Mac host" in msg
+
+
+def test_reviewer_plugins_live_reports_unconnected_mcp(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
+    root = _reviewer_repo(tmp_path / "repo")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    lib = doc_mod._load_reviewer_plugins_lib(root)
+    monkeypatch.setattr(doc_mod, "_load_reviewer_plugins_lib", lambda _r: lib)
+    manifest = lib.load_manifest(
+        root / "unix/home/.config/mise/assets/reviewer-plugins.json"
+    )
+    monkeypatch.setattr(
+        lib, "_bin", lambda name, _h: name if name == "claude" else None
+    )
+    monkeypatch.setattr(
+        lib, "claude_state", lambda _c: (set(manifest["claude"]["plugins"]), set())
+    )
+    statuses = {"plugin:graphify:graphify": "! Needs authentication"}
+    monkeypatch.setattr(
+        lib,
+        "claude_mcp_status",
+        lambda _c, n: (
+            None
+            if n in manifest["claude"]["retired_mcps"]
+            else statuses.get(n, "\u2714 Connected")
+        ),
+    )
+    errs, _ = doc_mod.check_reviewer_plugins(root)
+    assert any("plugin:graphify:graphify not Connected" in e for e in errs), errs
+    assert not any("Not Connected" in e or "coderabbit" in e for e in errs)
+
+
+def test_is_connected_rejects_not_connected(tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    assert lib.is_connected("\u2714 Connected") and lib.is_connected("Connected")
+    for bad in ("\u2718 Not Connected", "! Needs authentication", "", None):
+        assert not lib.is_connected(bad)
+
+
+@pytest.mark.parametrize(
+    ("existing", "expect_guarded_after"),
+    [
+        (None, True),
+        ("embedder: local\n", True),
+        ("distill:\n    commands:\n        enabled: false\n", True),
+        ('distill:\n  commands:\n\n    enabled: "false"\n', True),
+        ("distill: {commands: {enabled: false}}\n", True),
+        ("distill:\r\n  commands:\r\n    permission: off\r\n", True),
+        ("distill:\n  enabled: true\n", False),
+    ],
+)
+def test_repowise_guard_fallback_without_cli(
+    monkeypatch, tmp_path, existing, expect_guarded_after
+) -> None:
+    """Stdlib fallback (no repowise CLI) recognises valid YAML shapes; never clobbers a distill block."""
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    monkeypatch.setattr(lib, "repowise_python", lambda home=None: None)
+    repo = tmp_path / "dev" / "org" / "proj"
+    (repo / ".repowise").mkdir(parents=True)
+    if existing is not None:
+        (repo / ".repowise" / "config.yaml").write_bytes(existing.encode())
+    assert lib.repowise_repos([tmp_path / "dev"]) == [repo]
+    result = lib.apply_guard(repo)
+    assert lib.guarded(repo) is expect_guarded_after, result
+    if not expect_guarded_after:
+        assert result.startswith("MANUAL")
+
+
+def test_repowise_guard_comment_alone_is_not_a_guard(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    monkeypatch.setattr(lib, "repowise_python", lambda home=None: None)
+    repo = tmp_path / "proj"
+    (repo / ".repowise").mkdir(parents=True)
+    (repo / ".repowise" / "config.yaml").write_text(
+        f"# {lib.GUARD_LINE}\nembedder: local\n"
+    )
+    assert lib.guarded(repo) is False
+
+
+@pytest.mark.parametrize("with_uv_lock", [True, False])
+def test_mise_lock_integrity_accepts_pypi_uv_lock_dir(
+    monkeypatch, tmp_path, with_uv_lock
+) -> None:
+    """pypi tools lock a uv graph dir instead of per-platform URLs; missing files still fail."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    lock_dir = mise_dir / "locks" / "pypi-repowise" / "0.62.0~abc"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    if with_uv_lock:
+        (lock_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    for f in lock_dir.iterdir():
+        f.chmod(0o644)
+    (mise_dir / "config.toml").write_text(
+        '[tools]\n"pypi:repowise" = { version = "0.62.0", python = "3.13" }\n'
+        '[settings]\nlockfile_platforms = ["linux-x64", "macos-arm64"]\n',
+        encoding="utf-8",
+    )
+    (mise_dir / "mise.lock").write_text(
+        '[[tools."pypi:repowise"]]\nversion = "0.62.0"\nbackend = "pypi:repowise"\n'
+        'uv = { path = "locks/pypi-repowise/0.62.0~abc", digest = "sha256:00" }\n',
+        encoding="utf-8",
+    )
+    (mise_dir / "mise.lock").chmod(0o644)
+    errs = doc_mod.check_mise_lock_integrity(tmp_path)
+    assert not any("platforms." in e or "Unreferenced" in e for e in errs), errs
+    assert any("uv.lock" in e for e in errs) is (not with_uv_lock), errs
+
+
+def test_config_hygiene_allows_backend_for_tools_not_in_registry(
+    monkeypatch, tmp_path
+) -> None:
+    """Short-name rule applies only when a registry entry exists; PyPI/GitHub-only tools never block."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[tools]\n"pipx:repowise" = "0.62.0"\n"github:example/notinregistry" = "1.0.0"\nhk = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        doc_mod,
+        "_load_mise_registry_map",
+        lambda: {"aqua:jdx/hk": ("hk", ["aqua:jdx/hk"])},
+    )
+    errs = doc_mod.check_config_hygiene(tmp_path)
+    assert not any("canonical mise registry short name" in e for e in errs), errs
+
+
+def test_repowise_fallback_rejects_values_repowise_reads_as_enabled(tmp_path) -> None:
+    """`enabled: disabled` is not a repowise FALSY spelling, so it must not count as guarded."""
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    assert not lib._guarded_fallback("distill:\n  commands:\n    enabled: disabled\n")
+    assert lib._guarded_fallback("distill:\n  commands:\n    permission: deny\n")
+
+
+def test_reviewer_plugins_lib_parses_on_python39() -> None:
+    """Hooks/bootstrap may run under /usr/bin/python3 (3.9): no PEP 758 bare-tuple excepts."""
+    import ast
+
+    src = (
+        Path(__file__).resolve().parents[1]
+        / "unix/home/.config/mise/lib/reviewer_plugins.py"
+    ).read_text(encoding="utf-8")
+    ast.parse(src, feature_version=(3, 9))
+
+
+def test_repowise_telemetry_reads_persistent_consent(tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    home = tmp_path / "home"
+    assert lib.repowise_telemetry_enabled(home) is True
+    (home / ".repowise").mkdir(parents=True)
+    (home / ".repowise" / "platform.json").write_text('{"telemetry_enabled": false}')
+    assert lib.repowise_telemetry_enabled(home) is False
+
+
+@pytest.mark.parametrize(
+    ("rc", "failed"), [(0, False), (1, True), (-9, True), (130, True)]
+)
+def test_reviewer_sync_failure_detection(tmp_path, rc, failed) -> None:
+    """A CLI killed by a signal (negative rc) must count as a failed sync."""
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    line = lib._result("claude plugin install x@y", rc, "boom\nreal error")
+    assert lib.sync_failed([line, "ok: /tmp/rc=1-repo"]) is failed
+    if failed:
+        assert line.endswith("real error")
+    assert lib.sync_failed(["guarded: /home/u/dev/rc=5"]) is False
+
+
+def test_reviewer_sync_keeps_retired_mcp_until_replacements_installed(
+    monkeypatch, tmp_path
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(lib, "_bin", lambda n, _h: n if n == "claude" else None)
+    monkeypatch.setattr(
+        lib, "claude_state", lambda _c: (set(), {"graphify", "repowise"})
+    )
+    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: "✔ Connected")
+    monkeypatch.setattr(
+        lib, "_run", lambda argv, timeout=180: calls.append(argv) or (1, "nope")
+    )
+    monkeypatch.setattr(lib, "repowise_repos", lambda _r: [])
+    manifest = {
+        "claude": {
+            "plugins": ["graphify@graphify"],
+            "retired_mcps": ["graphify-reviews"],
+        }
+    }
+    log = lib.sync(manifest, tmp_path)
+    assert not any(a[:3] == ["claude", "mcp", "remove"] for a in calls)
+    assert lib.sync_failed(log)
+    assert any("keep graphify-reviews" in ln for ln in log)
+
+
+@pytest.mark.parametrize("pre_existing", [False, True])
+def test_repowise_init_cleans_only_its_own_parent_stub(tmp_path, pre_existing) -> None:
+    """When repowise redirects to a child repo, drop the parent stub only if this run created it."""
+    import shutil as _sh
+
+    root = Path(__file__).resolve().parents[1]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "repowise"
+    # Fake `repowise init <args> <dir>`: index the single child repo instead of <dir>.
+    fake.write_text(
+        '#!/bin/sh\nfor a; do last="$a"; done\nmkdir -p "$last/app/.repowise" && touch "$last/app/.repowise/wiki.db"\n'
+    )
+    fake.chmod(0o755)
+    work = tmp_path / "work"
+    (work / "app").mkdir(parents=True)
+    if pre_existing:
+        (work / ".repowise").mkdir()
+        (work / ".repowise" / "config.yaml").write_text("embedder: local\n")
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+    }
+    task = root / "unix/home/.config/mise/tasks/repowise/init"
+    subprocess.run(
+        [_sh.which("bash") or "bash", str(task), str(work)],
+        check=True,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert (work / "app" / ".repowise" / "config.yaml").is_file()
+    if pre_existing:
+        assert "embedder: local" in (work / ".repowise" / "config.yaml").read_text()
+    else:
+        assert not (work / ".repowise").exists()
+
+
+def test_config_hygiene_rejects_global_flag_fetch_killers(
+    tmp_path, monkeypatch
+) -> None:
+    """DO_NOT_TRACK et al. in global mise [env] drop /ship and /steward from every new Claude session."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[env]\nDO_NOT_TRACK = "1"\nREPOWISE_TELEMETRY_DISABLED = "1"\n'
+    )
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any("DO_NOT_TRACK" in e and "/ship" in e for e in errors), errors
+    assert not any("REPOWISE_TELEMETRY_DISABLED" in e for e in errors), errors
+    frag = mise_dir / "conf.d" / "x" / "mise.toml"
+    frag.parent.mkdir(parents=True)
+    frag.write_text('[env]\nDISABLE_TELEMETRY = "1"\n')
+    (tmp_path / "mise.toml").write_text('[env]\nCLAUDE_CODE_DISABLE_SHIP = "1"\n')
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any(
+        "conf.d/x/mise.toml" in e and "DISABLE_TELEMETRY" in e for e in errors
+    ), errors
+    assert any(
+        e.startswith("config-hygiene: mise.toml") and "CLAUDE_CODE_DISABLE_SHIP" in e
+        for e in errors
+    ), errors
+
+
+def test_config_hygiene_flag_fetch_edge_cases(tmp_path, monkeypatch) -> None:
+    """`= false` unsets (allowed); FEATURE_FLAGS, Dockerfile ENV and unparsable fragments are reported."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[env]\nDO_NOT_TRACK = false\nCLAUDE_CODE_DISABLE_FEATURE_FLAGS = "1"\n'
+    )
+    bad = mise_dir / "conf.d" / "bad" / "mise.toml"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("[env\n")
+    dockerfile = tmp_path / "docker" / "ubuntu" / "Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text(
+        '# DO_NOT_TRACK=1 is fine in a comment\nRUN DO_NOT_TRACK=1 true\nENV container=docker \\\n    DISABLE_TELEMETRY=1\nENV DISABLE_GROWTHBOOK 1\nENV\tCLAUDE_CODE_DISABLE_SHIP=1\nENV EXAMPLE="env DO_NOT_TRACK=1 api_runner"\n'
+    )
+    monkeypatch.setattr(
+        doc_mod,
+        "_load_mise_registry_map",
+        lambda: (_ for _ in ()).throw(OSError("no mise")),
+    )
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert not any("DO_NOT_TRACK" in e for e in errors), errors
+    assert any("CLAUDE_CODE_DISABLE_FEATURE_FLAGS" in e for e in errors), errors
+    assert any("conf.d/bad/mise.toml" in e and "cannot parse" in e for e in errors), (
+        errors
+    )
+    assert any(
+        "docker/ubuntu/Dockerfile" in e and "DISABLE_TELEMETRY" in e for e in errors
+    ), errors
+    assert any("failed to load `mise registry`" in e for e in errors), errors
+    assert any(
+        "docker/ubuntu/Dockerfile" in e and "DISABLE_GROWTHBOOK" in e for e in errors
+    ), errors
+    assert not any("Dockerfile" in e and "DO_NOT_TRACK" in e for e in errors), errors
+    assert any("Dockerfile" in e and "CLAUDE_CODE_DISABLE_SHIP" in e for e in errors), (
+        errors
+    )
+
+
+def test_config_hygiene_flag_fetch_shell_and_extra_configs(tmp_path) -> None:
+    """Managed shell exports, dotted/flat mise configs and `ENV<TAB>` are caught; command prefixes are not."""
+    doc_mod = _load_task_module("doctor_checks")
+    home = tmp_path / "unix" / "home"
+    mise_dir = home / ".config" / "mise"
+    (mise_dir / "conf.d").mkdir(parents=True)
+    (mise_dir / "conf.d" / "flat.toml").write_text('[env]\nDO_NOT_TRACK = "1"\n')
+    (tmp_path / ".mise.toml").write_text('[env]\nDISABLE_TELEMETRY = "1"\n')
+    (home / ".zshenv").write_text(
+        "export DO_NOT_TRACK=1\nDISABLE_GROWTHBOOK=1 some-cmd\n"
+    )
+    zrc = home / ".config" / "zsh" / ".zshrc.d" / "50-x.zsh"
+    zrc.parent.mkdir(parents=True)
+    zrc.write_text("# export CLAUDE_CODE_DISABLE_SHIP=1\nCLAUDE_CODE_DISABLE_SHIP=1\n")
+    dockerfile = tmp_path / "docker" / "x" / "Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("ENV\tDO_NOT_TRACK=1\n")
+    errors = doc_mod._check_flag_fetch_env(tmp_path, mise_dir)
+    assert any("conf.d/flat.toml" in e and "DO_NOT_TRACK" in e for e in errors), errors
+    assert any(".mise.toml" in e and "DISABLE_TELEMETRY" in e for e in errors), errors
+    assert any(".zshenv exports DO_NOT_TRACK" in e for e in errors), errors
+    assert not any("DISABLE_GROWTHBOOK" in e for e in errors), errors
+    assert any("50-x.zsh exports CLAUDE_CODE_DISABLE_SHIP" in e for e in errors), errors
+    assert any("docker/x/Dockerfile" in e and "DO_NOT_TRACK" in e for e in errors), (
+        errors
+    )
+
+
+def test_real_global_env_keeps_ship_available() -> None:
+    root = Path(__file__).resolve().parents[1]
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = root / "unix" / "home" / ".config" / "mise"
+    assert doc_mod._check_flag_fetch_env(root, mise_dir) == []
+
+
+def test_config_hygiene_rejects_auto_venv_on_path(tmp_path, monkeypatch) -> None:
+    """uv_venv_auto / [env] _.python.venv put .venv/bin on PATH, which blocks the /ship watch."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text('[env]\n_.python.venv = { path = ".venv" }\n')
+    (tmp_path / "mise.toml").write_text('[settings]\npython.uv_venv_auto = "source"\n')
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any(
+        e.startswith("config-hygiene: mise.toml") and "uv_venv_auto" in e
+        for e in errors
+    ), errors
+    assert any("config.toml [env] _.python.venv" in e for e in errors), errors
+    (tmp_path / "mise.toml").write_text("[settings]\npython.uv_venv_auto = false\n")
+    (mise_dir / "config.toml").write_text("[env]\nX = '1'\n")
+    assert not any("venv" in e for e in doc_mod.check_config_hygiene(tmp_path))
+
+
+def test_config_hygiene_venv_guard_tolerates_odd_tables(tmp_path, monkeypatch) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        'settings = "x"\n[env]\nMISE_PYTHON_UV_VENV_AUTO = "source"\n'
+    )
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any("uv_venv_auto = 'source'" in e for e in errors), errors
+
+
+def test_no_repo_skills_allows_claude_runtime_state(tmp_path) -> None:
+    """/ship watch timers create .claude/scheduled_tasks.lock; only skill dirs may fail the check."""
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    cmd = tomllib.loads((root / "mise.toml").read_text(encoding="utf-8"))["doctor"][
+        "checks"
+    ]["no-repo-skills"]["run"]
+
+    def run() -> int:
+        return subprocess.run(["bash", "-c", cmd], cwd=tmp_path, check=False).returncode
+
+    assert run() == 0
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "scheduled_tasks.lock").write_text("")
+    assert run() == 0
+    (tmp_path / ".claude" / "skills").mkdir()
+    assert run() != 0
+    (tmp_path / ".claude" / "skills").rmdir()
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
+    assert run() != 0
+
+
+def test_claude_ship_env_flags_managed_settings(tmp_path, monkeypatch) -> None:
+    """Managed Claude settings must not disable feature-flag fetching or the ship skills."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    assets = tmp_path / "unix/home/.config/mise/assets/claude"
+    assets.mkdir(parents=True)
+    (assets / "env-common.json").write_text('{"env": {"CLAUDE_CODE_BRIEF": "1"}}')
+    errors, msg = doc_mod.check_claude_ship_env(tmp_path)
+    assert errors == [] and "not probed" in msg
+    (assets / "bad.json").write_text(
+        '{"env": {"DISABLE_TELEMETRY": "1"}, "skillOverrides": {"steward": "off"}, "disableBundledSkills": true}'
+    )
+    (assets / "env-mac.json.tera").write_text(
+        '{"env": {"DO_NOT_TRACK": "{{ x }}"}, "skillOverrides": {"ship-local": "off"}, "disableBundledSkills": true}'
+    )
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    joined = "\n".join(errors)
+    for needle in (
+        "DISABLE_TELEMETRY",
+        "turns off steward",
+        "disableBundledSkills",
+        "env-mac.json.tera sets DO_NOT_TRACK",
+        "env-mac.json.tera skillOverrides turns off ship-local",
+        "env-mac.json.tera disableBundledSkills",
+    ):
+        assert needle in joined, errors
+
+
+def test_real_managed_claude_settings_keep_ship(monkeypatch) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    errors, _ = doc_mod.check_claude_ship_env(Path(__file__).resolve().parents[1])
+    assert errors == []
+
+
+def _pr_ship_sandbox(tmp_path, checks: str) -> tuple[list[str], dict[str, str]]:
+    """Temp wt/* repo with a bare origin and a fake gh that serves canned API answers."""
+    root = Path(__file__).resolve().parents[1]
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "wt/demo", str(work)], check=True)
+    git = [
+        "git",
+        "-C",
+        str(work),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+    ]
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+    subprocess.run([*git, "remote", "add", "origin", str(origin)], check=True)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (tmp_path / "checks.tsv").write_text(checks)
+    fake = bindir / "gh"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  "api repos/ray-manaloto/dotfiles-v2 --jq .allow_auto_merge") echo false ;;\n'
+        '  "pr list"*) echo 7 ;;\n'
+        "  *autoMergeRequest*) echo false ;;\n"
+        '  *rules/branches/main*) [ -n "$FAKE_GH_FAIL_RULES" ] && exit 1; printf "Lint, Gates, and Tests\\nBootstrap Convergence\\n" ;;\n'
+        f'  *check-runs*) cat "{tmp_path}/checks.tsv" ;;\n'
+        "  *headRefOid*) git rev-parse HEAD ;;\n"
+        '  *"/comments"*) : ;;\n'
+        '  "event listen"*) exit 8 ;;\n'
+        '  *) echo unexpected gh "$*" >&2; exit 1 ;;\n'
+        "esac\n"
+    )
+    fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "usage_skip_local_gates": "1",
+        "usage_max_waits": "2",
+        # The sandbox push must not run this host's global config-based git hooks (hk, gh-doctor).
+        "HK": "0",
+    }
+    return ["/bin/bash", str(root / "tasks/pr/ship")], {
+        **env,
+        "PWD": str(work),
+        "_WORK": str(work),
+    }
+
+
+@pytest.mark.parametrize(
+    ("checks", "code", "needle"),
+    [
+        (
+            "Lint, Gates, and Tests\tcompleted\tsuccess\nBootstrap Convergence\tcompleted\tsuccess\n",
+            0,
+            "READY #7",
+        ),
+        (
+            "Lint, Gates, and Tests\tcompleted\tfailure\nBootstrap Convergence\tcompleted\tsuccess\n",
+            1,
+            "RED",
+        ),
+        # A check whose name only ends in a required name must not count (exact match).
+        (
+            "Not Bootstrap Convergence\tcompleted\tsuccess\nLint, Gates, and Tests\tcompleted\tsuccess\n",
+            2,
+            "TIMEOUT",
+        ),
+    ],
+)
+def test_pr_ship_verdicts(tmp_path, checks, code, needle) -> None:
+    cmd, env = _pr_ship_sandbox(tmp_path, checks)
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    assert needle in proc.stdout + proc.stderr
+    if code == 0:
+        assert "--merge --match-head-commit" in proc.stdout
+
+
+def test_pr_ship_api_failure_exits_4(tmp_path) -> None:
+    """A GitHub API outage must not look like a red check, a refusal, or a moved head."""
+    cmd, env = _pr_ship_sandbox(tmp_path, "")
+    env |= {"FAKE_GH_FAIL_RULES": "1", "PR_SHIP_RETRY_SLEEP": "0"}
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+    assert "GitHub API unavailable" in proc.stderr
+
+
+def test_pr_ship_final_read_after_last_wait(tmp_path) -> None:
+    """A result that lands during the last wait is reported, not turned into a timeout."""
+    cmd, env = _pr_ship_sandbox(tmp_path, "")
+    checks = tmp_path / "checks.tsv"
+    # The fake gh's `event listen` writes the final state, simulating CI finishing during the wait.
+    fake = tmp_path / "bin" / "gh"
+    fake.write_text(
+        fake.read_text().replace(
+            '"event listen"*) exit 8 ;;',
+            f'"event listen"*) printf "Lint, Gates, and Tests\\tcompleted\\tfailure\\nBootstrap Convergence\\tcompleted\\tsuccess\\n" > "{checks}"; exit 8 ;;',
+        )
+    )
+    env["usage_max_waits"] = "1"
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "RED" in proc.stderr
+
+
+def test_claude_ship_env_live_without_settings_file(tmp_path, monkeypatch) -> None:
+    """A host with no ~/.claude/settings.json has nothing that disables /ship."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    for name in doc_mod._FLAG_FETCH_KILLERS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(doc_mod.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / "unix/home/.config/mise/assets/claude").mkdir(parents=True)
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert errors == []
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.json").write_text('{"env": {"DO_NOT_TRACK": "1"}}')
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert any("~/.claude/settings.json env sets DO_NOT_TRACK" in e for e in errors), (
+        errors
+    )

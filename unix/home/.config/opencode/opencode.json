@@ -6,5 +6,18 @@
   "instructions": ["~/.agents/AGENTS.md", "~/.config/opencode/AGENTS.md"],
   "compaction": {
     "background": false
+  },
+  "plugins": ["graphify-opencode@1.1.1"],
+  "mcp": {
+    "servers": {
+      "repowise": {
+        "type": "local",
+        "command": ["repowise", "mcp"],
+        "environment": {
+          "DO_NOT_TRACK": "1",
+          "REPOWISE_TELEMETRY_DISABLED": "1"
+        }
+      }
+    }
   }
 }
