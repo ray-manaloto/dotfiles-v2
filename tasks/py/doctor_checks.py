@@ -2581,12 +2581,20 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
                 errors += _claude_settings_ship_errors(rel, json.loads(text))
             except ValueError as exc:
                 errors.append(f"claude-ship-env: {rel}: invalid JSON: {exc}")
-        elif m := killer_key.search(
-            text
-        ):  # templates (.json.tera) are not JSON until rendered
-            errors.append(
-                f"claude-ship-env: {rel} sets {m.group(1)}; it removes /ship and /steward"
-            )
+        else:  # templates (.json.tera) are not JSON until rendered: match the same three settings textually
+            if m := killer_key.search(text):
+                errors.append(
+                    f"claude-ship-env: {rel} sets {m.group(1)}; it removes /ship and /steward"
+                )
+            for skill in _SHIP_SKILLS:
+                if re.search(rf'"{skill}"\s*:\s*"off"', text, re.I):
+                    errors.append(
+                        f"claude-ship-env: {rel} skillOverrides turns off {skill}"
+                    )
+            if re.search(r'"disableBundledSkills"\s*:\s*true', text):
+                errors.append(
+                    f"claude-ship-env: {rel} disableBundledSkills removes /ship and /steward"
+                )
     if errors or _live_host_skipped():
         return errors, (
             _skip_reason(

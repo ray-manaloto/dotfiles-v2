@@ -2222,7 +2222,9 @@ def test_claude_ship_env_flags_managed_settings(tmp_path, monkeypatch) -> None:
     (assets / "bad.json").write_text(
         '{"env": {"DISABLE_TELEMETRY": "1"}, "skillOverrides": {"steward": "off"}, "disableBundledSkills": true}'
     )
-    (assets / "env-mac.json.tera").write_text('{"env": {"DO_NOT_TRACK": "{{ x }}"}}')
+    (assets / "env-mac.json.tera").write_text(
+        '{"env": {"DO_NOT_TRACK": "{{ x }}"}, "skillOverrides": {"ship-local": "off"}, "disableBundledSkills": true}'
+    )
     errors, _ = doc_mod.check_claude_ship_env(tmp_path)
     joined = "\n".join(errors)
     for needle in (
@@ -2230,6 +2232,8 @@ def test_claude_ship_env_flags_managed_settings(tmp_path, monkeypatch) -> None:
         "turns off steward",
         "disableBundledSkills",
         "env-mac.json.tera sets DO_NOT_TRACK",
+        "env-mac.json.tera skillOverrides turns off ship-local",
+        "env-mac.json.tera disableBundledSkills",
     ):
         assert needle in joined, errors
 
@@ -2346,3 +2350,29 @@ def test_pr_ship_api_failure_exits_4(tmp_path) -> None:
     )
     assert proc.returncode == 4, proc.stdout + proc.stderr
     assert "GitHub API unavailable" in proc.stderr
+
+
+def test_pr_ship_final_read_after_last_wait(tmp_path) -> None:
+    """A result that lands during the last wait is reported, not turned into a timeout."""
+    cmd, env = _pr_ship_sandbox(tmp_path, "")
+    checks = tmp_path / "checks.tsv"
+    # The fake gh's `event listen` writes the final state, simulating CI finishing during the wait.
+    fake = tmp_path / "bin" / "gh"
+    fake.write_text(
+        fake.read_text().replace(
+            '"event listen"*) exit 8 ;;',
+            f'"event listen"*) printf "Lint, Gates, and Tests\\tcompleted\\tfailure\\nBootstrap Convergence\\tcompleted\\tsuccess\\n" > "{checks}"; exit 8 ;;',
+        )
+    )
+    env["usage_max_waits"] = "1"
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "RED" in proc.stderr

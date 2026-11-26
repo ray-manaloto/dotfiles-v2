@@ -75,7 +75,8 @@ state() {
 	ghq api "repos/${repo}/commits/${head}/check-runs?per_page=100" --jq '.check_runs[]|"\(.name)\t\(.status)\t\(.conclusion // "")"'
 }
 verdict=""
-for ((i = 1; i <= max_waits; i++)); do
+# max_waits waits, plus one final read after the last wait so a result that lands then is not reported as a timeout.
+for ((i = 0; i <= max_waits; i++)); do
 	runs="$(state)"
 	done_n=0
 	failed=""
@@ -95,6 +96,7 @@ for ((i = 1; i <= max_waits; i++)); do
 		verdict="GREEN"
 		break
 	fi
+	((i < max_waits)) || break
 	rc=0
 	gh event listen --resource "${url}" \
 		--event com.github.pull_request.check_suite.status.changed.v1,com.github.pull_request.head.changed.v1,com.github.pull_request.state.changed.v1 \
@@ -108,9 +110,11 @@ for ((i = 1; i <= max_waits; i++)); do
 done
 
 # 5. Bot sweep (advisory: bots review once and may be quota-limited; the lead reads and fixes real findings).
-echo "pr:ship: bot line comments on #${pr}:"
-gh api "repos/${repo}/pulls/${pr}/comments?per_page=100" \
-	--jq '.[]|select(.user.type=="Bot")|"  \(.user.login) @\(.commit_id[0:7]) \(.path):\(.line // .original_line)"' 2>/dev/null || true
+echo "pr:ship: bot line comments on #${pr} (read each; fix real findings):"
+if ! gh api --paginate "repos/${repo}/pulls/${pr}/comments?per_page=100" \
+	--jq '.[]|select(.user.type=="Bot")|"  \(.user.login) @\(.commit_id[0:7]) \(.path):\(.line // .original_line) \(.html_url)"' 2>/dev/null; then
+	echo "pr:ship: WARNING: bot comment sweep failed; read the PR's comments manually" >&2
+fi
 
 case "${verdict}" in
 GREEN)
