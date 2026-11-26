@@ -1,6 +1,12 @@
 name: OpenAI PR review
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths-ignore:
+      - docs/**
+      - '**/*.md'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -16,8 +22,8 @@ on:
 permissions: {}
 
 concurrency:
-  group: openai-pr-review-${{ inputs.pr_number }}
-  cancel-in-progress: false
+  group: openai-pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -26,27 +32,83 @@ defaults:
 jobs:
   review:
     name: Advisory OpenAI review of one PR's patches
-    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    if: >-
+      ${{ (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.repository.private) ||
+      (github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
     permissions:
       contents: read  # check out the trusted default-branch reviewer code
       pull-requests: read  # read PR metadata and file patches via the REST API
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: openai-pr-review
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
-      - name: Check out only the dispatched default-branch commit
+      - name: Check out the trusted base revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
       - name: Run offline reviewer unit tests
         run: python3 -B -m unittest discover -s .github/openai-review -p 'test_*.py'
       - name: Review file patches
+        id: review
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
           REPO_PRIVATE: ${{ github.event.repository.private }}
           ALLOW_PRIVATE_DIFF: ${{ inputs.allow_private_diff }}
           GITHUB_TOKEN: ${{ github.token }}
           REVIEW_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
-        run: python3 -B .github/openai-review/review.py
+          REVIEW_OUTPUT_DIR: ${{ runner.temp }}/openai-review
+        run: |
+          if [[ ! -f .github/openai-review/findings.schema.json ]]; then
+            printf '%s\n' 'Structured review is pending rollout to the default branch.' >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          python3 -B .github/openai-review/review.py
+          if [[ -s "${REVIEW_OUTPUT_DIR}/findings.json" ]]; then
+            printf 'identity=%s\n' "$(jq -er '[.pr, .base, .head] | join("-")' "${REVIEW_OUTPUT_DIR}/findings.json")" >> "${GITHUB_OUTPUT}"
+            printf 'actionable=%s\n' "$(jq -er '.findings | if length > 0 then "ready" else "empty" end' "${REVIEW_OUTPUT_DIR}/findings.json")" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Upload the reviewed head and triaged findings
+        id: upload
+        if: ${{ steps.review.outputs.identity != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: openai-review-${{ steps.review.outputs.identity }}-${{ github.run_attempt }}-${{ steps.review.outputs.actionable }}
+          path: ${{ runner.temp }}/openai-review/
+          if-no-files-found: error
+          retention-days: 7
+
+  comment:
+    name: Post the reviewed head and findings
+    needs: review
+    if: ${{ needs.review.outputs.artifact != '' }}
+    permissions:
+      pull-requests: write  # post the advisory comment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Download the review
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          artifact-ids: ${{ needs.review.outputs.artifact }}
+          path: ${{ runner.temp }}/openai-review
+      - name: Post the advisory summary if the PR still matches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          REVIEW_OUTPUT_DIR: ${{ runner.temp }}/openai-review
+        run: |
+          live="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          if jq -e --argjson live "${live}" --arg pr "${PR_NUMBER}" \
+            '.pr == $pr and .head == $live.head.sha and .base == $live.base.sha and $live.state == "open"' \
+            "${REVIEW_OUTPUT_DIR}/findings.json" >/dev/null; then
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body-file "${REVIEW_OUTPUT_DIR}/comment.md"
+          fi
