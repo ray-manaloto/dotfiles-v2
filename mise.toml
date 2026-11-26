@@ -16,7 +16,9 @@ private_user = "{{ env.USER | default(value='') }}"
 [settings]
 exec_auto_install = false
 experimental = true
-python.uv_venv_auto = "source"
+# Never auto-activate .venv: a checkout dir on PATH makes /ship and /steward refuse to watch PRs
+# (code.claude.com/docs/en/ship-command-troubleshooting). Tasks use `uv run` or .venv/bin/python explicitly.
+python.uv_venv_auto = false
 
 [secrets.fnox]
 profile = "infra"

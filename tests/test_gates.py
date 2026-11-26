@@ -2002,11 +2002,58 @@ def test_config_hygiene_rejects_global_flag_fetch_killers(
     ), errors
 
 
-def test_real_global_env_keeps_ship_available() -> None:
-    import tomllib
+def test_config_hygiene_flag_fetch_edge_cases(tmp_path, monkeypatch) -> None:
+    """`= false` unsets (allowed); FEATURE_FLAGS, Dockerfile ENV and unparsable fragments are reported."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text(
+        '[env]\nDO_NOT_TRACK = false\nCLAUDE_CODE_DISABLE_FEATURE_FLAGS = "1"\n'
+    )
+    bad = mise_dir / "conf.d" / "bad" / "mise.toml"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("[env\n")
+    dockerfile = tmp_path / "docker" / "ubuntu" / "Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("ENV container=docker \\\n    DISABLE_TELEMETRY=1\n")
+    monkeypatch.setattr(
+        doc_mod,
+        "_load_mise_registry_map",
+        lambda: (_ for _ in ()).throw(OSError("no mise")),
+    )
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert not any("DO_NOT_TRACK" in e for e in errors), errors
+    assert any("CLAUDE_CODE_DISABLE_FEATURE_FLAGS" in e for e in errors), errors
+    assert any("conf.d/bad/mise.toml" in e and "cannot parse" in e for e in errors), (
+        errors
+    )
+    assert any(
+        "docker/ubuntu/Dockerfile" in e and "DISABLE_TELEMETRY" in e for e in errors
+    ), errors
+    assert any("failed to load `mise registry`" in e for e in errors), errors
 
+
+def test_real_global_env_keeps_ship_available() -> None:
     root = Path(__file__).resolve().parents[1]
     doc_mod = _load_task_module("doctor_checks")
-    for cfg in (root / "unix/home/.config/mise").glob("config*.toml"):
-        env = tomllib.loads(cfg.read_text(encoding="utf-8")).get("env", {})
-        assert not (doc_mod._FLAG_FETCH_KILLERS & set(env)), cfg
+    mise_dir = root / "unix" / "home" / ".config" / "mise"
+    assert doc_mod._check_flag_fetch_env(root, mise_dir) == []
+
+
+def test_config_hygiene_rejects_auto_venv_on_path(tmp_path, monkeypatch) -> None:
+    """uv_venv_auto / [env] _.python.venv put .venv/bin on PATH, which blocks the /ship watch."""
+    doc_mod = _load_task_module("doctor_checks")
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    (mise_dir / "config.toml").write_text('[env]\n_.python.venv = { path = ".venv" }\n')
+    (tmp_path / "mise.toml").write_text('[settings]\npython.uv_venv_auto = "source"\n')
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    errors = doc_mod.check_config_hygiene(tmp_path)
+    assert any(
+        e.startswith("config-hygiene: mise.toml") and "uv_venv_auto" in e
+        for e in errors
+    ), errors
+    assert any("config.toml [env] _.python.venv" in e for e in errors), errors
+    (tmp_path / "mise.toml").write_text("[settings]\npython.uv_venv_auto = false\n")
+    (mise_dir / "config.toml").write_text("[env]\nX = '1'\n")
+    assert not any("venv" in e for e in doc_mod.check_config_hygiene(tmp_path))

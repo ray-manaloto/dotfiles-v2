@@ -1590,16 +1590,77 @@ def _load_mise_registry_map() -> dict[str, list[tuple[str, list[str]]]]:
     return by_backend
 
 
-# Env vars that make Claude Code skip feature-flag fetching (code.claude.com/docs/en/ship-command-troubleshooting).
-# Set globally they silently remove /ship and /steward, so they may only be scoped to a single command.
+# Env vars that make Claude Code skip feature-flag fetching (code.claude.com/docs/en/env-vars#features-that-need-feature-flag-fetching),
+# plus CLAUDE_CODE_DISABLE_SHIP. Set globally they silently remove /ship and /steward, so they may only be scoped to a single command.
 _FLAG_FETCH_KILLERS = frozenset(
     {
+        "CLAUDE_CODE_DISABLE_FEATURE_FLAGS",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
         "CLAUDE_CODE_DISABLE_SHIP",
+        "DISABLE_GROWTHBOOK",
         "DISABLE_TELEMETRY",
         "DO_NOT_TRACK",
     }
 )
+
+
+def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
+    """Reject global [env] / Dockerfile ENV entries that turn off Claude Code feature-flag fetching."""
+    errors: list[str] = []
+    msg = (
+        "it disables Claude Code feature-flag fetching and removes /ship and /steward from every new session "
+        "(scope it per command)"
+    )
+    # Global env files: user config*.toml, conf.d/<topic>/mise.toml fragments, and repo-root/doctor mise configs.
+    env_files = {
+        *mise_dir.glob("config*.toml"),
+        *mise_dir.glob("conf.d/**/mise.toml"),
+        *repo_root.glob("mise.toml"),
+        *repo_root.glob("mise.*.toml"),
+        *repo_root.glob("mise/doctor/mise.toml"),
+    }
+    for env_file in sorted(f for f in env_files if f.is_file()):
+        rel = env_file.relative_to(repo_root).as_posix()
+        try:
+            env_tbl = tomllib.loads(env_file.read_text(encoding="utf-8")).get("env")
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            errors.append(
+                f"config-hygiene: {rel}: cannot parse for [env] flag-fetch check: {exc}"
+            )
+            continue
+        cfg = tomllib.loads(env_file.read_text(encoding="utf-8"))
+        uv_auto = cfg.get("settings", {}).get("python", {}).get("uv_venv_auto", False)
+        if uv_auto not in (False, "false"):
+            errors.append(
+                f"config-hygiene: {rel} sets python.uv_venv_auto = {uv_auto!r}; it puts the checkout's .venv/bin on "
+                "PATH, so /ship and /steward refuse to watch PRs (use `uv run` or .venv/bin/python in tasks)"
+            )
+        if (
+            isinstance(env_tbl, dict)
+            and isinstance(env_tbl.get("_"), dict)
+            and "python" in env_tbl["_"]
+        ):
+            errors.append(
+                f"config-hygiene: {rel} [env] _.python.venv activates a venv on PATH; /ship and /steward refuse to "
+                "watch PRs with a checkout dir on PATH (scope it to a task env instead)"
+            )
+        if isinstance(env_tbl, dict):
+            for name in sorted(_FLAG_FETCH_KILLERS & set(env_tbl)):
+                # mise `[env] NAME = false` unsets an inherited value, which is the safe direction.
+                if env_tbl[name] is False:
+                    continue
+                errors.append(f"config-hygiene: {rel} [env] sets {name}; {msg}")
+    env_re = re.compile(r"\b(" + "|".join(sorted(_FLAG_FETCH_KILLERS)) + r")=")
+    for dockerfile in sorted(repo_root.glob("docker/**/Dockerfile*")):
+        try:
+            text = dockerfile.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for name in sorted(set(env_re.findall(text))):
+            errors.append(
+                f"config-hygiene: {dockerfile.relative_to(repo_root).as_posix()} sets {name}; {msg}"
+            )
+    return errors
 
 
 def check_config_hygiene(repo_root: Path) -> list[str]:
@@ -1610,28 +1671,14 @@ def check_config_hygiene(repo_root: Path) -> list[str]:
     if not main_cfg_path.is_file():
         return ["config-hygiene: missing unix/home/.config/mise/config.toml"]
 
+    errors.extend(_check_flag_fetch_env(repo_root, mise_dir))
+
     try:
         raw_reg_map = _load_mise_registry_map()
     except (OSError, subprocess.SubprocessError) as exc:
-        return [f"config-hygiene: failed to load `mise registry`: {exc}"]
+        return [*errors, f"config-hygiene: failed to load `mise registry`: {exc}"]
 
     reg_map, short_to_backends = _normalize_registry_entries(raw_reg_map)
-
-    # Global env files: user config*.toml, conf.d/<topic>/mise.toml fragments, and the repo-root mise.toml.
-    env_files = [
-        *mise_dir.glob("config*.toml"),
-        *mise_dir.glob("conf.d/**/mise.toml"),
-        repo_root / "mise.toml",
-    ]
-    for env_file in sorted(f for f in env_files if f.is_file()):
-        env_tbl = tomllib.loads(env_file.read_text(encoding="utf-8")).get("env")
-        if isinstance(env_tbl, dict):
-            for name in sorted(_FLAG_FETCH_KILLERS & set(env_tbl)):
-                errors.append(
-                    f"config-hygiene: {env_file.relative_to(repo_root).as_posix()} [env] sets {name}; it disables "
-                    "Claude Code feature-flag fetching and removes /ship and /steward from every new session "
-                    "(scope it per command)"
-                )
 
     # 1, 2, 3, 4 & 6. Registry canonical short names, hyphenated npm prerelease, wrapper checks, and dotfiles paths across config*.toml.
     # Short-name rule: a backend-qualified key is an error only when `mise registry` already maps it to a
