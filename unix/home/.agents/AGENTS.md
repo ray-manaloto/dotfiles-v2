@@ -25,7 +25,13 @@ hosts, Linux containers, and macOS VMs.
   `git add -A` or `git add .`). Never commit secrets, tokens, private
   hostnames (use `pc` or "remote Linux host"), or local `/Users/...` home
   paths. Never enable `set -x` / `bash -x` or print environment variables in
-  shells where tokens or credentials are loaded.
+  shells where tokens or credentials are loaded. Build fake secrets in test
+  fixtures from concatenated pieces (`"not" + "-a-real-one"`, split token
+  prefixes) so `betterleaks` passes without an allowlist entry.
+- **Shell redirects under dcg:** Write redirect targets as literal absolute
+  paths (never `> $VAR/...`), and put multi-line probe scripts in files with
+  the editor's write tool; on a dcg block, switch to that form or ask the
+  owner to approve, never reword the same command.
 - **Tooling scope and ecosystem:** Keep developer tools user-global under
   `~/.config/mise/config.toml` unless a tool is strictly project-specific.
   Keep claude.ai connectors off (`disableClaudeAiConnectors`) unless a

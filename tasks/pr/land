@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#MISE description="Land a merged wt/* PR per docs/pr-shipping-protocol.md: verify the merge and the learn review, fast-forward main, remove the worktree"
+#USAGE flag "--pr <number>" help="PR number (default: the PR whose head is this worktree's branch)"
+#USAGE flag "--skip-learn-check" help="Land without a recorded post-task-learn review (prints a warning)"
+# Run from the merged wt/<slug> worktree. Read-only until every check passes; re-runnable.
+# Exit: 0 landed, 3 refused (not merged, head mismatch, dirty tree, learn review missing), 4 GitHub API unavailable.
+set -euo pipefail
+
+repo="ray-manaloto/dotfiles-v2"
+
+refuse() {
+	echo "pr:land: REFUSED: $*" >&2
+	exit 3
+}
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+[[ ${branch} == wt/* ]] || refuse "branch '${branch}' is not a wt/* branch; run pr:land from the merged worktree"
+slug="${branch#wt/}"
+[[ -z "$(git status --porcelain --untracked-files=no)" ]] || refuse "uncommitted tracked changes in ${slug}; they would be lost"
+head="$(git rev-parse HEAD)"
+
+# 1. The PR merged, at exactly this worktree's head (nothing local left unshipped).
+if [[ -n ${usage_pr:-} ]]; then
+	pr="${usage_pr}"
+else
+	pr="$(gh pr list -R "${repo}" --head "${branch}" --state merged --json number --jq '.[0].number // empty' 2>/dev/null)" ||
+		{
+			echo "pr:land: GitHub API unavailable" >&2
+			exit 4
+		}
+	[[ -n ${pr} ]] || refuse "no merged PR for ${branch}"
+fi
+info="$(gh pr view "${pr}" -R "${repo}" --json state,headRefOid,mergeCommit --jq '"\(.state) \(.headRefOid) \(.mergeCommit.oid // "")"' 2>/dev/null)" ||
+	{
+		echo "pr:land: GitHub API unavailable" >&2
+		exit 4
+	}
+read -r state pr_head merge_commit <<<"${info}"
+[[ ${state} == MERGED ]] || refuse "#${pr} is ${state}, not MERGED"
+[[ ${pr_head} == "${head}" ]] || refuse "#${pr} merged at ${pr_head:0:7} but ${slug} is at ${head:0:7}; push or drop the extra commits first"
+
+# 2. The post-task-learn review for this worktree is recorded (the learn step is part of landing).
+plan_id="$(sed -n 's/^PLAN_ID *= *"\(.*\)"/\1/p' mise.local.toml 2>/dev/null | head -1)"
+reviews="${XDG_STATE_HOME:-${HOME}/.local/state}/agy-learn/reviews.jsonl"
+if [[ -z ${usage_skip_learn_check:-} ]]; then
+	if ! python3 -I -B -c '
+import json, sys
+path, plan_id, slug = sys.argv[1:4]
+try:
+    rows = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
+except OSError:
+    sys.exit(1)
+ok = any(r.get("worktree_slug") == slug or (plan_id and r.get("plan_id") == plan_id) for r in rows)
+sys.exit(0 if ok else 1)
+' "${reviews}" "${plan_id}" "${slug}"; then
+		refuse "no post-task-learn review recorded for ${slug} (PLAN_ID ${plan_id:-unset}); run the post-task-learn skill (mise run learn:record-review --worktree-slug ${slug} --plan-id ${plan_id:-<id>} ...), or pass --skip-learn-check"
+	fi
+else
+	echo "pr:land: WARNING: landing ${slug} without a recorded learn review" >&2
+fi
+
+# 3. Fast-forward the main checkout and confirm the merge commit is on it.
+common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+main_root="$(dirname "${common_dir}")"
+[[ "$(git -C "${main_root}" rev-parse --abbrev-ref HEAD)" == main ]] || refuse "main checkout ${main_root} is not on main"
+[[ -z "$(git -C "${main_root}" status --porcelain --untracked-files=no)" ]] || refuse "main checkout has uncommitted tracked changes"
+git -C "${main_root}" -c core.hooksPath=/dev/null pull -q --ff-only origin main </dev/null
+git -C "${main_root}" merge-base --is-ancestor "${merge_commit}" HEAD || refuse "merge commit ${merge_commit:0:7} is not on main after the pull"
+echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_root}" rev-parse --short HEAD)"
+
+# 4. Remove the worktree and its branch (the branch is merged, so `branch -d` is safe).
+cd "${main_root}"
+MISE_YES=1 mise run -q worktree:rm "${slug}" </dev/null
+echo "pr:land: removed worktree ${slug} and branch ${branch}"
+
+# 5. Read-only learn ledger health (owing reviews, escalations, already-shipped proposals).
+MISE_YES=1 mise run -q learn:heal --check </dev/null || echo "pr:land: WARNING: learn:heal --check reported issues; read them" >&2

@@ -147,6 +147,12 @@ and C++26 workstation setup.
   tool/MCP/auth error first rather than dismissing it, and ask decisions
   interactively via `ask_question` (recommended option first with concise
   pros/cons).
+- **Land merged work without asking:** After a PR merges, record the
+  `post-task-learn` review for the worktree's `PLAN_ID`, then run
+  `mise run pr:land` from that worktree (it verifies the merge, fast-forwards
+  the main checkout, and removes the worktree and its `wt/*` branch; see
+  `docs/pr-shipping-protocol.md`). Never ask the owner whether to clean up a
+  merged worktree.
 - **Prototype workflow & privacy:** Direct push to `main` during prototyping,
   guarded locally by `hk check --all` (includes `betterleaks`) and
   `agy-code-review-guard.py` (run Stage 1 `/code-review:code-review` +
