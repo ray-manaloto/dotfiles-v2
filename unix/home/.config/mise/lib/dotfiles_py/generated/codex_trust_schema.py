@@ -109,7 +109,7 @@ class CodexTrustReturnEntry(BaseModel):
 
 class CodexHookFinding(BaseModel):
     """
-    Diagnostic finding for a single plugin hook or config.toml [hooks.state.*] entry.
+    Diagnostic finding for a single hook or config.toml [hooks.state.*] entry.
     """
 
     model_config = ConfigDict(
@@ -123,6 +123,7 @@ class CodexHookFinding(BaseModel):
     source_path: StrictStr | None = None
     status: CodexHookStatus
     issue: Annotated[StrictStr, Field(min_length=1)]
+    advisory: StrictBool = False
     current_hash: StrictStr | None = None
     expected_bundle_hash: StrictStr | None = None
     trusted_hash: StrictStr | None = None

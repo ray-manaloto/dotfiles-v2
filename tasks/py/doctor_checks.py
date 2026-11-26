@@ -2285,9 +2285,24 @@ def check_codex_managed_config(repo_root: Path) -> tuple[list[str], str]:
     """Validate the managed config and rule files using the installed CLI."""
     codex = shutil.which("codex")
     if not codex:
-        if os.environ.get("CI"):
-            return [], "CI: native Codex config check skipped (CLI unavailable)"
-        return ["install Codex to validate the managed configuration"], ""
+        return [], "not verified: Codex not installed"
+    if _live_host_skipped():
+        return [], _skip_reason("native Codex configuration not verified in repo scope")
+
+    minimum = (0, 172, 0)
+    try:
+        version = subprocess.run(
+            [codex, "--version"], capture_output=True, text=True, timeout=5, check=True
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"could not determine installed Codex version: {exc}"], ""
+    match = re.fullmatch(
+        r"codex(?:-cli)? (\d+)\.(\d+)\.(\d+)(?:[-+][\w.+-]+)?", version
+    )
+    if match is None:
+        return [], f"not verified: unrecognized Codex version output {version!r}"
+    if tuple(map(int, match.groups())) < minimum:
+        return [], f"not verified: {version} is below the supported minimum 0.172.0"
 
     assets = repo_root / "unix/home/.config/mise/assets/codex"
     rules = repo_root / "unix/home/.codex/rules"
@@ -2298,15 +2313,19 @@ def check_codex_managed_config(repo_root: Path) -> tuple[list[str], str]:
         config = isolated_home / "config.toml"
 
         def run_check(label: str, args: list[str]) -> None:
-            result = subprocess.run(
-                [codex, *args],
-                cwd=isolated_home,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            try:
+                result = subprocess.run(
+                    [codex, *args],
+                    cwd=isolated_home,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                )
+            except subprocess.TimeoutExpired:
+                errors.append(f"{label}: native Codex probe timed out after 8 seconds")
+                return
             if result.returncode:
                 failure = result.stdout.strip() or result.stderr.strip()
                 errors.append(f"{label}: {failure or f'exit {result.returncode}'}")
@@ -2338,7 +2357,7 @@ def check_codex_managed_config(repo_root: Path) -> tuple[list[str], str]:
                     "status",
                 ],
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except OSError as exc:
             errors.append(str(exc))
     return (
         errors,
@@ -2376,17 +2395,18 @@ def check_codex_hook_trust(
                 f"codex-hook-trust: missing executable task {p.relative_to(repo_root)}"
             ], ""
     home = Path.home()
-    if (
-        _live_host_skipped()
-        or not (home / ".codex" / "config.toml").is_file()
-        or not shutil.which("codex")
-    ):
-        return [], "CI/unconfigured: skipped live codex-hook-trust check"
+    if _live_host_skipped():
+        return [], _skip_reason("live Codex hook trust not verified")
+    codex_home = Path(os.environ.get("CODEX_HOME") or home / ".codex").expanduser()
+    if not (codex_home / "config.toml").is_file():
+        return [], "live Codex hook trust not verified: no config.toml"
+    if not shutil.which("codex"):
+        return [], "live Codex hook trust not verified: Codex not installed"
     venv_py = repo_root / ".venv" / "bin" / "python"
     if not venv_py.is_file():
         venv_py = _main_checkout_root(repo_root) / ".venv" / "bin" / "python"
     if not venv_py.is_file():
-        return [], "skipped live codex-hook-trust (missing .venv/bin/python)"
+        return [], "live Codex hook trust not verified: missing .venv/bin/python"
     lib_dir = repo_root / "unix" / "home" / ".config" / "mise" / "lib"
     try:
         proc = subprocess.run(
@@ -2417,12 +2437,15 @@ def check_codex_hook_trust(
         data = json.loads(proc.stdout.strip().splitlines()[-1])
     except json.JSONDecodeError as exc:
         return [f"codex-hook-trust: invalid JSON ({exc})"], ""
-    findings = data.get("findings") or []
+    findings = [f for f in data.get("findings") or [] if isinstance(f, dict)]
     blocking = [
-        f for f in findings if isinstance(f, dict) and f.get("status") != "orphaned"
+        f for f in findings if f.get("status") != "orphaned" and not f.get("advisory")
     ]
-    orphaned = [
-        f for f in findings if isinstance(f, dict) and f.get("status") == "orphaned"
+    orphaned = [f for f in findings if f.get("status") == "orphaned"]
+    warnings = [
+        f"WARNING codex-hook-trust {f.get('status')}: {f.get('key')} ({f.get('issue')})"
+        for f in findings
+        if f.get("advisory")
     ]
     errors: list[str] = []
     for err in data.get("errors") or []:
@@ -2444,13 +2467,14 @@ def check_codex_hook_trust(
                 f"codex-hook-trust orphaned: {o.get('key')} (run `mise run codex:hook-trust --repair`)"
             )
     if errors:
-        return errors, ""
+        return errors, "\n".join(warnings)
+    summary = "enabled repo-managed and plugin hook trust passed"
     if orphaned:
-        return [], (
-            f"codex-hook-trust: 0 modified/unmigrated ({len(orphaned)} orphaned entries; "
+        summary = (
+            f"0 modified/unmigrated ({len(orphaned)} orphaned entries; "
             "run `mise run codex:hook-trust --repair` to prune)"
         )
-    return [], "codex-hook-trust: enabled user hooks and plugin hook trust passed"
+    return [], "\n".join([summary, *warnings])
 
 
 def check_mise_binary_integrity(repo_root: Path) -> tuple[list[str], str]:
@@ -3170,6 +3194,8 @@ def main(argv: list[str] | None = None) -> int:
         return _report("codex-managed-config", errs, msg)
     if args.cmd == "codex-hook-trust":
         errs, msg = check_codex_hook_trust(repo_root, strict_host=args.strict_host)
+        if errs and msg:
+            sys.stderr.write(msg + "\n")
         return _report("codex-hook-trust", errs, msg)
     if args.cmd == "mise-binary-integrity":
         errs, msg = check_mise_binary_integrity(repo_root)

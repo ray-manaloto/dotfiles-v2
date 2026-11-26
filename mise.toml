@@ -390,12 +390,12 @@ run = "python3 -I -B tasks/py/doctor_checks.py herdr-app-bundle"
 hint = "Install Herdr.app cleanly at /Applications/Herdr.app and remove any duplicate ~/Applications/Herdr.app. Details: `mise run doctor:explain herdr-app-bundle`."
 
 [doctor.checks.codex-managed-config]
-description = "The installed Codex validates the managed config, profiles, and execpolicy rules"
+description = "Host validation of managed config, profiles, and execpolicy rules with Codex 0.172.0 or newer"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-managed-config"
 timeout = "65s"
 
 [doctor.checks.codex-hook-trust]
-description = "Codex user and plugin hook trust matches live hooks/list RPC hashes"
+description = "Audit live Codex hook trust, including project hooks visible from the current directory"
 depends = "py-deps-fresh"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
 hint = "Inspect trust drift with `mise run codex:hook-trust --check --json`. Review changed user hooks before approving them in Codex /hooks. The `--repair` mode is for plugins."

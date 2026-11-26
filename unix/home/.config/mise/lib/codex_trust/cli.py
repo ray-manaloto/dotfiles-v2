@@ -71,7 +71,7 @@ def _build_app() -> cyclopts.App:
             Path | None, cyclopts.Parameter(name="--codex-home")
         ] = None,
     ) -> int:
-        """Inspect Codex user and plugin hook trust, or repair plugin hook trust."""
+        """Inspect Codex hooks visible from one cwd, or repair plugin hook trust."""
         _ = check
         _configure_logging(json_mode=json_out, mutating=repair)
         resp = (
@@ -89,8 +89,9 @@ def _build_app() -> cyclopts.App:
                 f"orphans={len(resp.orphaned_keys)} repaired={len(resp.repaired_keys)}\n"
             )
             for finding in resp.findings:
+                prefix = "WARNING " if finding.advisory else ""
                 sys.stdout.write(
-                    f"  - [{finding.status.value}] {finding.key}: {finding.issue}\n"
+                    f"  - {prefix}[{finding.status.value}] {finding.key}: {finding.issue}\n"
                 )
             for err in resp.errors:
                 sys.stderr.write(f"ERROR {err.code.value}: {err.message or ''}\n")

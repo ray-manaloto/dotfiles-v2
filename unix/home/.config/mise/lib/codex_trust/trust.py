@@ -417,6 +417,25 @@ def repair_hook_trust(
     )
 
 
+def _is_repo_managed_user_hook(
+    row: dict[str, Any], codex_home: Path, source_path: str
+) -> bool:
+    """Recognize the dcg and learn commands merged into the shared hooks.json."""
+    if row.get("source") != "user" or Path(source_path) != codex_home / "hooks.json":
+        return False
+    command = str(row.get("command") or "")
+    event = row.get("eventName")
+    if event == "preToolUse":
+        return "/shims/dcg" in command and "--agent codex" in command
+    if event in {"sessionStart", "stop"}:
+        learn_event = "session-start" if event == "sessionStart" else "stop"
+        return (
+            "portable-learn-hook.py" in command
+            and f"--harness codex --event {learn_event}" in command
+        )
+    return False
+
+
 def _run_hook_trust(
     *,
     repair: bool,
@@ -489,12 +508,14 @@ def _run_hook_trust(
     if not isinstance(state_tbl, dict):
         state_tbl = {}
 
-    data_rows = rpc_res.get("data") or []
-    scope = data_rows[0] if isinstance(data_rows, list) and data_rows else {}
-    live_hooks = scope.get("hooks") if isinstance(scope, dict) else []
-    if not isinstance(live_hooks, list):
-        live_hooks = []
+    live_hooks = [
+        row
+        for scope in rpc_res.get("data") or []
+        if isinstance(scope, dict) and isinstance(scope.get("hooks"), list)
+        for row in scope["hooks"]
+    ]
 
+    seen_keys: set[str] = set()
     live_plugin_keys: set[str] = set()
     upserts: dict[str, tuple[str, str | None]] = {}
     legacy_paths_to_clean: list[Path] = []
@@ -504,28 +525,31 @@ def _run_hook_trust(
             continue
         source = str(row.get("source") or "")
         key = str(row.get("key") or "")
-        if not key:
+        if not key or key in seen_keys:
             continue
+        seen_keys.add(key)
         source_path = str(row.get("sourcePath") or "")
         trust_status = str(row.get("trustStatus") or "untrusted").lower()
         current_hash = str(row.get("currentHash") or "")
-        if (
-            source == "user"
-            and not repair
-            and row.get("enabled")
-            and trust_status in {"modified", "untrusted"}
-        ):
-            findings.append(
-                CodexHookFinding(
-                    key=key,
-                    event_name=row.get("eventName"),
-                    source_path=source_path or None,
-                    status=CodexHookStatus(trust_status),
-                    issue="review the user hook source and re-approve it in Codex /hooks",
-                    current_hash=current_hash or None,
-                )
-            )
         if source != "plugin":
+            if (
+                not repair
+                and row.get("enabled")
+                and trust_status in {"modified", "untrusted"}
+            ):
+                findings.append(
+                    CodexHookFinding(
+                        key=key,
+                        event_name=row.get("eventName"),
+                        source_path=source_path or None,
+                        status=CodexHookStatus(trust_status),
+                        issue=f"review the {source or 'unknown'} hook source in Codex /hooks",
+                        current_hash=current_hash or None,
+                        advisory=not _is_repo_managed_user_hook(
+                            row, resolved_home, source_path
+                        ),
+                    )
+                )
             continue
         live_plugin_keys.add(key)
         plugin_id = str(row.get("pluginId") or "")
@@ -621,7 +645,8 @@ def _run_hook_trust(
             legacy_baselines_pruned.append(str(leg_path))
 
     if any(
-        f.status in {CodexHookStatus.MODIFIED, CodexHookStatus.UNTRUSTED}
+        not f.advisory
+        and f.status in {CodexHookStatus.MODIFIED, CodexHookStatus.UNTRUSTED}
         for f in findings
     ):
         errors.append(
@@ -704,22 +729,22 @@ def _run_hook_trust(
                 message="All plugin hooks are already trusted and migrated.",
             )
         ]
-    elif findings or legacy_drift_paths:
+    elif errors:
         returns = [
             CodexTrustReturnEntry(
                 code=CodexTrustReturnCode.RET_FAILED,
-                message=f"Found {len(findings)} hook issue(s) and {len(legacy_drift_paths)} legacy baseline drift(s).",
+                message=f"Found {sum(not f.advisory for f in findings)} blocking hook issue(s) and {len(legacy_drift_paths)} legacy baseline drift(s).",
             )
         ]
     else:
         returns = [
             CodexTrustReturnEntry(
                 code=CodexTrustReturnCode.RET_OK,
-                message="Enabled user hooks and plugin hook trust passed.",
+                message="Enabled repo-managed and plugin hook trust passed.",
             )
         ]
 
-    rc = 0 if ((not findings and not legacy_drift_paths) or applied) else 1
+    rc = int(bool(errors) and not applied)
     return CodexTrustResponse(
         command=CodexTrustCommand.HOOK_TRUST,
         rc=rc,

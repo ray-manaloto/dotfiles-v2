@@ -94,7 +94,7 @@
     },
     "CodexHookFinding": {
       "type": "object",
-      "description": "Diagnostic finding for a single plugin hook or config.toml [hooks.state.*] entry.",
+      "description": "Diagnostic finding for a single hook or config.toml [hooks.state.*] entry.",
       "additionalProperties": false,
       "required": ["key", "status", "issue"],
       "properties": {
@@ -120,6 +120,10 @@
         "issue": {
           "type": "string",
           "minLength": 1
+        },
+        "advisory": {
+          "type": "boolean",
+          "default": false
         },
         "current_hash": {
           "type": ["string", "null"],

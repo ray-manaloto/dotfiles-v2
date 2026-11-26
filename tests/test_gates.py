@@ -1287,6 +1287,55 @@ def _load_doctor_checks():
     return repo_root, mod
 
 
+def test_codex_managed_config_not_verified_without_codex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, doc_mod = _load_doctor_checks()
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    monkeypatch.setattr(doc_mod.shutil, "which", lambda _: None)
+    assert doc_mod.check_codex_managed_config(repo_root) == (
+        [],
+        "not verified: Codex not installed",
+    )
+
+
+def test_codex_managed_config_repo_scope_skips_host_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, doc_mod = _load_doctor_checks()
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    monkeypatch.setattr(doc_mod.shutil, "which", lambda _: "/fake/bin/codex")
+
+    def unexpected_probe(*args: object, **kwargs: object) -> None:
+        pytest.fail("repo doctor invoked the host Codex binary")
+
+    monkeypatch.setattr(doc_mod.subprocess, "run", unexpected_probe)
+    errors, summary = doc_mod.check_codex_managed_config(repo_root)
+    assert not errors
+    assert "not verified" in summary
+
+
+def test_codex_managed_config_skips_older_host_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, doc_mod = _load_doctor_checks()
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.setattr(doc_mod.shutil, "which", lambda _: "/fake/bin/codex")
+
+    def version_only(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        assert argv == ["/fake/bin/codex", "--version"]
+        return subprocess.CompletedProcess(argv, 0, stdout="codex-cli 0.171.0\n")
+
+    monkeypatch.setattr(doc_mod.subprocess, "run", version_only)
+    errors, summary = doc_mod.check_codex_managed_config(repo_root)
+    assert not errors
+    assert (
+        summary
+        == "not verified: codex-cli 0.171.0 is below the supported minimum 0.172.0"
+    )
+
+
 def test_iter_managed_entries_skips_runtime_caches_and_bounds_codex() -> None:
     _, doc_mod = _load_doctor_checks()
 
