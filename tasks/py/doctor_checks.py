@@ -58,6 +58,22 @@ BINARY_HARDEN_SKIP_DIRS = frozenset(
 )
 
 
+def _live_host_skipped() -> bool:
+    """True when live-host probes must not run: CI runners, or pre-push repo scope.
+
+    The pre-push hook sets DOTFILES_DOCTOR_SCOPE=repo so a push depends only on the
+    branch; committed-file assertions in each check still run in that scope.
+    """
+    return (
+        bool(os.environ.get("CI")) or os.environ.get("DOTFILES_DOCTOR_SCOPE") == "repo"
+    )
+
+
+def _skip_reason(what: str) -> str:
+    scope = "CI" if os.environ.get("CI") else "DOTFILES_DOCTOR_SCOPE=repo"
+    return f"{scope}: {what}"
+
+
 def _git_tracked(repo_root: Path, *patterns: str) -> list[Path]:
     cmd = ["git", "-C", str(repo_root), "ls-files", "--", *patterns]
     out = subprocess.check_output(cmd, text=True)
@@ -442,8 +458,8 @@ def check_host_option_a(
     repo_root: Path, *, strict_host: bool = False
 ) -> tuple[list[str], str]:
     """Run Option A host checks (pre-cutover aware until `~/.config/mise` points to dotfiles-v2)."""
-    if os.environ.get("CI"):
-        return [], "CI: skipped live host Option A checks"
+    if _live_host_skipped():
+        return [], _skip_reason("skipped live host Option A checks")
 
     home = Path.home()
     is_cutover, resolved_mise = _is_dotfiles_v2_mise_cutover(home, repo_root=repo_root)
@@ -747,8 +763,8 @@ def _normalize_path_for_mise_doctor(
 
 def check_mise_doctor_clean(repo_root: Path | None = None) -> tuple[list[str], str]:
     """Verify `mise -C ~ doctor --json` reports 0 errors and 0 warnings."""
-    if os.environ.get("CI"):
-        return [], "CI: skipped live host mise-doctor-clean"
+    if _live_host_skipped():
+        return [], _skip_reason("skipped live host mise-doctor-clean")
     home = Path.home()
     root = repo_root if repo_root is not None else Path(__file__).resolve().parents[2]
     env = dict(os.environ)
@@ -950,8 +966,8 @@ def _collect_installed_bin_names(installs_dir: Path) -> set[str]:
 
 def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
     """Verify clean host shims, wrappers, plugins, pitchfork daemons, vb, local bins, opencode.jsonc, config.local.toml, and skills."""
-    if os.environ.get("CI"):
-        return [], "CI: skipped live host-hygiene"
+    if _live_host_skipped():
+        return [], _skip_reason("skipped live host-hygiene")
 
     home = Path.home()
     data_dir = Path(
@@ -1873,7 +1889,7 @@ def check_herdr_app_bundle() -> tuple[list[str], str]:
     """Verify macOS Herdr.app is in /Applications/Herdr.app with no duplicate ~/Applications/Herdr.app."""
     home = Path.home()
     if (
-        os.environ.get("CI")
+        _live_host_skipped()
         or sys.platform != "darwin"
         or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
     ):
@@ -1921,7 +1937,7 @@ def check_codex_hook_trust(
             ], ""
     home = Path.home()
     if (
-        os.environ.get("CI")
+        _live_host_skipped()
         or not (home / ".codex" / "config.toml").is_file()
         or not shutil.which("codex")
     ):
@@ -2108,7 +2124,7 @@ def check_mise_binary_integrity(repo_root: Path) -> tuple[list[str], str]:
                     f"mise-binary-integrity: invalid JSON in {rel_asset}: {exc}"
                 )
 
-    if not os.environ.get("CI"):
+    if not _live_host_skipped():
         home = Path.home()
         data_dir = Path(
             os.environ.get("MISE_DATA_DIR", str(home / ".local" / "share" / "mise"))
@@ -2178,7 +2194,7 @@ def check_agy_rc_health(
         return [f"agy-rc-health: missing executable {guard.relative_to(repo_root)}"], ""
     home = Path.home()
     if (
-        os.environ.get("CI")
+        _live_host_skipped()
         or sys.platform != "darwin"
         or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
     ):
@@ -2269,8 +2285,8 @@ def check_skills_6harness_parity(repo_root: Path) -> tuple[list[str], str]:
             errors.append(
                 f"skills-6harness-parity: missing executable {p.relative_to(repo_root)}"
             )
-    if os.environ.get("CI"):
-        return errors, "CI: repo-level 6-harness skill structure verified"
+    if _live_host_skipped():
+        return errors, _skip_reason("repo-level 6-harness skill structure verified")
 
     home = Path.home()
     is_cutover, _ = _is_dotfiles_v2_mise_cutover(home, repo_root=repo_root)

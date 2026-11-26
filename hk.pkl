@@ -77,7 +77,16 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     steps {
       for (name, step in hygieneGroup.steps) {
         [name] = (step as Step) {
-          exclude = ((step as Step).exclude ?? List()) + lockfileExcludes
+          // apple-bin/* link to macOS-only /usr/bin tools; they are dangling on Linux CI by design.
+          exclude =
+            ((step as Step).exclude ?? List())
+              + lockfileExcludes
+              + (
+                if (name == "check-symlinks")
+                  List("unix/home/.config/mise/apple-bin/**")
+                else
+                  List()
+              )
         }
       }
     }
