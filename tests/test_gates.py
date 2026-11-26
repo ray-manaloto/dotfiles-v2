@@ -2208,3 +2208,34 @@ def test_no_repo_skills_allows_claude_runtime_state(tmp_path) -> None:
     (tmp_path / ".claude" / "skills").rmdir()
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
     assert run() != 0
+
+
+def test_claude_ship_env_flags_managed_settings(tmp_path, monkeypatch) -> None:
+    """Managed Claude settings must not disable feature-flag fetching or the ship skills."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    assets = tmp_path / "unix/home/.config/mise/assets/claude"
+    assets.mkdir(parents=True)
+    (assets / "env-common.json").write_text('{"env": {"CLAUDE_CODE_BRIEF": "1"}}')
+    errors, msg = doc_mod.check_claude_ship_env(tmp_path)
+    assert errors == [] and "not probed" in msg
+    (assets / "bad.json").write_text(
+        '{"env": {"DISABLE_TELEMETRY": "1"}, "skillOverrides": {"steward": "off"}, "disableBundledSkills": true}'
+    )
+    (assets / "env-mac.json.tera").write_text('{"env": {"DO_NOT_TRACK": "{{ x }}"}}')
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    joined = "\n".join(errors)
+    for needle in (
+        "DISABLE_TELEMETRY",
+        "turns off steward",
+        "disableBundledSkills",
+        "env-mac.json.tera sets DO_NOT_TRACK",
+    ):
+        assert needle in joined, errors
+
+
+def test_real_managed_claude_settings_keep_ship(monkeypatch) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    errors, _ = doc_mod.check_claude_ship_env(Path(__file__).resolve().parents[1])
+    assert errors == []

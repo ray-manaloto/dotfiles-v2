@@ -408,6 +408,11 @@ depends = "py-deps-fresh"
 run = "mise run hub:doctor --offline"
 hint = "Inspect docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} and docker/mac-agent/compose.yaml with `mise run hub:doctor --offline`."
 
+[doctor.checks.claude-ship-env]
+description = "Managed and live Claude settings never disable feature-flag fetching, /ship or /steward (env, skillOverrides, disableBundledSkills, shell env, active checkout venv)"
+run = "python3 -I -B tasks/py/doctor_checks.py claude-ship-env"
+hint = "Remove the flagged env var / override; scope telemetry opt-outs to a single command. See docs/pr-shipping-protocol.md."
+
 [doctor.checks.reviewer-plugins]
 description = "Reviewer-bot plugins (Graphify, Greptile, CodeRabbit, Repowise) declared in assets/reviewer-plugins.json are installed in Claude/Codex/agy/OpenCode, Claude plugin MCPs Connected, and Repowise's Bash rewrite disabled in indexed repos"
 run = "python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"

@@ -2535,6 +2535,84 @@ def _load_reviewer_plugins_lib(repo_root: Path):
     return mod
 
 
+_SHIP_SKILLS = ("ship-local", "steward")
+
+
+def _claude_settings_ship_errors(label: str, data: object) -> list[str]:
+    """Claude settings that remove /ship or /steward: flag-fetch killers in `env`, skill overrides, bundled skills off."""
+    if not isinstance(data, dict):
+        return []
+    errors: list[str] = []
+    env = data.get("env")
+    if isinstance(env, dict):
+        for name in sorted(_FLAG_FETCH_KILLERS & set(env)):
+            errors.append(
+                f"claude-ship-env: {label} env sets {name}; it turns off feature-flag fetching and removes /ship and /steward"
+            )
+    overrides = data.get("skillOverrides")
+    if isinstance(overrides, dict):
+        for skill in _SHIP_SKILLS:
+            if str(overrides.get(skill, "")).lower() == "off":
+                errors.append(
+                    f"claude-ship-env: {label} skillOverrides turns off {skill}"
+                )
+    if data.get("disableBundledSkills") is True:
+        errors.append(
+            f"claude-ship-env: {label} disableBundledSkills removes /ship and /steward"
+        )
+    return errors
+
+
+def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
+    """Managed Claude settings (repo) and the live host never disable /ship, /steward or feature-flag fetching."""
+    errors: list[str] = []
+    killer_key = re.compile(r'"(' + "|".join(sorted(_FLAG_FETCH_KILLERS)) + r')"\s*:')
+    managed = sorted(
+        {
+            *(repo_root / "unix/home/.config/mise/assets/claude").glob("**/*.json*"),
+            *(repo_root / "unix/home/.claude").glob("**/*.json"),
+        }
+    )
+    for path in managed:
+        rel = path.relative_to(repo_root).as_posix()
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".json":
+            try:
+                errors += _claude_settings_ship_errors(rel, json.loads(text))
+            except ValueError as exc:
+                errors.append(f"claude-ship-env: {rel}: invalid JSON: {exc}")
+        elif m := killer_key.search(
+            text
+        ):  # templates (.json.tera) are not JSON until rendered
+            errors.append(
+                f"claude-ship-env: {rel} sets {m.group(1)}; it removes /ship and /steward"
+            )
+    if errors or _live_host_skipped():
+        return errors, (
+            _skip_reason(
+                f"{len(managed)} managed Claude settings files clean; live settings not probed"
+            )
+            if not errors
+            else ""
+        )
+    settings = Path.home() / ".claude/settings.json"
+    try:
+        errors += _claude_settings_ship_errors(
+            "~/.claude/settings.json", json.loads(settings.read_text(encoding="utf-8"))
+        )
+    except (OSError, ValueError) as exc:
+        errors.append(f"claude-ship-env: cannot read ~/.claude/settings.json: {exc}")
+    for name in sorted(_FLAG_FETCH_KILLERS & set(os.environ)):
+        errors.append(
+            f"claude-ship-env: this shell exports {name}; new Claude sessions started from it lose /ship and /steward"
+        )
+    if os.environ.get("VIRTUAL_ENV", "").startswith(str(repo_root)):
+        errors.append(
+            "claude-ship-env: a checkout venv is active (VIRTUAL_ENV); /ship and /steward refuse to watch"
+        )
+    return errors, "managed and live Claude settings keep /ship and /steward available"
+
+
 def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
     """Declared reviewer-bot plugins are well-formed (repo) and installed/Connected (live Mac host)."""
     errors: list[str] = []
@@ -2644,6 +2722,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mise-doctor-clean")
     sub.add_parser("host-hygiene")
     sub.add_parser("reviewer-plugins")
+    sub.add_parser("claude-ship-env")
     sub.add_parser("jouet-rules")
     sub.add_parser("usage-lint")
     sub.add_parser("pitchfork-config")
@@ -2765,6 +2844,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "reviewer-plugins":
         errs, msg = check_reviewer_plugins(repo_root)
         return _report("reviewer-plugins", errs, msg)
+    if args.cmd == "claude-ship-env":
+        errs, msg = check_claude_ship_env(repo_root)
+        return _report("claude-ship-env", errs, msg)
     if args.cmd == "skills-6harness-parity":
         errs, msg = check_skills_6harness_parity(repo_root)
         return _report("skills-6harness-parity", errs, msg)
