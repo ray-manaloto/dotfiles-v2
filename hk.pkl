@@ -376,6 +376,13 @@ hooks {
       ["reviewer-plugins"] {
         check = "python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"
       }
+      // Live: Codex marketplaces stay allowlisted (no Claude imports) and managed hooks (dcg) stay trusted.
+      ["codex-marketplaces"] {
+        check = "python3 -I -B tasks/py/doctor_checks.py codex-marketplaces"
+      }
+      ["codex-hook-trust"] {
+        check = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
+      }
     }
   }
   ["check"] {

@@ -2752,3 +2752,72 @@ def test_git_index_locks_requires_optional_locks_env_and_flags_stale_locks(
     (tmp_path / "hk.pkl").write_text('// env { ["GIT_OPTIONAL_LOCKS"] = "0" }\n')
     errs = doc_mod.check_git_index_locks(tmp_path)
     assert errs and "GIT_OPTIONAL_LOCKS" in errs[0]
+
+
+def _codex_policy() -> tuple[dict, dict, dict]:
+    root = Path(__file__).resolve().parents[1] / "unix/home/.config/mise/assets"
+    policy = json.loads((root / "codex/marketplaces.json").read_text(encoding="utf-8"))
+    import tomllib
+
+    defaults = tomllib.loads(
+        (root / "codex/team-defaults.toml").read_text(encoding="utf-8")
+    )
+    reviewer = json.loads((root / "reviewer-plugins.json").read_text(encoding="utf-8"))
+    return policy, defaults, reviewer
+
+
+def test_codex_marketplace_policy_is_consistent_and_rejects_claude() -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    policy, defaults, reviewer = _codex_policy()
+    assert doc_mod._codex_marketplace_policy_errors(policy, defaults, reviewer) == []
+    bad = json.loads(json.dumps(policy))
+    bad["allowed"]["claude-plugins-official"] = (
+        "https://github.com/anthropics/claude-plugins-official.git"
+    )
+    assert any(
+        "Claude marketplace" in e
+        for e in doc_mod._codex_marketplace_policy_errors(bad, defaults, reviewer)
+    )
+    unpinned = json.loads(json.dumps(defaults))
+    unpinned["desktop"]["external-agent-import-sync-item-types"]["PLUGINS"] = "original"
+    assert any(
+        "PLUGINS" in e
+        for e in doc_mod._codex_marketplace_policy_errors(policy, unpinned, reviewer)
+    )
+
+
+def test_codex_live_marketplaces_flag_claude_imports() -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    policy, _, _ = _codex_policy()
+    clean = {
+        "desktop": {
+            "external-agent-import-sync-enabled": False,
+            "external-agent-import-sync-item-types": {"PLUGINS": False},
+        },
+        "marketplaces": {"egm": {"source": policy["allowed"]["egm"]}},
+        "plugins": {"github@openai-curated": {}, "egm@egm": {}},
+    }
+    assert doc_mod._codex_live_marketplace_errors(policy, clean) == []
+    dirty = json.loads(json.dumps(clean))
+    dirty["desktop"]["external-agent-import-sync-enabled"] = True
+    dirty["desktop"]["external-agent-import-sync-item-types"]["SESSIONS"] = "original"
+    dirty["marketplaces"]["claude-community"] = {
+        "source": "https://github.com/anthropics/claude-plugins-community.git"
+    }
+    dirty["plugins"]["eli5@claude-community"] = {}
+    dirty["plugins"]["no-marketplace"] = {}
+    errs = doc_mod._codex_live_marketplace_errors(policy, dirty)
+    assert any("names no marketplace" in e for e in errs)
+    unapplied = {
+        "marketplaces": {
+            "egm": {"source": "git@github.com:google/elephant-goldfish-model"}
+        }
+    }
+    errs_unapplied = doc_mod._codex_live_marketplace_errors(policy, unapplied)
+    assert errs_unapplied == [
+        "codex-marketplaces: [desktop] external-agent-import-sync-enabled is not pinned false (run `mise dot apply`)"
+    ]
+    assert any("Keep imports in sync" in e for e in errs)
+    assert any("SESSIONS" in e for e in errs)
+    assert any("marketplace claude-community" in e for e in errs)
+    assert any("plugin eli5@claude-community" in e for e in errs)

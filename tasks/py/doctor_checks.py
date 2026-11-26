@@ -2477,6 +2477,156 @@ def check_codex_hook_trust(
     return [], "\n".join([summary, *warnings])
 
 
+def _codex_marketplace_policy_errors(
+    policy: Mapping[str, Any], defaults: Mapping[str, Any], reviewer: Mapping[str, Any]
+) -> list[str]:
+    """Repo-scope invariants: the allowlist, team defaults and reviewer manifest agree."""
+    errors: list[str] = []
+    allowed = policy.get("allowed")
+    builtin = policy.get("builtin")
+    types = policy.get("import_item_types")
+    if not isinstance(allowed, dict) or not isinstance(builtin, list) or not types:
+        return [
+            "codex-marketplaces: marketplaces.json needs builtin, allowed and import_item_types"
+        ]
+    names = set(allowed) | set(builtin)
+    for name, src in allowed.items():
+        if "claude" in name.lower() or "claude" in str(src).lower():
+            errors.append(
+                f"codex-marketplaces: allowlist names a Claude marketplace: {name} ({src})"
+            )
+    desktop = defaults.get("desktop") or {}
+    if desktop.get("external-agent-import-sync-enabled") is not False:
+        errors.append(
+            "codex-marketplaces: team-defaults.toml must pin [desktop] external-agent-import-sync-enabled = false"
+        )
+    pinned = desktop.get("external-agent-import-sync-item-types") or {}
+    for item in types:
+        if pinned.get(item) is not False:
+            errors.append(
+                f"codex-marketplaces: team-defaults.toml must pin import item type {item} = false"
+            )
+    codex = reviewer.get("codex") or {}
+    for name in codex.get("marketplaces") or {}:
+        if name not in names:
+            errors.append(
+                f"codex-marketplaces: reviewer-plugins codex marketplace {name} is not allowlisted"
+            )
+    for pid in codex.get("plugins") or []:
+        if str(pid).split("@", 1)[-1] not in names:
+            errors.append(
+                f"codex-marketplaces: reviewer-plugins codex plugin {pid} is from a non-allowlisted marketplace"
+            )
+    return errors
+
+
+def _codex_live_marketplace_errors(
+    policy: Mapping[str, Any], live: Mapping[str, Any]
+) -> list[str]:
+    """Live ~/.codex/config.toml matches the allowlist and keeps the desktop importer off."""
+    errors: list[str] = []
+    allowed: Mapping[str, str] = policy["allowed"]
+    names = set(allowed) | set(policy["builtin"])
+
+    def table(value: Any) -> Mapping[str, Any]:
+        return value if isinstance(value, Mapping) else {}
+
+    def norm(src: str) -> str:
+        s = src.strip().rstrip("/").lower()
+        s = re.sub(r"^git@github\.com:", "https://github.com/", s)
+        return s.removesuffix(".git")
+
+    desktop = table(live.get("desktop"))
+    sync = desktop.get("external-agent-import-sync-enabled")
+    if sync is True:
+        errors.append(
+            "codex-marketplaces: ChatGPT desktop 'Keep imports in sync' is on; "
+            "turn it off in the app settings, then run `mise dot apply`"
+        )
+    elif sync is not False:
+        errors.append(
+            "codex-marketplaces: [desktop] external-agent-import-sync-enabled is not pinned false "
+            "(run `mise dot apply`)"
+        )
+    types = table(desktop.get("external-agent-import-sync-item-types"))
+    on = sorted(k for k, v in types.items() if v is not False)
+    if on:
+        errors.append(
+            f"codex-marketplaces: desktop import item types not off: {', '.join(on)} (run `mise dot apply`)"
+        )
+    for name, spec in sorted(table(live.get("marketplaces")).items()):
+        src = str(table(spec).get("source", ""))
+        if name not in names:
+            errors.append(
+                f"codex-marketplaces: marketplace {name} ({src}) is not allowlisted; "
+                f"remove it with `codex plugin marketplace remove {name}`"
+            )
+        elif name in allowed and norm(src) != norm(allowed[name]):
+            errors.append(
+                f"codex-marketplaces: marketplace {name} source {src} != allowlisted {allowed[name]}"
+            )
+    for pid in sorted(table(live.get("plugins"))):
+        if "@" not in pid:
+            errors.append(f"codex-marketplaces: plugin id {pid!r} names no marketplace")
+            continue
+        mkt = pid.split("@", 1)[1]
+        if mkt not in names:
+            errors.append(
+                f"codex-marketplaces: plugin {pid} comes from non-allowlisted marketplace {mkt}; "
+                f"remove it with `codex plugin remove {pid}`"
+            )
+    return errors
+
+
+def check_codex_marketplaces(repo_root: Path) -> tuple[list[str], str]:
+    """Codex uses only allowlisted (Codex-native) marketplaces and never imports Claude config."""
+    mise_dir = repo_root / "unix/home/.config/mise"
+    try:
+        policy = json.loads(
+            (mise_dir / "assets/codex/marketplaces.json").read_text(encoding="utf-8")
+        )
+        defaults = tomllib.loads(
+            (mise_dir / "assets/codex/team-defaults.toml").read_text(encoding="utf-8")
+        )
+        reviewer = json.loads(
+            (mise_dir / "assets/reviewer-plugins.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        return [f"codex-marketplaces: cannot read policy files: {exc}"], ""
+    errors = _codex_marketplace_policy_errors(policy, defaults, reviewer)
+    if errors:
+        return errors, ""
+    if _live_host_skipped():
+        return [], _skip_reason("allowlist consistent; live ~/.codex not verified")
+    codex_home = Path(
+        os.environ.get("CODEX_HOME") or Path.home() / ".codex"
+    ).expanduser()
+    config = codex_home / "config.toml"
+    if not config.is_file():
+        return [], "live Codex marketplaces not verified: no config.toml"
+    try:
+        live = tomllib.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"codex-marketplaces: cannot parse {config}: {exc}"], ""
+    errors = _codex_live_marketplace_errors(policy, live)
+    if errors:
+        return errors, ""
+    names = set(policy["allowed"]) | set(policy["builtin"])
+    cache = codex_home / "plugins" / "cache"
+    stale = (
+        sorted(p.name for p in cache.iterdir() if p.is_dir() and p.name not in names)
+        if cache.is_dir()
+        else []
+    )
+    note = (
+        f"; stale plugin caches (safe to delete): {', '.join(stale)}" if stale else ""
+    )
+    return (
+        [],
+        f"only allowlisted Codex marketplaces and plugins, desktop import off{note}",
+    )
+
+
 def check_mise_binary_integrity(repo_root: Path) -> tuple[list[str], str]:
     """Verify host:harden-bins, dcg guardrails/hooks, and 0555 binary immutability inside mise installs/."""
     errors: list[str] = []
@@ -2989,9 +3139,14 @@ def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
         return [*errors, f"reviewer-plugins: cannot load manifest/lib: {exc}"], ""
 
     pid_re = re.compile(r"[a-z0-9-]+@[a-z0-9-]+")
+    # Marketplaces each harness ships built in; a Claude marketplace is never built in for Codex.
+    builtin = {
+        "claude": {"claude-plugins-official"},
+        "codex": {"openai-bundled", "openai-curated", "openai-curated-remote"},
+    }
     for harness in ("claude", "codex"):
         spec = manifest.get(harness, {})
-        mps = spec.get("marketplaces", {})
+        mps = {*spec.get("marketplaces", {}), *builtin[harness]}
         for pid in spec.get("plugins", []):
             if not pid_re.fullmatch(str(pid)):
                 errors.append(
@@ -2999,7 +3154,7 @@ def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
                 )
                 continue
             mkt = str(pid).split("@", 1)[1]
-            if mkt not in mps and mkt != "claude-plugins-official":
+            if mkt not in mps:
                 errors.append(
                     f"reviewer-plugins: {harness} plugin {pid} has no declared marketplace {mkt}"
                 )
@@ -3085,6 +3240,7 @@ def main(argv: list[str] | None = None) -> int:
     p_audit.add_argument("--err-file", type=Path, default=None)
     sub.add_parser("herdr-app-bundle")
     sub.add_parser("codex-managed-config")
+    sub.add_parser("codex-marketplaces")
     p_trust = sub.add_parser("codex-hook-trust")
     p_trust.add_argument("--strict-host", action="store_true")
     sub.add_parser("mise-binary-integrity")
@@ -3192,6 +3348,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "codex-managed-config":
         errs, msg = check_codex_managed_config(repo_root)
         return _report("codex-managed-config", errs, msg)
+    if args.cmd == "codex-marketplaces":
+        errs, msg = check_codex_marketplaces(repo_root)
+        return _report("codex-marketplaces", errs, msg)
     if args.cmd == "codex-hook-trust":
         errs, msg = check_codex_hook_trust(repo_root, strict_host=args.strict_host)
         if errs and msg:

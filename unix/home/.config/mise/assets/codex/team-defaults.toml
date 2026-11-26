@@ -14,6 +14,23 @@ review_model = "gpt-6.2-sol"
 [features]
 multi_agent_v2 = true
 
+# Owner decision 2026-11-26: Codex never imports Claude Code / Cowork config, plugins, sessions or
+# skills. The ChatGPT desktop "Keep imports in sync" re-added Claude marketplaces on 11-23 and 11-25.
+# Pin the master switch and every item type off; `codex-marketplaces` doctor check enforces it.
+[desktop]
+external-agent-import-sync-enabled = false
+
+[desktop.external-agent-import-sync-item-types]
+AGENTS_MD = false
+COMMANDS = false
+CONFIG = false
+HOOKS = false
+MCP_SERVER_CONFIG = false
+PLUGINS = false
+SESSIONS = false
+SKILLS = false
+SUBAGENTS = false
+
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 6
