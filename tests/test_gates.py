@@ -1828,11 +1828,7 @@ def test_reviewer_plugins_live_reports_unconnected_mcp(monkeypatch, tmp_path) ->
     monkeypatch.setattr(
         lib,
         "claude_mcp_status",
-        lambda _c, n: (
-            None
-            if n in manifest["claude"]["retired_mcps"]
-            else statuses.get(n, "\u2714 Connected")
-        ),
+        lambda _c, n: statuses.get(n, "\u2714 Connected"),
     )
     errs, _ = doc_mod.check_reviewer_plugins(root)
     assert any("plugin:graphify:graphify not Connected" in e for e in errs), errs
@@ -1983,19 +1979,18 @@ def test_reviewer_sync_failure_detection(tmp_path, rc, failed) -> None:
     assert lib.sync_failed(["guarded: /home/u/dev/rc=5"]) is False
 
 
-def test_reviewer_sync_keeps_retired_mcp_until_replacements_installed(
-    monkeypatch, tmp_path
-) -> None:
+def test_reviewer_sync_never_removes_mcp_servers(monkeypatch, tmp_path) -> None:
+    """Owner rule: sync never deletes locally configured MCP servers (even ones a manifest once retired)."""
     doc_mod = _load_task_module("doctor_checks")
     lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
     calls: list[list[str]] = []
     monkeypatch.setattr(lib, "_bin", lambda n, _h: n if n == "claude" else None)
     monkeypatch.setattr(
-        lib, "claude_state", lambda _c: (set(), {"graphify", "repowise"})
+        lib, "claude_state", lambda _c: ({"graphify@graphify"}, {"graphify"})
     )
-    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: "✔ Connected")
+    monkeypatch.setattr(lib, "claude_mcp_status", lambda _c, _n: "\u2714 Connected")
     monkeypatch.setattr(
-        lib, "_run", lambda argv, timeout=180: calls.append(argv) or (1, "nope")
+        lib, "_run", lambda argv, timeout=180: calls.append(argv) or (0, "ok")
     )
     monkeypatch.setattr(lib, "repowise_repos", lambda _r: [])
     manifest = {
@@ -2004,10 +1999,15 @@ def test_reviewer_sync_keeps_retired_mcp_until_replacements_installed(
             "retired_mcps": ["graphify-reviews"],
         }
     }
-    log = lib.sync(manifest, tmp_path)
-    assert not any(a[:3] == ["claude", "mcp", "remove"] for a in calls)
-    assert lib.sync_failed(log)
-    assert any("keep graphify-reviews" in ln for ln in log)
+    lib.sync(manifest, tmp_path)
+    assert not any(a[1:3] == ["mcp", "remove"] for a in calls), calls
+    real = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "unix/home/.config/mise/assets/reviewer-plugins.json"
+        ).read_text()
+    )
+    assert "retired_mcps" not in real["claude"]
 
 
 @pytest.mark.parametrize("pre_existing", [False, True])

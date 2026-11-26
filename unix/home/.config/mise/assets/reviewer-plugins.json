@@ -15,8 +15,7 @@
       "plugin:graphify:graphify",
       "plugin:greptile:greptile",
       "plugin:repowise:repowise"
-    ],
-    "retired_mcps": ["graphify-reviews"]
+    ]
   },
   "codex": {
     "marketplaces": {
