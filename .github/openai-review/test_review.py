@@ -435,6 +435,20 @@ class RunnerCompatibilityTests(unittest.TestCase):
                 self.assertIn("    branches: [main]", trigger[1])
         self.assertFalse(expected)
 
+    def test_openai_pr_workflows_keep_caching_disabled(self):
+        workflows = Path(__file__).resolve().parent.parent / "workflows"
+        for path in workflows.glob("openai-pr-*.y*ml"):
+            with self.subTest(workflow=path.name):
+                raw = path.read_text(encoding="utf-8")
+                self.assertNotRegex(
+                    raw, r"(?im)^\s*(?:-\s*)?uses:\s*['\"]?actions/cache[@/]"
+                )
+                for value in re.findall(
+                    r"(?im)^\s*['\"]?(?:cache|cache-enabled|enable-cache)['\"]?\s*:\s*([^#\r\n]+)",
+                    raw,
+                ):
+                    self.assertEqual(value.strip().strip("'\"").lower(), "false")
+
     def test_sources_parse_on_runner_python_312(self):
         # ubuntu-24.04's stock python3 is 3.12; the repo toolchain is newer.
         import ast

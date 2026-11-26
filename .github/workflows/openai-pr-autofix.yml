@@ -186,6 +186,8 @@ jobs:
           retention-days: 7
 
   verify:
+    # Keep caches disabled in both workflows: PR code runs here in the main
+    # event context and must not influence cached inputs of privileged jobs.
     name: Validate and test the candidate patch
     needs: generate
     if: ${{ needs.generate.outputs.patch != '' }}
