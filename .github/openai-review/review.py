@@ -366,6 +366,16 @@ def skipped_section(skipped):
     return body + "</pre>\n\n"
 
 
+def shadow_section(shadow):
+    if not shadow:
+        return ""
+    rows = "".join(
+        f"{safe_cell(item['path'])}:{item['line']} {safe_cell(item['title'])}\n"
+        for item in shadow
+    )
+    return f"\n### Shadow triage ({len(shadow)})\n\n<pre>\n{rows}</pre>\n"
+
+
 def safe_comment(number, head, findings, skipped):
     heading = f"## Advisory OpenAI review for #{number}\n\nHead: `{head}`\n\n"
     heading += skipped_section(skipped)
@@ -573,6 +583,7 @@ def run(env, send=None):
         write_decline(env, note_head, str(exc), usage)
         return
     key = env["REVIEW_API_KEY"]
+    shadow = []
     if provider == "openai":
         schema = json.loads(FINDINGS_SCHEMA.read_text(encoding="utf-8"))
         patches = json.loads(data)
@@ -585,10 +596,20 @@ def run(env, send=None):
             if finding["line"] in lines.get(finding["file"], set())
         ]
         try:
-            findings = triage.select(candidates, patches, key, send)
+            findings, shadow_candidates = triage.partition(
+                candidates, patches, key, send
+            )
         except (triage.TriageError, ReviewError):
             write_decline(env, head, "Triage unavailable.", usage)
             return
+        shadow = [
+            {
+                "path": finding["file"],
+                "line": finding["line"],
+                "title": " ".join(finding["claim"].split()),
+            }
+            for finding in shadow_candidates
+        ]
         comment = safe_comment(number, head, findings, skipped)
         if output_dir := env.get("REVIEW_OUTPUT_DIR"):
             output = Path(output_dir)
@@ -601,6 +622,7 @@ def run(env, send=None):
                         "base": base,
                         "triage": "completed",
                         "findings": findings,
+                        "shadow": shadow,
                         "skipped": skipped,
                         "usage": usage,
                         "cost_usd": usage_cost(usage),
@@ -613,7 +635,7 @@ def run(env, send=None):
     else:
         review = html.escape(model_review(provider, key, data, send))
         comment = f"## Advisory PR review: #{number}\n\nHead: `{head}`\n\n{skipped_section(skipped)}<pre>{review}</pre>\n"
-    write_summary(env, comment, usage)
+    write_summary(env, comment + shadow_section(shadow), usage)
 
 
 def write_decline(env, head, reason, usage):

@@ -27,6 +27,18 @@ job without an OpenAI key posts the reason if the PR is still open at the
 intended head. API and configuration errors outside the triage fallback
 still fail the review job.
 
+## Shadow calibration
+
+During the shadow period, candidates with defect probability of at least
+0.85 and a severity score from 0.0 up to but excluding 1.0 appear only in
+the `shadow` array in `findings.json` and in the job step summary. Each entry
+contains the path, line, and one-line title. PR comments and autofix consume
+only the posted findings.
+
+After validating the volume, change `MIN_SEVERITY = 1.0` to
+`MIN_SEVERITY = 0.0` in `.github/openai-review/triage.py` to promote the
+shadow range to normal triage.
+
 ## Autofix
 
 A collaborator with write access can add the `autofix` label after a successful

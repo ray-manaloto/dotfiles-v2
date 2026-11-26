@@ -143,6 +143,63 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn("OpenAI usage", comment)
         self.assertIn('OpenAI usage: `{"cost_usd": 0.0, "usage": {}}`', summary)
 
+    def test_shadow_appears_only_in_artifact_and_step_summary(self):
+        for posted in (False, True):
+            with self.subTest(posted=posted):
+                output = Path(self.directory.name) / str(posted)
+                self.summary.unlink(missing_ok=True)
+                shadow = finding(
+                    id="F2",
+                    severity="low",
+                    claim="Shadow <entry>\n@reader",
+                    suggested_fix="Shadow suggestion",
+                )
+                proposed = openai_ok(*([finding(), shadow] if posted else [shadow]))
+                answers = [
+                    {"type": "predicate", "name": "F2_defect", "probability": 0.85},
+                    {"type": "score", "name": "F2_severity", "score": 0.0},
+                ]
+                if posted:
+                    answers[:0] = [
+                        {"type": "predicate", "name": "F1_defect", "probability": 0.91},
+                        {"type": "score", "name": "F1_severity", "score": 1.0},
+                    ]
+                pull = pr()
+                pull["base"]["repo"]["private"] = True
+                send = Mock(
+                    side_effect=[pull, [item()], pull, proposed, {"answers": answers}]
+                )
+                env = dict(
+                    self.env,
+                    REPO_PRIVATE="true",
+                    ALLOW_PRIVATE_DIFF="true",
+                    REVIEW_OUTPUT_DIR=str(output),
+                )
+                review.run(env, send)
+
+                artifact = (output / "findings.json").read_text()
+                payload = json.loads(artifact)
+                self.assertEqual(payload["findings"], [finding()] if posted else [])
+                self.assertEqual(
+                    payload["shadow"],
+                    [
+                        {
+                            "path": "src/file.cpp",
+                            "line": 1,
+                            "title": "Shadow <entry> @reader",
+                        }
+                    ],
+                )
+                summary = self.summary.read_text()
+                comment = (output / "comment.md").read_text()
+                self.assertTrue(summary.startswith(comment))
+                self.assertIn("### Shadow triage (1)", summary)
+                self.assertIn("src/file.cpp:1 Shadow &lt;entry&gt; ＠reader", summary)
+                self.assertNotIn("Shadow", comment)
+                self.assertNotIn("Shadow suggestion", artifact)
+                self.assertNotIn("Shadow suggestion", summary)
+                self.assertEqual("No findings passed triage." in comment, not posted)
+
     def test_automatic_review_requires_same_repo(self):
         env = dict(
             self.env,

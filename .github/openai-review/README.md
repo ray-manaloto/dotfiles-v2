@@ -32,7 +32,10 @@ unscoped key fails with an HTTP error.
 In **Actions → OpenAI PR review** (or **Claude PR review**) **→ Run workflow**,
 leave the default branch selected and enter an open PR number. Both reviewers
 send GitHub file patches with paths and write the exact reviewed head in the
-run summary. OpenAI also triages candidates and posts the result to the PR.
+run summary. The OpenAI workflow posts candidates that pass triage with
+defect probability of at least 0.85 and severity of at least 1.0. The job
+summary and artifact include a shadow range from 0.0 up to 1.0 as described
+in the runbook.
 Neither review job checks out or executes PR code. Required reviews still apply.
 
 If the repository is private, the run refuses to send patches unless you tick
