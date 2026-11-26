@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
 from tasks_py_loader import load_module
 
 
@@ -1730,108 +1731,177 @@ def test_repo_scope_keeps_committed_file_checks(monkeypatch, tmp_path) -> None:
     assert doc_mod._live_host_skipped() is False
 
 
-def _claude_mcps_repo(root: Path, servers: str, prune: str = "") -> None:
-    task = root / "unix/home/.config/mise/tasks/bootstrap/claude-mcps"
-    task.parent.mkdir(parents=True)
-    task.write_text(f"SERVERS=(\n{servers})\n", encoding="utf-8")
-    task.chmod(0o755)
-    pr = root / "unix/home/.config/mise/tasks/host/prune-mcps"
-    pr.parent.mkdir(parents=True)
-    pr.write_text(prune, encoding="utf-8")
+def _reviewer_repo(tmp_path: Path, mutate=None) -> Path:
+    """Copy the real reviewer-plugins manifest/lib/tasks/opencode.json into a temp repo."""
+    import shutil as _sh
+
+    src = Path(__file__).resolve().parents[1]
+    rels = [
+        "unix/home/.config/mise/assets/reviewer-plugins.json",
+        "unix/home/.config/mise/lib/reviewer_plugins.py",
+        "unix/home/.config/mise/tasks/bootstrap/reviewer-plugins",
+        "unix/home/.config/mise/tasks/repowise/guard",
+        "unix/home/.config/mise/tasks/repowise/init",
+        "unix/home/.config/mise/tasks/host/prune-mcps",
+        "unix/home/.config/opencode/opencode.json",
+    ]
+    for rel in rels:
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        _sh.copy2(src / rel, dst)
+    if mutate:
+        mutate(tmp_path)
+    return tmp_path
 
 
-def test_claude_mcps_repo_scope_validates_declarations(monkeypatch, tmp_path) -> None:
+def test_reviewer_plugins_repo_scope_passes_on_real_tree(monkeypatch, tmp_path) -> None:
     doc_mod = _load_task_module("doctor_checks")
-    monkeypatch.delenv("CI", raising=False)
     monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
-    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
-    errs, msg = doc_mod.check_claude_mcps(tmp_path)
-    assert errs == [] and "1 declared" in msg
+    errs, msg = doc_mod.check_reviewer_plugins(_reviewer_repo(tmp_path))
+    assert errs == [] and msg.startswith("DOTFILES_DOCTOR_SCOPE=repo:")
 
 
-def test_claude_mcps_rejects_name_in_prune_list(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("edit", "needle"),
+    [
+        (lambda m: m["claude"]["plugins"].append("bad id"), "not name@marketplace"),
+        (
+            lambda m: m["codex"]["plugins"].append("x@nomkt"),
+            "no declared marketplace nomkt",
+        ),
+        (
+            lambda m: m["claude"]["connected_mcps"].append("plugin:ghost:ghost"),
+            "no matching Claude plugin",
+        ),
+        (
+            lambda m: m["claude"]["retired_mcps"].append("not-pruned"),
+            "missing from host:prune-mcps",
+        ),
+        (
+            lambda m: m["opencode"]["plugins"].append("other@1.0.0"),
+            "opencode.json plugins missing",
+        ),
+    ],
+)
+def test_reviewer_plugins_repo_scope_rejects_drift(
+    monkeypatch, tmp_path, edit, needle
+) -> None:
     doc_mod = _load_task_module("doctor_checks")
     monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
-    _claude_mcps_repo(
-        tmp_path,
-        '\t"graphify|https://api.graphify.com/mcp"\n',
-        'LEGACY_MCP_NAMES = frozenset({\n    "graphify",\n})\n',
-    )
-    errs, _ = doc_mod.check_claude_mcps(tmp_path)
-    assert any("prune-mcps" in e for e in errs)
+
+    def mutate(root: Path) -> None:
+        mp = root / "unix/home/.config/mise/assets/reviewer-plugins.json"
+        data = json.loads(mp.read_text(encoding="utf-8"))
+        edit(data)
+        mp.write_text(json.dumps(data), encoding="utf-8")
+
+    errs, _ = doc_mod.check_reviewer_plugins(_reviewer_repo(tmp_path, mutate))
+    assert any(needle in e for e in errs), errs
 
 
-def test_claude_mcps_live_requires_connected(monkeypatch, tmp_path) -> None:
-    doc_mod = _load_task_module("doctor_checks")
-    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
-    monkeypatch.delenv("CI", raising=False)
-    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
-    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
-    home = tmp_path / "home"
-    claude = home / ".local/bin/claude"
-    claude.parent.mkdir(parents=True)
-    claude.write_text(
-        "#!/bin/sh\nprintf '%s:\\n  Status: ! Needs authentication\\n  URL: https://api.graphify.com/mcp\\n' \"$3\"\n"
-    )
-    claude.chmod(0o755)
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    errs, _ = doc_mod.check_claude_mcps(tmp_path)
-    assert errs and "Authenticate" in errs[0]
-    claude.write_text(
-        "#!/bin/sh\nprintf '%s:\\n  Status: \\342\\234\\224 Connected\\n  URL: https://api.graphify.com/mcp\\n' \"$3\"\n"
-    )
-    errs, msg = doc_mod.check_claude_mcps(tmp_path)
-    assert errs == [] and "Connected" in msg
-
-
-def test_claude_mcps_live_skips_without_claude(monkeypatch, tmp_path) -> None:
-    doc_mod = _load_task_module("doctor_checks")
-    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
-    monkeypatch.delenv("CI", raising=False)
-    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
-    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
-    errs, msg = doc_mod.check_claude_mcps(tmp_path)
-    assert errs == [] and "not installed" in msg
-
-
-def test_claude_mcps_live_not_required_off_mac(monkeypatch, tmp_path) -> None:
+def test_reviewer_plugins_live_not_required_off_mac(monkeypatch, tmp_path) -> None:
     doc_mod = _load_task_module("doctor_checks")
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
     monkeypatch.setattr(doc_mod.sys, "platform", "linux")
-    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
-    errs, msg = doc_mod.check_claude_mcps(tmp_path)
+    errs, msg = doc_mod.check_reviewer_plugins(_reviewer_repo(tmp_path))
     assert errs == [] and "not the Mac host" in msg
 
 
-def test_claude_mcps_rejects_malformed_entry_next_to_valid(
-    monkeypatch, tmp_path
-) -> None:
+def test_reviewer_plugins_live_reports_unconnected_mcp(monkeypatch, tmp_path) -> None:
     doc_mod = _load_task_module("doctor_checks")
-    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
-    _claude_mcps_repo(
-        tmp_path,
-        '\t"graphify-reviews|https://api.graphify.com/mcp"\n'
-        '\t"graphify|http://localhost:8000/mcp"\n',
-    )
-    errs, _ = doc_mod.check_claude_mcps(tmp_path)
-    assert any("malformed SERVERS entry" in e for e in errs)
-
-
-def test_claude_mcps_not_connected_fails(monkeypatch, tmp_path) -> None:
-    doc_mod = _load_task_module("doctor_checks")
-    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
-    _claude_mcps_repo(tmp_path, '\t"graphify-reviews|https://api.graphify.com/mcp"\n')
+    monkeypatch.setattr(doc_mod.sys, "platform", "darwin")
+    root = _reviewer_repo(tmp_path / "repo")
     home = tmp_path / "home"
-    claude = home / ".local/bin/claude"
-    claude.parent.mkdir(parents=True)
-    claude.write_text(
-        "#!/bin/sh\nprintf '%s:\\n  Status: \\342\\234\\227 Not Connected\\n  URL: https://api.graphify.com/mcp\\n' \"$3\"\n"
-    )
-    claude.chmod(0o755)
+    home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    errs, _ = doc_mod.check_claude_mcps(tmp_path)
-    assert errs and "Not Connected" in errs[0]
+    lib = doc_mod._load_reviewer_plugins_lib(root)
+    monkeypatch.setattr(doc_mod, "_load_reviewer_plugins_lib", lambda _r: lib)
+    manifest = lib.load_manifest(
+        root / "unix/home/.config/mise/assets/reviewer-plugins.json"
+    )
+    monkeypatch.setattr(
+        lib, "_bin", lambda name, _h: name if name == "claude" else None
+    )
+    monkeypatch.setattr(
+        lib, "claude_state", lambda _c: (set(manifest["claude"]["plugins"]), set())
+    )
+    statuses = {"plugin:graphify:graphify": "! Needs authentication"}
+    monkeypatch.setattr(
+        lib,
+        "claude_mcp_status",
+        lambda _c, n: (
+            None
+            if n in manifest["claude"]["retired_mcps"]
+            else statuses.get(n, "\u2714 Connected")
+        ),
+    )
+    errs, _ = doc_mod.check_reviewer_plugins(root)
+    assert any("plugin:graphify:graphify not Connected" in e for e in errs), errs
+    assert not any("Not Connected" in e or "coderabbit" in e for e in errs)
+
+
+def test_is_connected_rejects_not_connected(tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    assert lib.is_connected("\u2714 Connected") and lib.is_connected("Connected")
+    for bad in ("\u2718 Not Connected", "! Needs authentication", "", None):
+        assert not lib.is_connected(bad)
+
+
+@pytest.mark.parametrize(
+    ("existing", "expect_guarded_after"),
+    [
+        (None, True),
+        ("embedder: local\n", True),
+        ("distill:\n  commands:\n    enabled: false\n", True),
+        ("distill:\n  enabled: true\n", False),
+    ],
+)
+def test_repowise_guard_disables_rewrite(
+    tmp_path, existing, expect_guarded_after
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    repo = tmp_path / "dev" / "org" / "proj"
+    (repo / ".repowise").mkdir(parents=True)
+    if existing is not None:
+        (repo / ".repowise" / "config.yaml").write_text(existing, encoding="utf-8")
+    assert lib.repowise_repos([tmp_path / "dev"]) == [repo]
+    result = lib.apply_guard(repo)
+    assert lib.guarded(repo) is expect_guarded_after, result
+    if not expect_guarded_after:
+        assert result.startswith("MANUAL")
+
+
+@pytest.mark.parametrize("with_uv_lock", [True, False])
+def test_mise_lock_integrity_accepts_pypi_uv_lock_dir(
+    monkeypatch, tmp_path, with_uv_lock
+) -> None:
+    """pypi tools lock a uv graph dir instead of per-platform URLs; missing files still fail."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    lock_dir = mise_dir / "locks" / "pypi-repowise" / "0.62.0~abc"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    if with_uv_lock:
+        (lock_dir / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    for f in lock_dir.iterdir():
+        f.chmod(0o644)
+    (mise_dir / "config.toml").write_text(
+        '[tools]\n"pypi:repowise" = { version = "0.62.0", python = "3.13" }\n'
+        '[settings]\nlockfile_platforms = ["linux-x64", "macos-arm64"]\n',
+        encoding="utf-8",
+    )
+    (mise_dir / "mise.lock").write_text(
+        '[[tools."pypi:repowise"]]\nversion = "0.62.0"\nbackend = "pypi:repowise"\n'
+        'uv = { path = "locks/pypi-repowise/0.62.0~abc", digest = "sha256:00" }\n',
+        encoding="utf-8",
+    )
+    (mise_dir / "mise.lock").chmod(0o644)
+    errs = doc_mod.check_mise_lock_integrity(tmp_path)
+    assert not any("platforms." in e or "Unreferenced" in e for e in errs), errs
+    assert any("uv.lock" in e for e in errs) is (not with_uv_lock), errs

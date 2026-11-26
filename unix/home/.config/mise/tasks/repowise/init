@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Index a repo with Repowise and disable its auto-approved Bash rewrite hook in the same step (args: [repo] [repowise init args...])"
+set -euo pipefail
+repo="$(cd "${1:-.}" && pwd)"
+[[ $# -gt 0 ]] && shift
+lib="$(cd "$(dirname "$0")/../.." && pwd)/lib/reviewer_plugins.py"
+# Write the guard first so the rewrite is never live, even if init is interrupted.
+mkdir -p "${repo}/.repowise"
+python3 -I -B "${lib}" guard "${repo}"
+DO_NOT_TRACK=1 REPOWISE_TELEMETRY_DISABLED=1 repowise init "$@" "${repo}"
+python3 -I -B "${lib}" guard "${repo}"

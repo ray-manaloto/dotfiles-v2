@@ -49,6 +49,7 @@ LEGACY_MCP_NAMES = frozenset({
     "agentsview",
     "codebase-memory-mcp",
     "graphify",
+    "graphify-reviews",
     "clion",
 })
 

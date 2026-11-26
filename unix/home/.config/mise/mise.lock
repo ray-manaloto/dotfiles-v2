@@ -1027,6 +1027,15 @@ aube = { path = "locks/prettier/3.10.1", digest = "sha256:2d1e8d35e9c42e9df167e3
 backend = "npm:prettier"
 specifiers = ["3.10.1"]
 
+[[tools."pypi:repowise"]]
+version = "0.62.0"
+backend = "pypi:repowise"
+specifiers = ["0.62.0"]
+uv = { path = "locks/pypi-repowise/0.62.0~f32a6c7c", digest = "sha256:998449166ab9611412d5b7da659591d18ba388587cc93a96b3376df4cfb28006" }
+
+[tools."pypi:repowise".options]
+python = "3.13"
+
 [[tools.python]]
 version = "3.15.2"
 backend = "core:python"
@@ -1045,6 +1054,26 @@ provenance = "github-attestations"
 [tools.python."platforms.macos-arm64"]
 checksum = "sha256:7e58607647b5b4832092a339ff1c55eeeccee128221232509b8fc8d27957065e"
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.15.2+20261110-aarch64-apple-darwin-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[[tools.python]]
+version = "3.13.18"
+backend = "core:python"
+specifiers = ["3.13"]
+
+[tools.python."platforms.linux-arm64"]
+checksum = "sha256:300d388cef58ff23f101e1a41512dc51db9adae136b138c61af9ae1b1d9703a7"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261124/cpython-3.13.18+20261124-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[tools.python."platforms.linux-x64"]
+checksum = "sha256:b56ceb4fc1d8f0c49b7bd4dc91cd176bad7b86a88b9fc509bae6b10b3ee36692"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261124/cpython-3.13.18+20261124-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[tools.python."platforms.macos-arm64"]
+checksum = "sha256:296f0903cccda15a5c9d3d8393cd2204718aeffd9b095a00f812d75c7b1c0967"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261124/cpython-3.13.18+20261124-aarch64-apple-darwin-install_only_stripped.tar.gz"
 provenance = "github-attestations"
 
 [[tools.ripgrep]]

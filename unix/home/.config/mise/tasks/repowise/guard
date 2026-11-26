@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Disable Repowise's auto-approved Bash rewrite hook in indexed repos (args: repo roots; default: scan ~/dev)"
+set -euo pipefail
+lib="$(cd "$(dirname "$0")/../.." && pwd)/lib/reviewer_plugins.py"
+exec python3 -I -B "${lib}" guard "$@"
