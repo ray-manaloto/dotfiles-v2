@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="Install declared reviewer-bot plugins (Graphify, Greptile, CodeRabbit, Repowise) across Claude/Codex/agy at user scope; OAuth stays a one-time human step"
+#MISE depends=["bootstrap:claude"]
+set -euo pipefail
+
+# Source of truth: assets/reviewer-plugins.json (OpenCode entries live in ~/.config/opencode/opencode.json).
+# Offline/CI runs skip network installs, mirroring bootstrap:skills.
+if [[ ${MISE_OFFLINE:-0} == "1" || ${MISE_OFFLINE:-false} == "true" || ${CI:-false} == "true" ]]; then
+	echo "SKIP: reviewer-plugins (offline/CI)"
+	exit 0
+fi
+lib="$(cd "$(dirname "$0")/../.." && pwd)/lib/reviewer_plugins.py"
+python3 -I -B "${lib}" sync || echo "WARN: reviewer-plugins sync reported errors" >&2

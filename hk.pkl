@@ -250,14 +250,18 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     check =
       #"if rg -n --pcre2 '(?:^|[;&|(\s])(?:(?:ln|cp|mv|install|tee|rm|chmod|chown|tar|unzip|rsync|curl[^\n]*\s-[^\n]*o)\b|>>?)[^\n]*(?:\.local/share/mise/installs|/opt/mise/installs)' {{ files }}; then echo 'Direct writes/clobbering under mise installs/ are forbidden' >&2; exit 1; fi"#
   }
-  ["claude-mcps-declared"] = new Step {
+  ["reviewer-plugins-declared"] = new Step {
     glob =
       List(
-        "unix/home/.config/mise/tasks/bootstrap/claude-mcps",
+        "unix/home/.config/mise/assets/reviewer-plugins.json",
+        "unix/home/.config/mise/lib/reviewer_plugins.py",
+        "unix/home/.config/mise/tasks/bootstrap/reviewer-plugins",
+        "unix/home/.config/mise/tasks/repowise/*",
         "unix/home/.config/mise/tasks/host/prune-mcps",
+        "unix/home/.config/opencode/opencode.json",
         "tasks/py/doctor_checks.py",
       )
-    check = "DOTFILES_DOCTOR_SCOPE=repo python3 -I -B tasks/py/doctor_checks.py claude-mcps"
+    check = "DOTFILES_DOCTOR_SCOPE=repo python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"
   }
   ["private-paths"] = new Step {
     check = "mise run privacy:scan -- {{ files }}"
@@ -324,7 +328,7 @@ hooks {
       ["config-hygiene"] = fastSteps["config-hygiene"]
       ["dcg-packs"] = fastSteps["dcg-packs"]
       ["no-installs-clobber"] = fastSteps["no-installs-clobber"]
-      ["claude-mcps-declared"] = fastSteps["claude-mcps-declared"]
+      ["reviewer-plugins-declared"] = fastSteps["reviewer-plugins-declared"]
       ["codegen-check"] = fastSteps["codegen-check"]
       ["schema-first-ast"] = fastSteps["schema-first-ast"]
       ["schema-contract-check"] = fastSteps["schema-contract-check"]
@@ -336,9 +340,9 @@ hooks {
       ["host-option-a"] {
         check = "python3 -I -B tasks/py/doctor_checks.py host-option-a --strict-host"
       }
-      // Live: declared Claude MCPs (graphify-reviews) still registered and authenticated.
-      ["claude-mcps"] {
-        check = "python3 -I -B tasks/py/doctor_checks.py claude-mcps"
+      // Live: reviewer plugins installed across harnesses, Claude plugin MCPs Connected, Repowise rewrite guarded.
+      ["reviewer-plugins"] {
+        check = "python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"
       }
     }
   }

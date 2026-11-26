@@ -287,6 +287,28 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                 fpath = aube_dir / required_file
                 if not fpath.is_file():
                     errors.append(f"Missing {fpath.relative_to(resolved_root)}")
+        elif any(isinstance(e.get("uv"), dict) for e in matching):
+            # pypi tools lock a uv dependency graph (locks/<tool>/<ver>~<hash>/{pyproject.toml,uv.lock})
+            # instead of per-platform download URLs.
+            uv_rel = next(
+                (
+                    str(e["uv"].get("path"))
+                    for e in matching
+                    if isinstance(e.get("uv"), dict) and e["uv"].get("path")
+                ),
+                "",
+            )
+            uv_dir = (mise_cfg_root / uv_rel).resolve(strict=False)
+            if not uv_rel or not uv_dir.is_relative_to(resolved_root):
+                errors.append(
+                    f"mise.lock invalid uv.path for {tool_name}@{want_ver}: {uv_rel!r}"
+                )
+                continue
+            referenced_aube_dirs.add(uv_dir)
+            for required_file in ("pyproject.toml", "uv.lock"):
+                fpath = uv_dir / required_file
+                if not fpath.is_file():
+                    errors.append(f"Missing {fpath.relative_to(resolved_root)}")
         else:
             allowed_os = _tool_os_list(spec)
             for plat in platforms:
@@ -2364,80 +2386,107 @@ def check_skills_6harness_parity(repo_root: Path) -> tuple[list[str], str]:
     )
 
 
-def check_claude_mcps(repo_root: Path) -> tuple[list[str], str]:
-    """Declared user-scope Claude MCPs are well-formed (repo) and Connected (live host)."""
+def _load_reviewer_plugins_lib(repo_root: Path):
+    import importlib.util
+
+    path = repo_root / "unix/home/.config/mise/lib/reviewer_plugins.py"
+    spec = importlib.util.spec_from_file_location("reviewer_plugins", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
+    """Declared reviewer-bot plugins are well-formed (repo) and installed/Connected (live Mac host)."""
     errors: list[str] = []
-    task = repo_root / "unix/home/.config/mise/tasks/bootstrap/claude-mcps"
-    if not task.is_file() or not os.access(task, os.X_OK):
-        return [f"claude-mcps: missing executable {task.relative_to(repo_root)}"], ""
-    text = task.read_text(encoding="utf-8")
-    body = re.search(r"^SERVERS=\((.*?)^\)", text, re.S | re.M)
-    entries = [ln.strip() for ln in (body.group(1) if body else "").splitlines()]
-    entries = [ln for ln in entries if ln and not ln.startswith("#")]
-    servers: list[tuple[str, str]] = []
-    for ln in entries:
-        m = re.fullmatch(r'"([a-z0-9-]+)\|(https://[^"|\s]+)"', ln)
-        if m:
-            servers.append((m.group(1), m.group(2)))
-        else:
+    mise_dir = repo_root / "unix/home/.config/mise"
+    for rel in (
+        "tasks/bootstrap/reviewer-plugins",
+        "tasks/repowise/guard",
+        "tasks/repowise/init",
+    ):
+        task = mise_dir / rel
+        if not task.is_file() or not os.access(task, os.X_OK):
+            errors.append(f"reviewer-plugins: missing executable {rel}")
+    try:
+        lib = _load_reviewer_plugins_lib(repo_root)
+        manifest = lib.load_manifest(mise_dir / "assets/reviewer-plugins.json")
+    except (OSError, ImportError, ValueError) as exc:
+        return [*errors, f"reviewer-plugins: cannot load manifest/lib: {exc}"], ""
+
+    pid_re = re.compile(r"[a-z0-9-]+@[a-z0-9-]+")
+    for harness in ("claude", "codex"):
+        spec = manifest.get(harness, {})
+        mps = spec.get("marketplaces", {})
+        for pid in spec.get("plugins", []):
+            if not pid_re.fullmatch(str(pid)):
+                errors.append(
+                    f"reviewer-plugins: {harness} plugin id {pid!r} is not name@marketplace"
+                )
+                continue
+            mkt = str(pid).split("@", 1)[1]
+            if mkt not in mps and mkt != "claude-plugins-official":
+                errors.append(
+                    f"reviewer-plugins: {harness} plugin {pid} has no declared marketplace {mkt}"
+                )
+    claude = manifest.get("claude", {})
+    for mcp in claude.get("connected_mcps", []):
+        plugin = str(mcp).split(":")[1] if str(mcp).startswith("plugin:") else ""
+        if not any(str(p).split("@")[0] == plugin for p in claude.get("plugins", [])):
             errors.append(
-                f'claude-mcps: malformed SERVERS entry {ln!r} (want "name|https://url")'
+                f"reviewer-plugins: connected MCP {mcp} has no matching Claude plugin"
             )
-    if not entries:
-        errors.append(
-            "claude-mcps: no name|url entries in bootstrap/claude-mcps SERVERS"
-        )
-    prune = repo_root / "unix/home/.config/mise/tasks/host/prune-mcps"
+    prune = mise_dir / "tasks/host/prune-mcps"
     prune_txt = prune.read_text(encoding="utf-8") if prune.is_file() else ""
     m = re.search(r"LEGACY_MCP_NAMES = frozenset\(\{(.*?)\}\)", prune_txt, re.S)
-    prune_txt = m.group(1) if m else ""
-    for name, _url in servers:
-        if f'"{name}"' in prune_txt:
+    for name in claude.get("retired_mcps", []):
+        if not m or f'"{name}"' not in m.group(1):
             errors.append(
-                f"claude-mcps: {name} is also in host:prune-mcps LEGACY_MCP_NAMES (it would be deleted)"
+                f"reviewer-plugins: retired MCP {name} missing from host:prune-mcps LEGACY_MCP_NAMES"
             )
+    oc_path = repo_root / "unix/home/.config/opencode/opencode.json"
+    try:
+        oc = json.loads(oc_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        oc = {}
+        errors.append(f"reviewer-plugins: cannot read opencode.json: {exc}")
+    oc_spec = manifest.get("opencode", {})
+    for plug in oc_spec.get("plugins", []):
+        if plug not in (oc.get("plugins") or []):
+            errors.append(f"reviewer-plugins: opencode.json plugins missing {plug}")
+    servers = (
+        ((oc.get("mcp") or {}).get("servers") or {})
+        if isinstance(oc.get("mcp"), dict)
+        else {}
+    )
+    for name in oc_spec.get("mcp_servers", []):
+        if name not in servers:
+            errors.append(f"reviewer-plugins: opencode.json mcp.servers missing {name}")
+
     if errors or _live_host_skipped():
-        return errors, _skip_reason(
-            f"{len(servers)} declared Claude MCP(s) well-formed; live status not probed"
-        ) if not errors else ""
-    home = Path.home()
-    # OAuth sign-in is per host and needs a browser; only the Mac host is required
-    # to stay Connected (VM/containers/pc register the server but may not sign in).
-    if sys.platform != "darwin" or (home / ".config/dotfiles-v2/vm-env.sh").is_file():
-        return [], "not the Mac host; live MCP status not required"
-    claude = home / ".local/bin/claude"
-    if not claude.is_file():
-        return [], f"{claude} not installed on this host; live MCP status not probed"
-    for name, url in servers:
-        try:
-            out = subprocess.run(
-                [str(claude), "mcp", "get", name],
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=45,
-                check=False,
-            ).stdout
-        except subprocess.TimeoutExpired:
-            errors.append(f"claude-mcps: `claude mcp get {name}` timed out")
-            continue
-        status = next(
-            (
-                ln.split(":", 1)[1].strip()
-                for ln in out.splitlines()
-                if ln.strip().startswith("Status:")
-            ),
-            "",
+        return errors, (
+            _skip_reason(
+                "reviewer-plugins manifest well-formed; live install/status not probed"
+            )
+            if not errors
+            else ""
         )
-        if url not in out:
-            errors.append(
-                f"claude-mcps: {name} not registered at {url} (run `mise run bootstrap:claude-mcps`)"
-            )
-        elif not re.fullmatch(r"(?:\u2714\s*)?Connected", status):
-            errors.append(
-                f"claude-mcps: {name} status '{status or 'unknown'}' (in Claude Code: /mcp -> {name} -> Authenticate)"
-            )
-    return errors, f"{len(servers)} Claude MCP(s) registered and Connected"
+    home = Path.home()
+    # Installs + OAuth sign-ins are per host and need a browser; only the Mac host is required.
+    if sys.platform != "darwin" or (home / ".config/dotfiles-v2/vm-env.sh").is_file():
+        return [], "not the Mac host; live plugin status not required"
+    live = [f"reviewer-plugins: {e}" for e in lib.check(manifest, home)]
+    if live:
+        live.append(
+            "reviewer-plugins: fix with `mise run bootstrap:reviewer-plugins`; sign in via Claude /mcp -> <server> -> Authenticate"
+        )
+        return live, ""
+    return (
+        [],
+        "declared reviewer plugins installed across harnesses and Claude plugin MCPs Connected",
+    )
 
 
 def _report(label: str, errors: list[str], ok_msg: str) -> int:
@@ -2457,7 +2506,7 @@ def main(argv: list[str] | None = None) -> int:
     p_host.add_argument("--strict-host", action="store_true")
     sub.add_parser("mise-doctor-clean")
     sub.add_parser("host-hygiene")
-    sub.add_parser("claude-mcps")
+    sub.add_parser("reviewer-plugins")
     sub.add_parser("jouet-rules")
     sub.add_parser("usage-lint")
     sub.add_parser("pitchfork-config")
@@ -2576,9 +2625,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "agy-rc-health":
         errs, msg = check_agy_rc_health(repo_root, strict_host=args.strict_host)
         return _report("agy-rc-health", errs, msg)
-    if args.cmd == "claude-mcps":
-        errs, msg = check_claude_mcps(repo_root)
-        return _report("claude-mcps", errs, msg)
+    if args.cmd == "reviewer-plugins":
+        errs, msg = check_reviewer_plugins(repo_root)
+        return _report("reviewer-plugins", errs, msg)
     if args.cmd == "skills-6harness-parity":
         errs, msg = check_skills_6harness_parity(repo_root)
         return _report("skills-6harness-parity", errs, msg)

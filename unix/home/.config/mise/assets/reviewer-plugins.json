@@ -1,0 +1,39 @@
+{
+  "claude": {
+    "marketplaces": {
+      "graphify": "Graphify-Labs/graphify-claude-plugin",
+      "repowise": "repowise-dev/repowise"
+    },
+    "plugins": [
+      "coderabbit@claude-plugins-official",
+      "graphify@graphify",
+      "greptile@claude-plugins-official",
+      "repowise@repowise"
+    ],
+    "connected_mcps": [
+      "plugin:coderabbit:coderabbit",
+      "plugin:graphify:graphify",
+      "plugin:greptile:greptile",
+      "plugin:repowise:repowise"
+    ],
+    "retired_mcps": ["graphify-reviews"]
+  },
+  "codex": {
+    "marketplaces": {
+      "graphify": "Graphify-Labs/graphify-codex-plugin",
+      "greptile-plugin": "greptileai/skills",
+      "repowise": "repowise-dev/repowise"
+    },
+    "plugins": ["codex@repowise", "graphify@graphify", "greptile@greptile-plugin"]
+  },
+  "agy": {
+    "plugins": {
+      "coderabbit": "coderabbit",
+      "graphify": "https://github.com/Graphify-Labs/graphify-antigravity"
+    }
+  },
+  "opencode": {
+    "plugins": ["graphify-opencode@1.1.1"],
+    "mcp_servers": ["repowise"]
+  }
+}
