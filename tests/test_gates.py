@@ -1856,24 +1856,41 @@ def test_is_connected_rejects_not_connected(tmp_path) -> None:
     [
         (None, True),
         ("embedder: local\n", True),
-        ("distill:\n  commands:\n    enabled: false\n", True),
+        ("distill:\n    commands:\n        enabled: false\n", True),
+        ('distill:\n  commands:\n\n    enabled: "false"\n', True),
+        ("distill: {commands: {enabled: false}}\n", True),
+        ("distill:\r\n  commands:\r\n    permission: off\r\n", True),
         ("distill:\n  enabled: true\n", False),
     ],
 )
-def test_repowise_guard_disables_rewrite(
-    tmp_path, existing, expect_guarded_after
+def test_repowise_guard_fallback_without_cli(
+    monkeypatch, tmp_path, existing, expect_guarded_after
 ) -> None:
+    """Stdlib fallback (no repowise CLI) recognises valid YAML shapes; never clobbers a distill block."""
     doc_mod = _load_task_module("doctor_checks")
     lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    monkeypatch.setattr(lib, "repowise_python", lambda home=None: None)
     repo = tmp_path / "dev" / "org" / "proj"
     (repo / ".repowise").mkdir(parents=True)
     if existing is not None:
-        (repo / ".repowise" / "config.yaml").write_text(existing, encoding="utf-8")
+        (repo / ".repowise" / "config.yaml").write_bytes(existing.encode())
     assert lib.repowise_repos([tmp_path / "dev"]) == [repo]
     result = lib.apply_guard(repo)
     assert lib.guarded(repo) is expect_guarded_after, result
     if not expect_guarded_after:
         assert result.startswith("MANUAL")
+
+
+def test_repowise_guard_comment_alone_is_not_a_guard(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path / "repo"))
+    monkeypatch.setattr(lib, "repowise_python", lambda home=None: None)
+    repo = tmp_path / "proj"
+    (repo / ".repowise").mkdir(parents=True)
+    (repo / ".repowise" / "config.yaml").write_text(
+        f"# {lib.GUARD_LINE}\nembedder: local\n"
+    )
+    assert lib.guarded(repo) is False
 
 
 @pytest.mark.parametrize("with_uv_lock", [True, False])

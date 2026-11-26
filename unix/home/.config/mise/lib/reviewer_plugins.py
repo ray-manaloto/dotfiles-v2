@@ -146,46 +146,135 @@ def repowise_repos(roots: list[Path]) -> list[Path]:
     return sorted(set(found))
 
 
-def guarded(repo: Path) -> bool:
-    """True when .repowise/config.yaml disables distill command rewriting.
+# Runs inside repowise's own interpreter so the decision uses repowise's exact config reader
+# (_load_commands_config: same YAML parsing and on/off flag semantics as the live hook).
+_REPOWISE_HELPER = """
+import json, pathlib, sys
+import yaml
+from repowise.cli.rewrite_hook import _load_commands_config
+mode, repo, header = sys.argv[1], sys.argv[2], sys.argv[3]
+if mode == "set":
+    cfg = pathlib.Path(repo, ".repowise", "config.yaml")
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8")) if cfg.exists() else {}
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        sys.exit(3)
+    distill = data.get("distill") if isinstance(data.get("distill"), dict) else {}
+    commands = distill.get("commands") if isinstance(distill.get("commands"), dict) else {}
+    commands["enabled"] = False
+    distill["commands"] = commands
+    data["distill"] = distill
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(header + yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+enabled, _perm, _fam = _load_commands_config(repo)
+sys.stdout.write(json.dumps({"rewrite_enabled": bool(enabled)}))
+"""
 
-    Mirrors repowise's own _load_commands_config: distill.enabled false, distill.commands.enabled
-    false, or distill.commands.permission off all disable the rewrite.
-    """
-    cfg = repo / ".repowise" / "config.yaml"
+
+def repowise_python(home: Path | None = None) -> str | None:
+    """The interpreter of the installed repowise CLI (has yaml + repowise importable)."""
+    exe = _bin("repowise", home or Path.home())
+    if not exe:
+        return None
+    py = Path(os.path.realpath(exe)).parent / "python"
+    return str(py) if os.access(py, os.X_OK) else None
+
+
+def _helper(py: str, mode: str, repo: Path) -> bool | None:
     try:
-        text = cfg.read_text(encoding="utf-8")
+        proc = subprocess.run(
+            [py, "-I", "-c", _REPOWISE_HELPER, mode, str(repo), f"# {GUARD_LINE}\n"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return (
+            not json.loads(proc.stdout)["rewrite_enabled"]
+            if proc.returncode == 0
+            else None
+        )
+    except OSError, subprocess.TimeoutExpired, ValueError, KeyError:
+        return None
+
+
+def _guarded_fallback(text: str) -> bool:
+    """Stdlib approximation when the repowise CLI is absent: any indent, quoted booleans, comments."""
+    off = r"[\"']?(false|off|no|0|deny|disable|disabled|none)[\"']?\s*(#.*)?$"
+    lines = [ln.rstrip("\r") for ln in text.splitlines()]
+    in_distill = in_commands = False
+    distill_indent = commands_indent = -1
+    for ln in lines:
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        indent = len(ln) - len(ln.lstrip())
+        key = ln.strip()
+        if indent == 0:
+            in_distill = key.startswith("distill:")
+            in_commands = False
+            if in_distill and re.search(r"enabled:\s*" + off, key, re.I):
+                return True  # flow style: distill: {enabled: false}
+            if in_distill and re.search(
+                r"commands:\s*\{[^}]*enabled:\s*(false|off|no)", key, re.I
+            ):
+                return True
+            continue
+        if not in_distill:
+            continue
+        if distill_indent < 0:
+            distill_indent = indent
+        if indent == distill_indent:
+            in_commands = key.startswith("commands:")
+            commands_indent = -1
+            if re.fullmatch(r"enabled:\s*" + off, key, re.I):
+                return True
+            continue
+        if in_commands:
+            if commands_indent < 0:
+                commands_indent = indent
+            if indent == commands_indent and (
+                re.fullmatch(r"enabled:\s*" + off, key, re.I)
+                or re.fullmatch(r"permission:\s*" + off, key, re.I)
+            ):
+                return True
+    return False
+
+
+def guarded(repo: Path, py: str | None = None) -> bool:
+    """True when repowise will NOT rewrite Bash commands in this repo."""
+    py = py or repowise_python()
+    if py:
+        verdict = _helper(py, "check", repo)
+        if verdict is not None:
+            return verdict
+    try:
+        return _guarded_fallback(
+            (repo / ".repowise" / "config.yaml").read_text(encoding="utf-8")
+        )
     except OSError:
         return False
-    if GUARD_LINE in text:
-        return True
-    block = re.search(r"^distill:\s*\n((?:[ \t]+.*\n?|\s*\n)*)", text, re.M)
-    if not block:
-        return False
-    body = block.group(1)
-    return bool(
-        re.search(r"^  enabled:\s*(false|off|no)\b", body, re.M)
-        or re.search(
-            r"^  commands:\s*\n(?:    .*\n)*?    (enabled:\s*(false|off|no)|permission:\s*(off|false))\b",
-            body,
-            re.M,
-        )
-    )
 
 
-def apply_guard(repo: Path) -> str:
+def apply_guard(repo: Path, py: str | None = None) -> str:
     cfg = repo / ".repowise" / "config.yaml"
-    if guarded(repo):
+    py = py or repowise_python()
+    if guarded(repo, py):
         return f"ok: {repo}"
-    if cfg.exists():
-        text = cfg.read_text(encoding="utf-8")
-        if re.search(r"^distill:", text, re.M):
-            return f"MANUAL: {cfg} has a distill: block; set distill.commands.enabled: false"
-        sep = "" if text.endswith("\n") or not text else "\n"
-        cfg.write_text(text + sep + GUARD_YAML, encoding="utf-8")
-    else:
-        cfg.write_text(GUARD_YAML, encoding="utf-8")
-    return f"guarded: {repo}"
+    if py and _helper(py, "set", repo) is True:
+        return f"guarded: {repo}"
+    text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    if re.search(r"^distill\s*:", text, re.M) or text.strip() in ("{}", "---", "..."):
+        return f"MANUAL: {cfg}: set distill.commands.enabled: false"
+    sep = "" if text.endswith("\n") or not text else "\n"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(text + sep + GUARD_YAML, encoding="utf-8")
+    return (
+        f"guarded: {repo}"
+        if guarded(repo, py)
+        else f"MANUAL: {cfg}: guard not recognised"
+    )
 
 
 def default_roots(home: Path) -> list[Path]:
@@ -232,8 +321,34 @@ def sync(manifest: dict, home: Path) -> list[str]:
             if name not in have:
                 rc, _ = _run([agy, "plugin", "install", target])
                 log.append(f"agy plugin install {target}: rc={rc}")
+    repowise = _bin("repowise", home)
+    if repowise and repowise_telemetry_enabled(repowise):
+        # Persistent opt-out: Codex starts MCP servers with a cleared env, so DO_NOT_TRACK never reaches them.
+        rc, _ = _run([repowise, "telemetry", "disable"])
+        log.append(f"repowise telemetry disable: rc={rc}")
     log.extend(apply_guard(r) for r in repowise_repos(default_roots(home)))
     return log
+
+
+def repowise_telemetry_enabled(repowise: str) -> bool:
+    """True unless `repowise telemetry status` reports the persistent opt-out (env vars ignored)."""
+    env = {k: v for k, v in os.environ.items() if k not in _TELEMETRY_ENV}
+    try:
+        out = subprocess.run(
+            [repowise, "telemetry", "status"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=env,
+        ).stdout
+    except OSError, subprocess.TimeoutExpired:
+        return True
+    return re.search(r"^Telemetry:\s*disabled", out, re.M) is None
+
+
+_TELEMETRY_ENV = ("DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED", "REPOWISE_OFFLINE")
 
 
 def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list[str]:
@@ -273,6 +388,9 @@ def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list
             for n in manifest["agy"].get("plugins", {})
             if n not in have
         ]
+    repowise = _bin("repowise", home)
+    if repowise and repowise_telemetry_enabled(repowise):
+        errors.append("repowise telemetry enabled (run `repowise telemetry disable`)")
     errors += [
         f"repowise rewrite not disabled: {r}/.repowise/config.yaml (run `mise run repowise:guard`)"
         for r in repowise_repos(default_roots(home))
@@ -297,8 +415,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if any(o.startswith("MANUAL") for o in out) else 0
     manifest = load_manifest()
     if args.cmd == "sync":
-        _emit(sync(manifest, home), "reviewer-plugins: up to date")
-        return 0
+        log = sync(manifest, home)
+        _emit(log, "reviewer-plugins: up to date")
+        failed = [
+            ln for ln in log if re.search(r"rc=[1-9]", ln) or ln.startswith("MANUAL")
+        ]
+        return 1 if failed else 0
     errs = check(manifest, home)
     _emit(errs, "reviewer-plugins: all declared plugins installed and Connected")
     return 1 if errs else 0
