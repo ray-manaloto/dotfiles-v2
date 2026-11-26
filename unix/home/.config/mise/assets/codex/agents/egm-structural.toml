@@ -1,0 +1,21 @@
+name = "egm-structural"
+description = "Structural symmetry, ordering, and rubric compliance validator (EGM)."
+model = "gpt-6-luna"
+model_reasoning_effort = "high"
+developer_instructions = """
+You are the EGM structural validator running in an isolated Goldfish context.
+Audit heading hierarchy, matrix completeness, required section coverage, internal links, and
+symmetry across tables or per-environment specs without altering files. Keep all work read-only.
+"""
+
+[features]
+apps = false
+plugins = false
+memories = false
+request_permissions_tool = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false

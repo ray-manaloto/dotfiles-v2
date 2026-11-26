@@ -1,0 +1,79 @@
+# Rule guards for Codex's exec policy, beside default.rules (which Codex rewrites; this file it never touches).
+# A prefix rule sees only a command's leading words, so wrappers (`mise x --`, `sh -c`, `env`) and
+# non-adjacent flags (`git push origin main --force`) are left to the dcg PreToolUse hook
+# (~/.config/dcg, wired for Claude/Codex/AGY), which is the full check. workflow.rules must never
+# allow a wrapper prefix. Deployed with mode = "copy": Codex skips a symlinked .rules file
+# (codex-rs/core/src/exec_policy.rs keeps only entries whose own type is a file).
+# Flag-prefixed forms (`fnox -c f -P p get`, `doppler -p x secrets`) are caught by the dcg
+# custom.mise_protect pack, which fails closed when dcg is missing.
+# Policy: prefer mise-native installs over Homebrew; the end state is that mise manages everything.
+# Check: codex execpolicy check --rules unix/home/.codex/rules/guards.rules -- brew install jq
+
+prefix_rule(
+    pattern = ["brew", ["install", "reinstall", "upgrade", "tap", "bundle"]],
+    decision = "forbidden",
+    justification = "agents never install with Homebrew; declare packages via mise bootstrap",
+    match = [["brew", "install", "jq"], ["brew", "upgrade"]],
+    not_match = [["brew", "list"], ["brew", "info", "jq"]],
+)
+
+prefix_rule(
+    pattern = ["doppler", "secrets"],
+    decision = "forbidden",
+    justification = "all `doppler secrets` subcommands are agent-forbidden: reads print values and writes go only through the `secret:*` mise tasks",
+    match = [["doppler", "secrets"], ["doppler", "secrets", "get", "API_KEY"], ["doppler", "secrets", "download"], ["doppler", "secrets", "set", "KEY"]],
+    not_match = [["doppler", "me"]],
+)
+
+prefix_rule(
+    pattern = ["doppler", "run"],
+    decision = "forbidden",
+    justification = "secrets stay inside fnox; use fnox proxy run -- <cmd>",
+    match = [["doppler", "run", "--", "env"]],
+)
+
+prefix_rule(
+    pattern = ["fnox", ["get", "export", "exec", "edit", "tui", "mcp", "push"]],
+    decision = "forbidden",
+    justification = "disallowed fnox secret-printing command; use fnox proxy run -- <cmd> or fnox check",
+    match = [["fnox", "get", "API_KEY"], ["fnox", "export"], ["fnox", "exec", "--only", "KEY", "--", "env"]],
+    not_match = [["fnox", "proxy", "run", "--", "env"], ["fnox", "check"]],
+)
+
+prefix_rule(
+    pattern = ["fnox", "list", "--values"],
+    decision = "forbidden",
+    justification = "fnox list --values prints secrets; check with fnox check or fnox list",
+    match = [["fnox", "list", "--values"]],
+    not_match = [["fnox", "list"]],
+)
+
+prefix_rule(
+    pattern = ["docker", "desktop", "update"],
+    decision = "forbidden",
+    justification = "Docker Desktop updates require owner approval; use docker desktop start --timeout 300",
+    match = [["docker", "desktop", "update"]],
+    not_match = [["docker", "desktop", "start", "--timeout", "300"]],
+)
+
+prefix_rule(
+    pattern = ["pkill"],
+    decision = "forbidden",
+    justification = "pkill by pattern can hit unrelated desktop/agent sessions; kill the recorded pid",
+    match = [["pkill", "-f", "foo"]],
+)
+
+prefix_rule(
+    pattern = ["killall"],
+    decision = "forbidden",
+    justification = "killall by name can hit unrelated processes; kill the recorded pid",
+    match = [["killall", "node"]],
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--force", "-f"]],
+    decision = "forbidden",
+    justification = "bare force-push risks overwriting remote history; use --force-with-lease only when approved",
+    match = [["git", "push", "--force", "origin", "main"], ["git", "push", "-f"]],
+    not_match = [["git", "push", "--force-with-lease", "origin", "wt/foo"]],
+)

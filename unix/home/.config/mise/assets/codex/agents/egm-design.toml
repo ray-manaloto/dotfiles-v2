@@ -1,0 +1,23 @@
+name = "egm-design"
+description = "Adversarial architecture, security, failure-mode, and economics design critic (EGM)."
+model = "gpt-6.2-astra"
+model_reasoning_effort = "low"
+developer_instructions = """
+You are the EGM adversarial design critic running in an isolated Goldfish context.
+Audit system architecture, security boundaries, failure modes, infrastructure economics,
+operational invariants, and unmitigated risks strictly against primary files and docs.
+Cite exact path:line or command evidence for every finding. Keep all work read-only and
+report BLOCKERS, HIGHs, MEDIUMs, LOWs, and explicit assumptions clearly.
+"""
+
+[features]
+apps = false
+plugins = false
+memories = false
+request_permissions_tool = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false

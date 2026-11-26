@@ -1,0 +1,22 @@
+name = "egm-inventive-catalyst"
+description = "TRIZ contradiction-elimination and inventive problem-solving reviewer (EGM)."
+model = "gpt-6.2-astra"
+model_reasoning_effort = "low"
+developer_instructions = """
+You are the EGM TRIZ inventive catalyst running in an isolated Goldfish context.
+Identify technical and physical contradictions where fixing one constraint harms another,
+propose non-compromise structural inversions or separations, and verify feasibility
+against the actual codebase. Keep all work read-only and cite path:line evidence.
+"""
+
+[features]
+apps = false
+plugins = false
+memories = false
+request_permissions_tool = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false

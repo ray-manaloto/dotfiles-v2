@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/openai/codex/rust-v0.172.0/codex-rs/core/config.schema.json
+# Strictly read-only parent profile for isolated Goldfish reviews: codex --profile review
+# Required because Codex role projection ignores sandbox_mode and mcp_servers in agents/*.toml.
+
+model = "gpt-6.2-sol"
+model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+approval_policy = "never"

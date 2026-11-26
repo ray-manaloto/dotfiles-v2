@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "advisorModel": "opus",
+  "attribution": {
+    "sessionUrl": false
+  },
+  "autoCompactWindow": 200000,
+  "autoDreamEnabled": true,
+  "autoUpdatesChannel": "latest",
+  "cleanupPeriodDays": 30,
+  "crossSessionInbound": "accept",
+  "effortLevel": "medium",
+  "fallbackModel": ["sonnet"],
+  "model": "opus",
+  "modelSettings": {
+    "claude-fable-5-2": {
+      "effortLevel": "high"
+    },
+    "claude-opus-5-5": {
+      "autoCompactWindow": 500000,
+      "effortLevel": "medium"
+    },
+    "claude-sonnet-5-5": {
+      "effortLevel": "medium"
+    }
+  },
+  "promptSuggestionEnabled": false,
+  "subagentPromptCacheTtl": "1h",
+  "teammateMode": "in-process"
+}

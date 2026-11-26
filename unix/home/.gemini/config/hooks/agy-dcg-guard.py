@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,17 @@ def _extract_command(payload: dict[str, Any]) -> str | None:
     return None
 
 
+# With dcg missing or broken, only a plain `mise install` / `mise doctor ...` may run, so the
+# guard can be restored from the session (same allowance as the Claude and Codex hooks).
+_RECOVERY = re.compile(r"mise (install|doctor)( [A-Za-z0-9._@:=/+-]+)*")
+
+
+def _recovery_or_deny(cmd: str, reason: str) -> int:
+    if _RECOVERY.fullmatch(cmd.strip()):
+        return _allow()
+    return _deny(reason)
+
+
 def _resolve_dcg_bin() -> str | None:
     mise_data = os.environ.get("MISE_DATA_DIR") or os.path.expanduser(
         "~/.local/share/mise"
@@ -73,7 +85,11 @@ def main() -> int:
 
     dcg = _resolve_dcg_bin()
     if dcg is None:
-        return _allow()
+        # Fail closed: a missing guard binary must not silently disable every check.
+        return _recovery_or_deny(
+            cmd,
+            "Blocked by agy-dcg-guard: dcg not found; run `mise install` to restore the guard",
+        )
 
     sub_env = dict(os.environ)
     sub_env.setdefault("DCG_NO_SELF_HEAL", "1")
@@ -121,6 +137,13 @@ def main() -> int:
             or "Blocked by dcg"
         )
         return _deny(str(reason))
+    if proc.returncode != 0:
+        # A broken guard (for example a mise shim for an uninstalled dcg) must not allow everything.
+        detail = proc.stderr.strip()[:200] or f"exit {proc.returncode}"
+        return _recovery_or_deny(
+            cmd,
+            f"Blocked by agy-dcg-guard: dcg failed ({detail}); run `mise install` to restore the guard",
+        )
     return _allow()
 
 

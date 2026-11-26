@@ -158,6 +158,7 @@ exclude = ["*"]
 [dotfile_groups.agents-skills.entries]
 "~/.agents/skills/agy-session-ops" = { source = "agy-session-ops", mode = "symlink", main_checkout = true }
 "~/.agents/skills/apify-ultimate-scraper" = { source = "apify-ultimate-scraper", mode = "symlink", main_checkout = true }
+"~/.agents/skills/egm-adversarial-review" = { source = "egm-adversarial-review", mode = "symlink", main_checkout = true }
 "~/.agents/skills/exa-search" = { source = "exa-search", mode = "symlink", main_checkout = true }
 "~/.agents/skills/find-docs" = { source = "find-docs", mode = "symlink", main_checkout = true }
 "~/.agents/skills/firecrawl" = { source = "firecrawl", mode = "symlink", main_checkout = true }
@@ -190,14 +191,35 @@ exclude = ["*"]
   "~/.zshenv",
 ] }
 "~/.claude/CLAUDE.md" = { main_checkout = true }
+"~/.claude/settings.json/automode" = { source = "assets/claude/automode.json", merge = true, permissions = "0600" }
 "~/.claude/settings.json/dcg-hooks" = { source = "assets/claude/dcg-hooks.json", merge = true, permissions = "0600" }
+"~/.claude/settings.json/env-common" = { source = "assets/claude/env-common.json", merge = true, permissions = "0600" }
 "~/.claude/settings.json/learn-hooks" = { source = "assets/claude/learn-hooks.json", merge = true, permissions = "0600" }
+"~/.claude/settings.json/model-routing" = { source = "assets/claude/model-routing.json", merge = true, permissions = "0600" }
+"~/.claude/settings.json/permissions" = { source = "assets/claude/permissions.json", merge = true, permissions = "0600" }
+"~/.claude/statusline.sh" = { main_checkout = true }
 "~/.codex/AGENTS.md" = { source = "assets/agents/codex-AGENTS.md.tera", mode = "template", depends = [
   "~/.agents/AGENTS.md",
 ] }
+"~/.codex/agents/egm-codebase-details.toml" = { source = "assets/codex/agents/egm-codebase-details.toml", mode = "copy", permissions = "0600" }
+"~/.codex/agents/egm-comprehension.toml" = { source = "assets/codex/agents/egm-comprehension.toml", mode = "copy", permissions = "0600" }
+"~/.codex/agents/egm-design.toml" = { source = "assets/codex/agents/egm-design.toml", mode = "copy", permissions = "0600" }
+"~/.codex/agents/egm-implementation-readiness.toml" = { source = "assets/codex/agents/egm-implementation-readiness.toml", mode = "copy", permissions = "0600" }
+"~/.codex/agents/egm-inventive-catalyst.toml" = { source = "assets/codex/agents/egm-inventive-catalyst.toml", mode = "copy", permissions = "0600" }
+"~/.codex/agents/egm-structural.toml" = { source = "assets/codex/agents/egm-structural.toml", mode = "copy", permissions = "0600" }
+"~/.codex/agents/egm-style.toml" = { source = "assets/codex/agents/egm-style.toml", mode = "copy", permissions = "0600" }
+"~/.codex/agents/egm-zoom-out.toml" = { source = "assets/codex/agents/egm-zoom-out.toml", mode = "copy", permissions = "0600" }
+"~/.codex/astra.config.toml" = { source = "assets/codex/profiles/astra.config.toml", mode = "copy", permissions = "0600" }
 "~/.codex/config.toml/shell-env-policy" = { source = "assets/codex/mcp-fnox-policy.toml", merge = true, permissions = "0600" }
+"~/.codex/config.toml/team-defaults" = { source = "assets/codex/team-defaults.toml", merge = true, permissions = "0600" }
 "~/.codex/hooks.json/dcg-hooks" = { source = "assets/codex/dcg-hooks.json", merge = true, permissions = "0600" }
 "~/.codex/hooks.json/learn-hooks" = { source = "assets/codex/learn-hooks.json", merge = true, permissions = "0600" }
+"~/.codex/luna.config.toml" = { source = "assets/codex/profiles/luna.config.toml", mode = "copy", permissions = "0600" }
+"~/.codex/review.config.toml" = { source = "assets/codex/profiles/review.config.toml", mode = "copy", permissions = "0600" }
+# Codex ignores symlinked .rules entries (`exec_policy.rs`), so deploy with mode = "copy".
+"~/.codex/rules/guards.rules" = { mode = "copy", permissions = "0600" }
+"~/.codex/rules/workflow.rules" = { mode = "copy", permissions = "0600" }
+"~/.codex/sol.config.toml" = { source = "assets/codex/profiles/sol.config.toml", mode = "copy", permissions = "0600" }
 "~/.gemini/antigravity-cli/settings.json/orchestrator-neon" = { source = "assets/gemini/settings-orchestrator.json", merge = true, permissions = "0600" }
 "~/.gemini/antigravity-cli/settings.json/statusline" = { source = "assets/gemini/settings-statusline.json", merge = true, permissions = "0600" }
 "~/.gemini/config/AGENTS.md" = { source = "~/.agents/AGENTS.md", main_checkout = true, depends = [
@@ -340,6 +362,12 @@ fi
 mode = "0700"
 
 [bootstrap.directories."~/.codex"]
+mode = "0700"
+
+[bootstrap.directories."~/.codex/agents"]
+mode = "0700"
+
+[bootstrap.directories."~/.codex/rules"]
 mode = "0700"
 
 [bootstrap.directories."~/.hermes"]

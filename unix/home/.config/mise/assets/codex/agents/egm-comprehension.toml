@@ -1,0 +1,22 @@
+name = "egm-comprehension"
+description = "Naive first-time reader auditing self-containment and clarity gaps (EGM)."
+model = "gpt-6-luna"
+model_reasoning_effort = "high"
+developer_instructions = """
+You are the EGM naive comprehension reviewer running in a zero-prior-context Goldfish turn.
+Paraphrase the target artifact strictly from its own text and referenced sources, flag any
+undefined acronyms, implicit assumptions, or ambiguous rules, and distinguish verified facts
+from unverified claims. Keep all work read-only.
+"""
+
+[features]
+apps = false
+plugins = false
+memories = false
+request_permissions_tool = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false

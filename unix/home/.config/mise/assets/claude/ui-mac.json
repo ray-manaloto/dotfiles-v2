@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "agentPushNotifEnabled": true,
+  "inputNeededNotifEnabled": true,
+  "preferredNotifChannel": "ghostty",
+  "remoteControlAtStartup": true,
+  "statusLine": {
+    "command": "$HOME/.claude/statusline.sh",
+    "type": "command"
+  }
+}

@@ -1,0 +1,95 @@
+# Strictly read-only allowlist (owner decision 2026-11-25). An `allow` decision may bypass the
+# sandbox, so nothing here may write files, run repo-defined code (hk run/fix, mise doctor/run,
+# git hooks), or wrap another command (mise x, env, sh -c). Everything else stays on the
+# auto-review path. Most-restrictive rule wins; guards.rules forbids take precedence.
+# Deployed with mode = "copy" because Codex skips symlinked .rules files.
+# Check: codex execpolicy check --rules guards.rules --rules workflow.rules -- <cmd>
+
+prefix_rule(
+    pattern = ["hc", ["ls", "get", "read", "wait", "status"]],
+    decision = "allow",
+    justification = "read/wait on Herdr terminal state",
+    match = [["hc", "ls", "--json"], ["hc", "read", "t1", "--lines", "40"], ["hc", "wait", "t2"]],
+    not_match = [["hc", "kill", "t1"], ["hc", "send", "t1", "hi"], ["hc", "run", "x"]],
+)
+
+prefix_rule(
+    pattern = ["vb", ["whoami", "list", "channels", "actors", "read"]],
+    decision = "allow",
+    justification = "read-only Vercel Board inspection (posting and task leases stay reviewed)",
+    match = [["vb", "whoami"], ["vb", "read", "ops/updates"]],
+    not_match = [["vb", "post", "ops/updates", "hi"], ["vb", "tasks", "claim", "t1"]],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", ["view", "list", "diff", "checks", "status"]],
+    decision = "allow",
+    justification = "read-only GitHub PR inspection",
+    match = [["gh", "pr", "view", "201"], ["gh", "pr", "checks"]],
+    not_match = [["gh", "pr", "merge", "1"], ["gh", "pr", "checkout", "1"]],
+)
+
+prefix_rule(
+    pattern = ["gh", "issue", ["view", "list", "status"]],
+    decision = "allow",
+    justification = "read-only GitHub issue inspection",
+    match = [["gh", "issue", "view", "24"], ["gh", "issue", "list"]],
+    not_match = [["gh", "issue", "close", "24"]],
+)
+
+prefix_rule(
+    pattern = ["gh", "run", ["list", "view"]],
+    decision = "allow",
+    justification = "read-only GitHub Actions run inspection",
+    match = [["gh", "run", "list"], ["gh", "run", "view", "12345"]],
+    not_match = [["gh", "run", "cancel", "12345"], ["gh", "run", "rerun", "1"]],
+)
+
+# git: inspection only. No fetch (--upload-pack runs code), diff/show/log (--output writes files),
+# add/commit (hooks run), or worktree/branch mutation.
+prefix_rule(
+    pattern = ["git", ["status", "rev-parse"]],
+    decision = "allow",
+    justification = "local git inspection without file writes or hooks",
+    match = [["git", "status", "--short"], ["git", "rev-parse", "HEAD"]],
+    not_match = [["git", "fetch", "origin"], ["git", "diff", "--output=x"], ["git", "log", "--output=x"], ["git", "commit", "-m", "x"], ["git", "push"]],
+)
+
+prefix_rule(
+    pattern = ["git", "worktree", "list"],
+    decision = "allow",
+    justification = "list linked worktrees",
+    match = [["git", "worktree", "list"]],
+    not_match = [["git", "worktree", "remove", "--force", "x"]],
+)
+
+prefix_rule(
+    pattern = ["docker", ["ps", "images"]],
+    decision = "allow",
+    justification = "read-only container listing (inspect/logs can expose secrets)",
+    match = [["docker", "ps"], ["docker", "images"]],
+    not_match = [["docker", "inspect", "x"], ["docker", "logs", "x"], ["docker", "compose", "up"]],
+)
+
+prefix_rule(
+    pattern = ["agentsview", "session", ["search", "messages", "list"]],
+    decision = "allow",
+    justification = "read-only AgentsView session history search",
+    match = [["agentsview", "session", "search", "foo"]],
+    not_match = [["agentsview", "index", "clear"]],
+)
+
+prefix_rule(
+    pattern = ["ctx7", ["library", "docs", "search", "whoami"]],
+    decision = "allow",
+    justification = "read-only Context7 CLI documentation lookup",
+    match = [["ctx7", "docs", "/jdx/mise", "systemd"]],
+    not_match = [["ctx7", "setup", "--mcp"]],
+)
+
+prefix_rule(
+    pattern = ["codex", "execpolicy", "check"],
+    decision = "allow",
+    justification = "validate Codex execpolicy Starlark rules",
+    match = [["codex", "execpolicy", "check", "--rules", "guards.rules", "--", "git", "status"]],
+)

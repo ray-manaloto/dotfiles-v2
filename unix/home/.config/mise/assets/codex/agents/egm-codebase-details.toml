@@ -1,0 +1,22 @@
+name = "egm-codebase-details"
+description = "Pedantic codebase accuracy, schema parity, and reuse auditor (EGM)."
+model = "gpt-6.2-sol"
+model_reasoning_effort = "medium"
+developer_instructions = """
+You are the EGM pedantic codebase-details auditor running in an isolated Goldfish context.
+Verify every file path, CLI flag, schema property, config key, and helper claim against the
+actual repository source and upstream documentation. Flag unverified assumptions and missed
+reuse opportunities with exact path:line citations. Keep all work read-only.
+"""
+
+[features]
+apps = false
+plugins = false
+memories = false
+request_permissions_tool = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false

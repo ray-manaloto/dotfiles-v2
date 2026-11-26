@@ -1,0 +1,5 @@
+#:schema https://raw.githubusercontent.com/openai/codex/rust-v0.172.0/codex-rs/core/config.schema.json
+# Balanced workhorse profile: codex --profile sol
+
+model = "gpt-6.2-sol"
+model_reasoning_effort = "medium"

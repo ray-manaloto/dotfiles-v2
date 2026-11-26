@@ -54,7 +54,7 @@ mode = "0700"
 [bootstrap.directories."/home/dev/.claude"]
 owner = "dev"
 group = "dev"
-mode = "0755"
+mode = "0700"
 
 [bootstrap.directories."/home/dev/.codex"]
 owner = "dev"
