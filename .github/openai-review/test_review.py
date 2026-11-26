@@ -1,6 +1,7 @@
 """Offline tests. No secrets, runners, package installs, or network calls."""
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,7 +121,7 @@ class ReviewTests(unittest.TestCase):
     def test_automatic_review_skips_round_two_but_requires_matching_same_repo(self):
         env = dict(
             self.env,
-            GITHUB_EVENT_NAME="pull_request",
+            GITHUB_EVENT_NAME="pull_request_target",
             EXPECTED_HEAD="a" * 40,
             EXPECTED_BASE="b" * 40,
         )
@@ -140,6 +141,22 @@ class ReviewTests(unittest.TestCase):
         send = Mock(side_effect=[pull, commit])
         review.run(env, send)
         self.assertEqual(send.call_count, 2)
+
+    def test_triage_failure_writes_untriaged_candidates_and_note(self):
+        output = Path(self.directory.name) / "output"
+        for error in (
+            review.triage.TriageError("bad answer"),
+            review.ReviewError("HTTP 503"),
+        ):
+            with self.subTest(error=error):
+                send = Mock(
+                    side_effect=[pr(), [item()], pr(), openai_ok(finding()), error]
+                )
+                review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
+                payload = json.loads((output / "findings.json").read_text())
+                self.assertEqual(payload["triage"], "unavailable")
+                self.assertEqual(payload["findings"], [finding()])
+                self.assertIn("Triage unavailable", (output / "comment.md").read_text())
 
     def test_findings_reject_duplicate_ids_and_non_integer_locations(self):
         schema = json.loads(review.FINDINGS_SCHEMA.read_text())
@@ -399,6 +416,25 @@ class ReviewTests(unittest.TestCase):
 
 
 class RunnerCompatibilityTests(unittest.TestCase):
+    def test_credential_workflows_have_only_default_branch_triggers(self):
+        workflows = Path(__file__).resolve().parent.parent / "workflows"
+        expected = {
+            "openai-pr-review.yml": {"pull_request_target", "workflow_dispatch"},
+            "openai-pr-autofix.yml": {"pull_request_target"},
+        }
+        for path in workflows.glob("*.y*ml"):
+            raw = path.read_text(encoding="utf-8")
+            if not re.search(r"^\s*environment: openai-pr-(review|fix)\s*$", raw, re.M):
+                continue
+            with self.subTest(workflow=path.name):
+                trigger = re.search(r"^on:\n((?: .+\n)+)", raw, re.M)
+                if trigger is None:
+                    self.fail("Credential workflows require an explicit event block.")
+                events = set(re.findall(r"^  ([a-z_]+):", trigger[1], re.M))
+                self.assertEqual(events, expected.pop(path.name, None))
+                self.assertIn("    branches: [main]", trigger[1])
+        self.assertFalse(expected)
+
     def test_sources_parse_on_runner_python_312(self):
         # ubuntu-24.04's stock python3 is 3.12; the repo toolchain is newer.
         import ast

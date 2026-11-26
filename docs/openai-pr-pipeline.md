@@ -4,6 +4,8 @@ The pipeline reviews same-repository public PRs targeting `main` when they
 open, reopen, or receive a push. Documentation-only changes and fork PRs
 skip automatic review. A new head cancels the previous review. Manual review
 remains available from the default branch, including explicit private opt-in.
+GitHub loads both automatic workflows from the trusted base on `main` through
+`pull_request_target`.
 
 ## Review and triage
 
@@ -20,8 +22,10 @@ lines in the diff. Decisions receives the candidates and the same patch
 evidence. A candidate passes at a defect probability of at least 0.85 and a
 severity score of at least 1.0 on the zero-based low-to-critical scale.
 The `findings.json` artifact records the PR, base, head, and accepted findings.
-A separate job without an OpenAI key posts sanitized text if the PR still
-matches. Review is advisory and does not change required checks.
+If Decisions is unavailable, the artifact and advisory comment retain the
+untriaged candidates with a "Triage unavailable" note, and autofix skips
+that result. A separate job without an OpenAI key posts sanitized text if
+the PR still matches. Review is advisory and does not change required checks.
 
 ## Autofix
 
@@ -32,37 +36,47 @@ consumes its reservation. A pushed round-two commit skips automatic review
 while that commit is the head. The workflow removes the label and reports
 whether it pushed, left an empty patch, or stopped.
 
-Codex receives the triaged findings and works on the exact PR head with a
-read-only GitHub token. A separate job applies the artifact and runs hk and
-the tests without an OpenAI key or push token. The publishing job reapplies
-the same artifact from a fresh checkout and checks the live PR before a
-normal fast-forward push. It never runs candidate code.
+Codex receives triaged findings and up to 64,000 bytes of credential-scanned
+source from allowlisted files at the exact PR head. The source is read as Git
+blobs. Codex starts in an empty workspace with sudo disabled and returns a
+patch. The read-only verifier checks out the candidate, applies the patch
+artifact and runs hk and the tests without an OpenAI key or push token.
+The publisher reapplies the same artifact in a bare Git repository and checks
+the live PR before a normal fast-forward push.
 
 The allowlist covers modifications to existing text Python files in
 `unix/home/.config/mise/lib/` and `tests/`. It excludes generated code,
-sensitive paths and credential-like text. Git mode changes, binary edits,
-file creation, deletion and renames are rejected. Review and merge the
-result normally.
+sensitive paths and credential-like text. It also excludes Python files in
+test fixture directories and the import hooks `conftest.py`, `__init__.py`
+and `tasks_py_loader.py`. Git mode changes, binary edits, file creation,
+deletion and renames are rejected. Review and merge the result normally.
 
 ## Owner setup
 
 - In `openai-pr-review`, set `OPENAI_REVIEW_API_KEY`. In `openai-pr-fix`, set
   `OPENAI_FIX_API_KEY` for Codex. Scope each key to its intended OpenAI project.
-- Keep environment approvals and branch protections appropriate to the
-  repository. Automatic jobs are triggered by same-repo `pull_request` events.
-  For selected deployment branches, include `refs/pull/*/merge` and allow
-  `main` in the review environment for manual dispatch. These rules allow PR
-  workflow definitions from collaborators who can push to the repository.
-  Keep that access limited to trusted collaborators. The secret-consuming
-  review code and publishing validator are loaded from the PR base.
+- Under **Selected branches and tags**, allow only the `main` branch for
+  both `openai-pr-review` and `openai-pr-fix`. Set these deployment rules
+  before adding credentials. Keep branch protections and environment approvals.
   [GitHub deployment branch rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#deployment-branches-and-tags)
-- Install a GitHub App on this repository with **Contents: Read and write**.
-  Set the App's client ID as `AUTOFIX_APP_ID` and its private key as
-  `AUTOFIX_APP_PRIVATE_KEY` in `openai-pr-fix`.
+- Beginning December 2, 2026, GitHub enforces its default
+  `pull_request_target` block for affected public repositories. The active
+  event policy for this repository covers only
+  `.github/workflows/openai-pr-review.yml` and
+  `.github/workflows/openai-pr-autofix.yml`. It allows
+  `pull_request_target` and `workflow_dispatch`. Apply the same scope when
+  rolling this pipeline out to another affected public repository.
+  [GitHub default event policy](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target#default-policy-for-pull_request_target)
+  [Repository Actions policy API](https://docs.github.com/en/rest/actions/policies#create-a-repository-actions-policy)
+- Install the `ray-manaloto-autofix` GitHub App on this repository with
+  **Contents: Read and write**. Set the App's client ID in the environment
+  variable `AUTOFIX_APP_CLIENT_ID` and its private key in the environment
+  secret `AUTOFIX_APP_PRIVATE_KEY`, both in `openai-pr-fix`.
   The publisher mints a single-repository token so that its push triggers
   PR CI. If both App credentials are absent, the publisher uses
   `GITHUB_TOKEN` and dispatches `ci.yml` against the PR branch. That workflow
-  supplies both required checks. The fallback requires the branch's CI workflow
+  supplies both required checks, **Lint, Gates, and Tests** and **Bootstrap
+  Convergence**. The fallback requires the branch's CI workflow
   to match the base before pushing. If dispatch fails after a successful push,
   run CI for the new branch head from Actions or approve the queued PR runs.
   [GitHub workflow event behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow)

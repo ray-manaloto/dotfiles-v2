@@ -267,13 +267,15 @@ def parse_findings(text, schema):
     return findings
 
 
-def safe_comment(number, head, findings):
+def safe_comment(number, head, findings, triage_status):
     def safe_cell(value):
         # The body is sent as data, never to runner stdout. Prevent embedded
         # Markdown/HTML and notification mentions even inside the pre block.
         return html.escape(" ".join(value.split()).replace("@", "＠"))
 
     heading = f"## Advisory OpenAI review for #{number}\n\nHead: `{head}`\n\n"
+    if triage_status == "unavailable":
+        heading += "Triage unavailable. These candidates are untriaged and ineligible for autofix.\n\n"
     if not findings:
         return heading + "No findings passed triage.\n"
     rows = []
@@ -367,12 +369,13 @@ def run(env, send=request_json):
         raise ReviewError("Invalid repository.")
     event = env.get("GITHUB_EVENT_NAME")
     automatic = (
-        event == "pull_request" and env.get("REVIEW_PROVIDER", "openai") == "openai"
+        event == "pull_request_target"
+        and env.get("REVIEW_PROVIDER", "openai") == "openai"
     )
-    if not automatic and (
-        event != "workflow_dispatch" or env["GITHUB_REF"] != f"refs/heads/{branch}"
-    ):
-        raise ReviewError("Dispatch only from the default branch.")
+    if (not automatic and event != "workflow_dispatch") or env.get(
+        "GITHUB_REF"
+    ) != f"refs/heads/{branch}":
+        raise ReviewError("Run the reviewer only from the default branch.")
     if not re.fullmatch(r"[1-9][0-9]{0,8}", number):
         raise ReviewError("Enter a positive PR number.")
     repo_private = env.get("REPO_PRIVATE")
@@ -440,14 +443,25 @@ def run(env, send=request_json):
             )
             if finding["line"] in lines.get(finding["file"], set())
         ]
-        findings = triage.select(candidates, patches, key, send)
-        comment = safe_comment(number, head, findings)
+        triage_status = "completed"
+        try:
+            findings = triage.select(candidates, patches, key, send)
+        except (triage.TriageError, ReviewError):
+            findings = candidates
+            triage_status = "unavailable"
+        comment = safe_comment(number, head, findings, triage_status)
         if output_dir := env.get("REVIEW_OUTPUT_DIR"):
             output = Path(output_dir)
             output.mkdir(parents=True, exist_ok=True)
             (output / "findings.json").write_text(
                 json.dumps(
-                    {"pr": number, "head": head, "base": base, "findings": findings}
+                    {
+                        "pr": number,
+                        "head": head,
+                        "base": base,
+                        "triage": triage_status,
+                        "findings": findings,
+                    }
                 )
                 + "\n",
                 encoding="utf-8",

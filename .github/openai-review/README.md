@@ -14,10 +14,10 @@ to use.
 
 ## Setup
 
-After merging to the default branch, create the GitHub Actions environment for
-each workflow you use. Keep the Claude environment restricted to the default
-branch and use the runbook's PR ref rules for the OpenAI environments. Store
-the secrets in their environments. Keep branch protection and review in place.
+Create the GitHub Actions environment for each workflow you use. Restrict the
+Claude environment to the default branch and both OpenAI environments to the
+`main` branch before adding credentials. Store the secrets in their
+environments. Keep branch protection and review in place.
 
 For Claude, create the API key in a dedicated Claude Console workspace, so the
 key is scoped to one workspace. The reviewer sends the key as

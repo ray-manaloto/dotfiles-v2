@@ -1,7 +1,7 @@
 name: OpenAI PR autofix
 
 on:
-  pull_request:
+  pull_request_target:  # zizmor: ignore[dangerous-triggers] Loads trusted main; only the read-only verifier checks out PR code.
     types: [labeled]
     branches: [main]
 
@@ -26,6 +26,7 @@ jobs:
     name: Authorize and reserve an autofix round
     if: >-
       ${{ github.event.label.name == 'autofix' &&
+      github.ref == 'refs/heads/main' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.repository.private }}
     permissions:
@@ -81,15 +82,24 @@ jobs:
             printf '%s\n' 'reason=Two autofix rounds have already been reserved.' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          review="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/openai-pr-review.yml/runs" --method GET \
-            -f head_sha="${HEAD_SHA}" -f branch="${HEAD_BRANCH}" -f event=pull_request -f status=success \
-            -f per_page=1 --jq '.workflow_runs[0] // empty')"
-          if [[ -n "${review}" ]]; then
-            run="$(jq -er '.id' <<< "${review}")"
-            attempt="$(jq -er '.run_attempt' <<< "${review}")"
-            artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}/artifacts" --method GET \
-              -f name="openai-review-${PR_NUMBER}-${BASE_SHA}-${HEAD_SHA}-${attempt}-ready" \
-              --jq 'first(.artifacts[] | select(.expired == false) | .id) // empty')"
+          prefix="openai-review-auto-${PR_NUMBER}-${BASE_SHA}-${HEAD_SHA}"
+          latest="$(
+            for status in ready empty untriaged; do
+              gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts" --method GET \
+                -f name="${prefix}-${status}" --jq '.artifacts[] | select(.expired == false)' || exit 1
+            done | jq -cs 'max_by(.id) // empty'
+          )"
+          if [[ -n "${latest}" ]] &&
+            jq -e --arg name "${prefix}-ready" '.name == $name' <<< "${latest}" >/dev/null; then
+            run="$(jq -er '.workflow_run.id' <<< "${latest}")"
+            created="$(jq -er '.created_at' <<< "${latest}")"
+            if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}" |
+              jq -e --arg created "${created}" '
+                .path == ".github/workflows/openai-pr-review.yml" and .event == "pull_request_target" and
+                .conclusion == "success" and .run_started_at <= $created
+              ' >/dev/null; then
+              artifact="$(jq -er '.id' <<< "${latest}")"
+            fi
           fi
           if [[ -z "${artifact:-}" ]]; then
             printf '%s\n' 'reason=No completed review with actionable findings for this PR revision.' >> "${GITHUB_OUTPUT}"
@@ -119,12 +129,11 @@ jobs:
           ref: ${{ env.BASE_SHA }}
           path: trusted
           persist-credentials: false
-      - name: Check out the exact PR head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ env.HEAD_SHA }}
-          path: candidate
-          persist-credentials: false
+      - name: Fetch the exact head for reading source blobs
+        run: |
+          git init --bare source
+          GIT_TERMINAL_PROMPT=0 git -C source fetch --no-tags --depth=1 \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "${HEAD_SHA}"
       - name: Download triaged findings
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
@@ -133,29 +142,37 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/triage
       - name: Build the prompt
+        id: prompt
         env:
           SOURCE: trusted/.github/openai-review
         run: |
           python3 -B "${SOURCE}/autofix.py" prompt "${RUNNER_TEMP}/triage/findings.json" \
-            "${SOURCE}/autofix-prompt.md" "${RUNNER_TEMP}/codex-prompt.md" "${PR_NUMBER}" "${BASE_SHA}" "${HEAD_SHA}"
+            "${SOURCE}/autofix-prompt.md" "${RUNNER_TEMP}/codex-prompt.md" source "${PR_NUMBER}" "${BASE_SHA}" "${HEAD_SHA}"
+          rm -rf -- source
+          mkdir -- "${RUNNER_TEMP}/codex-workspace"
+          if [[ -s "${RUNNER_TEMP}/codex-prompt.md" ]]; then
+            printf '%s\n' 'present=yes' >> "${GITHUB_OUTPUT}"
+          fi
       - name: Generate a candidate patch
+        if: ${{ steps.prompt.outputs.present == 'yes' }}
         uses: openai/codex-action@306c6a196a99dcc6582530c396a19d2672d5e9ec  # v1.14
         with:
           openai-api-key: ${{ secrets.OPENAI_FIX_API_KEY }}
-          working-directory: ${{ github.workspace }}/candidate
+          working-directory: ${{ runner.temp }}/codex-workspace
           prompt-file: ${{ runner.temp }}/codex-prompt.md
-          output-file: ${{ runner.temp }}/codex-result.txt
+          output-file: ${{ runner.temp }}/codex.patch
           model: gpt-6.2-sol
           effort: low
           codex-version: 0.172.0
           codex-args: '["--ephemeral", "-c", "project_doc_max_bytes=0"]'
           permission-profile: :workspace
           safety-strategy: drop-sudo
-      - name: Export the worktree changes as data
+      - name: Detect a proposed patch
         id: patch
+        if: ${{ steps.prompt.outputs.present == 'yes' }}
         run: |
-          git -C candidate diff --no-ext-diff --no-textconv --binary "${HEAD_SHA}" -- > "${RUNNER_TEMP}/codex.patch"
-          if [[ -s "${RUNNER_TEMP}/codex.patch" ]]; then
+          if [[ -s "${RUNNER_TEMP}/codex.patch" ]] &&
+            ! grep -Fxq 'No patch' "${RUNNER_TEMP}/codex.patch"; then
             printf '%s\n' 'present=yes' >> "${GITHUB_OUTPUT}"
           fi
       - name: Upload the candidate patch
@@ -236,12 +253,13 @@ jobs:
           ref: ${{ env.BASE_SHA }}
           path: trusted
           persist-credentials: false
-      - name: Check out the exact PR head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ env.HEAD_SHA }}
-          path: candidate
-          persist-credentials: false
+      - name: Fetch the exact PR head into a bare repository
+        run: |
+          git init --bare --initial-branch=candidate candidate
+          GIT_TERMINAL_PROMPT=0 git -C candidate fetch --no-tags --depth=1 \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "${HEAD_SHA}"
+          git -C candidate update-ref HEAD "${HEAD_SHA}"
+          git -C candidate read-tree HEAD
       - name: Download the verified patch
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
@@ -252,12 +270,12 @@ jobs:
       - name: Check App configuration
         id: app-config
         env:
-          APP_ID: ${{ secrets.AUTOFIX_APP_ID }}
+          APP_CLIENT_ID: ${{ vars.AUTOFIX_APP_CLIENT_ID }}
           APP_KEY: ${{ secrets.AUTOFIX_APP_PRIVATE_KEY }}
         run: |
-          if [[ -n "${APP_ID}" && -n "${APP_KEY}" ]]; then
+          if [[ -n "${APP_CLIENT_ID}" && -n "${APP_KEY}" ]]; then
             printf '%s\n' 'present=yes' >> "${GITHUB_OUTPUT}"
-          elif [[ -n "${APP_ID}" || -n "${APP_KEY}" ]]; then
+          elif [[ -n "${APP_CLIENT_ID}" || -n "${APP_KEY}" ]]; then
             printf '%s\n' 'Configure both autofix App credentials.' >&2
             exit 1
           fi
@@ -266,7 +284,7 @@ jobs:
         if: ${{ steps.app-config.outputs.present == 'yes' }}
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc  # v3.4.0
         with:
-          client-id: ${{ secrets.AUTOFIX_APP_ID }}
+          client-id: ${{ vars.AUTOFIX_APP_CLIENT_ID }}
           private-key: ${{ secrets.AUTOFIX_APP_PRIVATE_KEY }}
           permission-contents: write
       - name: Commit and push if the PR still matches
@@ -285,13 +303,14 @@ jobs:
             jq -e --arg repo "${GITHUB_REPOSITORY}" --arg head "${HEAD_SHA}" --arg base "${BASE_SHA}" --arg ref "${HEAD_BRANCH}" \
               '.state == "open" and .head.repo.full_name == $repo and .base.repo.private == false and
               .head.sha == $head and .base.sha == $base and .head.ref == $ref and any(.labels[]; .name == "autofix")' >/dev/null
-          git -C candidate -c user.name='github-actions[bot]' \
+          tree="$(git -C candidate write-tree)"
+          sha="$(git -C candidate -c core.fsmonitor=false -c core.hooksPath=/dev/null -c user.name='github-actions[bot]' \
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit -m 'Apply triaged OpenAI review fixes' -m "OpenAI-Autofix: #${PR_NUMBER} round ${ROUND}"
+            commit-tree "${tree}" -p "${HEAD_SHA}" -m 'Apply triaged OpenAI review fixes' -m "OpenAI-Autofix: #${PR_NUMBER} round ${ROUND}")"
           url="https://github.com/${GITHUB_REPOSITORY}.git"
-          GH_TOKEN="${APP_TOKEN:-${GH_TOKEN}}" git -C candidate -c credential.helper= \
-            -c 'credential.helper=!gh auth git-credential' push "${url}" "HEAD:refs/heads/${HEAD_BRANCH}"
-          printf 'sha=%s\n' "$(git -C candidate rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+          GH_TOKEN="${APP_TOKEN:-${GH_TOKEN}}" git -C candidate -c core.hooksPath=/dev/null -c credential.helper= \
+            -c 'credential.helper=!gh auth git-credential' push "${url}" "${sha}:refs/heads/${HEAD_BRANCH}"
+          printf 'sha=%s\n' "${sha}" >> "${GITHUB_OUTPUT}"
           if [[ -n "${APP_TOKEN}" ]]; then
             printf '%s\n' 'mode=GitHub App push' >> "${GITHUB_OUTPUT}"
           else

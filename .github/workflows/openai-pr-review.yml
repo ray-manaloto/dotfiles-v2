@@ -1,7 +1,7 @@
 name: OpenAI PR review
 
 on:
-  pull_request:
+  pull_request_target:  # zizmor: ignore[dangerous-triggers] Loads trusted main; PR patches are data only.
     types: [opened, synchronize, reopened]
     branches: [main]
     paths-ignore:
@@ -33,7 +33,7 @@ jobs:
   review:
     name: Advisory OpenAI review of one PR's patches
     if: >-
-      ${{ (github.event_name == 'pull_request' &&
+      ${{ (github.event_name == 'pull_request_target' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.repository.private) ||
       (github.event_name == 'workflow_dispatch' &&
@@ -74,16 +74,20 @@ jobs:
           python3 -B .github/openai-review/review.py
           if [[ -s "${REVIEW_OUTPUT_DIR}/findings.json" ]]; then
             printf 'identity=%s\n' "$(jq -er '[.pr, .base, .head] | join("-")' "${REVIEW_OUTPUT_DIR}/findings.json")" >> "${GITHUB_OUTPUT}"
-            printf 'actionable=%s\n' "$(jq -er '.findings | if length > 0 then "ready" else "empty" end' "${REVIEW_OUTPUT_DIR}/findings.json")" >> "${GITHUB_OUTPUT}"
+            printf 'actionable=%s\n' "$(jq -er '
+              if .triage == "unavailable" then "untriaged"
+              elif (.findings | length) > 0 then "ready" else "empty" end
+            ' "${REVIEW_OUTPUT_DIR}/findings.json")" >> "${GITHUB_OUTPUT}"
           fi
       - name: Upload the reviewed head and triaged findings
         id: upload
         if: ${{ steps.review.outputs.identity != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: openai-review-${{ steps.review.outputs.identity }}-${{ github.run_attempt }}-${{ steps.review.outputs.actionable }}
+          name: openai-review-${{ github.event_name == 'pull_request_target' && 'auto' || 'manual' }}-${{ steps.review.outputs.identity }}-${{ steps.review.outputs.actionable }}
           path: ${{ runner.temp }}/openai-review/
           if-no-files-found: error
+          overwrite: true
           retention-days: 7
 
   comment:
