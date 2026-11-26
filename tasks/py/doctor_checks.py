@@ -1615,8 +1615,11 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
     env_files = {
         *mise_dir.glob("config*.toml"),
         *mise_dir.glob("conf.d/**/mise.toml"),
+        *mise_dir.glob("conf.d/*.toml"),
         *repo_root.glob("mise.toml"),
         *repo_root.glob("mise.*.toml"),
+        *repo_root.glob(".mise.toml"),
+        *repo_root.glob(".mise.*.toml"),
         *repo_root.glob("mise/doctor/mise.toml"),
     }
     for env_file in sorted(f for f in env_files if f.is_file()):
@@ -1680,11 +1683,32 @@ def _check_flag_fetch_env(repo_root: Path, mise_dir: Path) -> list[str]:
         env_lines = [
             ln.strip()[4:]
             for ln in logical.splitlines()
-            if ln.strip().upper().startswith("ENV ")
+            if re.match(r"ENV\s", ln.strip(), re.IGNORECASE)
         ]
         for name in sorted({m for ln in env_lines for m in env_re.findall(" " + ln)}):
             errors.append(
                 f"config-hygiene: {dockerfile.relative_to(repo_root).as_posix()} sets {name}; {msg}"
+            )
+    # Managed shell startup files export into every session; a bare `NAME=1 cmd` prefix stays command-scoped.
+    killers = "|".join(sorted(_FLAG_FETCH_KILLERS))
+    sh_re = re.compile(rf"^\s*(?:export\s+({killers})=|({killers})=\S*\s*(?:#.*)?$)")
+    home = repo_root / "unix" / "home"
+    shell_files = {
+        *home.glob(".zshenv"),
+        *home.glob(".config/zsh/**/*"),
+        *mise_dir.glob("assets/**/*.sh"),
+    }
+    for sh_file in sorted(f for f in shell_files if f.is_file()):
+        try:
+            lines = sh_file.read_text(encoding="utf-8").splitlines()
+        except OSError, UnicodeDecodeError:
+            continue
+        names = {
+            a or b for ln in lines if (m := sh_re.match(ln)) for a, b in [m.groups()]
+        }
+        for name in sorted(names):
+            errors.append(
+                f"config-hygiene: {sh_file.relative_to(repo_root).as_posix()} exports {name}; {msg}"
             )
     return errors
 

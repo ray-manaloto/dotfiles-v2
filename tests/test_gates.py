@@ -2039,6 +2039,34 @@ def test_config_hygiene_flag_fetch_edge_cases(tmp_path, monkeypatch) -> None:
     assert not any("Dockerfile" in e and "DO_NOT_TRACK" in e for e in errors), errors
 
 
+def test_config_hygiene_flag_fetch_shell_and_extra_configs(tmp_path) -> None:
+    """Managed shell exports, dotted/flat mise configs and `ENV<TAB>` are caught; command prefixes are not."""
+    doc_mod = _load_task_module("doctor_checks")
+    home = tmp_path / "unix" / "home"
+    mise_dir = home / ".config" / "mise"
+    (mise_dir / "conf.d").mkdir(parents=True)
+    (mise_dir / "conf.d" / "flat.toml").write_text('[env]\nDO_NOT_TRACK = "1"\n')
+    (tmp_path / ".mise.toml").write_text('[env]\nDISABLE_TELEMETRY = "1"\n')
+    (home / ".zshenv").write_text(
+        "export DO_NOT_TRACK=1\nDISABLE_GROWTHBOOK=1 some-cmd\n"
+    )
+    zrc = home / ".config" / "zsh" / ".zshrc.d" / "50-x.zsh"
+    zrc.parent.mkdir(parents=True)
+    zrc.write_text("# export CLAUDE_CODE_DISABLE_SHIP=1\nCLAUDE_CODE_DISABLE_SHIP=1\n")
+    dockerfile = tmp_path / "docker" / "x" / "Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("ENV\tDO_NOT_TRACK=1\n")
+    errors = doc_mod._check_flag_fetch_env(tmp_path, mise_dir)
+    assert any("conf.d/flat.toml" in e and "DO_NOT_TRACK" in e for e in errors), errors
+    assert any(".mise.toml" in e and "DISABLE_TELEMETRY" in e for e in errors), errors
+    assert any(".zshenv exports DO_NOT_TRACK" in e for e in errors), errors
+    assert not any("DISABLE_GROWTHBOOK" in e for e in errors), errors
+    assert any("50-x.zsh exports CLAUDE_CODE_DISABLE_SHIP" in e for e in errors), errors
+    assert any("docker/x/Dockerfile" in e and "DO_NOT_TRACK" in e for e in errors), (
+        errors
+    )
+
+
 def test_real_global_env_keeps_ship_available() -> None:
     root = Path(__file__).resolve().parents[1]
     doc_mod = _load_task_module("doctor_checks")
