@@ -28,7 +28,7 @@ ghq() {
 			printf '%s\n' "${out}"
 			return 0
 		fi
-		sleep $((attempt * 5))
+		sleep $((attempt * ${PR_SHIP_RETRY_SLEEP:-5}))
 	done
 	echo "pr:ship: gh $1 $2 failed 3 times; GitHub API unavailable, re-run pr:ship later" >&2
 	exit 4
@@ -64,10 +64,12 @@ echo "pr:ship: #${pr} head ${head:0:7} ${url}"
 
 # 4. Event-driven wait: read state, then listen; events are not replayed, so always re-read after each wait.
 # bash 3.2 (macOS /bin/bash) has no mapfile.
+# Assign first: a failure inside a process substitution would not stop the script.
+rules="$(ghq api "repos/${repo}/rules/branches/main" --jq '.[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context')"
 required=()
 while IFS= read -r ctx; do
 	[[ -n ${ctx} ]] && required+=("${ctx}")
-done < <(ghq api "repos/${repo}/rules/branches/main" --jq '.[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context')
+done <<<"${rules}"
 ((${#required[@]} > 0)) || refuse "could not read required checks for main from the ruleset"
 state() {
 	ghq api "repos/${repo}/commits/${head}/check-runs?per_page=100" --jq '.check_runs[]|"\(.name)\t\(.status)\t\(.conclusion // "")"'

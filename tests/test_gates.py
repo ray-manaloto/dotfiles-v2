@@ -2269,7 +2269,7 @@ def _pr_ship_sandbox(tmp_path, checks: str) -> tuple[list[str], dict[str, str]]:
         '  "api repos/ray-manaloto/dotfiles-v2 --jq .allow_auto_merge") echo false ;;\n'
         '  "pr list"*) echo 7 ;;\n'
         "  *autoMergeRequest*) echo false ;;\n"
-        '  *rules/branches/main*) printf "Lint, Gates, and Tests\\nBootstrap Convergence\\n" ;;\n'
+        '  *rules/branches/main*) [ -n "$FAKE_GH_FAIL_RULES" ] && exit 1; printf "Lint, Gates, and Tests\\nBootstrap Convergence\\n" ;;\n'
         f'  *check-runs*) cat "{tmp_path}/checks.tsv" ;;\n'
         "  *headRefOid*) git rev-parse HEAD ;;\n"
         '  *"/comments"*) : ;;\n'
@@ -2286,7 +2286,7 @@ def _pr_ship_sandbox(tmp_path, checks: str) -> tuple[list[str], dict[str, str]]:
         # The sandbox push must not run this host's global config-based git hooks (hk, gh-doctor).
         "HK": "0",
     }
-    return ["bash", str(root / "tasks/pr/ship")], {
+    return ["/bin/bash", str(root / "tasks/pr/ship")], {
         **env,
         "PWD": str(work),
         "_WORK": str(work),
@@ -2329,3 +2329,20 @@ def test_pr_ship_verdicts(tmp_path, checks, code, needle) -> None:
     assert needle in proc.stdout + proc.stderr
     if code == 0:
         assert "--merge --match-head-commit" in proc.stdout
+
+
+def test_pr_ship_api_failure_exits_4(tmp_path) -> None:
+    """A GitHub API outage must not look like a red check, a refusal, or a moved head."""
+    cmd, env = _pr_ship_sandbox(tmp_path, "")
+    env |= {"FAKE_GH_FAIL_RULES": "1", "PR_SHIP_RETRY_SLEEP": "0"}
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+    assert "GitHub API unavailable" in proc.stderr
