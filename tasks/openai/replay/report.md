@@ -54,8 +54,6 @@ Precision excludes insufficient-evidence labels. Recall measures recovery of lab
 
 The production thresholds selected 2 candidates. The grader labeled 2 inconclusive and recovered 0 of the 70 labeled defects in the scored pool.
 
-Recommendation is `MIN_PROBABILITY = 0.85` and `MIN_SEVERITY = 1.0`. The conservative change rule requires at least 10 labeled defects, an F1 gain of at least 0.05, and zero additional labeled false positives.
-
 ## Recurring false positives
 
 - incorrect — 4
@@ -65,3 +63,39 @@ For the review prompt, require direct patch evidence for each factual claim and 
 ## Limitations
 
 The grader is a model, and shares its model with production triage. Agreement can reflect shared blind spots. Follow-up source and patches are byte-bounded excerpts. A later edit is corroboration only. A lack of a later edit is inconclusive. Path renames, squashes, and unavailable context can hide a real fix. The sample includes only the two chosen repositories and only findings returned on their admitted patches.
+
+## Independent re-grade
+
+GPT-6 Sol independently graded all 105 candidates selected at probability 0.85 and severity 0.0. It also graded a simple random sample of 30 of the 43 rejects. The sample used Python's seeded random sampling after sorting internal candidate IDs, with seed `20261126`. The grader received the same excerpts and verdict rubric, with Luna labels and triage scores withheld. All 135 `/v1/responses` requests completed with `store: false`.
+
+| Grader | Selected defects / nondefects / inconclusive | Sampled reject defects / nondefects / inconclusive | Resolved precision | Estimated candidate recall |
+| --- | ---: | ---: | ---: | ---: |
+| GPT-6 Luna | 59 / 2 / 44 | 7 / 2 / 21 | 96.7% | 85.5% |
+| GPT-6 Sol | 73 / 6 / 26 | 10 / 6 / 14 | 92.4% | 83.6% |
+
+Precision uses selected candidates with a conclusive verdict. Recall uses observed selected defects plus an estimate of rejected defects, weighting each sampled reject by 43/30. Luna's full-cohort recall was 84.3%. Under Sol, the current 0.85/1.0 thresholds selected one defect and one inconclusive candidate, for 1.1% estimated recall and precision based on just one resolved verdict. These are model estimates within the raw candidate pool. They exclude inconclusive verdicts from the defect counts.
+
+The graders assigned the same six-way label to 92 of 135 candidates (68.1%). That includes 36 jointly inconclusive labels. They agreed on defect versus nondefect for 57 of the 66 cases both resolved (86.4%). Sol called 24 of Luna's inconclusive cases defects. Shared evidence limits both graders.
+
+The follow-up upper estimate was **$8.570862** against a **$10** added cap. Metered usage cost **$0.793424** at standard rates. The 135 responses used 210,207 input tokens, including 183,759 30-minute cache writes, and 28,113 output tokens. [OpenAI API pricing](https://developers.openai.com/api/docs/pricing?offer=add-linebreak)
+
+### Revised recommendation
+
+Keep `MIN_PROBABILITY = 0.85` and lower `MIN_SEVERITY` to `0.0` in the next calibration rollout. Sol's estimated recall rises from 1.1% to 83.6%. The lower floor recovered 72 additional Sol-labeled defects alongside six additional labeled nondefects. Drop the zero-additional-false-positive rule. The lower floor grows the historical selection from 2 to 105, so validate that volume in shadow mode before enabling automatic posting.
+
+### Spot checks
+
+Ten pairs were sampled from the re-graded candidates in the public repository using seed `20261127`. Finding summaries are paraphrased.
+
+| Path | Finding summary | Luna | Sol |
+| --- | --- | --- | --- |
+| `unix/home/.config/mise/tasks/bootstrap/skills` | A working AgentsView installation elsewhere on PATH can be skipped by the fixed-path guard. | Defect | Defect |
+| `hk.pkl` | A sufficiently large pre-push payload can exceed Linux's maximum length for a single argument. | Inconclusive | Defect |
+| `tasks/pr/land` | The fast-forward pull permits an already-ahead local main branch to retain unpushed commits. | Defect | Defect |
+| `tasks/py/doctor_checks.py` | A non-activated shell can incur an extra mise subprocess when its result is unusable. | Inconclusive | Inconclusive |
+| `unix/home/.config/mise/tasks/repowise/init` | A pre-existing child index can falsely trigger parent guard removal. | Defect | Defect |
+| `.github/workflows/claude-pr-review.yml` | The patch excerpt provides insufficient evidence that the workflow's shared reviewer exists on the target branch. | Inconclusive | Duplicate |
+| `hk.pkl` | Keeping the first combined output line can hide warnings from successful mise checks. | Defect | Defect |
+| `tasks/py/doctor_checks.py` | The shell guard misses the blocked variable when it appears later in a multi-variable export. | Inconclusive | Defect |
+| `tasks/py/doctor_checks.py` | The shell guard can treat a local assignment as an export. | Defect | Defect |
+| `unix/home/.config/mise/lib/api_runner/runner.py` | An unexpected stream event subtype can carry arbitrary text into a loggable diagnostic. | Defect | Defect |

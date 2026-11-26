@@ -20,26 +20,16 @@ def metrics(graded, probability, severity):
     unknown = sum(row[0] == "insufficient-evidence" for row in accepted)
     fp = len(accepted) - tp - unknown
     positives = sum(row[0] == "defect" for row in graded)
-    fn = positives - tp
-    f1 = 2 * tp / (2 * tp + fp + fn) if tp else 0.0
-    return len(accepted), tp, fp, unknown, positives, f1
+    return len(accepted), tp, fp, unknown, positives
 
 
 def thresholds(graded):
     baseline = (triage.MIN_PROBABILITY, triage.MIN_SEVERITY)
-    grid = {
+    return {
         (p, s): metrics(graded, p, s)
         for p in sorted({*PROBS, baseline[0]})
         for s in sorted({*SEVERITIES, baseline[1]})
     }
-    old = grid[baseline]
-    eligible = (
-        point
-        for point, measured in grid.items()
-        if old[4] >= 10 and measured[-1] - old[-1] >= 0.05 and measured[2] <= old[2]
-    )
-    best = max(eligible, key=lambda point: grid[point][-1], default=baseline)
-    return grid, best
 
 
 def money(amount):
@@ -52,7 +42,7 @@ def render(cache, rows, estimate, response_counts, graded, batch_status):
     for row in rows:
         skipped.update(row.get("skipped", {}))
     labels = Counter(row[0] for row in graded)
-    grid, recommended = thresholds(graded)
+    grid = thresholds(graded)
     entries = totals(cache)
     batch = read_json(cache / "spend-batch.json")
     batch_cost = batch["actual_microusd"] or 0
@@ -114,29 +104,19 @@ def render(cache, rows, estimate, response_counts, graded, batch_status):
         "| Probability | Severity | Selected | True | False | Unknown | Precision | Recall |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for (p, s), (selected, tp, fp, unknown, positives, _) in grid.items():
+    for (p, s), (selected, tp, fp, unknown, positives) in grid.items():
         lines.append(
             f"| {p:.2f} | {s:.1f} | {selected} | {tp} | {fp} | {unknown} | "
             f"{rate(tp, tp + fp)} | {rate(tp, positives)} |"
         )
-    p, s = recommended
     base = (triage.MIN_PROBABILITY, triage.MIN_SEVERITY)
-    base_selected, base_tp, _, base_unknown, positives, _ = grid[base]
-    rationale = (
-        "The conservative change rule requires at least 10 labeled defects, "
-        "an F1 gain of at least 0.05, and zero additional labeled false positives."
-        if recommended == base
-        else "This grid point improves F1 by at least 0.05 without additional false positives. "
-        "The gain is in-sample and needs independent confirmation."
-    )
+    base_selected, base_tp, _, base_unknown, positives = grid[base]
     lines.extend(
         [
             "",
             f"The production thresholds selected {base_selected} candidates. "
             f"The grader labeled {base_unknown} inconclusive and recovered {base_tp} "
             f"of the {positives} labeled defects in the scored pool.",
-            "",
-            f"Recommendation is `MIN_PROBABILITY = {p:.2f}` and `MIN_SEVERITY = {s:.1f}`. {rationale}",
             "",
             "## Recurring false positives",
             "",
