@@ -280,7 +280,7 @@ python3 -I -B unix/home/.gemini/config/hooks/agy-hc-send-guard.py --self-check -
 hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md."
 
 [doctor.checks.vercel-board-config]
-description = "jdx tools, @vercel/board, pitchfork config, bootstrap:skills, canonical skills, and 0 global mcp-jdx are valid"
+description = "jdx tools, @vercel/board, pitchfork config, bootstrap:skills, and canonical skills are valid"
 run = '''
 (test -f pitchfork.toml || test -f unix/home/.config/pitchfork/config.toml)
 test -x unix/home/.config/mise/tasks/bootstrap/skills
@@ -312,8 +312,6 @@ for cfg_path in sorted(mise_dir.glob("config*.toml")):
         for grp in dg.values():
             if isinstance(grp, dict):
                 all_groups.append(grp)
-
-assert not any("mcp-jdx" in k for k in all_dotfiles), "Unexpected global mcp-jdx target in [dotfiles]"
 
 skills_task_txt = (mise_dir / "tasks" / "bootstrap" / "skills").read_text(encoding="utf-8")
 
@@ -361,7 +359,7 @@ deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
 PY
 '''
-hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, bootstrap:skills, canonical ~/.agents/skills, and 0 global mcp-jdx are configured cleanly."
+hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly."
 
 [doctor.checks.herdr-roll]
 description = "Clean-room herdr_roll engine tests and executable roll:* tasks pass validation"
@@ -409,9 +407,9 @@ run = "mise run hub:doctor --offline"
 hint = "Inspect docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} and docker/mac-agent/compose.yaml with `mise run hub:doctor --offline`."
 
 [doctor.checks.claude-ship-env]
-description = "Managed and live Claude settings never disable feature-flag fetching, /ship or /steward (env, skillOverrides, disableBundledSkills, shell env, active checkout venv)"
+description = "Managed and live Claude settings never disable feature-flag fetching, /ship or /steward, and keep claude.ai connectors off (env, skillOverrides, disableBundledSkills, disableClaudeAiConnectors, shell env, active checkout venv)"
 run = "python3 -I -B tasks/py/doctor_checks.py claude-ship-env"
-hint = "Remove the flagged env var / override; scope telemetry opt-outs to a single command. See docs/pr-shipping-protocol.md."
+hint = "Remove the flagged env var / override; keep disableClaudeAiConnectors=true unless a connector is really needed; scope telemetry opt-outs to a single command. See docs/pr-shipping-protocol.md."
 
 [doctor.checks.reviewer-plugins]
 description = "Reviewer-bot plugins (Graphify, Greptile, CodeRabbit, Repowise) declared in assets/reviewer-plugins.json are installed in Claude/Codex/agy/OpenCode, Claude plugin MCPs Connected, and Repowise's Bash rewrite disabled in indexed repos"

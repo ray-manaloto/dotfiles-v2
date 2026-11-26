@@ -179,7 +179,7 @@ def test_dead_codex_otel_cleanup_and_doctor_guard(tmp_path: Path, monkeypatch) -
     hygiene_errs, _ = doc_mod.check_host_hygiene(REPO_ROOT)
     assert any("dead-codex-otel:" in err for err in hygiene_errs)
 
-    prune_task = MISE_TASKS_DIR / "host" / "prune-mcps"
+    prune_task = MISE_TASKS_DIR / "host" / "prune-codex-otel"
     chk = subprocess.run(
         ["bash", str(prune_task)],
         env={
@@ -232,7 +232,7 @@ def test_dead_codex_otel_cleanup_and_doctor_guard(tmp_path: Path, monkeypatch) -
         text=True,
         check=True,
     )
-    assert "zero legacy global MCP entries found" in rechk.stdout
+    assert "no dead Codex [otel] stanza found" in rechk.stdout
 
     codex_cfg.write_text(
         "[otel]\n"

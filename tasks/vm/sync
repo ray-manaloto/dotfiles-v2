@@ -56,7 +56,7 @@ export MISE_YES=1
   --config-dir unix/home/.config/mise \
   --force-dotfiles --yes
 /usr/local/bin/mise -E macos,vm -C "${HOME}" run host:prune --apply
-/usr/local/bin/mise -E macos,vm -C "${HOME}" run host:prune-mcps --apply
+/usr/local/bin/mise -E macos,vm -C "${HOME}" run host:prune-codex-otel --apply
 if [[ -x /opt/homebrew/bin/brew ]] && /opt/homebrew/bin/brew list --cask codex >/dev/null 2>&1; then
   codex_raw="$(codex --version </dev/null 2>/dev/null || true)"
   if python3 -c 'import re, sys; m = re.search(r"(\d+)\.(\d+)\.(\d+)", sys.argv[1]); sys.exit(0 if m and tuple(map(int, m.groups())) < (0, 171, 0) else 1)' "${codex_raw}"; then

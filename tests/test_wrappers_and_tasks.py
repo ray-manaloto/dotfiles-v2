@@ -218,190 +218,96 @@ def test_host_prune_cleans_zsh_completions_and_reads_imported_fnox_secrets(
     assert keep_file.is_file()
 
 
-def test_host_prune_mcps_audits_and_prunes_preserving_backups(tmp_path: Path) -> None:
+def test_host_prune_codex_otel_leaves_mcp_servers_and_plugins_untouched(
+    tmp_path: Path,
+) -> None:
     fake_home = tmp_path / "home"
     (fake_home / ".gemini" / "config").mkdir(parents=True)
     (fake_home / ".codex").mkdir(parents=True)
     mcp_cfg = fake_home / ".gemini" / "config" / "mcp_config.json"
-    mcp_cfg.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "exa": {"url": "https://mcp.exa.ai/mcp"},
-                    "custom-keep": {"command": "echo"},
-                }
+    mcp_text = json.dumps(
+        {
+            "mcpServers": {
+                "exa": {"url": "https://mcp.exa.ai/mcp"},
+                "custom-keep": {"command": "echo"},
             }
-        ),
-        encoding="utf-8",
+        }
     )
-    agy_cfg = fake_home / ".gemini" / "config" / "config.json"
-    agy_cfg.write_text(
-        json.dumps(
-            {
-                "enabledPlugins": {
-                    "apify@apify-plugins": True,
-                    "apify-other@custom": True,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+    mcp_cfg.write_text(mcp_text, encoding="utf-8")
     claude_json = fake_home / ".claude.json"
-    claude_json.write_text(
-        json.dumps({"mcpServers": {"mcp-jdx": {}, "keep": {}}}), encoding="utf-8"
+    claude_text = json.dumps({"mcpServers": {"mcp-jdx": {}, "keep": {}}})
+    claude_json.write_text(claude_text, encoding="utf-8")
+    codex_cfg = fake_home / ".codex" / "config.toml"
+    codex_text = (
+        '[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n'
+        '[plugins."context7@context7-marketplace"]\nenabled = true\n'
+        '[mcp_servers.keepme]\ncommand = "echo"\n'
     )
+    codex_cfg.write_text(codex_text, encoding="utf-8")
+    task = MISE_TASKS_DIR / "host" / "prune-codex-otel"
+
+    def run(flag: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(task)],
+            env={
+                "HOME": str(fake_home),
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                flag: "true",
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    chk = run("usage_check")
+    assert "no dead Codex [otel] stanza found" in chk.stdout
+    app = run("usage_apply")
+    assert "no dead Codex [otel] stanza found" in app.stdout
+    assert "PRUNED" not in app.stdout
+    assert mcp_cfg.read_text(encoding="utf-8") == mcp_text
+    assert claude_json.read_text(encoding="utf-8") == claude_text
+    assert codex_cfg.read_text(encoding="utf-8") == codex_text
+    assert not (fake_home / ".local" / "state" / "dotfiles-v2" / "backups").exists()
+
+
+def test_host_prune_codex_otel_apply_prunes_only_otel(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    (fake_home / ".codex").mkdir(parents=True)
     codex_cfg = fake_home / ".codex" / "config.toml"
     codex_cfg.write_text(
         '[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n'
-        '[[projects."/workspace/repo"]]\ntrust_level = "trusted"\n'
+        '[otel]\nenvironment = "symphony-cpp-local"\n'
+        '[otel.exporter.otlp-http]\nendpoint = "http://127.0.0.1:4318/v1/logs"\n'
         '[mcp_servers.keepme]\ncommand = "echo"\n',
         encoding="utf-8",
     )
-    task = MISE_TASKS_DIR / "host" / "prune-mcps"
+    task = MISE_TASKS_DIR / "host" / "prune-codex-otel"
+    env = {"HOME": str(fake_home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
     chk = subprocess.run(
         ["bash", str(task)],
-        env={
-            "HOME": str(fake_home),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_check": "true",
-        },
+        env={**env, "usage_check": "true"},
         capture_output=True,
         text=True,
         check=True,
     )
-    assert "FOUND gemini-mcp" in chk.stdout
-    assert "FOUND gemini-plugin" in chk.stdout
-    assert "FOUND claude-mcp" in chk.stdout
-    assert "FOUND codex-mcp" in chk.stdout
-
+    assert "FOUND codex-dead-otel" in chk.stdout
+    assert "[otel]" in codex_cfg.read_text(encoding="utf-8")
     app = subprocess.run(
         ["bash", str(task)],
-        env={
-            "HOME": str(fake_home),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_apply": "true",
-        },
+        env={**env, "usage_apply": "true"},
         capture_output=True,
         text=True,
         check=True,
     )
-    assert "PRUNED" in app.stdout
-    assert "exa" not in json.loads(mcp_cfg.read_text())["mcpServers"]
-    assert "custom-keep" in json.loads(mcp_cfg.read_text())["mcpServers"]
-    enabled = json.loads(agy_cfg.read_text())["enabledPlugins"]
-    assert "apify@apify-plugins" not in enabled
-    assert "apify-other@custom" in enabled
-    assert "mcp-jdx" not in json.loads(claude_json.read_text())["mcpServers"]
-    codex_after = codex_cfg.read_text()
-    assert "context7" not in codex_after
-    assert '[[projects."/workspace/repo"]]' in codex_after
-    assert "keepme" in codex_after
+    assert "PRUNED codex" in app.stdout
+    after = codex_cfg.read_text(encoding="utf-8")
+    assert "otel" not in after
+    assert "[mcp_servers.context7]" in after
+    assert "[mcp_servers.keepme]" in after
     backups = list(
         (fake_home / ".local" / "state" / "dotfiles-v2" / "backups").glob("*.bak")
     )
-    assert len(backups) == 4
-
-
-def test_host_prune_mcps_handles_claude_config_dir_and_dedup(tmp_path: Path) -> None:
-    fake_home = tmp_path / "home"
-    claude_dir = fake_home / ".claude"
-    custom_dir = tmp_path / "custom-claude"
-    claude_dir.mkdir(parents=True)
-    custom_dir.mkdir(parents=True)
-
-    home_claude = fake_home / ".claude.json"
-    home_claude.write_text(
-        json.dumps({"mcpServers": {"exa": {}, "keep-home": {}}}), encoding="utf-8"
-    )
-    dir_claude = claude_dir / ".claude.json"
-    dir_claude.write_text(
-        json.dumps({"mcpServers": {"firecrawl": {}, "keep-dir": {}}}), encoding="utf-8"
-    )
-    custom_claude = custom_dir / ".claude.json"
-    custom_claude.write_text(
-        json.dumps({"mcpServers": {"context7": {}, "keep-custom": {}}}),
-        encoding="utf-8",
-    )
-
-    task = MISE_TASKS_DIR / "host" / "prune-mcps"
-    chk = subprocess.run(
-        ["bash", str(task)],
-        env={
-            "HOME": str(fake_home),
-            "CLAUDE_CONFIG_DIR": str(custom_dir),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_check": "true",
-        },
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert f"FOUND claude-mcp {home_claude}: mcpServers.exa" in chk.stdout
-    assert f"FOUND claude-mcp {custom_claude}: mcpServers.context7" in chk.stdout
-    assert f"FOUND claude-mcp {dir_claude}: mcpServers.firecrawl" in chk.stdout
-
-    app = subprocess.run(
-        ["bash", str(task)],
-        env={
-            "HOME": str(fake_home),
-            "CLAUDE_CONFIG_DIR": str(custom_dir),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_apply": "true",
-        },
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert app.stdout.count("PRUNED claude-mcp") == 3
-    assert json.loads(home_claude.read_text()) == {"mcpServers": {"keep-home": {}}}
-    assert json.loads(custom_claude.read_text()) == {"mcpServers": {"keep-custom": {}}}
-    assert json.loads(dir_claude.read_text()) == {"mcpServers": {"keep-dir": {}}}
-    backups = list(
-        (fake_home / ".local" / "state" / "dotfiles-v2" / "backups").glob("*.bak")
-    )
-    assert len(backups) == 3
-
-    # Deduplicate when CLAUDE_CONFIG_DIR == ~/.claude and ~/.claude/.claude.json symlinks to ~/.claude.json.
-    dedup_home = tmp_path / "dedup-home"
-    (dedup_home / ".claude").mkdir(parents=True)
-    dedup_root = dedup_home / ".claude.json"
-    dedup_root.write_text(
-        json.dumps({"mcpServers": {"exa": {}, "keep": {}}}), encoding="utf-8"
-    )
-    (dedup_home / ".claude" / ".claude.json").symlink_to(dedup_root)
-
-    dedup_chk = subprocess.run(
-        ["bash", str(task)],
-        env={
-            "HOME": str(dedup_home),
-            "CLAUDE_CONFIG_DIR": str(dedup_home / ".claude"),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_check": "true",
-        },
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert dedup_chk.stdout.count("FOUND claude-mcp") == 1
-
-    dedup_app = subprocess.run(
-        ["bash", str(task)],
-        env={
-            "HOME": str(dedup_home),
-            "CLAUDE_CONFIG_DIR": str(dedup_home / ".claude"),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "usage_apply": "true",
-        },
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert dedup_app.stdout.count("PRUNED claude-mcp") == 1
-    assert json.loads(dedup_root.read_text()) == {"mcpServers": {"keep": {}}}
-    dedup_backups = list(
-        (dedup_home / ".local" / "state" / "dotfiles-v2" / "backups").glob("*.bak")
-    )
-    assert len(dedup_backups) == 1
+    assert len(backups) == 1
 
 
 def test_host_prune_removes_dangling_unix_home_symlinks_in_local_bin(

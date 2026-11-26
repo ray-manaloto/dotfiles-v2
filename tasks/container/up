@@ -139,7 +139,7 @@ run_phase2_bootstrap() {
 			--config-dir unix/home/.config/mise \
 			--only dotfiles,tools,task \
 			--force-dotfiles --yes
-		mise -E container,linux -C "${HOME}" run host:prune-mcps --apply
+		mise -E container,linux -C "${HOME}" run host:prune-codex-otel --apply
 		MISE_YES=1 mise -C /workspace deps uv
 	' bash "${repo_url}"
 }

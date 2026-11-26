@@ -49,7 +49,7 @@ description: >-
 - Root `mise.toml` declares `[secrets.fnox] profile = "infra"` so infra tasks
   (`container:up`, `vm:up` with `#MISE secrets=["TAILSCALE_API_KEY"]`) resolve
   secrets natively; headless Linux/VM use `config.headless.toml` without Keychain.
-- Keep `0` global MCPs across harnesses (CLI+Skill first: `find-docs`, `exa-search`,
+- Keep claude.ai connectors off unless needed and prefer CLI/SDK for research tools (CLI-first skills: `find-docs`, `exa-search`,
   `firecrawl`, `apify-ultimate-scraper`, `toolchain-update-review`, plus the
   official `agentsview-finding-history` installed by `bootstrap:skills` via
   `agentsview skills install --harness agents --force`),

@@ -257,7 +257,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
         "unix/home/.config/mise/lib/reviewer_plugins.py",
         "unix/home/.config/mise/tasks/bootstrap/reviewer-plugins",
         "unix/home/.config/mise/tasks/repowise/*",
-        "unix/home/.config/mise/tasks/host/prune-mcps",
+        "unix/home/.config/mise/tasks/host/prune-codex-otel",
         "unix/home/.config/opencode/opencode.json",
         "tasks/py/doctor_checks.py",
       )

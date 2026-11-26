@@ -1742,7 +1742,6 @@ def _reviewer_repo(tmp_path: Path, mutate=None) -> Path:
         "unix/home/.config/mise/tasks/bootstrap/reviewer-plugins",
         "unix/home/.config/mise/tasks/repowise/guard",
         "unix/home/.config/mise/tasks/repowise/init",
-        "unix/home/.config/mise/tasks/host/prune-mcps",
         "unix/home/.config/opencode/opencode.json",
     ]
     for rel in rels:
@@ -1773,10 +1772,6 @@ def test_reviewer_plugins_repo_scope_passes_on_real_tree(monkeypatch, tmp_path) 
         (
             lambda m: m["claude"]["connected_mcps"].append("plugin:ghost:ghost"),
             "no matching Claude plugin",
-        ),
-        (
-            lambda m: m["claude"]["retired_mcps"].append("not-pruned"),
-            "missing from host:prune-mcps",
         ),
         (
             lambda m: m["opencode"]["plugins"].append("other@1.0.0"),
@@ -2217,6 +2212,7 @@ def test_claude_ship_env_flags_managed_settings(tmp_path, monkeypatch) -> None:
     assets = tmp_path / "unix/home/.config/mise/assets/claude"
     assets.mkdir(parents=True)
     (assets / "env-common.json").write_text('{"env": {"CLAUDE_CODE_BRIEF": "1"}}')
+    (assets / "permissions.json").write_text('{"disableClaudeAiConnectors": true}')
     errors, msg = doc_mod.check_claude_ship_env(tmp_path)
     assert errors == [] and "not probed" in msg
     (assets / "bad.json").write_text(
@@ -2395,4 +2391,63 @@ def test_claude_ship_env_live_without_settings_file(tmp_path, monkeypatch) -> No
     errors, _ = doc_mod.check_claude_ship_env(tmp_path)
     assert any("~/.claude/settings.json env sets DO_NOT_TRACK" in e for e in errors), (
         errors
+    )
+
+
+@pytest.mark.parametrize(
+    ("settings", "needle"),
+    [
+        (
+            {"disableClaudeAiConnectors": False},
+            "disableClaudeAiConnectors=false turns claude.ai connectors on",
+        ),
+        (
+            {"env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "true"}},
+            "ENABLE_CLAUDEAI_MCP_SERVERS turns claude.ai connectors on",
+        ),
+        (
+            {"permissions": {"deny": []}},
+            "no managed Claude settings file sets disableClaudeAiConnectors=true",
+        ),
+    ],
+)
+def test_claude_ship_env_keeps_connectors_off(
+    tmp_path, monkeypatch, settings, needle
+) -> None:
+    """Owner rule: claude.ai connectors stay off unless needed; MCP denies themselves are fine."""
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    assets = tmp_path / "unix/home/.config/mise/assets/claude"
+    assets.mkdir(parents=True)
+    (assets / "x.json").write_text(json.dumps(settings))
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert any(needle in e for e in errors), errors
+    (assets / "x.json").write_text(
+        json.dumps(
+            {
+                "disableClaudeAiConnectors": True,
+                "deniedMcpServers": [{"serverName": "plugin:apify:apify"}],
+                "permissions": {"deny": ["mcp__clion__*"]},
+            }
+        )
+    )
+    (assets / "y.json.tera").write_text('{"disableClaudeAiConnectors": false}')
+    errors, _ = doc_mod.check_claude_ship_env(tmp_path)
+    assert errors == [
+        "claude-ship-env: unix/home/.config/mise/assets/claude/y.json.tera turns claude.ai connectors on"
+    ], errors
+
+
+def test_real_managed_claude_settings_keep_connectors_off() -> None:
+    data = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "unix/home/.config/mise/assets/claude/permissions.json"
+        ).read_text()
+    )
+    assert data["disableClaudeAiConnectors"] is True
+    assert {"serverName": "plugin:apify:apify"} in data["deniedMcpServers"]
+    assert any(
+        "@modelcontextprotocol/server-pdf" in d.get("serverCommand", [])
+        for d in data["deniedMcpServers"]
     )

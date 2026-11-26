@@ -151,12 +151,12 @@
     `npm:` entries in `check_mise_lock_integrity` (`PLAN_ID` / worktree slug:
     `mise-registry-canonical`; shipped on `main` at `23794f3`).
 - [x] **Follow-up (Phase 13 Wave 1A & 1B: core `mise`, 6-harness skills,
-  Arch B `fnox`, 0-MCP CLI+Skill, hardened hooks/CI):**
+  Arch B `fnox`, CLI-first research skills, hardened hooks/CI):**
   - [x] [#21](https://github.com/ray-manaloto/dotfiles-v2/issues/21) Wave 1A:
     core `mise 2026.11.14`, strict `tombi` schema, `[dotfile_groups]`,
     universal `zsh`, 6-harness `bootstrap:skills`, `[shell_alias]`, `Herdr.app`
     cask, `upgrade.auto_prune`, `dotfiles-catalog`, `yt-dlp`, `1h` soak, Arch B
-    scoped `fnox`, `dcg`+`0555` hardening, `0` global MCPs, and `deps:audit`
+    scoped `fnox`, `dcg`+`0555` hardening, CLI-first research skills, and `deps:audit`
     (shipped on `main` at `2daba55`, `1e2a3ca`, `278efcc`, `5c5212e`).
   - [x] [#22](https://github.com/ray-manaloto/dotfiles-v2/issues/22) Wave 1B:
     `/learn` & hook shell-unwrapping hardening, Claude/Codex `/learn` hooks,

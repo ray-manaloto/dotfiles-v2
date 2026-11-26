@@ -1239,7 +1239,7 @@ def check_host_hygiene(repo_root: Path) -> tuple[list[str], str]:
     dead_otel_reasons = find_dead_codex_otel(codex_cfg)
     if dead_otel_reasons:
         errors.append(
-            f"dead-codex-otel: {codex_cfg} has dead [otel] stanza ({', '.join(dead_otel_reasons)}; run `mise run host:prune-mcps --apply`)"
+            f"dead-codex-otel: {codex_cfg} has dead [otel] stanza ({', '.join(dead_otel_reasons)}; run `mise run host:prune-codex-otel --apply`)"
         )
 
     # 8. Untracked config.local.toml
@@ -2563,8 +2563,27 @@ def _claude_settings_ship_errors(label: str, data: object) -> list[str]:
     return errors
 
 
+def _claude_settings_mcp_errors(label: str, data: object) -> list[str]:
+    """Owner rule: claude.ai connectors stay off unless a concrete need is shown."""
+    if not isinstance(data, dict):
+        return []
+    errors: list[str] = []
+    if data.get("disableClaudeAiConnectors") is False:
+        errors.append(
+            f"claude-ship-env: {label} disableClaudeAiConnectors=false turns claude.ai connectors on"
+        )
+    env = data.get("env")
+    if isinstance(env, dict) and str(
+        env.get("ENABLE_CLAUDEAI_MCP_SERVERS", "")
+    ).lower() in {"1", "true", "yes", "on"}:
+        errors.append(
+            f"claude-ship-env: {label} env ENABLE_CLAUDEAI_MCP_SERVERS turns claude.ai connectors on"
+        )
+    return errors
+
+
 def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
-    """Managed Claude settings (repo) and the live host never disable /ship, /steward or feature-flag fetching."""
+    """Managed Claude settings (repo) and the live host keep /ship, /steward and feature-flag fetching, and keep claude.ai connectors off."""
     errors: list[str] = []
     killer_key = re.compile(r'"(' + "|".join(sorted(_FLAG_FETCH_KILLERS)) + r')"\s*:')
     managed = sorted(
@@ -2573,12 +2592,19 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
             *(repo_root / "unix/home/.claude").glob("**/*.json"),
         }
     )
+    connectors_off = False
     for path in managed:
         rel = path.relative_to(repo_root).as_posix()
         text = path.read_text(encoding="utf-8")
         if path.suffix == ".json":
             try:
-                errors += _claude_settings_ship_errors(rel, json.loads(text))
+                data = json.loads(text)
+                errors += _claude_settings_ship_errors(rel, data)
+                errors += _claude_settings_mcp_errors(rel, data)
+                connectors_off |= (
+                    isinstance(data, dict)
+                    and data.get("disableClaudeAiConnectors") is True
+                )
             except ValueError as exc:
                 errors.append(f"claude-ship-env: {rel}: invalid JSON: {exc}")
         else:  # templates (.json.tera) are not JSON until rendered: match the same three settings textually
@@ -2595,6 +2621,12 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
                 errors.append(
                     f"claude-ship-env: {rel} disableBundledSkills removes /ship and /steward"
                 )
+            if re.search(r'"disableClaudeAiConnectors"\s*:\s*false', text):
+                errors.append(f"claude-ship-env: {rel} turns claude.ai connectors on")
+    if managed and not connectors_off:
+        errors.append(
+            "claude-ship-env: no managed Claude settings file sets disableClaudeAiConnectors=true; claude.ai connectors stay off unless needed"
+        )
     if errors or _live_host_skipped():
         return errors, (
             _skip_reason(
@@ -2606,10 +2638,16 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
     settings = Path.home() / ".claude/settings.json"
     if settings.is_file():  # no settings file means nothing disables the ship skills
         try:
-            errors += _claude_settings_ship_errors(
-                "~/.claude/settings.json",
-                json.loads(settings.read_text(encoding="utf-8")),
-            )
+            live = json.loads(settings.read_text(encoding="utf-8"))
+            errors += _claude_settings_ship_errors("~/.claude/settings.json", live)
+            errors += _claude_settings_mcp_errors("~/.claude/settings.json", live)
+            if (
+                isinstance(live, dict)
+                and live.get("disableClaudeAiConnectors") is not True
+            ):
+                errors.append(
+                    "claude-ship-env: ~/.claude/settings.json does not set disableClaudeAiConnectors=true; run `mise dot apply`"
+                )
         except (OSError, ValueError) as exc:
             errors.append(
                 f"claude-ship-env: cannot read ~/.claude/settings.json: {exc}"
@@ -2623,7 +2661,10 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
         errors.append(
             "claude-ship-env: a checkout venv is active (VIRTUAL_ENV); /ship and /steward refuse to watch"
         )
-    return errors, "managed and live Claude settings keep /ship and /steward available"
+    return (
+        errors,
+        "managed and live Claude settings keep /ship and /steward available and claude.ai connectors off",
+    )
 
 
 def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
@@ -2665,14 +2706,6 @@ def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
         if not any(str(p).split("@")[0] == plugin for p in claude.get("plugins", [])):
             errors.append(
                 f"reviewer-plugins: connected MCP {mcp} has no matching Claude plugin"
-            )
-    prune = mise_dir / "tasks/host/prune-mcps"
-    prune_txt = prune.read_text(encoding="utf-8") if prune.is_file() else ""
-    m = re.search(r"LEGACY_MCP_NAMES = frozenset\(\{(.*?)\}\)", prune_txt, re.S)
-    for name in claude.get("retired_mcps", []):
-        if not m or f'"{name}"' not in m.group(1):
-            errors.append(
-                f"reviewer-plugins: retired MCP {name} missing from host:prune-mcps LEGACY_MCP_NAMES"
             )
     oc_path = repo_root / "unix/home/.config/opencode/opencode.json"
     try:

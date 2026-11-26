@@ -1,4 +1,14 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "deniedMcpServers": [
+    {
+      "serverCommand": ["npx", "-y", "@modelcontextprotocol/server-pdf", "--stdio"]
+    },
+    {
+      "serverName": "plugin:apify:apify"
+    }
+  ],
+  "disableClaudeAiConnectors": true,
   "permissions": {
     "allow": [
       "Bash(hc read *)",
@@ -70,6 +80,5 @@
       "Bash(* push * +*)",
       "Bash(* push * :*)"
     ]
-  },
-  "$schema": "https://json.schemastore.org/claude-code-settings.json"
+  }
 }
