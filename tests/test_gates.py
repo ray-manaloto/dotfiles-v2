@@ -1698,8 +1698,11 @@ def test_mise_doctor_clean_strips_mise_env_path_entries(monkeypatch) -> None:
         # Activated shells skip the probe entirely.
         calls.clear()
         monkeypatch.setenv("MISE_SHELL", "zsh")
-        doc_mod.check_mise_doctor_clean(repo_root)
+        errs, _ = doc_mod.check_mise_doctor_clean(repo_root)
+        assert errs == []
         assert all("env" not in cmd for cmd, _ in calls)
+        # The doctor run uses the resolved mise binary, so stripping its dir cannot lose it.
+        assert calls[-1][0][0] == str(fake_mise)
 
 
 def test_vm_up_normalizes_usr_local_bin_ownership_for_packslip() -> None:

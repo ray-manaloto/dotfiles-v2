@@ -827,6 +827,8 @@ def check_mise_doctor_clean(repo_root: Path | None = None) -> tuple[list[str], s
     home = Path.home()
     root = repo_root if repo_root is not None else Path(__file__).resolve().parents[2]
     env = dict(os.environ)
+    # Resolve mise before PATH normalization can drop the directory that holds it.
+    mise_cmd = shutil.which("mise", path=env.get("PATH")) or "mise"
     if "PATH" in env:
         activated = bool(env.get("MISE_SHELL") or env.get("__MISE_DIFF"))
         mise_env_entries = (
@@ -837,7 +839,7 @@ def check_mise_doctor_clean(repo_root: Path | None = None) -> tuple[list[str], s
         )
     try:
         proc = subprocess.run(
-            ["mise", "-C", str(home), "doctor", "--json"],
+            [mise_cmd, "-C", str(home), "doctor", "--json"],
             capture_output=True,
             text=True,
             env=env,
