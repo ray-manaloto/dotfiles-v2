@@ -61,6 +61,10 @@ local const githubActionsGroup = helpers.lintSteps()["github-actions"] as Group
 local const hygieneGroup = picked["hygiene"] as Group
 local const miseGroup = picked["mise"] as Group
 local const oxfmtStep = picked["oxfmt"] as Step
+local const shellGroup = picked["shell"] as Group
+// These scripts are byte-for-byte cpp-standard imports used by pc bootstrap.
+local const pcRunnerLauncher = "unix/home/.config/mise/assets/pc/gha-slot"
+local const pcAgentSecrets = "unix/home/.config/mise/assets/pc/agent-secrets.bash"
 // KB validates these mirrored schemas with jq. Both repositories enforce the same bytes.
 local const openaiReviewSchemas =
   List(".github/openai-review/findings.schema.json", ".github/openai-review/repo.schema.json")
@@ -78,7 +82,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     depends = List()
   }
   ["editorconfig-checker"] = (Builtins.editorconfig_checker) {
-    exclude = lockfileExcludes
+    exclude = lockfileExcludes + List(pcAgentSecrets)
   }
   ["lychee"] = (Builtins.lychee) {
     glob = List("**/*.md", "**/*.markdown")
@@ -114,7 +118,29 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     glob = openaiReviewSchemas
   }
   ["typos"] = (typosStep) {
-    exclude = (typosStep.exclude ?? List()) + lockfileExcludes
+    exclude =
+      (typosStep.exclude ?? List())
+        + lockfileExcludes
+        + List("unix/home/.config/mise/assets/pc/ufw-before.rules")
+  }
+  ["shell"] = (shellGroup) {
+    steps {
+      ["shfmt"] = (shellGroup.steps["shfmt"] as Step) {
+        exclude =
+          ((shellGroup.steps["shfmt"] as Step).exclude ?? List())
+            + List(pcRunnerLauncher, pcAgentSecrets)
+      }
+      ["shellcheck"] = (shellGroup.steps["shellcheck"] as Step) {
+        exclude =
+          ((shellGroup.steps["shellcheck"] as Step).exclude ?? List()) + List(pcRunnerLauncher)
+      }
+      ["shellcheck-pc-runner-launcher"] = new Step {
+        glob = List(pcRunnerLauncher)
+        // The upstream script has advisory notes, including an external compiler helper.
+        check = "shellcheck --external-sources --severity=warning --format=gcc {{ files }}"
+        diagnostic_format = "gcc"
+      }
+    }
   }
   ["mise"] = (miseGroup) {
     steps {

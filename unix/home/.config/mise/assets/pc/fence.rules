@@ -1,0 +1,7 @@
+# gha-fence.service (dotfiles #741): the job fence's IPv4 mangle drops, applied with iptables-restore --noflush.
+*mangle
+-F INPUT
+-F FORWARD
+-A INPUT -i br-gha -m conntrack --ctstate NEW -j DROP
+-A FORWARD -i br-gha -o tailscale0 -j DROP
+COMMIT

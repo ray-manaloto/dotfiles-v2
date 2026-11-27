@@ -1,0 +1,30 @@
+[Unit]
+Description=GitHub Actions one-job runner slot %i (fresh container per job)
+Documentation=file:///etc/gha-runner/README.md
+After=network-online.target docker.service gha-fence.service
+Wants=network-online.target gha-fence.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# The job fence (gha-fence.service): no slot starts without it, and its restarts never touch a running slot.
+ExecStartPre=/usr/bin/systemctl is-active --quiet gha-fence.service
+ExecStartPre=/usr/bin/iptables -t mangle -C INPUT -i br-gha -m conntrack --ctstate NEW -j DROP
+ExecStartPre=/usr/bin/iptables -t mangle -C FORWARD -i br-gha -o tailscale0 -j DROP
+ExecStartPre=/usr/bin/ip6tables -t mangle -C INPUT -i br-gha ! -p ipv6-icmp -m conntrack --ctstate NEW -j DROP
+ExecStart=/usr/local/sbin/gha-slot run %i
+Restart=always
+RestartSec=10
+# Room for the stop path (remove the job container, then mint a token and delete the idle runner at GitHub,
+# each call capped at 15 s, so up to about 30 s plus docker). This host sets DefaultTimeoutStopSec=5s, too
+# short for that. The stop path exits 143 (TERM) or 130 (INT), which systemd must count as a clean stop.
+TimeoutStopSec=45
+SuccessExitStatus=130 143
+SyslogIdentifier=gha-slot-%i
+# The loop only talks to GitHub and the Docker daemon; jobs themselves run inside the containers.
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
