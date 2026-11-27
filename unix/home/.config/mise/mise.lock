@@ -1069,6 +1069,11 @@ aube = { path = "locks/prettier/3.10.1", digest = "sha256:2d1e8d35e9c42e9df167e3
 backend = "npm:prettier"
 specifiers = ["3.10.1"]
 
+[[tools."pypi:ray-manaloto/cpp-standard#subdirectory=python/repo"]]
+version = "6eec09e90f98d53190662fef4519432c840fde71"
+backend = "pypi:ray-manaloto/cpp-standard#subdirectory=python/repo"
+specifiers = ["6eec09e90f98d53190662fef4519432c840fde71"]
+
 [[tools."pypi:repowise"]]
 version = "0.62.0"
 backend = "pypi:repowise"
