@@ -118,6 +118,15 @@ else
 	printf '%s\n' "${doctor_out}" | sed 's/^/pr:land:   /' >&2
 fi
 
+# 3c. Warn-only roadmap drift: the doctor run above hides it (the check always passes), and this land
+# may have just shipped a path that ROADMAP.md still lists as Remaining. Never changes the exit code.
+drift_out="$(cd "${main_root}" && python3 -I -B tasks/py/doctor_checks.py roadmap-drift </dev/null 2>&1)" || true
+while IFS= read -r line; do
+	if [[ ${line} == WARN* ]]; then
+		echo "pr:land: WARNING: ${line#WARN  } (update ROADMAP.md on main)" >&2
+	fi
+done <<<"${drift_out}"
+
 # 4. Keep the git-ignored plan files (removing the worktree would delete them), then remove the
 # worktree and its branch (the branch is merged, so `branch -d` is safe).
 if [[ -n ${plan_id} && -d .planning/${plan_id} ]]; then
