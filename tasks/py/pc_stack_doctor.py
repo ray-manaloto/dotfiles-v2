@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # Source: cpp-standard python/pctools/src/pctools/data/pc-kernel.json.
@@ -26,6 +27,35 @@ FENCE = {
     "ip6tables": (
         "-A INPUT -i br-gha ! -p ipv6-icmp -m conntrack --ctstate NEW -j DROP",
     ),
+}
+# Match the names in config.pc.toml. Keep an independent baseline so removing
+# a declaration itself still fails the doctor.
+PC_BOOTSTRAP_REQUIRED = {
+    "file:/etc/systemd/system/gha-slot@.service",
+    "file:/etc/systemd/system/gha-fence.service",
+    "file:/etc/gha-runner/fence.rules",
+    "file:/etc/gha-runner/fence6.rules",
+    "file:/etc/ufw/before.rules",
+    "file:/etc/ufw/after.rules",
+    "file:/etc/systemd/system/acu-trial.service",
+    "file:/usr/local/sbin/gha-slot",
+    "file:~/.local/bin/agent-secrets",
+    "file:/etc/cdi/nvidia.yaml",
+    "service:gha-fence.service",
+    "service:ufw",
+    "service:gha-slot@glaze",
+    "service:gha-slot@cpp-utilities",
+    "service:gha-slot@dotfiles",
+    "service:gha-slot@hft-challenges-prototype",
+    "service:gha-slot@knowledge-base-v2",
+    "service:acu-trial.service",
+    "service:nvidia-cdi-refresh.path",
+    "service:nvidia-cdi-refresh.service",
+    "user-service:agent-secrets",
+}
+PC_BOOTSTRAP_PACKAGES = {
+    "package:pacman:zsh",
+    "package:pacman:nvidia-container-toolkit",
 }
 UPDATE = re.compile(r"\S+ \S+ -> \S+(?: \[(?:-?\d+[dhm]){1,2}\])?")
 
@@ -66,31 +96,28 @@ def bootstrap(check: str) -> str:
         entries = report["files"] + report["services"]
     else:
         entries = report["resources"]
-    resources = {
-        f"{entry['id']['kind']}:{entry['id']['name']}": entry["action"]
-        for entry in entries
-        if "pc" in (entry.get("origin") or {}).get("environment", [])
-        or entry["id"]["name"] == "pacman:nvidia-container-toolkit"
-    }
+    required = PC_BOOTSTRAP_REQUIRED
+    if check == "plan":
+        required = required | PC_BOOTSTRAP_PACKAGES
+    home = f":{Path.home()}/"
+    resources = {}
+    for entry in entries:
+        resource = entry["id"]
+        key = f"{resource['kind']}:{resource['name']}".replace(home, ":~/")
+        if (
+            "pc" in (entry.get("origin") or {}).get("environment", [])
+            or key in PC_BOOTSTRAP_PACKAGES
+        ):
+            resources[key] = entry["action"]
     if check == "status":
         for service in report["user_services"]:
             if service["name"] == "agent-secrets":
                 resources["user-service:agent-secrets"] = service["action"]
-    required = {
-        "file:/etc/systemd/system/gha-slot@.service",
-        "service:gha-fence.service",
-        "user-service:agent-secrets",
-    }
-    if check == "plan":
-        required.add("package:pacman:nvidia-container-toolkit")
     missing = required - resources.keys()
     if missing:
         raise ValueError("missing pc declarations: " + ", ".join(sorted(missing)))
-    home = f":{Path.home()}/"
     drift = [
-        f"{name.replace(home, ':~/')} ({action})"
-        for name, action in resources.items()
-        if action != "noop"
+        f"{name} ({action})" for name, action in resources.items() if action != "noop"
     ]
     if drift:
         raise ValueError("pc resources differ: " + ", ".join(drift))
@@ -122,13 +149,13 @@ def privileged() -> str:
         flags = values.stdout.splitlines()
         if len(flags) != len(ids) or set(flags) - {"true", "false"}:
             raise ValueError(
-                "could not determine privilege for every running container"
+                "could not determine the --privileged flag for every running container"
             )
         if "true" in flags:
             raise ValueError(
-                f"{flags.count('true')} running containers use privileged mode"
+                f"{flags.count('true')} running containers use --privileged"
             )
-    return f"{len(ids)} running containers checked"
+    return f"{len(ids)} running containers checked for --privileged"
 
 
 def gpu_cdi() -> str:
@@ -146,20 +173,23 @@ def gpu_cdi() -> str:
         "nvidia-cdi-refresh.path",
     )
     run("systemctl", "is-active", "--quiet", "nvidia-cdi-refresh.path")
-    props = run(
+    show = (
         "systemctl",
         "show",
         "--property=LoadState,UnitFileState,ActiveState,Result",
         "nvidia-cdi-refresh.service",
-    ).stdout
-    values = dict(line.split("=", 1) for line in props.splitlines())
-    if values != {
+    )
+    values = dict(line.split("=", 1) for line in run(*show).stdout.splitlines())
+    if values.get("ActiveState") == "activating":
+        time.sleep(2)
+        values = dict(line.split("=", 1) for line in run(*show).stdout.splitlines())
+    state = values.pop("ActiveState", None)
+    if state not in {"inactive", "activating"} or values != {
         "LoadState": "loaded",
         "UnitFileState": "enabled",
-        "ActiveState": "inactive",
         "Result": "success",
     }:
-        raise ValueError("CDI refresh service is outside its successful settled state")
+        raise ValueError("CDI refresh service is outside its successful oneshot state")
     if (
         os.path.lexists("/etc/cdi/nvidia.yaml")
         or not Path("/run/cdi/nvidia.yaml").is_file()
@@ -271,7 +301,7 @@ def main() -> int:
         ("bootstrap-status", lambda: bootstrap("status")),
         ("bootstrap-plan", lambda: bootstrap("plan")),
         ("kernel-watch", kernel_watch),
-        ("privileged", privileged),
+        ("docker-privileged-flag", privileged),
         ("gpu-cdi", gpu_cdi),
         ("pending-updates", pending_updates),
         ("fence-drops", fence_drops),
