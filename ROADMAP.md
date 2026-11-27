@@ -23,10 +23,12 @@
   - [x] 2.2 OpenCode (free zero-retention model)
   - [x] 2.3 ZCode (`npm:zcode-app-cli`)
   - [ ] 2.4 Antigravity CLI (`agy`, `Orchestrator (Neon)` default; `agy-rc-guard`
-    and quota-gated `env:smoke` landed; container/VM bootstrap tracked in `#24`)
-  - [ ] 2.5 Codex (`--device-auth`) + `ray-manaloto/skills` + `[dotfile_groups]`
+    and quota-gated `env:smoke` landed). **Remaining:** container/VM
+    `bootstrap:agy` (tracked in `#24`).
+  - [x] 2.5 Codex (`--device-auth`) + `ray-manaloto/skills` + `[dotfile_groups]`
     (`dotfile_groups`, 6-harness `bootstrap:skills`, and `env:smoke` landed;
-    remaining container/VM `codex` bootstrap parity tracked in `#24`)
+    container/VM `bootstrap:codex` + persistent `<name>-codex` volume shipped on
+    `main` at `990c99f`, PR `#54` merge `eaada54`)
 - [ ] **Step 3:** Declarative C++26 core (`mise.ubuntu.toml`: pinned latest
   GCC 16, Clang 23, `lld`/`lldb`/`libc++`, `gdb`, `valgrind`, `cppcheck`,
   `cmake`, `ninja`, `vcpkg`, `gcovr`) + C++26 smoke test, followed by optional
@@ -86,10 +88,15 @@
 - [ ] **Follow-up (Open GitHub PR & credit-backed coding-agent runners):**
   - [ ] [PR #1](https://github.com/ray-manaloto/dotfiles-v2/pull/1) Add manual
     OpenAI PR review (`automation/manual-openai-pr-review`).
-  - [ ] [#2](https://github.com/ray-manaloto/dotfiles-v2/issues/2) Add an OpenAI
-    Responses coding-agent profile using linked API credits.
-  - [ ] [#3](https://github.com/ray-manaloto/dotfiles-v2/issues/3) Add a
-    self-run Claude coding agent using linked API credits.
+  - [x] [#2](https://github.com/ray-manaloto/dotfiles-v2/issues/2) Add an OpenAI
+    Responses coding-agent profile using linked API credits (bounded
+    `mise run api:code` profile, `docs/responses-coding-profile.md`; shipped on
+    `main` at `e32a280`).
+  - [x] [#3](https://github.com/ray-manaloto/dotfiles-v2/issues/3) Add a
+    self-run Claude coding agent using linked API credits (fail-closed,
+    read-only `mise run api:review` `claude -p` runner on the `api-credit` fnox
+    profile; shipped on `main` at `4270119`, PR `#31`). A write-capable Claude
+    coding mode is not on `main`; re-scope `#3` on GitHub if it is still wanted.
 - [ ] **Follow-up (Option A cutover, `@vercel/board@0.55.0`, schema-first
   Python & self-healing `/learn`):**
   - [x] [#9](https://github.com/ray-manaloto/dotfiles-v2/issues/9) Execute
@@ -111,9 +118,9 @@
     `templates/swarm` + `factory` orchestration (`PLAN_ID` / worktree slug:
     `vercel-board-pc-orchestration`; `@vercel/board@0.56.1` now live behind
     `pc` Caddy/Tailscale and synced across `host`/`pc`/`mac`/`vm` in
-    `806d74c`–`5d6b945`; remaining: `templates/swarm`/`factory` channel
-    conventions `ops/kb-queue` & `work/*`, tailnet ACL cleanup, and
-    `--no-tailscale` Mac fallback check).
+    `806d74c`–`5d6b945`; loopback-only `board:up --no-tailscale` is on `main`
+    since `7251f2d`). **Remaining:** `templates/swarm`/`factory` board channel
+    conventions (`ops/kb-queue`, `work/*`) and tailnet ACL cleanup.
 - [ ] **Follow-up (Deep Audit, Full `mise`/`jdx` & Dependency Upgrades, Hardened Tier 1–3 Health Gates):**
   - [x] [#13](https://github.com/ray-manaloto/dotfiles-v2/issues/13) Upgrade
     `mise` (`2026.11.13`), `packslip` (`1.11.5`), `hk` (`2.14.0`), all outdated
@@ -179,17 +186,20 @@
     synced across `host`/`pc`/`mac`/`vm`, `AgentsView Hub` w/ `11G` Mac archive
     & `NO_LOCAL_DAEMON`, `SearXNG`+`Valkey`, `qmd 2.9.0` w/ `43,029` indexed KB
     files via `knowledge-base-v2` `PR #160`/`#161`, CLI-only static
-    `codebase-memory-mcp 0.12.1`; `806d74c`–`5d6b945`). **Remaining:**
-    `config.pc.toml` + `tasks/pc/{up,sync,doctor}` Option A cutover on `pc`
-    (`fnox-age.key`) and `ops/kb-queue` / `work/*` board channels.
+    `codebase-memory-mcp 0.12.1`; `806d74c`–`5d6b945`), plus the `pc` Option A
+    cutover (`config.pc.toml` + `pc:up`/`pc:sync`/`pc:doctor`, `728eff1`) with
+    Doppler-backed `pc` secrets instead of an age key (`e8d9ff9`, `da73225`).
+    **Remaining:** `ops/kb-queue` / `work/*` board channels (with `#11`).
   - [ ] [#24](https://github.com/ray-manaloto/dotfiles-v2/issues/24) Wave 2B:
     **Shipped:** dynamic quota-gated `env:smoke --skill-check`, Track 4 UI/TUI
     (`bottom`, `env:top`, `env:stats`, native GPUI `env-stats` Herdr mod,
     `herdr:realtime-stats`, `<25ms` `agy-statusline`, dead Codex `[otel]`
-    cleanup; `278efcc`, `6e88e27`–`0fbb33b`). **Remaining:** standalone
-    `tasks/env/quota` (`env:doctor --smoke`), container/VM `agy`/`codex`
-    bootstrap parity, and persistent Docker volumes + multi-project `pc`
-    containers (`kb-v2-pc`, `cpp-core-pc`).
+    cleanup; `278efcc`, `6e88e27`–`0fbb33b`), standalone `env:quota` with
+    quota-gated `env:doctor` smoke prompts (`87fbe0a`), and container/VM
+    `bootstrap:codex` with a persistent `<name>-codex` volume next to the
+    existing per-harness volumes (`990c99f`, PR `#54`). **Remaining:**
+    container/VM `bootstrap:agy` and multi-project `pc` containers (`kb-v2-pc`,
+    `cpp-core-pc`).
 - [ ] **Follow-up (GitHub Actions AI PR reviewers & upstream trackers):**
   - [ ] [#25](https://github.com/ray-manaloto/dotfiles-v2/issues/25) Claude
     GitHub Actions PR code review setup (`PR #1` & sibling repos).
