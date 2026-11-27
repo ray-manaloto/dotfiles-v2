@@ -132,10 +132,6 @@ deletion, and verify with `claude plugin list --json`.
   `pacman -Syu`.
 - **Sunset repositories:** `ray-manaloto/cpp-standard` and the legacy
   `ray-manaloto/dotfiles` are read-only. File and fix in `dotfiles-v2`.
-- **Remote scratch cleanup:** Soft-delete a scratch path on `pc` with
-  `mise run pc:trash '~/dev/tmp/<task>'` from the dotfiles-v2 checkout (it
-  moves the path into the host's Trash with a timestamp suffix), never with
-  `ssh pc 'mv ... Trash'`.
 - **Remote soft-delete:** `mise run pc:trash '<path>'` (never `rm` on pc; see
   `docs/pc-machine-bootstrap.md`).
 
