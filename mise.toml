@@ -132,6 +132,11 @@ description = "hk.pkl keeps GIT_OPTIONAL_LOCKS=0 for steps, and no worktree has 
 run = "python3 -I -B tasks/py/doctor_checks.py git-index-locks"
 hint = "Keep `env { [\"GIT_OPTIONAL_LOCKS\"] = \"0\" }` at the top of hk.pkl (jdx/hk#1911). For a reported stale lock: confirm no git command runs in that worktree, then remove the named file. Details: `mise run doctor:explain git-index-locks`."
 
+[doctor.checks.roadmap-drift]
+description = "Warn-only: no ROADMAP.md \"Remaining:\" entry names a path or file task that already exists on main"
+run = "python3 -I -B tasks/py/doctor_checks.py roadmap-drift"
+hint = "Always exits 0; read its WARN lines. Move the named work from Remaining: to Shipped with the commit that landed it. Details: `mise run doctor:explain roadmap-drift`."
+
 [doctor.checks.mise-version-parity]
 description = "Pinned mise versions match across Dockerfile, tasks/vm/up, tasks/pc/up, env:doctor, CI workflows, AGENTS.md, and configs"
 run = "python3 -I -B tasks/py/doctor_checks.py mise-version-parity"

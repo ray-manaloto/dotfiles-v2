@@ -3192,6 +3192,126 @@ def test_git_index_locks_requires_optional_locks_env_and_flags_stale_locks(
     assert errs and "GIT_OPTIONAL_LOCKS" in errs[0]
 
 
+_DRIFT_ROADMAP = """\
+# Roadmap
+
+- [ ] [#23](x) Wave 2A: **Shipped:** `tasks/hub/up` (`abc1234`). **Remaining:**
+  `config.pc.toml` + `tasks/pc/{up,sync}` Option A cutover
+  and `ops/kb-queue` / `work/*` board channels.
+- [ ] [#24](x) Wave 2B: **Shipped:** `tasks/hub/up`. **Remaining:** standalone
+  `tasks/env/quota` (`env:doctor --smoke`) and `bootstrap:agy`.
+  - [ ] Nested item, lowercase marker; remaining: the `docs/` directory.
+- [ ] Still to do. **Remaining:** `bootstrap:missing`, `@vercel/board@0.56.1`,
+  `0.55.0`, `fnox-age.key`, `kb-v2-pc`, `work/*`, `env:doctor --smoke`.
+"""
+
+
+def test_roadmap_drift_flags_remaining_paths_on_main_only() -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    files = {
+        "tasks/hub/up",
+        "tasks/pc/up",
+        "tasks/pc/sync",
+        "tasks/env/quota",
+        "unix/home/.config/mise/config.pc.toml",
+        "unix/home/.config/mise/tasks/bootstrap/agy",
+        "docs/x.md",
+    }
+    warnings = doc_mod.find_roadmap_drift(_DRIFT_ROADMAP, files)
+    assert len(warnings) == 3, warnings
+    first, second, third = warnings
+    # Reported on the line holding "Remaining:", never for Shipped paths.
+    assert first.startswith("roadmap-drift: ROADMAP.md:3 ")
+    assert "`config.pc.toml`" in first and "`tasks/pc/up`" in first
+    assert "`tasks/pc/sync`" in first and "tasks/hub/up" not in first
+    assert "ops/kb-queue" not in first
+    assert second.startswith("roadmap-drift: ROADMAP.md:6 ")
+    assert "`tasks/env/quota`" in second
+    assert "`bootstrap:agy (unix/home/.config/mise/tasks/bootstrap/agy)`" in second
+    assert third.startswith("roadmap-drift: ROADMAP.md:8 ") and "`docs`" in third
+
+    # Task names, versions, globs and commands that are not on main never warn.
+    files.update({"work/a", "env/doctor", "kb-v2-pc", "fnox-age.key.bak"})
+    assert len(doc_mod.find_roadmap_drift(_DRIFT_ROADMAP, files)) == 3
+    assert doc_mod.find_roadmap_drift(_DRIFT_ROADMAP, {"tasks/hub/up"}) == []
+
+
+def test_roadmap_drift_reads_main_and_never_fails(tmp_path: Path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(
+        GIT_AUTHOR_NAME="t",
+        GIT_AUTHOR_EMAIL="t@example.invalid",
+        GIT_COMMITTER_NAME="t",
+        GIT_COMMITTER_EMAIL="t@example.invalid",
+    )
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(tmp_path), *args],
+            check=True,
+            env=env,
+            capture_output=True,
+        )
+
+    git("init", "-q", "-b", "main")
+    (tmp_path / "ROADMAP.md").write_text(
+        "- [ ] Work. **Remaining:** `tasks/env/quota`.\n", encoding="utf-8"
+    )
+    git("add", "ROADMAP.md")
+    git("commit", "-q", "-m", "roadmap")
+    assert doc_mod.check_roadmap_drift(tmp_path)[0] == []
+
+    # A path on a side branch only is not drift on main.
+    git("checkout", "-q", "-b", "wt/side")
+    (tmp_path / "tasks/env").mkdir(parents=True)
+    (tmp_path / "tasks/env/quota").write_text("#!/bin/sh\n", encoding="utf-8")
+    git("add", "tasks/env/quota")
+    git("commit", "-q", "-m", "quota")
+    assert doc_mod.check_roadmap_drift(tmp_path)[0] == []
+
+    git("checkout", "-q", "main")
+    git("merge", "-q", "--ff-only", "wt/side")
+    warnings, _ = doc_mod.check_roadmap_drift(tmp_path)
+    assert len(warnings) == 1 and "ROADMAP.md:1 " in warnings[0]
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(Path(__file__).resolve().parents[1] / "tasks/py/doctor_checks.py"),
+            "roadmap-drift",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr  # warn-only
+    assert proc.stdout.startswith("WARN  roadmap-drift: ROADMAP.md:1 ")
+    assert "`tasks/env/quota`" in proc.stdout
+
+    # mise doctor hides a passing check's stdout; the post-commit advisory shows it.
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(Path(__file__).resolve().parents[1] / "tasks/py/doctor_checks.py"),
+            "post-commit-advisory",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "post-commit advisory: roadmap-drift: ROADMAP.md:1 " in proc.stdout
+
+
 def _codex_policy() -> tuple[dict, dict, dict]:
     root = Path(__file__).resolve().parents[1] / "unix/home/.config/mise/assets"
     policy = json.loads((root / "codex/marketplaces.json").read_text(encoding="utf-8"))

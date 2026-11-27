@@ -1638,6 +1638,146 @@ def check_git_index_locks(
     return errors
 
 
+_ROADMAP_REMAINING = re.compile(r"remaining:", re.IGNORECASE)
+_ROADMAP_ITEM = re.compile(r"^\s*(?:[-*+]|\d+\.)\s")
+_ROADMAP_CODE = re.compile(r"`([^`\n]+)`")
+_ROADMAP_BRACES = re.compile(r"\{([^{}]*)\}")
+_ROADMAP_TASK = re.compile(r"^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)+$")
+ROADMAP_TASK_DIRS = ("tasks", "unix/home/.config/mise/tasks")
+
+
+def _expand_braces(token: str) -> list[str]:
+    m = _ROADMAP_BRACES.search(token)
+    if m is None:
+        return [token]
+    out: list[str] = []
+    for alt in m.group(1).split(","):
+        out.extend(_expand_braces(token[: m.start()] + alt + token[m.end() :]))
+    return out
+
+
+def _roadmap_path_candidates(token: str) -> list[tuple[str, list[str]]]:
+    """Map one backticked token to (label, candidate repo paths); [] when it is not a path."""
+    token = token.strip()
+    if (
+        not token
+        or any(c.isspace() for c in token)
+        or any(c in token for c in "*?$<>@")
+    ):
+        return []
+    if _ROADMAP_TASK.match(token):  # mise task name, e.g. bootstrap:agy
+        rel = token.replace(":", "/")
+        return [(token, [f"{d}/{rel}" for d in ROADMAP_TASK_DIRS])]
+    out: list[tuple[str, list[str]]] = []
+    for path in _expand_braces(token):
+        if "/" in path or re.search(r"\.[A-Za-z][A-Za-z0-9]*$", path):
+            path = path.removeprefix("./").strip("/")
+            if path:
+                out.append((path, [path]))
+    return out
+
+
+def _roadmap_main_files(repo_root: Path) -> tuple[set[str], str] | None:
+    """Tracked files on `main` (or origin/main, else HEAD) as repo-relative paths."""
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+    for ref in ("main", "origin/main", "HEAD"):
+        try:
+            out = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    "-z",
+                    ref,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):  # fmt: skip
+            return None
+        if out.returncode == 0:
+            return {p for p in out.stdout.split("\0") if p}, ref
+    return None
+
+
+def find_roadmap_drift(text: str, files: set[str]) -> list[str]:
+    """Return `ROADMAP.md:<line>` warnings for "Remaining:" text naming a path in ``files``.
+
+    A list item is the bullet line plus its continuation lines; only text after the
+    item's "Remaining:" marker is scanned, so "Shipped:" paths never warn.
+    """
+    lines = text.splitlines()
+    items: list[list[int]] = []
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if (
+            not items
+            or not stripped
+            or stripped.startswith("#")
+            or _ROADMAP_ITEM.match(line)
+        ):
+            items.append([idx])
+        else:
+            items[-1].append(idx)
+    dirs = {str(p) for f in files for p in Path(f).parents if str(p) != "."}
+    basenames = {Path(f).name for f in files}
+    warnings: list[str] = []
+    for item in items:
+        offset = 0
+        starts: list[int] = []
+        for idx in item:
+            starts.append(offset)
+            offset += len(lines[idx]) + 1
+        joined = "\n".join(lines[i] for i in item)
+        m = _ROADMAP_REMAINING.search(joined)
+        if m is None:
+            continue
+        lineno = item[max(i for i, s in enumerate(starts) if s <= m.start())] + 1
+        found: list[str] = []
+        for code in _ROADMAP_CODE.findall(joined[m.end() :]):
+            for label, candidates in _roadmap_path_candidates(code):
+                hit = next(
+                    (
+                        c
+                        for c in candidates
+                        if c in files or c in dirs or ("/" not in c and c in basenames)
+                    ),
+                    None,
+                )
+                if hit is not None and label not in found:
+                    found.append(label if hit == label else f"{label} ({hit})")
+        if found:
+            warnings.append(
+                f"roadmap-drift: ROADMAP.md:{lineno} lists as Remaining work that exists on main: "
+                + ", ".join(f"`{f}`" for f in found)
+                + "; move it to Shipped with the commit that landed it"
+            )
+    return warnings
+
+
+def check_roadmap_drift(repo_root: Path) -> tuple[list[str], str]:
+    """Warn-only: ROADMAP.md "Remaining:" lines must not name paths already on main."""
+    roadmap = repo_root / "ROADMAP.md"
+    if not roadmap.is_file():
+        return [], "no ROADMAP.md"
+    listed = _roadmap_main_files(repo_root)
+    if listed is None:
+        return [], "skipped: git ls-tree unavailable"
+    files, ref = listed
+    try:
+        text = roadmap.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:  # fmt: skip
+        return [], f"skipped: cannot read ROADMAP.md ({exc})"
+    warnings = find_roadmap_drift(text, files)
+    return warnings, f"no ROADMAP.md Remaining: entry names a path on {ref}"
+
+
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
@@ -2307,6 +2447,9 @@ def post_commit_advisory(repo_root: Path) -> int:
             f"post-commit advisory: {len(home_changes)} unix/home/ file(s) changed; "
             "run `mise run host:sync-gemini` or `mise dot apply` if syncing live host.\n"
         )
+    # `mise doctor project` hides a passing check's output, so surface roadmap drift here.
+    for warning in check_roadmap_drift(repo_root)[0]:
+        sys.stdout.write(f"post-commit advisory: {warning}\n")
     return 0
 
 
@@ -3753,6 +3896,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("pitchfork-config")
     sub.add_parser("dockerignore-secret-guard")
     sub.add_parser("git-index-locks")
+    sub.add_parser("roadmap-drift")
     sub.add_parser("mise-version-parity")
     sub.add_parser("config-hygiene")
     p_audit = sub.add_parser("mise-audit-fixable")
@@ -3814,6 +3958,14 @@ def main(argv: list[str] | None = None) -> int:
             check_git_index_locks(repo_root),
             "hk read-only git calls skip optional locks; no stale index.lock",
         )
+    if args.cmd == "roadmap-drift":
+        # Warn-only: a stale roadmap must never block a push or a doctor run.
+        warnings, msg = check_roadmap_drift(repo_root)
+        for warning in warnings:
+            sys.stdout.write(f"WARN  {warning}\n")
+        if not warnings:
+            sys.stdout.write(f"roadmap-drift: {msg}\n")
+        return 0
     if args.cmd == "dockerignore-secret-guard":
         return _report(
             "dockerignore-secret-guard",
