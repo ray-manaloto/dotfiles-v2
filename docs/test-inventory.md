@@ -80,6 +80,14 @@ including parametrized cases.
 | `tests/test_push_leak_scan.py` | 12 | 0.00 | keep | |
 | **Total** | **609** | **53.29** | 14 keep, 12 migrate, 1 done | |
 
+Modules added after the timing run (2026-11-27, not in the totals above):
+
+| Module | Tests | Seconds | Verdict | Target check / note |
+| --- | --- | --- | --- | --- |
+| `tests/test_doppler_token_lint.py` | 8 | n/a | migrate | one test lints the real tracked tree; hk `doppler-token-lint` covers it at commit time, so add it to `hooks["pre-push"]` (same gap as `metadata-gate-lint`) |
+| `tests/test_env_board.py` | 11 | n/a | keep | `env:board` parsing and rendering with fixtures |
+| `tests/test_herdr_tidy.py` | 6 | n/a | keep | `herdr_tidy.py` rules with a fake `hc` |
+
 `tests/tasks_py_loader.py` is a helper and has no tests.
 
 ## Per-test detail (migrate and done)
