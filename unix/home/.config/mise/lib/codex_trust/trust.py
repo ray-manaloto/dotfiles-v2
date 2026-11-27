@@ -429,6 +429,12 @@ def _is_repo_managed_user_hook(
         return ("/shims/dcg" in command and "--agent codex" in command) or (
             "heredoc-script-hint.py" in command and "--harness codex" in command
         )
+    if event == "postToolUse":
+        return (
+            "heredoc-script-hint.py" in command
+            and "--harness codex" in command
+            and "--event post-tool-use" in command
+        )
     if event in {"sessionStart", "stop"}:
         learn_event = "session-start" if event == "sessionStart" else "stop"
         return (

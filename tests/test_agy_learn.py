@@ -860,6 +860,7 @@ def test_hooks_python39_compatibility_and_cross_session_worktree_rm(
             "agy-pwf-guard.py",
             "agy-hc-send-guard.py",
             "agy-interactive-questions.py",
+            "heredoc-script-hint.py",
         ):
             proc = subprocess.run(
                 [

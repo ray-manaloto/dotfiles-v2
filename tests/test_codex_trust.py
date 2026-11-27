@@ -278,6 +278,8 @@ def test_inspect_and_repair_hook_trust_fixes_modified_unmigrated_and_orphans(
         ("dcg-hooks.json", "PreToolUse", 0, "preToolUse", CodexHookStatus.MODIFIED),
         # heredoc-script-hint (#93) is the second PreToolUse group in the dcg asset.
         ("dcg-hooks.json", "PreToolUse", 1, "preToolUse", CodexHookStatus.UNTRUSTED),
+        # Its model-visible Codex channel is a PostToolUse additionalContext hook.
+        ("dcg-hooks.json", "PostToolUse", 0, "postToolUse", CodexHookStatus.UNTRUSTED),
         (
             "learn-hooks.json",
             "SessionStart",
