@@ -14,10 +14,12 @@ The hub pulls the Mac's sessions through an `[[remote_hosts]]` entry with
 `transport = "ssh"` ([Remote Hosts][cfg-remote]). `hub:mac-pull-key` sets up
 the restricted key and ssh alias; `hub:up --mac-ssh <alias>` writes the entry.
 
-- **No per-provider exclusion exists for remote imports.** `disabled_agents`
+- **No user setting excludes a provider from remote imports.** `disabled_agents`
   "applies only to local filesystem discovery, targeted local file sync, file
-  watching, and scheduled polling" ([Disabling Session Providers][cfg-disable]).
-  It does not stop an SSH pull either; this was tested on 2026-11-27.
+  watching, and scheduled polling" and "does not affect HTTP remote imports"
+  ([Disabling Session Providers][cfg-disable]). The docs don't mention SSH; a
+  test on 2026-11-27 showed it does not stop an SSH pull either. The only
+  exclusion is the built-in `RemoteSyncExcluded` provider capability.
 - **`[agents.opencode] homes` fails the whole pull.** OpenCode does not support
   alternate homes ([Alternate Agent Homes][cfg-homes]), and the config loader
   rejects it with `agents.opencode.homes: provider does not support alternate
@@ -30,12 +32,12 @@ the restricted key and ssh alias; `hub:up --mac-ssh <alias>` writes the entry.
   everything (about 11 minutes for the Mac). Tracked upstream as
   [kenn-io/agentsview#3437][i3437]; until it ships, the live hub has no Mac
   entry.
-- **No log line marks a successful pull.** Every attempt logs
-  `remote sync: host=<h> phase=targets`, every import logs
+- **No log line marks a successful pull.** An attempt that gets past target
+  planning logs `remote sync: host=<h> phase=targets`, every import logs
   `remote sync delta import: host=<h> ...` ([`prepare.go`][src-delta]), and a
   failure follows as `remote sync <h> failed:` ([`sync.go`][src-failed]) or
   `scheduled remote sync <h>:`. A good pull is a delta-import line with no
-  failure line after it. Lines with `journal_outcome=aborted_before_processing`
+  failure line after it. Lines with `journal_outcome=retained(aborted-before-processing)`
   are aborted attempts, not results. `hub:status` reads `debug.log` and
   `debug.log.1` this way.
 
