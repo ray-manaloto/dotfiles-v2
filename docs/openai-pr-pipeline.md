@@ -98,11 +98,13 @@ deletion and renames are rejected. Review and merge the result normally.
 
 | Stage | Standard rates per million tokens | Per-run limits |
 | --- | --- | --- |
-| Review, GPT-6.2 Sol | $2 input, $0.10 cached input, $10 output | One request, 30 files and 24,000 bytes of patch input, 6,000 output tokens including reasoning |
-| Decisions, GPT-6 Luna | $0.10 uncached input, no output charge | At most one request, 64,000 bytes for the full request, 16 candidates and 32 questions |
+| Review, GPT-6.2 Sol | $2 input, $0.10 cached input, $10 output | Up to four requests (one per patch chunk) covering at most 30 files; per request, 24,000 bytes of patch input and 6,000 output tokens including reasoning |
+| Decisions, GPT-6 Luna | $0.10 uncached input, no output charge | At most one request per patch chunk, 64,000 bytes for the full request, 16 candidates and 32 questions; 16 posted findings per run |
 | Autofix, GPT-6.2 Sol | $2 input, $0.10 cached input, $10 output at short context | One Codex invocation per reservation, 15 minutes for generation, at most two reservations per PR |
 
-The review output ceiling is $0.06 at Standard rates, plus actual input cost.
+The review output ceiling is $0.06 per request ($0.24 for four chunks) at
+Standard rates, plus actual input cost. Most PRs fit in one chunk; a file
+larger than one chunk is split into hunks across chunks instead of skipped.
 Byte limits bound request size. Use provider token usage for billing because
 byte count and token count differ. GPT-6.2 Sol has higher per-token prices
 above 272,000 input tokens for a request. The Codex action has no run-wide

@@ -42,7 +42,8 @@ jobs:
       contents: read  # check out the trusted default-branch reviewer code
       pull-requests: read  # read PR metadata and file patches via the REST API
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Up to four sequential review and triage requests (60 s HTTP timeout each).
+    timeout-minutes: 10
     environment: openai-pr-review
     outputs:
       artifact: ${{ steps.upload.outputs.artifact-id }}
