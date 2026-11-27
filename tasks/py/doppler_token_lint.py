@@ -3,10 +3,16 @@
 Setting the `token` key via `doppler configure` writes it into the OS keyring
 (PR #88); #89 moved pc's service token to a 0600 file read via `DOPPLER_TOKEN`.
 `pc:doctor` only warns at runtime, so this blocks reintroducing the pattern in any
-tracked file. Comment lines (`#`, `//`) that merely mention it are skipped.
+tracked file.
 
-Allow a reviewed line (same line or the line above) with `doppler-token: ok <reason>`;
-the reason is required.
+Matching works on words, not raw text, so shell strings, argv lists
+(`["doppler", "configure", ...]`), `\\`-continued lines, lists split one item per
+line, and interleaved flags (`doppler --scope / configure ...`) are all caught.
+Comments (`# `, `// `, `#!`; not Pkl's `#"` raw strings) are dropped first, and a
+command stops at `;`, `&`, or `|`.
+
+Allow a reviewed invocation with `doppler-token: ok <reason>` on one of its own
+lines or on a comment-only line directly above it. The reason is required.
 """
 
 from __future__ import annotations
@@ -15,24 +21,101 @@ import re
 import sys
 from pathlib import Path
 
-# Matches `doppler configure set token ...` and `doppler configure set token=... project=...`.
-PATTERN = re.compile(r"\bdoppler\s+configure\s+set\b[^\n]*?(?<![\w-])token\b")
-ALLOW = re.compile(r"doppler-token:\s*ok\s+\S")
-COMMENT_PREFIXES = ("#", "//")
+ALLOW = re.compile(r"doppler-token:\s*ok\s+\w")
+# `#`/`//` starts a comment at line start or after whitespace, only when followed by
+# whitespace, `!`, or end of line. That leaves Pkl `#"..."#` raw strings, `${#x}`, and URLs as code.
+COMMENT = re.compile(r"(?:^|(?<=\s))(?:#+|//+)(?=[\s!]|$)")
+SEGMENT_END = re.compile(r"&&|\|\||[;&|]")
+NOT_WORD = re.compile(r"""["'`,\[\](){}]""")
+JOINERS = ("\\", ",", "[", "(")
+
+
+def code_part(line: str) -> str:
+    m = COMMENT.search(line)
+    return line[: m.start()] if m else line
+
+
+def is_comment_only(line: str) -> bool:
+    return bool(line.strip()) and not code_part(line).strip()
+
+
+def logical_lines(lines: list[str]) -> list[tuple[int, int, str]]:
+    """Join `\\` continuations and lines ending in `,`, `[`, `(`; return (first, last, code)."""
+    out: list[tuple[int, int, str]] = []
+    i = 0
+    while i < len(lines):
+        start, buf = i, code_part(lines[i])
+        while i + 1 < len(lines):
+            tail = buf.rstrip()
+            if not tail.endswith(JOINERS):
+                break
+            if tail.endswith("\\"):
+                tail = tail[:-1]
+            i += 1
+            buf = tail + " " + code_part(lines[i])
+        out.append((start, i, buf))
+        i += 1
+    return out
+
+
+def skip_to(words: list[str], i: int, target: str) -> int | None:
+    """Index after `target`, allowing only flags and their values before it."""
+    takes_value = False
+    while i < len(words):
+        w = words[i]
+        if w == target:
+            return i + 1
+        if w.startswith("-"):
+            takes_value = "=" not in w
+        elif takes_value:
+            takes_value = False
+        else:
+            return None
+        i += 1
+    return None
+
+
+def sets_token(words: list[str], i: int) -> bool:
+    """After `set`: is `token` among the keys (past flags, flag values, and other key=value pairs)?"""
+    takes_value = False
+    for w in words[i:]:
+        if w == "token" or w.startswith("token="):
+            return True
+        if w.startswith("-"):
+            takes_value = "=" not in w
+        elif takes_value or "=" in w:
+            takes_value = False
+        else:
+            return False
+    return False
+
+
+def invokes(code: str) -> bool:
+    for segment in SEGMENT_END.split(code):
+        words = NOT_WORD.sub(" ", segment).split()
+        for k, w in enumerate(words):
+            if w != "doppler" and not w.endswith("/doppler"):
+                continue
+            j = skip_to(words, k + 1, "configure")
+            j = None if j is None else skip_to(words, j, "set")
+            if j is not None and sets_token(words, j):
+                return True
+    return False
 
 
 def scan_text(text: str) -> list[tuple[int, str]]:
-    """Return (line, source line) for each unallowed hit."""
+    """Return (first line, source line) for each unallowed hit."""
     lines = text.splitlines()
     hits: list[tuple[int, str]] = []
-    for i, line in enumerate(lines):
-        if not PATTERN.search(line):
+    for start, end, code in logical_lines(lines):
+        if not invokes(code):
             continue
-        if ALLOW.search(line) or (i > 0 and ALLOW.search(lines[i - 1])):
+        if any(ALLOW.search(line) for line in lines[start : end + 1]):
             continue
-        if line.lstrip().startswith(COMMENT_PREFIXES):
+        above = lines[start - 1] if start else ""
+        if is_comment_only(above) and ALLOW.search(above):
             continue
-        hits.append((i + 1, line.strip()))
+        hits.append((start + 1, lines[start].strip()))
     return hits
 
 
