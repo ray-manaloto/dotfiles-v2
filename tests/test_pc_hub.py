@@ -939,3 +939,39 @@ def test_remote_py_is_stdlib_only() -> None:
         if isinstance(n, ast.ImportFrom) and n.module
     }
     assert mods <= set(sys.stdlib_module_names) | {"__future__"}, mods
+
+
+def test_hub_config_writes_through_symlink_and_tightens_stale_tmp(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real.toml"
+    real.write_text("port = 8080\n", encoding="utf-8")
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+    stale = tmp_path / "real.toml.new"
+    stale.write_text("junk", encoding="utf-8")
+    stale.chmod(0o644)
+    subprocess.run(_hub_config(tmp_path, link, "tok", "", "15m"), check=True)
+    assert link.is_symlink()
+    assert tomllib.loads(real.read_text(encoding="utf-8"))["auth_token"] == "tok"
+    assert real.stat().st_mode & 0o777 == 0o600
+    assert not stale.exists()
+
+
+def test_rewrite_vector_disable_keeps_bracket_text_in_strings() -> None:
+    from pc_hub.remote import rewrite_vector
+
+    text = 'motd = """\n[vector]\nnot a table\n"""\n\n[vector]\nenabled = true\n'
+    out = rewrite_vector(text, RECIPE, enable=False)
+    data = tomllib.loads(out)
+    assert data == {"motd": "[vector]\nnot a table\n"}
+
+
+def test_hub_tasks_ship_remote_py_isolated() -> None:
+    for name, sub in (("up", "hub-config"), ("vector", "vector")):
+        text = (HUB_TASKS_DIR / name).read_text(encoding="utf-8")
+        assert "HUB_REMOTE_B64=%q" in text
+        assert f'python3 -I -B -c "${{hub_remote_src}}" {sub}' in text
+        assert "[[ -n ${hub_remote_src} ]] ||" in text
+    status = (HUB_TASKS_DIR / "status").read_text(encoding="utf-8")
+    assert "HUB_REMOTE_B64=%q" in status and '"mac-pull"' in status

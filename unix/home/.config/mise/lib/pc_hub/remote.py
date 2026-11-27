@@ -366,9 +366,15 @@ def mac_pull_state(av_dir: Path, now: float | None = None) -> tuple[str, str]:
 
 
 def write_private(path: Path, text: str) -> None:
-    """Replace *path* atomically with a 0600 file (the config holds auth_token)."""
+    """Replace *path* atomically with a 0600 file (the config holds auth_token).
+
+    A symlinked config is written through to its target, and a stale `.new` file
+    with a looser mode is tightened before any secret is written to it.
+    """
+    path = path.resolve()
     tmp = path.with_name(path.name + ".new")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     os.replace(tmp, path)
@@ -415,6 +421,7 @@ def _cmd_vector(args: list[str]) -> int:
             [os.path.expanduser("~/.local/bin/ollama"), "pull", emb["model"]],
             check=False,
             env={**os.environ, "OLLAMA_HOST": "127.0.0.1:11434"},
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
         )
         if pull.returncode != 0:

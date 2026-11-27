@@ -103,6 +103,7 @@ av_st, av_det = check_systemd("dev.mise.agentsview-hub.service")
 rows.append({"service": "agentsview-hub", "state": av_st, "bind_target": "127.0.0.1:8082", "exposed_http": True, "detail": av_det})
 
 # The Mac-pull parser lives in lib/pc_hub/remote.py (shipped as HUB_REMOTE_B64); WARN-only, never lose other rows.
+mp = None
 try:
     mp = subprocess.run(
         ["python3", "-I", "-B", "-c", base64.b64decode(os.environ["HUB_REMOTE_B64"]).decode("utf-8"), "mac-pull",
@@ -111,7 +112,8 @@ try:
     )
     mp_st, mp_det = json.loads(mp.stdout)
 except Exception as exc:
-    mp_st, mp_det = "WARN", f"mac pull check failed: {type(exc).__name__}"
+    err = mp.stderr.strip()[-80:] if mp is not None else ""
+    mp_st, mp_det = "WARN", f"mac pull check failed: {type(exc).__name__} {err}".strip()
 rows.append({"service": "agentsview-mac-pull", "state": mp_st, "bind_target": "ssh:mac", "exposed_http": False, "detail": mp_det})
 
 ol_st, ol_det = check_systemd("dev.mise.ollama-hub.service")

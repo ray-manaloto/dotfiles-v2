@@ -190,7 +190,9 @@ fi
 ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"
 
 # Own auth_token/require_auth/host and the Mac [[remote_hosts]] entry; lib/pc_hub/remote.py hub-config.
-python3 -I -B -c "$(printf '%s' "${HUB_REMOTE_B64}" | base64 -d)" hub-config \
+hub_remote_src="$(printf '%s' "${HUB_REMOTE_B64}" | base64 -d)"
+[[ -n ${hub_remote_src} ]] || { echo "hub: lib/pc_hub/remote.py did not decode on $(hostname)" >&2; exit 1; }
+python3 -I -B -c "${hub_remote_src}" hub-config \
 	"${REMOTE_HOME}/.agentsview/config.toml" "${REMOTE_HOME}/.config/agentsview/server-token" \
 	"${MAC_SSH:-}" "${MAC_INTERVAL:-15m}"
 REMOTE_BINS
