@@ -14,7 +14,7 @@ caddy_port="${usage_caddy_port:-8880}"
 beszel_email="${usage_beszel_email:-}"
 mac_ssh="${usage_mac_ssh:-}"
 mac_interval="${usage_mac_interval:-15m}"
-printf '%s' "${mac_interval}" | grep -qxE '[0-9]+(s|m|h)' || {
+printf '%s' "${mac_interval}" | grep -qxE '[1-9][0-9]*(s|m|h)' || {
 	echo "hub:up: --mac-interval must look like 15m" >&2
 	exit 1
 }
