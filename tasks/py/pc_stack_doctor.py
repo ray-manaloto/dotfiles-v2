@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -73,6 +74,32 @@ PC_BOOTSTRAP_PACKAGES = {
     "package:pacman:zsh",
     "package:pacman:nvidia-container-toolkit",
 }
+# Mirrors manifest claude.plugins in unix/home/.config/mise/assets/reviewer-plugins.json. This script runs on pc
+# from stdin and cannot read the manifest; tests/test_pc_host.py asserts the two stay equal.
+REVIEWER_CLAUDE_PLUGINS = (
+    "astral@astral-sh",
+    "clangd-lsp@claude-plugins-official",
+    "code-modernization@claude-plugins-official",
+    "coderabbit@claude-plugins-official",
+    "codex@openai-codex",
+    "egm@egm",
+    "eli5@claude-community",
+    "fleet-agents@ray-manaloto-skills",
+    "graphify@graphify",
+    "greptile@claude-plugins-official",
+    "html-plan@claude-community",
+    "hyperresearch@hyperresearch",
+    "last30days@last30days-skill",
+    "mattpocock-skills@mattpocock",
+    "next-steps@claude-community",
+    "planning-with-files@planning-with-files",
+    "plugin-dev@claude-plugins-official",
+    "repowise@repowise",
+    "skills@ray-manaloto-skills",
+    "tokeneconomizer@tokeneconomizer",
+    "typescript-native-lsp@dotfiles",
+)
+MISE = "/usr/local/bin/mise"
 UPDATE = re.compile(r"\S+ \S+ -> \S+(?: \[(?:-?\d+[dhm]){1,2}\])?")
 
 
@@ -138,6 +165,68 @@ def bootstrap(check: str) -> str:
     if drift:
         raise ValueError("pc resources differ: " + ", ".join(drift))
     return f"{len(resources)} pc resources match"
+
+
+def dead_shims() -> str:
+    """Shims whose tool is gone: `mise which` fails for them (only suspects are probed one by one)."""
+    data = Path(os.environ.get("MISE_DATA_DIR") or Path.home() / ".local/share/mise")
+    try:
+        shims = sorted(p.name for p in (data / "shims").iterdir())
+    except OSError as error:
+        raise ValueError(f"cannot list {data}/shims") from error
+    # One call resolves every live tool's bin dir; a shim with a file there is alive.
+    live: set[str] = set()
+    for line in run(MISE, "bin-paths", timeout=60).stdout.splitlines():
+        try:
+            live.update(entry.name for entry in Path(line.strip()).iterdir())
+        except OSError:
+            continue
+    dead, inactive = [], []
+    for name in shims:
+        if name in live or name == "mise":
+            continue
+        # accepted=(0, 1): read mise's own verdict instead of only its exit code.
+        out = run(MISE, "which", name, accepted=(0, 1), timeout=15)
+        if out.returncode == 0:
+            continue
+        # "is a mise bin however it is not currently active": the tool is installed but not in
+        # the active config (e.g. hub:up's pinned ollama, or an older python). Not broken.
+        (inactive if "not currently active" in out.stderr else dead).append(name)
+    note = (
+        f" ({len(inactive)} installed but inactive: {', '.join(inactive[:3])})"
+        if inactive
+        else ""
+    )
+    if dead:
+        first = ", ".join(dead[:5]) + (", ..." if len(dead) > 5 else "")
+        raise ValueError(
+            f"{len(dead)} of {len(shims)} mise shims are dead (no installed tool provides them): "
+            f"{first}; run `mise reshim`{note}"
+        )
+    return f"no dead mise shims among {len(shims)}{note}"
+
+
+def reviewer_plugins() -> str:
+    """Declared Claude reviewer plugins are installed and enabled (the Mac-only live check, via the host CLI)."""
+    claude = shutil.which("claude") or str(Path.home() / ".local/bin/claude")
+    try:
+        rows = json.loads(run(claude, "plugin", "list", "--json", timeout=60).stdout)
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"claude plugin list --json failed: {error}") from error
+    have = {
+        str(row.get("id"))
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict)
+        and row.get("enabled") is not False
+        and row.get("scope") in (None, "user")
+    }
+    missing = [p for p in REVIEWER_CLAUDE_PLUGINS if p not in have]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} claude plugins missing/disabled: {', '.join(missing)}; "
+            "run `mise run bootstrap:reviewer-plugins`"
+        )
+    return f"{len(REVIEWER_CLAUDE_PLUGINS)} claude reviewer plugins installed"
 
 
 def kernel_watch() -> str:
@@ -333,6 +422,7 @@ def apt_cache_route() -> str:
 def main() -> int:
     os.environ.update(
         MISE_AUTO_INSTALL="0",
+        MISE_NOT_FOUND_AUTO_INSTALL="0",
         MISE_ENV="linux,pc",
         MISE_SYSTEM_CONFIG_DIR="/nonexistent",
         MISE_YES="1",
@@ -340,6 +430,8 @@ def main() -> int:
     checks = (
         ("bootstrap-status", lambda: bootstrap("status")),
         ("bootstrap-plan", lambda: bootstrap("plan")),
+        ("dead-mise-shims", dead_shims),
+        ("reviewer-plugins", reviewer_plugins),
         ("kernel-watch", kernel_watch),
         ("docker-privileged-flag", privileged),
         ("gpu-cdi", gpu_cdi),

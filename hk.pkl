@@ -327,6 +327,16 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     glob = List("tasks/hub/**", "tasks/pc/**")
     check = "python3 -I -B tasks/py/remote_ssh_lint.py {{ files }}"
   }
+  // Never skip review or grant trust on forgeable commit/PR metadata (author names, trailers, bot-looking names) (#99).
+  ["metadata-gate-lint"] = new Step {
+    glob = List(".github/openai-review/*.py", ".github/workflows/*.yml")
+    exclude = List(".github/openai-review/test_*.py")
+    check = "python3 -I -B tasks/py/metadata_gate_lint.py {{ files }}"
+  }
+  // Lane plans (### Phase headings) fail only at pr:ship pre-push otherwise; the check is a no-op when PLAN_ID is unset (main) (#99).
+  ["pwf-worktree-plan"] = new Step {
+    check = "MISE_YES=1 mise run -q doctor:explain pwf-worktree-plan </dev/null"
+  }
   ["reviewer-plugins-declared"] = new Step {
     glob =
       List(

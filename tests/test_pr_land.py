@@ -8,8 +8,12 @@ import pytest
 LAND = Path(__file__).resolve().parents[1] / "tasks/pr/land"
 
 
-@pytest.mark.parametrize("ahead", [True, False], ids=["ahead", "in-sync"])
-def test_pr_land_requires_main_to_match_origin(tmp_path, ahead):
+@pytest.mark.parametrize(
+    ("ahead", "doctor_fails"),
+    [(True, False), (False, False), (False, True)],
+    ids=["ahead", "in-sync", "doctor-fails"],
+)
+def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
     origin = tmp_path / "origin"
     main = tmp_path / "main"
     feature = tmp_path / "feature"
@@ -66,7 +70,13 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead):
         encoding="utf-8",
     )
     mise = bin_dir / "mise"
-    mise.write_text("#!/bin/sh\nprintf 'mise %s\\n' \"$*\"\n", encoding="utf-8")
+    doctor_rc = 1 if doctor_fails else 0
+    mise.write_text(
+        '#!/bin/sh\nif [ "$1 $2" = "doctor project" ]; then\n'
+        f'  echo "FAIL fake-check: boom"; echo "1 failed"; exit {doctor_rc}\nfi\n'
+        "printf 'mise %s\\n' \"$*\"\n",
+        encoding="utf-8",
+    )
     for stub in (gh, mise):
         stub.chmod(0o755)
 
@@ -90,3 +100,8 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead):
     else:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "mise run -q worktree:rm fixture" in result.stdout
+        assert "live doctor on main" in result.stdout or doctor_fails
+        if doctor_fails:
+            # The land already happened: the doctor failure warns loudly but keeps exit 0.
+            assert "WARNING: live 'mise doctor project' on main failed" in result.stderr
+            assert "FAIL fake-check: boom" in result.stderr

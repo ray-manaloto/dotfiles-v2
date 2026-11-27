@@ -993,6 +993,7 @@ SCOPE_AWARE_DOCTOR_CHECKS = (
     "mise-binary-integrity",
     "agy-rc-health",
     "skills-6harness-parity",
+    "python-ca-bundle",
 )
 
 

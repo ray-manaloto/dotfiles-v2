@@ -2884,6 +2884,7 @@ def _pr_ship_sandbox(tmp_path, checks: str) -> tuple[list[str], dict[str, str]]:
         '  "api repos/ray-manaloto/dotfiles-v2 --jq .allow_auto_merge") echo false ;;\n'
         '  "pr list"*) echo 7 ;;\n'
         "  *autoMergeRequest*) echo false ;;\n"
+        '  *actions/workflows*) printf "%s" "$FAKE_GH_WORKFLOWS" ;;\n'
         '  *rules/branches/main*) [ -n "$FAKE_GH_FAIL_RULES" ] && exit 1; printf "Lint, Gates, and Tests\\nBootstrap Convergence\\n" ;;\n'
         f'  *check-runs*) cat "{tmp_path}/checks.tsv" ;;\n'
         "  *headRefOid*) git rev-parse HEAD ;;\n"
@@ -2944,6 +2945,96 @@ def test_pr_ship_verdicts(tmp_path, checks, code, needle) -> None:
     assert needle in proc.stdout + proc.stderr
     if code == 0:
         assert "--merge --match-head-commit" in proc.stdout
+
+
+def test_pr_ship_refuses_disabled_workflow_for_required_check(tmp_path) -> None:
+    """A disabled workflow's check never starts: refuse with the cause instead of waiting to time out."""
+    cmd, env = _pr_ship_sandbox(tmp_path, "")
+    env["FAKE_GH_WORKFLOWS"] = (
+        "Lint, Gates, and Tests\tdisabled_manually\t.github/workflows/ci.yml\n"
+        "Scheduled Health Audit\tdisabled_inactivity\t.github/workflows/health.yml\n"
+        "CI\tactive\t.github/workflows/ci.yml\n"
+    )
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "is disabled_manually and produces required check" in proc.stderr
+    assert "Scheduled Health" not in proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("job_line", "code"),
+    [
+        # A job whose name only contains a required name, and a step with that exact name, do not produce it.
+        (
+            "    name: Bootstrap Convergence (docs)\n    steps:\n      - name: Bootstrap Convergence\n",
+            2,
+        ),
+        # A job-level name that equals the required context does.
+        ('    name: "Bootstrap Convergence"\n', 3),
+    ],
+)
+def test_pr_ship_disabled_workflow_matches_whole_job_names(
+    tmp_path, job_line, code
+) -> None:
+    cmd, env = _pr_ship_sandbox(
+        tmp_path, "Lint, Gates, and Tests\tcompleted\tsuccess\n"
+    )
+    wf = Path(env["_WORK"]) / ".github/workflows/docs.yml"
+    wf.parent.mkdir(parents=True)
+    wf.write_text("name: Docs\non:\n  push:\njobs:\n  docs:\n" + job_line)
+    git = [
+        "git",
+        "-C",
+        env["_WORK"],
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "core.hooksPath=/dev/null",
+    ]
+    subprocess.run([*git, "add", ".github/workflows/docs.yml"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "wf"], check=True)
+    env["FAKE_GH_WORKFLOWS"] = "Docs\tdisabled_manually\t.github/workflows/docs.yml\n"
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    assert ("produces required check 'Bootstrap Convergence'" in proc.stderr) == (
+        code == 3
+    )
+
+
+def test_pr_ship_reports_not_started_distinct_from_failed(tmp_path) -> None:
+    cmd, env = _pr_ship_sandbox(
+        tmp_path, "Lint, Gates, and Tests\tcompleted\tsuccess\n"
+    )
+    proc = subprocess.run(
+        cmd,
+        cwd=env["_WORK"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "NOT STARTED" in proc.stderr and "Bootstrap Convergence" in proc.stderr
+    assert "failed:" not in proc.stdout
 
 
 def test_pr_ship_api_failure_exits_4(tmp_path) -> None:
@@ -3194,3 +3285,35 @@ def test_reviewer_plugins_bin_ignores_dead_mise_shim(monkeypatch, tmp_path) -> N
     monkeypatch.setenv("PATH", str(shims))
     assert mod._bin("agy", tmp_path) is None
     assert mod._bin("alive", tmp_path) == str(shims / "alive")
+
+
+def test_python_ca_bundle_flags_interpreter_without_certs(
+    tmp_path, monkeypatch
+) -> None:
+    """python.org framework builds ship an empty openssl dir: flag them unless SSL_CERT_FILE is set."""
+    doc_mod = _load_task_module("doctor_checks")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    bad = bindir / "python3.13"
+    bad.write_text('#!/bin/sh\necho "0 0"\n')
+    good = bindir / "python3"
+    good.write_text('#!/bin/sh\necho "140 0"\n')
+    alias = bindir / "python3.12"
+    alias.symlink_to(bad)  # same realpath: probed once
+    (bindir / "python").write_text("#!/bin/sh\necho 0 0\n")  # not a python3 name
+    for exe in (bad, good, bindir / "python"):
+        exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    errors, _ = doc_mod.check_python_ca_bundle()
+    # python3.12 is a symlink to python3.13: one distinct interpreter, reported once (first name wins).
+    assert (
+        len(errors) == 1 and "python3.1" in errors[0] and "SSL_CERT_FILE" in errors[0]
+    )
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/cert.pem")
+    assert doc_mod.check_python_ca_bundle()[0] == []
+    monkeypatch.delenv("SSL_CERT_FILE")
+    monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
+    assert doc_mod.check_python_ca_bundle()[0] == []
