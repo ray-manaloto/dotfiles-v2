@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +57,11 @@ def fmt_usd(amount: float | None) -> str:
     return f"${amount:,.2f}"
 
 
+def _aware(moment: datetime) -> datetime:
+    """Treat naive timestamps as UTC."""
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
 def fmt_until(reset_iso: str | None, now: datetime) -> str:
     """Time until an ISO reset instant: 3d4h, 5h12m, 7m, now, or ?."""
     if not reset_iso:
@@ -67,9 +72,14 @@ def fmt_until(reset_iso: str | None, now: datetime) -> str:
         return "?"
     if reset.year < 2000:
         return "?"
-    seconds = int((reset - now).total_seconds())
+    try:
+        seconds = int((_aware(reset) - _aware(now)).total_seconds())
+    except OverflowError, ValueError:
+        return "?"
     if seconds <= 0:
         return "now"
+    if seconds > 100 * 365 * 86400:
+        return "?"
     days, rem = divmod(seconds, 86400)
     hours, rem = divmod(rem, 3600)
     minutes = rem // 60
@@ -78,6 +88,79 @@ def fmt_until(reset_iso: str | None, now: datetime) -> str:
     if hours:
         return f"{hours}h{minutes:02d}m"
     return f"{max(minutes, 1)}m"
+
+
+def fmt_ago(moment_iso: str | None, now: datetime) -> str:
+    """Elapsed time since an ISO instant: just now, 7m ago, 2h05m ago, 3d ago, or ?."""
+    if not moment_iso:
+        return "?"
+    try:
+        moment = datetime.fromisoformat(moment_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return "?"
+    try:
+        seconds = int((_aware(now) - _aware(moment)).total_seconds())
+    except OverflowError, ValueError:
+        return "?"
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours}h{minutes:02d}m ago"
+    return f"{hours // 24}d ago"
+
+
+def balance_lines(balance: Mapping[str, Any], now: datetime) -> list[str]:
+    """Pure API CREDIT balance rows from a ``BalanceScheduler.view()`` snapshot."""
+    indent = " " * 13
+    if balance.get("unavailable"):
+        return [f"{indent}live balance: {balance['unavailable']}"]
+    reading = balance.get("reading")
+    error = balance.get("error")
+    if reading is None:
+        if error:
+            return [f"{indent}live balance: error: {error}"]
+        state = "reading..." if balance.get("running") else "pending first read"
+        return [f"{indent}live balance: {state}"]
+    expiries = [
+        t["expires_at"]
+        for t in reading.get("promo", [])
+        if not t.get("expired") and t.get("expires_at") and t.get("remaining_usd")
+    ]
+    soonest = min(expiries, key=lambda e: fmt_epoch(e)) if expiries else None
+    promo = f"promo left {fmt_usd(reading['promo_left_usd'])}"
+    if soonest:
+        promo += f" (expires in {fmt_until(soonest, now)})"
+    reload_state = "on" if reading.get("auto_reload") else "off"
+    lines = [
+        f"{indent}live balance: {fmt_usd(reading['total_usd'])} total  {promo}"
+        f"  purchased {fmt_usd(reading['purchased_usd'])}  auto-reload {reload_state}"
+    ]
+    cadence = (
+        "PAUSED" if balance.get("paused") else f"every {balance.get('interval_min')}m"
+    )
+    due = balance.get("next_due")
+    nxt = "" if balance.get("paused") or not due else f"  next {fmt_until(due, now)}"
+    lines.append(
+        f"{indent}read {fmt_ago(reading.get('read_at'), now)}  {cadence}{nxt}"
+        + ("  reading..." if balance.get("running") else "")
+    )
+    if error:
+        lines.append(f"{indent}stale: {error}")
+    return lines
+
+
+def fmt_epoch(reset_iso: str) -> float:
+    """Sortable epoch seconds for an ISO instant (unparsable sorts last)."""
+    try:
+        return _aware(
+            datetime.fromisoformat(reset_iso.replace("Z", "+00:00"))
+        ).timestamp()
+    except ValueError, OverflowError, OSError:
+        return float("inf")
 
 
 def parse_quota(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -183,6 +266,7 @@ def render(
     window_days: int,
     errors: Sequence[str] = (),
     interval_s: int = 10,
+    balance: Mapping[str, Any] | None = None,
 ) -> str:
     """Render the whole board as plain text (no ANSI) for one frame."""
     stamp = now.astimezone().strftime("%Y-%m-%d %H:%M:%S")
@@ -236,9 +320,15 @@ def render(
             f"  Anthropic  ledger spend {fmt_usd(ledger['spent_usd'])} over {ledger['runs']} runs"
             f" (derived, last event {ledger['last_ts'] or '?'})"
         )
-    lines.append(
-        "             live balance: n/a (no public balance endpoint; cost_report needs Admin key)"
-    )
+    if balance is None:
+        lines.append(
+            "             live balance: n/a (no public balance endpoint; cost_report needs Admin key)"
+        )
+    else:
+        try:
+            lines.extend(balance_lines(balance, now))
+        except Exception:
+            lines.append("             balance: render error")
     lines.append(
         "  OpenAI     live balance/spend: n/a (organization costs API needs Admin key)"
     )

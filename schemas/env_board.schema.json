@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/env_board.schema.json",
+  "title": "EnvBoardModels",
+  "description": "Runtime state for the env:board API-credit balance lane: live settings written by the Herdr controls mod and the on-disk balance cache. Neither file is a mise-managed dotfile.",
+  "$defs": {
+    "EnvBoardSettings": {
+      "type": "object",
+      "description": "Live board settings (${XDG_STATE_HOME:-~/.local/state}/env-board/settings.json), re-read every tick.",
+      "additionalProperties": false,
+      "required": ["balance_interval_min", "balance_paused", "refresh_requested_at"],
+      "properties": {
+        "balance_interval_min": {
+          "type": "integer",
+          "description": "Minutes between automatic api:balance reads (clamped to 5..240).",
+          "minimum": 5,
+          "maximum": 240
+        },
+        "balance_paused": {
+          "type": "boolean",
+          "description": "When true no automatic api:balance call is made."
+        },
+        "refresh_requested_at": {
+          "type": ["string", "null"],
+          "description": "ISO instant of the latest Refresh-now click; newer than the last attempt triggers a read (rate-limited to once per 60 s)."
+        }
+      }
+    },
+    "EnvBoardPromoTranche": {
+      "type": "object",
+      "description": "One promotional credit tranche from api:balance --json.",
+      "additionalProperties": false,
+      "required": ["name", "remaining_usd", "expired"],
+      "properties": {
+        "name": { "type": "string" },
+        "program": { "type": ["string", "null"] },
+        "remaining_usd": { "type": "number" },
+        "granted_usd": { "type": ["number", "null"] },
+        "granted_at": { "type": ["string", "null"] },
+        "expires_at": { "type": ["string", "null"] },
+        "expired": { "type": "boolean" }
+      }
+    },
+    "EnvBoardBalanceReading": {
+      "type": "object",
+      "description": "A successful api:balance --json read.",
+      "additionalProperties": false,
+      "required": [
+        "total_usd",
+        "purchased_usd",
+        "auto_reload",
+        "promo",
+        "promo_left_usd",
+        "read_at"
+      ],
+      "properties": {
+        "total_usd": { "type": "number" },
+        "purchased_usd": { "type": "number" },
+        "auto_reload": { "type": "boolean" },
+        "promo": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/EnvBoardPromoTranche" }
+        },
+        "promo_left_usd": { "type": "number" },
+        "read_at": { "type": "string" }
+      }
+    },
+    "EnvBoardBalanceCache": {
+      "type": "object",
+      "description": "On-disk balance cache (${XDG_STATE_HOME:-~/.local/state}/env-board/balance-cache.json, mode 0600): last good read, last attempt, last error.",
+      "additionalProperties": false,
+      "required": ["read", "last_attempt_at", "last_error"],
+      "properties": {
+        "read": {
+          "anyOf": [{ "$ref": "#/$defs/EnvBoardBalanceReading" }, { "type": "null" }]
+        },
+        "last_attempt_at": { "type": ["string", "null"] },
+        "last_error": { "type": ["string", "null"] },
+        "last_served_request": {
+          "type": ["string", "null"],
+          "description": "Latest refresh_requested_at already acted on; a request is served at most once.",
+          "default": null
+        }
+      }
+    }
+  }
+}

@@ -64,6 +64,13 @@ from .deps_audit_schema import (
     DepsAuditStatus,
     DepsAuditSummary,
 )
+from .env_board_schema import (
+    EnvBoardBalanceCache,
+    EnvBoardBalanceReading,
+    EnvBoardModels,
+    EnvBoardPromoTranche,
+    EnvBoardSettings,
+)
 from .env_inventory_schema import (
     ContainerOciMetadata,
     EnvInventoryModels,
@@ -226,6 +233,11 @@ __all__ = [
     "DepsAuditStatus",
     "DepsAuditSummary",
     "EnforcementTier",
+    "EnvBoardBalanceCache",
+    "EnvBoardBalanceReading",
+    "EnvBoardModels",
+    "EnvBoardPromoTranche",
+    "EnvBoardSettings",
     "EnvHostMetrics",
     "EnvInventoryModels",
     "EnvInventoryResponse",

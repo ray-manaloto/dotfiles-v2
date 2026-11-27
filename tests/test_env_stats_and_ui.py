@@ -278,6 +278,10 @@ def test_herdr_env_stats_mod_and_sync_tasks(tmp_path: Path) -> None:
     (herdr_home / "mods" / "env-stats").mkdir(parents=True)
     shutil.copy2(mod_dir / "mod.json", herdr_home / "mods" / "env-stats" / "mod.json")
     shutil.copy2(mod_dir / "main.js", herdr_home / "mods" / "env-stats" / "main.js")
+    shutil.copytree(
+        mod_dir.parent / "env-board-controls",
+        herdr_home / "mods" / "env-board-controls",
+    )
     (herdr_home / "layouts" / "main.json").write_text(
         json.dumps(
             {
@@ -406,6 +410,57 @@ def test_herdr_env_stats_mod_and_sync_tasks(tmp_path: Path) -> None:
     assert f"REMOVED dead symlink: {dangling_mod}" in prune_res.stdout
     assert not dangling_mod.is_symlink()
     assert (herdr_home / "mods" / "env-stats" / "main.js").is_file()
+
+
+def test_realtime_stats_places_board_controls_once(tmp_path: Path) -> None:
+    bin_stub = tmp_path / "bin"
+    bin_stub.mkdir()
+    log = tmp_path / "calls.log"
+    ls_json = (
+        '{"spaces":[{"id":"sp1","name":"realtime-stats","tabs":[{"id":"tb1",'
+        '"name":"AI Harness Quotas & Usage","terminals":[{"terminal":"t1",'
+        '"pane":"p9","name":"quota-board"}]}]}]}'
+    )
+    _make_stub(
+        bin_stub,
+        "herdr-app",
+        f'if [ "$1" = "ls" ]; then echo \'{ls_json}\'; exit 0; fi\n'
+        f'echo "$@" >> "{log}"\necho \'{{"pane":"p10"}}\'\n',
+    )
+    _make_stub(bin_stub, "hc", "echo '[]'\n")
+    jq_dir = str(Path(shutil.which("jq") or "/usr/bin/jq").parent)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    env = {
+        "HOME": str(fake_home),
+        "PATH": f"{bin_stub}:{jq_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+        "usage_quotas": "true",
+    }
+    task = MISE_TASKS_DIR / "herdr" / "realtime-stats"
+    for _ in range(2):  # the second run must not split again
+        subprocess.run(
+            ["bash", str(task)], env=env, capture_output=True, text=True, check=True
+        )
+    calls = log.read_text(encoding="utf-8").splitlines()
+    splits = [c for c in calls if c.startswith("do pane.split")]
+    assert splits == [
+        "do pane.split --direction right --pane p9 --mod env-board-controls"
+    ]
+    marker = fake_home / ".local" / "state" / "env-board" / "controls-pane"
+    assert marker.read_text(encoding="utf-8") == "p9"
+    assert (marker.stat().st_mode & 0o777) == 0o600
+
+    # A symlinked marker is refused: no split, target untouched.
+    victim = tmp_path / "victim"
+    victim.write_text("keep", encoding="utf-8")
+    marker.unlink()
+    marker.symlink_to(victim)
+    log.write_text("", encoding="utf-8")
+    subprocess.run(
+        ["bash", str(task)], env=env, capture_output=True, text=True, check=True
+    )
+    assert "pane.split" not in log.read_text(encoding="utf-8")
+    assert victim.read_text(encoding="utf-8") == "keep"
 
 
 def test_agy_statusline_atomic_output_cache_and_sub25ms_latency(tmp_path: Path) -> None:
