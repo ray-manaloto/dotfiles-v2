@@ -80,7 +80,22 @@ def _bin(name: str, home: Path) -> str | None:
         local = home / ".local" / "bin" / "claude"
         if os.access(local, os.X_OK):
             return str(local)
-    return shutil.which(name)
+    path = shutil.which(name)
+    if path and _dead_mise_shim(path, name):
+        return None
+    return path
+
+
+def _dead_mise_shim(path: str, name: str) -> bool:
+    """A mise shim whose tool is no longer installed (e.g. left by another mise config).
+
+    Shims are symlinks to the mise binary. `mise which` resolves without auto-installing.
+    """
+    target = os.path.realpath(path)
+    if os.path.basename(target) != "mise" or name == "mise":
+        return False
+    rc, _ = _run([target, "which", name], timeout=30)
+    return rc != 0
 
 
 # --- live state readers -------------------------------------------------------------------

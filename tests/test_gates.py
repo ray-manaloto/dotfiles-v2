@@ -3045,3 +3045,27 @@ def test_codex_live_marketplaces_flag_claude_imports() -> None:
     assert any("SESSIONS" in e for e in errs)
     assert any("marketplace claude-community" in e for e in errs)
     assert any("plugin eli5@claude-community" in e for e in errs)
+
+
+def test_reviewer_plugins_bin_ignores_dead_mise_shim(monkeypatch, tmp_path) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "reviewer_plugins_bin",
+        Path(__file__).resolve().parents[1]
+        / "unix/home/.config/mise/lib/reviewer_plugins.py",
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fake_mise = tmp_path / "real" / "mise"
+    fake_mise.parent.mkdir()
+    fake_mise.write_text('#!/bin/sh\n[ "$2" = alive ] && exit 0\nexit 1\n')
+    fake_mise.chmod(0o755)
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    for tool in ("agy", "alive"):
+        (shims / tool).symlink_to(fake_mise)
+    monkeypatch.setenv("PATH", str(shims))
+    assert mod._bin("agy", tmp_path) is None
+    assert mod._bin("alive", tmp_path) == str(shims / "alive")

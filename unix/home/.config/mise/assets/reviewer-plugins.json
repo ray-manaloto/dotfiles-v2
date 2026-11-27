@@ -1,6 +1,7 @@
 {
   "claude": {
     "marketplaces": {
+      "claude-plugins-official": "anthropics/claude-plugins-official",
       "graphify": "Graphify-Labs/graphify-claude-plugin",
       "repowise": "repowise-dev/repowise"
     },
