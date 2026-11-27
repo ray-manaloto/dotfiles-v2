@@ -1,5 +1,5 @@
 # AgentsView semantic-search recipe for the pc hub, applied by `mise run hub:vector --enable`.
-# Keys: https://github.com/kenn-io/agentsview/blob/main/docs/semantic-search.md
+# Keys: https://github.com/kenn-io/agentsview/blob/v0.48.0/docs/semantic-search.md (see also docs/agentsview-hub.md)
 # Changing model, dimension, max_input_chars or a prefix starts a new index generation and
 # re-embeds the whole archive.
 

@@ -812,7 +812,7 @@ def test_hub_status_mac_pull_freshness(tmp_path: Path) -> None:
         fh.write(f"{stamp(40)} remote sync: host=mac phase=targets duration=1s\n")
         fh.write(
             f"{stamp(39)} remote sync delta import: host=mac full_reason= "
-            "journal_outcome=aborted_before_processing\n"
+            "journal_outcome=retained(aborted-before-processing)\n"
         )
         fh.write(f"{stamp(38)} scheduled remote sync mac: ssh exploded\n")
     state, detail = check(tmp_path)

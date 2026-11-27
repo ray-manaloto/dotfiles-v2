@@ -5,6 +5,7 @@
 #USAGE flag "--disable" help="Remove every [vector] table from the hub config"
 #USAGE flag "--recipe <file>" help="Recipe TOML to apply (default: unix/home/.config/mise/assets/agentsview/semantic-search.toml)"
 #USAGE flag "--dry-run" help="Print what would change without writing anything"
+# Reference: docs/agentsview-hub.md (remote-sync and embeddings behaviour, upstream links).
 # Only [vector...] tables in ~/.agentsview/config.toml are touched; every other setting is checked
 # unchanged before the file is written. The hub service restarts so the new config loads.
 set -euo pipefail

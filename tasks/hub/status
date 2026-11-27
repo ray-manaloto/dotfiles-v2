@@ -3,6 +3,7 @@
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
 #USAGE flag "--json" help="Emit schema-validated PcHubStatusResponse JSON"
 #USAGE flag "--agentsview-dir <dir>" help="AgentsView data dir on the hub whose Mac pull to report (default: ~/.agentsview)"
+# Reference: docs/agentsview-hub.md (remote-sync and embeddings behaviour, upstream links).
 set -euo pipefail
 
 host="${usage_host:-pc}"
@@ -143,7 +144,7 @@ def check_mac_pull(av_dir: Path) -> tuple[str, str]:
             except ValueError:
                 continue
             body = line[m.end():]
-            if "journal_outcome=aborted" in body:
+            if "journal_outcome=retained(aborted-before-processing)" in body:
                 continue
             if body.startswith(("remote sync mac failed: ", "scheduled remote sync mac: ")):
                 last_fail, pending = ts, None

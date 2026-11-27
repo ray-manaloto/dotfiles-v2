@@ -3,6 +3,7 @@
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
 #USAGE flag "--alias <name>" default="agentsview-mac" help="SSH alias written on the hub and used as the [[remote_hosts]] destination"
 #USAGE flag "--dry-run" help="Print the planned changes without writing anything"
+# Reference: docs/agentsview-hub.md (remote-sync and embeddings behaviour, upstream links).
 # Idempotent. On the hub: a dedicated ed25519 key, a pinned host key for this Mac, and an `ssh_config`
 # alias, so no hostname is committed. On this Mac: one `authorized_keys` line for that key, limited to
 # the hub's tailnet IPv4 with `restrict` (no pty, no forwarding). AgentsView's SSH transport runs
