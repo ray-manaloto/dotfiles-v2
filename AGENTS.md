@@ -8,12 +8,6 @@ and C++26 workstation setup.
   under `unix/home/`, orchestration tasks under `tasks/`, and live
   cross-environment diagnostics under `mise/doctor/`. Never put code or
   Dockerfiles under `docs/`.
-- **Sunset repositories:** `ray-manaloto/cpp-standard` (sunset 2026-11-27) and
-  the legacy `ray-manaloto/dotfiles` are read-only references. `dotfiles-v2`
-  is their successor for machine setup, agent rules, skills, the `pc` runner
-  launcher and `repotools`. Never open an issue, branch or pull request in
-  either one, and never fix a file there to import it here: change it here.
-  C++ work goes to the repository `ROADMAP.md` names for it.
 - **Tool scope:** Root `mise.toml` stays tool-free (`no-project-tools` doctor
   check). User/global tools and skills live in
   `unix/home/.config/mise/config.toml` and `unix/home/.config/mise/mise.lock`.
