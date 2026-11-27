@@ -44,6 +44,44 @@ def item(**overrides):
     return dict(out, **overrides)
 
 
+def module(filename, count):
+    """A new file of count added lines, about 54 serialized bytes each."""
+    rows = "\n".join(
+        f"+value_{i:04} = compute({i}, 'padding text for the line')"
+        for i in range(1, count + 1)
+    )
+    return item(
+        filename=filename,
+        additions=count,
+        deletions=0,
+        patch=f"@@ -0,0 +1,{count} @@\n{rows}",
+    )
+
+
+def decide(body, score=2.0):
+    """Post every candidate in a Decisions request."""
+    return {
+        "answers": [
+            {"type": "predicate", "name": question["name"], "probability": 0.9}
+            if question["type"] == "predicate"
+            else {"type": "score", "name": question["name"], "score": score}
+            for question in body["questions"]
+        ]
+    }
+
+
+def covered_lines(chunks, path):
+    """Return added lines of path across chunks, failing on any overlap."""
+    covered = set()
+    for chunk in chunks:
+        for row in json.loads(chunk):
+            if row["path"] == path:
+                lines = review.changed_lines([row])[path]
+                assert not covered & lines, "overlapping parts"
+                covered |= lines
+    return covered
+
+
 def finding(**overrides):
     result = {
         "id": "F1",
@@ -405,7 +443,9 @@ class ReviewTests(unittest.TestCase):
                 self.assertEqual(
                     [entry["path"] for entry in json.loads(data)], ["normal.py"]
                 )
-                self.assertEqual(skipped, [{"path": path, "reason": reason}])
+                self.assertEqual(
+                    [(row["path"], row["reason"]) for row in skipped], [(path, reason)]
+                )
 
     def test_mixed_pr_reviews_fourteen_files_and_skips_the_large_lockfile(self):
         output = Path(self.directory.name) / "output"
@@ -425,7 +465,7 @@ class ReviewTests(unittest.TestCase):
         )
         self.assertEqual(
             json.loads((output / "findings.json").read_text())["skipped"],
-            [{"path": "uv.lock", "reason": "generated-or-lockfile"}],
+            [{"path": "uv.lock", "reason": "generated-or-lockfile", "changes": 2}],
         )
 
     def test_skipped_content_never_reaches_requests_or_outputs(self):
@@ -475,10 +515,12 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(
             json.loads(artifact)["skipped"],
             [
-                {"path": skipped_path, "reason": "sensitive-text"},
-                {"path": "<redacted path>", "reason": "sensitive-path"},
+                {"path": skipped_path, "reason": "sensitive-text", "changes": 2},
+                {"path": "<redacted path>", "reason": "sensitive-path", "changes": 2},
             ],
         )
+        # A two-line skip is listed but does not mark the review as partial.
+        self.assertNotIn("Not reviewed", comment)
 
     def test_skipped_files_do_not_count_toward_the_reviewable_file_limit(self):
         output = Path(self.directory.name) / "output"
@@ -536,9 +578,9 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(
             json.loads(artifact)["skipped"],
             [
-                {"path": "other.py", "reason": "over-budget"},
-                {"path": "small.py", "reason": "over-budget"},
-                {"path": "<redacted path>", "reason": "sensitive-path"},
+                {"path": "other.py", "reason": "over-budget", "changes": 2},
+                {"path": "small.py", "reason": "over-budget", "changes": 2},
+                {"path": "<redacted path>", "reason": "sensitive-path", "changes": 2},
             ],
         )
         for text in (
@@ -551,9 +593,10 @@ class ReviewTests(unittest.TestCase):
             self.assertNotIn(".env", text)
         comment = (output / "comment.md").read_text()
         self.assertIn(
-            "**Not reviewed: 2 changed file(s) exceeded the review size limit.**"
+            "**Not reviewed: 2 changed file(s) were skipped, largest first.**"
             " The results below cover only the other files.\n\n"
-            "<pre>\nother.py\nsmall.py\n</pre>",
+            "<pre>\nother.py (over-budget, 2 changed lines)\n"
+            "small.py (over-budget, 2 changed lines)\n</pre>",
             comment,
         )
         self.assertLess(
@@ -564,23 +607,12 @@ class ReviewTests(unittest.TestCase):
     def test_large_new_module_is_reviewed_in_hunks_across_requests(self):
         output = Path(self.directory.name) / "output"
         count = 1000
-        module = "\n".join(
-            f"+value_{i:04} = compute({i}, 'padding text for the line')"
-            for i in range(1, count + 1)
-        )
-        self.assertGreater(len(module), 40_000)
-        files = [
-            item(
-                filename="lib/remote.py",
-                additions=count,
-                deletions=0,
-                patch=f"@@ -0,0 +1,{count} @@\n{module}",
-            ),
-            item(filename="small.py"),
-        ]
+        files = [module("lib/remote.py", count), item(filename="small.py")]
+        self.assertGreater(len(files[0]["patch"]), 40_000)
         revision = dict(pr(), changed_files=len(files))
         github = [revision, files, revision]
         reviewed = []
+        instructions = []
         decisions = {
             "answers": [
                 {"type": "predicate", "name": "F1_defect", "probability": 0.9},
@@ -592,6 +624,7 @@ class ReviewTests(unittest.TestCase):
             if url == review.OPENAI_ENDPOINT:
                 patches = json.loads(kwargs["body"]["input"])
                 reviewed.append(patches)
+                instructions.append(kwargs["body"]["instructions"])
                 lines = review.changed_lines(patches).get("lib/remote.py")
                 if not lines:
                     return openai_ok()
@@ -606,18 +639,26 @@ class ReviewTests(unittest.TestCase):
         review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
         self.assertGreater(len(reviewed), 1)
         self.assertLessEqual(len(reviewed), review.MAX_REVIEW_CHUNKS)
-        covered = set()
-        for patches in reviewed:
-            serialized = json.dumps(patches, ensure_ascii=True, separators=(",", ":"))
-            self.assertLessEqual(len(serialized), review.MAX_PATCH_BYTES)
+        serialized = [
+            json.dumps(patches, ensure_ascii=True, separators=(",", ":"))
+            for patches in reviewed
+        ]
+        parts = []
+        for patches, text in zip(reviewed, serialized, strict=True):
+            self.assertLessEqual(len(text), review.MAX_PATCH_BYTES)
             for row in patches:
                 if row["path"] == "lib/remote.py":
-                    lines = review.changed_lines([row])["lib/remote.py"]
-                    self.assertFalse(covered & lines)
-                    covered |= lines
-                    for number in lines:
+                    parts.append(row["part"])
+                    for number in review.changed_lines([row])["lib/remote.py"]:
                         self.assertIn(f"+value_{number:04} =", row["patch"])
-        self.assertEqual(covered, set(range(1, count + 1)))
+                else:
+                    self.assertNotIn("part", row)
+        self.assertEqual(
+            covered_lines(serialized, "lib/remote.py"), set(range(1, count + 1))
+        )
+        self.assertEqual(parts, [f"{i}/{len(parts)}" for i in range(1, len(parts) + 1)])
+        for text in instructions:
+            self.assertIn(review.PARTIAL, text)
         payload = json.loads((output / "findings.json").read_text())
         self.assertEqual(payload["skipped"], [])
         # One F1 per module chunk; the first is low. Sorted by severity, renumbered.
@@ -636,6 +677,195 @@ class ReviewTests(unittest.TestCase):
         self.assertNotIn("Not reviewed", comment)
         self.assertIn("lib/remote.py", comment)
 
+    def test_split_files_fill_the_room_left_in_each_request(self):
+        # The PR #111 shape: a small file, then a test and a module just over one
+        # request each. Each first part starts in the room the last file left.
+        files = [
+            item(filename="small.py"),
+            module("tests/test_hub.py", 470),
+            module("lib/remote.py", 470),
+        ]
+        for row in files[1:]:
+            size = len(review.patch_entry(row["filename"], "", row["patch"]))
+            self.assertGreater(size, review.MAX_PATCH_BYTES)
+            self.assertLess(size, review.MAX_PATCH_BYTES + 4000)
+        chunks, skipped = review.patch_chunks(files)
+        self.assertEqual(skipped, [])
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual(
+            [row["path"] for row in json.loads(chunks[0])],
+            ["small.py", "tests/test_hub.py"],
+        )
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), review.MAX_PATCH_BYTES)
+        for row in files[1:]:
+            self.assertEqual(covered_lines(chunks, row["filename"]), set(range(1, 471)))
+
+    def test_unpackable_file_is_skipped_alone(self):
+        long_line = item(
+            filename="data.json",
+            additions=1,
+            deletions=0,
+            patch="@@ -0,0 +1 @@\n+" + "x" * 30_000,
+        )
+        # one.py fills about three requests; two.py cannot fit what is left.
+        for blockers in (
+            [long_line],
+            [module("lib/one.py", 1200), module("lib/two.py", 800)],
+        ):
+            last = blockers[-1]
+            with self.subTest(path=last["filename"]):
+                files = [item(filename="a.py"), *blockers, item(filename="z.py")]
+                chunks, skipped = review.patch_chunks(files)
+                paths = [row["path"] for chunk in chunks for row in json.loads(chunk)]
+                self.assertEqual(paths[0], "a.py")
+                self.assertEqual(paths[-1], "z.py")
+                self.assertNotIn(last["filename"], paths)
+                self.assertEqual(
+                    skipped,
+                    [
+                        {
+                            "path": last["filename"],
+                            "reason": "over-budget",
+                            "changes": last["additions"],
+                        }
+                    ],
+                )
+                if len(blockers) > 1:
+                    self.assertEqual(
+                        covered_lines(chunks, "lib/one.py"), set(range(1, 1201))
+                    )
+
+    def test_merged_findings_are_capped_sorted_and_renumbered(self):
+        output = Path(self.directory.name) / "output"
+        files = [module("lib/remote.py", 600)]
+        revision = dict(pr(), changed_files=len(files))
+        github = [revision, files, revision]
+        requests = []
+
+        def send(url, token, **kwargs):
+            if url == review.OPENAI_ENDPOINT:
+                patches = json.loads(kwargs["body"]["input"])
+                requests.append(patches)
+                lines = sorted(review.changed_lines(patches)["lib/remote.py"])
+                severity = "low" if len(requests) == 1 else "critical"
+                return openai_ok(
+                    *(
+                        finding(
+                            id=f"F{i}",
+                            file="lib/remote.py",
+                            line=lines[i],
+                            severity=severity,
+                        )
+                        for i in range(1, 10)
+                    )
+                )
+            if url == review.triage.ENDPOINT:
+                return decide(kwargs["body"])
+            return github.pop(0)
+
+        review.run(dict(self.env, REVIEW_OUTPUT_DIR=str(output)), send)
+        self.assertEqual(len(requests), 2)
+        payload = json.loads((output / "findings.json").read_text())
+        schema = json.loads(review.FINDINGS_SCHEMA.read_text())
+        self.assertEqual(
+            review.parse_findings(
+                json.dumps({"findings": payload["findings"]}), schema
+            ),
+            payload["findings"],
+        )
+        # 18 posted: 9 critical kept first, then 7 of the 9 low.
+        self.assertEqual(
+            [(row["id"], row["severity"]) for row in payload["findings"]],
+            [(f"F{i}", "critical" if i <= 9 else "low") for i in range(1, 17)],
+        )
+        self.assertIn(
+            "2 lower-severity finding(s) omitted by the finding limit.",
+            (output / "comment.md").read_text(),
+        )
+
+    def test_claude_reviews_every_chunk_and_joins_the_output(self):
+        files = [module("lib/remote.py", 600)]
+        revision = dict(pr(), changed_files=len(files))
+        github = [revision, files, revision]
+        texts = iter(["First <part>.", "Second part."])
+        bodies = []
+
+        def send(url, token, **kwargs):
+            if url == review.CLAUDE_ENDPOINT:
+                bodies.append(kwargs["body"])
+                text = next(texts)
+                return dict(claude_ok(), content=[{"type": "text", "text": text}])
+            return github.pop(0)
+
+        review.run(dict(self.env, REVIEW_PROVIDER="claude"), send)
+        self.assertEqual(
+            [json.loads(body["messages"][0]["content"])[0]["part"] for body in bodies],
+            ["1/2", "2/2"],
+        )
+        self.assertIn(review.PARTIAL, bodies[0]["system"])
+        summary = self.summary.read_text()
+        self.assertIn("<pre>First &lt;part&gt;.\n\nSecond part.</pre>", summary)
+        self.assertNotIn("Not reviewed", summary)
+
+    def test_triage_failure_on_a_later_request_declines_the_run(self):
+        files = [module("lib/remote.py", 600)]
+        revision = dict(pr(), changed_files=len(files))
+        github = [revision, files, revision]
+        triaged = []
+
+        def send(url, token, **kwargs):
+            if url == review.OPENAI_ENDPOINT:
+                patches = json.loads(kwargs["body"]["input"])
+                lines = review.changed_lines(patches)["lib/remote.py"]
+                return openai_ok(finding(file="lib/remote.py", line=min(lines)))
+            if url == review.triage.ENDPOINT:
+                triaged.append(kwargs["body"])
+                if len(triaged) > 1:
+                    raise review.ReviewError("HTTP 503")
+                return decide(kwargs["body"])
+            return github.pop(0)
+
+        # The first request's posted finding is dropped with the decline.
+        self.assert_decline("Triage unavailable.", send)
+        self.assertEqual(len(triaged), 2)
+        self.assertNotIn("Fix the boundary", self.summary.read_text())
+
+    def test_headline_names_the_largest_unreviewed_changes_first(self):
+        skipped = [
+            {"path": "small.py", "reason": "over-budget", "changes": 3},
+            {"path": "notes.md", "reason": "sensitive-text", "changes": 5},
+            {"path": "lib/big.py", "reason": "missing-patch", "changes": 4000},
+            {"path": "uv.lock", "reason": "generated-or-lockfile", "changes": 9000},
+            {"path": "lib/mid.py", "reason": "oversized", "changes": 2500},
+            {"path": "lib/next.py", "reason": "sensitive-text", "changes": 40},
+        ]
+        note = (
+            "**Not reviewed: 4 changed file(s) were skipped, largest first.** "
+            "The results below cover only the other files.\n\n<pre>\n"
+            "lib/big.py (missing-patch, 4000 changed lines)\n"
+            "lib/mid.py (oversized, 2500 changed lines)\n"
+            "lib/next.py (sensitive-text, 40 changed lines)\n"
+            "and 1 more\n</pre>\n\n"
+        )
+        self.assertEqual(review.unreviewed_note(skipped), note)
+        comment = review.safe_comment("5", "a" * 40, [], skipped)
+        self.assertIn(note, comment)
+        self.assertTrue(
+            comment.endswith("No findings passed triage in the reviewed files.\n")
+        )
+
+    def test_split_patch_handles_deletion_only_hunks(self):
+        rows = "\n".join(f"-removed line {i}" for i in range(1, 201))
+        pieces = review.split_patch(f"@@ -10,200 +9,0 @@\n{rows}", 1000)
+        self.assertGreater(len(pieces), 1)
+        start = 10
+        for piece in pieces:
+            count = piece.count("\n")
+            self.assertTrue(piece.startswith(f"@@ -{start},{count} +9,0 @@\n"))
+            start += count
+        self.assertEqual(start, 210)
+
     def test_split_patch_keeps_new_file_line_numbers(self):
         rows = []
         for i in range(1, 301):
@@ -647,14 +877,28 @@ class ReviewTests(unittest.TestCase):
         whole = review.changed_lines([{"path": "f", "patch": patch}])["f"]
         parts = review.changed_lines([{"path": "f", "patch": p} for p in pieces])
         self.assertEqual(parts["f"], whole)
-        # Piece 1 holds 38 context/removed/added triples from old 10 and new 20.
+        # Piece 0 holds 38 context/removed/added triples from old 10 and new 20.
+        # Piece 1 would end with "-removed line 76", which moves to piece 2.
         self.assertEqual(
-            pieces[1].split("\n", 1)[0], "@@ -86,76 +96,75 @@ def section():"
+            pieces[1].split("\n", 1)[0], "@@ -86,75 +96,75 @@ def section():"
         )
+        header, removed, added = pieces[2].split("\n", 3)[:3]
+        self.assertRegex(header, r"^@@ -161,\d+ \+171,\d+ @@ def section\(\):$")
+        self.assertEqual([removed, added], ["-removed line 76", "+added line 76"])
         for piece in pieces:
             self.assertLessEqual(len(json.dumps(piece)), 2000)
             self.assertTrue(piece.startswith("@@ -"))
+            # A removed line moves to the next piece with its replacement.
+            self.assertFalse(piece.rsplit("\n", 1)[-1].startswith("-"))
         self.assertIsNone(review.split_patch("@@ -1 +1 @@\n+" + "x" * 3000, 2000))
+        # A smaller first piece fills the room left in the current request.
+        first = review.split_patch(patch, 2000, 500)
+        self.assertLessEqual(len(json.dumps(first[0])), 500)
+        self.assertEqual(
+            review.changed_lines([{"path": "f", "patch": p} for p in first])["f"],
+            whole,
+        )
+        self.assertIsNone(review.split_patch(patch, 2000, 20))
 
     def test_unreviewable_module_is_named_in_the_headline(self):
         huge = "z" * (review.MAX_PATCH_BYTES * review.MAX_REVIEW_CHUNKS)
@@ -679,11 +923,12 @@ class ReviewTests(unittest.TestCase):
                 self.assertTrue(heading.startswith("Head: "))
                 self.assertTrue(
                     rest.startswith(
-                        "**Not reviewed: 1 changed file(s) exceeded the review size"
-                        " limit.**"
+                        "**Not reviewed: 1 changed file(s) were skipped, largest first.**"
                     )
                 )
-                self.assertIn("<pre>\nlib/huge.py\n</pre>", rest)
+                self.assertIn(
+                    "<pre>\nlib/huge.py (oversized, 2 changed lines)\n</pre>", rest
+                )
                 self.assertIn("lib/huge.py (oversized)", rest)
 
     def test_serialization_overhead_can_decline_all_files(self):
@@ -698,7 +943,9 @@ class ReviewTests(unittest.TestCase):
             [item(patch=patch), item(filename="small.py")]
         )
         self.assertEqual([row["path"] for row in json.loads(data)], ["small.py"])
-        self.assertEqual(skipped, [{"path": "src/file.cpp", "reason": "over-budget"}])
+        self.assertEqual(
+            skipped, [{"path": "src/file.cpp", "reason": "over-budget", "changes": 2}]
+        )
 
     def test_skipped_path_metadata_fits_the_artifact_cap(self):
         files = [item()]
@@ -909,7 +1156,9 @@ class ReviewTests(unittest.TestCase):
     def test_long_line_scan_stays_linear(self):
         import time
 
-        line = "@@ -1 +1 @@\n-old\n+" + "a" * (review.MAX_PATCH_BYTES - 40)
+        # The scanner sees whole patches up to the run budget before any split.
+        limit = review.MAX_PATCH_BYTES * review.MAX_REVIEW_CHUNKS
+        line = "@@ -1 +1 @@\n-old\n+" + "a" * (limit - 40)
         start = time.monotonic()
         self.assertIsNone(review.SENSITIVE_TEXT.search(line))
         self.assertLess(time.monotonic() - start, 1.0)

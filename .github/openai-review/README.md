@@ -81,10 +81,15 @@ missing, the script refuses to send patches.
   packs files in GitHub file order into at most four review requests of up to
   24,000 serialized bytes each. It splits a file too large for one request at
   line boundaries into hunks with recomputed headers, so a large new module
-  is reviewed in parts. It starts with the first file that fits and stops at
-  the first later file that no longer fits, listing the rest as `over-budget`.
-  When an `oversized` or `over-budget` file is skipped, the comment says
-  **Not reviewed** first and names those files, so a "no findings" result is
-  not read as a clean review. When no files fit or the file-count cap is
-  exceeded, the run reports the reason and succeeds without a findings
-  artifact.
+  is reviewed in parts. The first part fills the room left in the current
+  request, and each part carries a `part` field such as `2/3` that tells the
+  reviewer and triage it is a slice. A cut never separates removed lines from
+  the added lines that follow them when both fit. A file that fits one request
+  but not the remaining budget stops packing, and the rest are listed as
+  `over-budget`. A split file that does not fit, or has one line too long to
+  split, is skipped alone. The comment starts with **Not reviewed** and names
+  the largest skipped changes when a file is `oversized` or `over-budget`, or
+  has 20 or more changed lines and is `missing-patch` or `sensitive-text`, so
+  a "no findings" result is not read as a clean review. When no files fit or
+  the file-count cap is exceeded, the run reports the reason and succeeds
+  without a findings artifact.
