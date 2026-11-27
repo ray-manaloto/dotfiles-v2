@@ -6,6 +6,10 @@
 [env]
 HERMES_TUI_DIR = "{{ env.HOME }}/.local/share/hermes-cli.noindex/tui"
 HOMEBREW_PREFIX = "{{ system_brew_prefix }}"
+# python.org framework builds (/usr/local/bin/python3) ship an empty openssl dir, so TLS fails with
+# CERTIFICATE_VERIFY_FAILED; point every interpreter at the system bundle (doctor: python-ca-bundle).
+# Keep an inherited value (fnox proxy run exports its proxy CA here) when mise re-enters.
+SSL_CERT_FILE = "{{ env.SSL_CERT_FILE | default(value='/etc/ssl/cert.pem') }}"
 
 [env._]
 path = [

@@ -333,6 +333,19 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     exclude = List(".github/openai-review/test_*.py")
     check = "python3 -I -B tasks/py/metadata_gate_lint.py {{ files }}"
   }
+  // /usr/bin/python3 is 3.9.6 on macOS and runs these; ruff targets py315 elsewhere (#112). Keep the glob in
+  // step with pyproject.toml per-file-target-version.
+  ["py39-compat"] = new Step {
+    glob =
+      List(
+        "unix/home/.gemini/config/hooks/*.py",
+        "tasks/py/metadata_gate_lint.py",
+        "tasks/py/remote_ssh_lint.py",
+        "tasks/py/py39_compat.py",
+      )
+    check =
+      #"py=/usr/bin/python3; [ "$("$py" -I -B -c 'import sys; print(sys.version_info[:2] == (3, 9))' 2>/dev/null)" = True ] || py=python3; "$py" -I -B tasks/py/py39_compat.py {{ files }}"#
+  }
   // Lane plans (### Phase headings) fail only at pr:ship pre-push otherwise; the check is a no-op when PLAN_ID is unset (main) (#99).
   ["pwf-worktree-plan"] = new Step {
     check = "MISE_YES=1 mise run -q doctor:explain pwf-worktree-plan </dev/null"

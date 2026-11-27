@@ -3674,10 +3674,17 @@ def check_python_ca_bundle() -> tuple[list[str], str]:
     """Every python3 on PATH can verify TLS: python.org framework builds ship an empty openssl dir."""
     if _live_host_skipped():
         return [], _skip_reason("python3 CA bundle probes are live-host only")
-    if os.environ.get("SSL_CERT_FILE"):
-        return [], "SSL_CERT_FILE is set; python3 CA bundle probes skipped"
+    cert_file = os.environ.get("SSL_CERT_FILE", "")
+    if cert_file and not (os.path.isfile(cert_file) and os.path.getsize(cert_file) > 0):
+        return [f"python-ca-bundle: SSL_CERT_FILE={cert_file} is missing or empty"], ""
     exes = _path_pythons()
-    env = {k: v for k, v in os.environ.items() if k != "SSL_CERT_DIR"}
+    # Probe without SSL_CERT_FILE: it only reaches mise-activated shells, so launchd jobs, GUI apps and
+    # hooks started elsewhere still see the interpreter's own (possibly empty) store.
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("SSL_CERT_DIR", "SSL_CERT_FILE")
+    }
 
     def probe(exe: Path) -> str | None:
         try:
@@ -3697,6 +3704,11 @@ def check_python_ca_bundle() -> tuple[list[str], str]:
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         bad = [b for b in pool.map(probe, exes) if b]
+    if bad and cert_file:
+        return [], (
+            f"{len(bad)} python3 interpreter(s) rely on SSL_CERT_FILE={cert_file} "
+            f"({', '.join(bad)}); programs launched outside a mise shell still lack a CA bundle"
+        )
     if bad:
         return [
             f"python-ca-bundle: {exe} has zero CA certs and SSL_CERT_FILE is unset; "

@@ -4,6 +4,11 @@
 upgrade.auto_prune = true
 upgrade.prune_after = "24h"
 
+# Declared so `mise prune` and upgrade.auto_prune keep it while the hub service is stopped (#117).
+# hub:up links ~/.local/bin/ollama to this version; keep the two in step.
+[tools]
+ollama = "0.40.18"
+
 [bootstrap.packages]
 "pacman:zsh" = "latest"
 "pacman:lm_sensors" = "latest"

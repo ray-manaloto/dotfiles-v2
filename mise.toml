@@ -450,7 +450,7 @@ run = "python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"
 hint = "Run `mise run bootstrap:skills` and keep canonical skills under unix/home/.agents/skills/. Details: `mise run doctor:explain skills-6harness-parity`."
 
 [doctor.checks.python-ca-bundle]
-description = "Every python3 on PATH has a CA bundle (or SSL_CERT_FILE is set)"
+description = "Every python3 on PATH has a CA bundle (probed without SSL_CERT_FILE; a set, non-empty SSL_CERT_FILE passes with a note)"
 run = "python3 -I -B tasks/py/doctor_checks.py python-ca-bundle"
 timeout = "60s"
 hint = "Set SSL_CERT_FILE=/etc/ssl/cert.pem or run the Python framework's 'Install Certificates.command'. Details: `mise run doctor:explain python-ca-bundle`."

@@ -79,6 +79,9 @@ testpaths = ["tests", "unix/home/.config/mise/lib/herdr_roll/tests"]
 line-length = 88
 target-version = "py315"
 src = ["unix/home/.config/mise/lib"]
+# Run by /usr/bin/python3 (3.9 on macOS) or as stdlib lint steps: keep ruff from emitting newer syntax
+# (#112; the hooks dir also has its own ruff.toml). hk step py39-compat compiles them under 3.9.
+per-file-target-version = { "unix/home/.gemini/config/hooks/*.py" = "py39", "tasks/py/metadata_gate_lint.py" = "py39", "tasks/py/remote_ssh_lint.py" = "py39", "tasks/py/py39_compat.py" = "py39" }
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "T201", "TID251", "RUF"]
