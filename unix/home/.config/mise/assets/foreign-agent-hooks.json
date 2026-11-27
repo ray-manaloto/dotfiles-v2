@@ -1,0 +1,10 @@
+{
+  "$schema": "../../../../../schemas/foreign_agent_hooks.schema.json",
+  "markers": [
+    "ORCA_AGENT_HOOK_PORT",
+    ".orca/agent-hooks",
+    "orca-agent-hook",
+    "orca-status",
+    "orca-opencode-status"
+  ]
+}

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="Remove foreign agent hooks (Orca etc.) from Claude/Codex/agy/opencode (dry-run by default; --apply backs up first)"
+#USAGE flag "--apply" help="Back up then remove (otherwise dry-run)"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+
+args=()
+[[ ${usage_apply:-false} == "true" ]] && args+=(--apply)
+
+run='import sys; sys.path.insert(0, sys.argv[1]); from foreign_hooks.cli import main; raise SystemExit(main(sys.argv[2:]))'
+exec python3 -I -B -c "${run}" "${lib_dir}" ${args[@]+"${args[@]}"}

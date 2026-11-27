@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/foreign_agent_hooks.schema.json",
+  "title": "ForeignAgentHooks",
+  "description": "Denylist of foreign agent-hook markers (removed third-party apps) that must not reappear in Claude, Codex, agy, or opencode configs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "markers"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "markers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Case-sensitive substrings matched against hook commands, agy hook keys/bodies, opencode plugin names, and Codex config.toml lines.",
+      "items": {
+        "type": "string",
+        "minLength": 3
+      }
+    }
+  }
+}
