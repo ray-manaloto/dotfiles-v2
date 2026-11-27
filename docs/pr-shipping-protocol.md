@@ -65,7 +65,10 @@ ambiguous and has produced live settings without owner approval.
    worktree's exact head, the tree is clean and the learn review from step 7 is recorded; then it fast-forwards the main
    checkout, checks the merge commit is on `main`, removes the worktree and its `wt/*` branch with `worktree:rm`, runs `learn:heal --check`, and runs the full live
    `mise doctor project` (host scope) on the merged `main`, printing its summary; a failure there only warns, because the land
-   already happened. Verify the change is live afterwards.
+   already happened. It then closes the finished Herdr agent tabs that worked in the removed worktree (`herdr_tidy.py --cwd`);
+   a working agent, a plain shell and the terminal running `pr:land` are never closed. Verify the change is live afterwards.
+   For tabs left by worktrees landed some other way, `mise run herdr:tidy` lists finished agent tabs whose folder is gone,
+   and `--apply` closes them (`--keep a,b` protects named tabs).
 
 ## Preconditions kept by guards
 

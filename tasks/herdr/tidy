@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#MISE description="Close finished Herdr agent tabs whose worktree is gone (dry run unless --apply)"
+#USAGE flag "--apply" help="Close the tabs (default: list them)"
+#USAGE flag "--keep <names>" help="Comma-separated tab names never to close"
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+args=()
+[[ -n ${usage_apply:-} ]] && args+=(--apply)
+[[ -n ${usage_keep:-} ]] && args+=(--keep "${usage_keep}")
+exec python3 -I -B "${root}/tasks/py/herdr_tidy.py" ${args[@]+"${args[@]}"}

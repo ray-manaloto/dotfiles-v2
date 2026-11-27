@@ -77,7 +77,36 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
         "printf 'mise %s\\n' \"$*\"\n",
         encoding="utf-8",
     )
-    for stub in (gh, mise):
+    # Step 4b runs main's copy of herdr_tidy.py against a fake hc: only the finished tab in the
+    # landed worktree is closed, never the working one.
+    tidy = main / "tasks" / "py" / "herdr_tidy.py"
+    tidy.parent.mkdir(parents=True)
+    tidy.write_bytes((LAND.parents[1] / "py" / "herdr_tidy.py").read_bytes())
+    hc_log = tmp_path / "hc.log"
+    tabs = [
+        {
+            "address": "t1",
+            "agent": "claude-code",
+            "status": "done",
+            "cwd": str(feature),
+            "where": "s / lane",
+        },
+        {
+            "address": "t2",
+            "agent": "codex",
+            "status": "working",
+            "cwd": str(feature),
+            "where": "s / busy",
+        },
+    ]
+    hc = bin_dir / "hc"
+    hc.write_text(
+        f"#!/bin/sh\necho \"$*\" >> '{hc_log}'\n"
+        f"[ \"$1\" = ls ] && printf '%s\\n' '{json.dumps(tabs)}'\nexit 0\n",
+        encoding="utf-8",
+    )
+    env.pop("HC_TERMINAL_ID", None)
+    for stub in (gh, mise, hc):
         stub.chmod(0o755)
 
     result = subprocess.run(
@@ -101,6 +130,12 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
         assert result.returncode == 0, result.stdout + result.stderr
         assert "mise run -q worktree:rm fixture" in result.stdout
         assert "live doctor on main" in result.stdout or doctor_fails
+        assert hc_log.read_text(encoding="utf-8").splitlines() == [
+            "ls --json",
+            "kill t1",
+            "rm t1",
+        ]
+        assert "herdr:tidy: closed lane (t1)" in result.stdout
         if doctor_fails:
             # The land already happened: the doctor failure warns loudly but keeps exit 0.
             assert "WARNING: live 'mise doctor project' on main failed" in result.stderr
