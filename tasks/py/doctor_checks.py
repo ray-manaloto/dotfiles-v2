@@ -3613,12 +3613,25 @@ def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
             else ""
         )
     home = Path.home()
-    live = [f"reviewer-plugins: {e}" for e in lib.check(manifest, home)]
+    plugins_only = (
+        sys.platform != "darwin"
+        or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
+    )
+    live = [
+        f"reviewer-plugins: {e}"
+        for e in lib.check(manifest, home, plugins_only=plugins_only)
+    ]
     if live:
         live.append(
-            "reviewer-plugins: fix with `mise run bootstrap:reviewer-plugins`; sign in via Claude /mcp -> <server> -> Authenticate"
+            "reviewer-plugins: run `mise run bootstrap:reviewer-plugins` to sync plugins"
         )
+        if not plugins_only:
+            live.append(
+                "reviewer-plugins: sign in via Claude /mcp -> <server> -> Authenticate"
+            )
         return live, ""
+    if plugins_only:
+        return [], "applicable harness plugin checks passed"
     return (
         [],
         "applicable harness plugin, Claude MCP and Repowise checks passed",

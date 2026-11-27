@@ -79,9 +79,9 @@
   "agy": {
     "plugins": {
       "astral": "https://github.com/astral-sh/agent-plugins/tree/main/plugins/astral",
-      "chrome-devtools-plugin": "chrome-devtools-plugin",
+      "chrome-devtools-plugin": "chrome-devtools-plugin@antigravity-plugins-official",
       "code-review": "https://github.com/gemini-cli-extensions/code-review",
-      "coderabbit": "coderabbit",
+      "coderabbit": "coderabbit@antigravity-plugins-partners",
       "egm": "https://github.com/google/elephant-goldfish-model",
       "google-antigravity-sdk": "google-antigravity-sdk@antigravity-plugins-official",
       "graphify": "https://github.com/Graphify-Labs/graphify-antigravity",

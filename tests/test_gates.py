@@ -2168,18 +2168,54 @@ def test_reviewer_plugins_repo_scope_rejects_drift(
     assert any(needle in e for e in errs), errs
 
 
-def test_reviewer_plugins_linux_checks_installed_harnesses(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(("system", "vm"), [("linux", False), ("darwin", True)])
+def test_reviewer_plugins_headless_checks_plugin_drift_only(
+    monkeypatch, tmp_path, system, vm
 ) -> None:
     doc_mod = _load_task_module("doctor_checks")
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
-    monkeypatch.setattr(doc_mod.sys, "platform", "linux")
-    root = _reviewer_repo(tmp_path)
+    monkeypatch.setattr(doc_mod.sys, "platform", system)
+    home = tmp_path / "home"
+    marker = home / ".config/dotfiles-v2/vm-env.sh"
+    if vm:
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    root = _reviewer_repo(tmp_path / "repo")
     lib = doc_mod._load_reviewer_plugins_lib(root)
     monkeypatch.setattr(doc_mod, "_load_reviewer_plugins_lib", lambda _r: lib)
-    monkeypatch.setattr(lib, "_bin", lambda name, _h: name if name == "codex" else None)
-    monkeypatch.setattr(lib, "repowise_repos", lambda _roots: [])
+    monkeypatch.setattr(
+        lib,
+        "_bin",
+        lambda name, _h: name if name in {"claude", "codex", "repowise"} else None,
+    )
+    manifest = lib.load_manifest(
+        root / "unix/home/.config/mise/assets/reviewer-plugins.json"
+    )
+    monkeypatch.setattr(
+        lib,
+        "claude_state",
+        lambda _exe: (
+            set(manifest["claude"]["plugins"]),
+            set(manifest["claude"]["marketplaces"]),
+        ),
+    )
+    monkeypatch.setattr(
+        lib,
+        "claude_mcp_status_settled",
+        lambda *_args, **_kwargs: pytest.fail("headless doctor probed OAuth"),
+    )
+    monkeypatch.setattr(
+        lib,
+        "repowise_telemetry_enabled",
+        lambda *_args: pytest.fail("headless doctor probed Repowise telemetry"),
+    )
+    monkeypatch.setattr(
+        lib,
+        "repowise_repos",
+        lambda *_args: pytest.fail("headless doctor probed Repowise repos"),
+    )
     monkeypatch.setattr(lib, "codex_state", lambda _exe: (set(), set()))
     errs, _ = doc_mod.check_reviewer_plugins(root)
     assert "reviewer-plugins: codex marketplace missing: planning-with-files" in errs
@@ -2188,6 +2224,7 @@ def test_reviewer_plugins_linux_checks_installed_harnesses(
         in errs
     )
     assert not any("agy plugin" in error for error in errs)
+    assert not any("Authenticate" in error for error in errs)
 
 
 @pytest.mark.parametrize(

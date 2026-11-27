@@ -219,7 +219,7 @@ command = "~/.local/bin/agent-secrets serve"
 description = "Short-lived GitHub tokens and agent keys for project agent containers (cpp-standard D155)"
 restart = "always"
 requires_tools = true
-environment = { PATH = "/usr/local/bin:/usr/bin:/bin" }
+environment = { PATH = "/usr/local/bin:/usr/bin:/bin", MISE_SYSTEM_CONFIG_DIR = "/nonexistent", MISE_ENV = "linux,pc" }
 
 [dotfiles]
 "~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/pc-env.sh" ] && . "${HOME}/.config/dotfiles-v2/pc-env.sh"', position = "prepend" }
