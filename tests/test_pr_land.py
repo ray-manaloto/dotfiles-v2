@@ -31,6 +31,8 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
         usage_pr="1",
     )
     env.pop("usage_skip_learn_check", None)
+    # #131: the caller's shell may export a stale checkout venv; the post-land doctor must not see it.
+    env["VIRTUAL_ENV"] = str(tmp_path / "caller" / ".venv")
 
     def git(*args):
         return subprocess.check_output(
@@ -72,7 +74,9 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
     mise = bin_dir / "mise"
     doctor_rc = 1 if doctor_fails else 0
     mise.write_text(
-        '#!/bin/sh\nif [ "$1 $2" = "doctor project" ]; then\n'
+        '#!/bin/sh\nif [ "$1 $2" = "doctor project" ] && [ -n "$VIRTUAL_ENV" ]; then\n'
+        '  echo "FAIL venv-leak: $VIRTUAL_ENV"; echo "1 failed"; exit 1\nfi\n'
+        'if [ "$1 $2" = "doctor project" ]; then\n'
         f'  echo "FAIL fake-check: boom"; echo "1 failed"; exit {doctor_rc}\nfi\n'
         "printf 'mise %s\\n' \"$*\"\n",
         encoding="utf-8",

@@ -3166,7 +3166,8 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
     venv = os.environ.get("VIRTUAL_ENV", "")
     if venv and Path(venv).resolve().is_relative_to(repo_root.resolve()):
         errors.append(
-            "claude-ship-env: a checkout venv is active (VIRTUAL_ENV); /ship and /steward refuse to watch"
+            f"claude-ship-env: a checkout venv is active (VIRTUAL_ENV={venv}); /ship and /steward refuse to watch."
+            " Nothing in mise sets it (python.uv_venv_auto=false), so this shell inherited it: start a new shell"
         )
     return (
         errors,
