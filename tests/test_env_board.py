@@ -186,3 +186,26 @@ def test_render_pending_states():
     )
     assert "probe pending" in text and "AgentsView unavailable" in text
     assert "ledger not found" in text
+
+
+def test_parse_usage_tolerates_null_token_fields():
+    # Review finding: a null token field used to raise TypeError and blank the whole usage poll.
+    payload = {
+        "daily": [
+            {
+                "date": "2026-11-27",
+                "modelBreakdowns": [
+                    {
+                        "modelName": "claude-opus-5-5",
+                        "inputTokens": None,
+                        "outputTokens": 5,
+                        "cacheCreationTokens": None,
+                        "cacheReadTokens": None,
+                        "cost": {"microdollars": 0},
+                    }
+                ],
+            }
+        ]
+    }
+    usage = board.parse_usage(payload, "2026-11-27")
+    assert usage["Claude"]["today_tok"] == 5

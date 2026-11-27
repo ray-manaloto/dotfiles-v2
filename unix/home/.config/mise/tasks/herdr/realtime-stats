@@ -56,8 +56,12 @@ if [[ ${want_quotas} == "true" ]]; then
 	commands+=("tab.new --space ${space_id} --name ${quota_tab} --argv [\"mise\",\"run\",\"env:board\"]")
 	if [[ ${dry_run} != "true" ]]; then
 		# Reuse an existing tab by name: fill it when it has no terminal, else leave it running.
-		tab_json="$(herdr-app ls 2>/dev/null | jq -c --arg sp "${space_id}" --arg n "${quota_tab}" '[.spaces[]? | select(.id == $sp) | .tabs[]? | select(.name == $n)] | first // empty')"
-		if [[ -z ${tab_json} ]]; then
+		tab_json="$(herdr-app ls 2>/dev/null | jq -c --arg sp "${space_id}" --arg n "${quota_tab}" '[.spaces[]? | select(.id == $sp) | .tabs[]? | select(.name == $n)] | first // empty' || true)"
+		# A live quota-board terminal anywhere means one is already running: never start a second.
+		board_live="$(hc ls --json 2>/dev/null | jq -r '[(.terminals // .)[]? | select(.name == "quota-board" and .state == "live")] | length' || echo 0)"
+		if [[ ${board_live:-0} != "0" ]]; then
+			:
+		elif [[ -z ${tab_json} ]]; then
 			herdr-app "do" tab.new --space "${space_id}" --name "${quota_tab}" --folder "${quota_cwd}" --argv '["mise","run","env:board"]' >/dev/null
 		elif [[ "$(printf '%s' "${tab_json}" | jq '.terminals | length')" == "0" ]]; then
 			tab_id="$(printf '%s' "${tab_json}" | jq -r '.id')"

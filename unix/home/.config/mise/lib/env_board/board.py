@@ -130,10 +130,10 @@ def parse_usage(payload: Mapping[str, Any], today: str) -> dict[str, dict[str, A
         for model in day.get("modelBreakdowns", []):
             fam = family_of(str(model.get("modelName", "")))
             tokens = (
-                int(model.get("inputTokens", 0))
-                + int(model.get("outputTokens", 0))
-                + int(model.get("cacheCreationTokens", 0))
-                + int(model.get("cacheReadTokens", 0))
+                int(model.get("inputTokens") or 0)
+                + int(model.get("outputTokens") or 0)
+                + int(model.get("cacheCreationTokens") or 0)
+                + int(model.get("cacheReadTokens") or 0)
             )
             usd = (model.get("cost") or {}).get("microdollars", 0) / 1e6
             out[fam]["win_tok"] += tokens
