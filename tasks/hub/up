@@ -68,7 +68,9 @@ ssh -o BatchMode=yes "${host}" "mkdir -p '${stack_dir}/searxng' '${state_dir}/be
 COPYFILE_DISABLE=1 tar -C "${repo_root}/docker/pc-hub" -cf - compose.yaml Caddyfile searxng/settings.yml | ssh -o BatchMode=yes "${host}" "tar -C '${stack_dir}' -xf - && find '${stack_dir}' -maxdepth 2 -name '._*' -type f -delete"
 
 # Mint/preserve runtime tokens and Beszel ed25519 keypair on pc (never leaves pc except explicit client sync).
-ssh -o BatchMode=yes "${host}" env STATE_DIR="${state_dir}" REMOTE_HOME="${remote_home}" /bin/bash -euo pipefail <<'REMOTE_SECRETS'
+# ssh joins its arguments into one line for the remote login shell, so quote each value.
+printf -v secrets_cmd 'env STATE_DIR=%q REMOTE_HOME=%q /bin/bash -euo pipefail' "${state_dir}" "${remote_home}"
+ssh -o BatchMode=yes "${host}" "${secrets_cmd}" <<'REMOTE_SECRETS'
 umask 077
 secrets_file="${STATE_DIR}/hub-secrets.env"
 touch "${secrets_file}"
@@ -126,7 +128,8 @@ beszel_pub="$(ssh -o BatchMode=yes "${host}" "awk '{print \$1\" \"\$2}' '${state
 	ssh -o BatchMode=yes "${host}" "umask 077 && cat >'${state_dir}/.env'"
 
 # Install/verify CLI-only codebase-memory-mcp 0.12.1 (zero HTTP exposure) + @tobilu/qmd 2.9.0 + agentsview on pc.
-ssh -o BatchMode=yes "${host}" env REMOTE_HOME="${remote_home}" MAC_SSH="${mac_ssh}" MAC_INTERVAL="${mac_interval}" /bin/bash -euo pipefail <<'REMOTE_BINS'
+printf -v bins_cmd 'env REMOTE_HOME=%q MAC_SSH=%q MAC_INTERVAL=%q /bin/bash -euo pipefail' "${remote_home}" "${mac_ssh}" "${mac_interval}"
+ssh -o BatchMode=yes "${host}" "${bins_cmd}" <<'REMOTE_BINS'
 cbm_ver="0.12.1"
 cbm_sha="8c3d0341064301e78ecc84cf7348d4e2c6562a0f57448243ea560aaa34de36c1"
 cbm_bin="${REMOTE_HOME}/.local/bin/codebase-memory-mcp"

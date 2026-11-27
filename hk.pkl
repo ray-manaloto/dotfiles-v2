@@ -322,6 +322,11 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     check =
       #"if rg -n --pcre2 '(?:^|[;&|(\s])(?:(?:ln|cp|mv|install|tee|rm|chmod|chown|tar|unzip|rsync|curl[^\n]*\s-[^\n]*o)\b|>>?)[^\n]*(?:\.local/share/mise/installs|/opt/mise/installs)' {{ files }}; then echo 'Direct writes/clobbering under mise installs/ are forbidden' >&2; exit 1; fi"#
   }
+  // ssh hands its remote command to pc's zsh login shell: no unquoted globs, no raw env values (#103).
+  ["remote-ssh-lint"] = new Step {
+    glob = List("tasks/hub/**", "tasks/pc/**")
+    check = "python3 -I -B tasks/py/remote_ssh_lint.py {{ files }}"
+  }
   ["reviewer-plugins-declared"] = new Step {
     glob =
       List(
