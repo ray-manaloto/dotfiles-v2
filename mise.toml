@@ -76,6 +76,10 @@ fi
 exec repotools privacy-scan --patterns="$PRIVATE_PATTERNS" --files="${usage_file:-}" ${usage_outgoing:+--outgoing}
 '''
 
+[tasks."dcg:repro"]
+description = "Replay the #116 dcg repro fixtures through the installed dcg; exit 1 while any still reproduces"
+run = "python3 -I -B tasks/py/dcg_repro.py"
+
 [doctor.checks.no-project-tools]
 description = "Project mise TOMLs declare zero [tools], no root mise.lock, and slim pyproject.toml"
 run = "python3 -I -B tasks/py/doctor_checks.py no-project-tools"

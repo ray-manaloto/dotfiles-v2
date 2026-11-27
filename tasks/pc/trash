@@ -1,0 +1,30 @@
+#!/usr/bin/env -S usage exec bash
+# shellcheck shell=bash
+#MISE description="Soft-delete a path on pc: move it into ~/.local/share/Trash/files/ with a timestamp suffix"
+#USAGE arg "<path>" help="Path on the host; ~/ and relative paths resolve against the remote home (top-level home entries, credentials, mise, dcg and the dotfiles checkout are refused)"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
+#USAGE flag "--dry-run" help="Describe the move without connecting"
+set -euo pipefail
+
+# The one sanctioned remote soft-delete for agents (#116): dcg blocks `ssh pc 'mv ... Trash'`.
+host="${usage_host:-pc}"
+path="${usage_path:?}"
+# printf %q would emit $'..' for control characters, which a POSIX remote shell cannot parse.
+if [[ $path == *[[:cntrl:]]* ]]; then
+	echo "pc:trash: refusing a path with control characters (newline, tab, DEL, ...)" >&2
+	exit 1
+fi
+# An unquoted ~ was expanded by this machine's shell; point it back at the remote home.
+# shellcheck disable=SC2088 # the literal ~ is resolved on the host by pc_trash.py
+if [[ $path == "$HOME" ]]; then
+	path='~'
+elif [[ $path == "$HOME"/* ]]; then
+	path="~/${path#"$HOME"/}"
+fi
+if [[ ${usage_dry_run:-false} == true ]]; then
+	echo "pc:trash dry-run ($host): move $path into ~/.local/share/Trash/files/ with a timestamp suffix"
+	exit 0
+fi
+taskdir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+printf -v remote '/usr/bin/python3 -I -B - %q' "$path"
+ssh -o BatchMode=yes -- "$host" "$remote" <"$taskdir/../py/pc_trash.py"

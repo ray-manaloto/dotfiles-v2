@@ -1,0 +1,6 @@
+{
+  "issue": 116,
+  "summary": "Repro 2a: a quoted heredoc fed to cat is data, not a script; its markdown names one destructive command, find -delete.",
+  "command": "cat >> task_plan.md <<'EOF'\n| 2026-11-27 | probe cleanup blocked | suggested `find ~/dev/tmp/av-status-probe -delete`; used the Edit tool |\nEOF",
+  "expect": "allow"
+}

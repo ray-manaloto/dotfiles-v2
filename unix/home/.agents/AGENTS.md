@@ -132,6 +132,8 @@ deletion, and verify with `claude plugin list --json`.
   `pacman -Syu`.
 - **Sunset repositories:** `ray-manaloto/cpp-standard` and the legacy
   `ray-manaloto/dotfiles` are read-only. File and fix in `dotfiles-v2`.
+- **Remote soft-delete:** `mise run pc:trash '<path>'` (never `rm` on pc; see
+  `docs/pc-machine-bootstrap.md`).
 
 ## Large reviews fan out
 
