@@ -15,7 +15,8 @@ hosts, Linux containers, and macOS VMs.
   merging into `main`/`master`, opening a pull request, or claiming completion on
   any non-documentation change, run Stage 1 `/code-review:code-review` (`+
   code-review-commons`, fanning out across read-only slices when diffs exceed
-  ~1,000 lines), fix confirmed `CRITICAL`, `HIGH`, and `MEDIUM` findings, record
+  ~1,000 lines, and applying `~/.agents/review-standards.md`), fix confirmed
+  `CRITICAL`, `HIGH`, and `MEDIUM` findings, record
   Stage 1 via
   `python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --summary "..."`,
   and then run Stage 2 post-review behavioral verification via
