@@ -31,7 +31,14 @@
     "summaryMaxBytes": 8192
   },
   "mcp": {
-    "servers": {}
+    "servers": {
+      "openwiki": {
+        "type": "stdio",
+        "command": "openwiki",
+        "args": ["mcp", "--host", "zcode"],
+        "timeoutMs": 60000
+      }
+    }
   },
   "plugins": {
     "enabled": true,

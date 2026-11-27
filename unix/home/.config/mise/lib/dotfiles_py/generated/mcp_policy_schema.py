@@ -16,6 +16,7 @@ class Harness(Enum):
     CLAUDE = "claude"
     CODEX = "codex"
     OPENCODE = "opencode"
+    ZCODE = "zcode"
 
 
 class Decision(Enum):

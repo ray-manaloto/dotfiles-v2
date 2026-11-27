@@ -3176,7 +3176,7 @@ def check_claude_ship_env(repo_root: Path) -> tuple[list[str], str]:
 
 
 _MCP_POLICY_PATH = "unix/home/.config/mise/assets/mcp-policy.json"
-_MCP_POLICY_HARNESSES = {"agy", "claude", "codex", "opencode"}
+_MCP_POLICY_HARNESSES = {"agy", "claude", "codex", "opencode", "zcode"}
 
 
 def _mcp_plugin_declares_server(root: Path, harness: str) -> bool:
@@ -3315,6 +3315,11 @@ def _mcp_config_names(
         plugins = active(data.get("plugins", {}), "enabled", False)
     elif harness == "agy":
         servers = active(data.get("mcpServers", {}), "disabled", True)
+        plugins = []
+    elif harness == "zcode":
+        servers = active(
+            mapping(data.get("mcp", {})).get("servers", {}), "enabled", False
+        )
         plugins = []
     else:
         servers = active(data.get("mcpServers", {}), "disabled", True)
@@ -3512,9 +3517,10 @@ def check_mcp_policy(repo_root: Path) -> tuple[list[str], str]:
         (".config/opencode/opencode.json", "opencode"),
         (".gemini/config/mcp_config.json", "agy"),
         (".claude.json", "claude"),
+        (".zcode/cli/setting.json", "zcode"),
     ):
         path = managed_home / rel
-        if harness not in {"agy", "claude"} or path.exists():
+        if harness not in {"agy", "claude", "zcode"} or path.exists():
             scan(path, path.relative_to(repo_root).as_posix(), harness)
     manifest = assets / "reviewer-plugins.json"
     for harness in sorted(_MCP_POLICY_HARNESSES):
@@ -3529,6 +3535,7 @@ def check_mcp_policy(repo_root: Path) -> tuple[list[str], str]:
         (".claude/settings.json", "claude"),
         (".codex/config.toml", "codex"),
         (".gemini/config/mcp_config.json", "agy"),
+        (".zcode/cli/setting.json", "zcode"),
     ):
         path = Path.home() / rel
         if path.exists():
