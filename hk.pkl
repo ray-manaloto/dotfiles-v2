@@ -344,6 +344,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     glob =
       List(
         "unix/home/.gemini/config/hooks/*.py",
+        "unix/home/.agents/skills/*/scripts/*.py",
         "tasks/py/metadata_gate_lint.py",
         "tasks/py/remote_ssh_lint.py",
         "tasks/py/doppler_token_lint.py",
