@@ -1,0 +1,5 @@
+# gha-fence.service (dotfiles #741): the job fence's IPv6 mangle drop, applied with ip6tables-restore --noflush.
+*mangle
+-F INPUT
+-A INPUT -i br-gha ! -p ipv6-icmp -m conntrack --ctstate NEW -j DROP
+COMMIT

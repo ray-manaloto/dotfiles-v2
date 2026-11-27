@@ -1,9 +1,12 @@
+import importlib.util
+import json
 import os
 import shutil
 import stat
 import subprocess
 import tomllib
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -143,7 +146,22 @@ def test_sync_bootstraps_without_identity(tmp_path: Path, login_shell: str) -> N
         "getent": f'printf "fixture:x:1000:1000::/tmp:{login_shell}\\n"',
         "zsh": "exit 0",
         "sudo": f'printf "%s\\n" "$*" >> "{sudo_calls}"',
-        "mise": 'test "$MISE_SYSTEM_CONFIG_DIR" = "/nonexistent" && test "$1" = bootstrap && ln -s "$HOME/dev/dotfiles-v2/unix/home/.config/mise" "$HOME/.config/mise"',
+        "mise": """
+set -eu
+test "$MISE_SYSTEM_CONFIG_DIR" = "/nonexistent"
+test "$MISE_YES" = "1"
+if [ "$1" = bootstrap ]; then
+    ln -s "$HOME/dev/dotfiles-v2/unix/home/.config/mise" "$HOME/.config/mise"
+else
+    test "$#" -eq 4
+    test "$1" = "-C"
+    test "$2" = "$HOME/dev/dotfiles-v2"
+    test "$3" = "deps"
+    test "$4" = "uv"
+    test -L "$HOME/.config/mise"
+    touch "$2/deps-uv-ran"
+fi
+""",
     }.items():
         stub = tmp_path / name
         stub.write_text(f"#!/bin/sh\n{body}\n")
@@ -175,3 +193,105 @@ def test_sync_bootstraps_without_identity(tmp_path: Path, login_shell: str) -> N
     assert stat.S_IMODE((tmp_path / ".config/fnox").stat().st_mode) == 0o700
     assert not (tmp_path / ".config/fnox/age.txt").exists()
     assert (tmp_path / ".config/mise").resolve() == target
+    assert (checkout / "deps-uv-ran").is_file()
+
+
+@pytest.fixture
+def pc_stack_doctor() -> ModuleType:
+    path = ROOT / "tasks/py/pc_stack_doctor.py"
+    spec = importlib.util.spec_from_file_location("pc_stack_doctor", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("check", ["status", "plan"])
+def test_doctor_rejects_each_missing_bootstrap_resource(
+    pc_stack_doctor: ModuleType, monkeypatch: pytest.MonkeyPatch, check: str
+) -> None:
+    config = tomllib.loads((MISE / "config.pc.toml").read_text())["bootstrap"]
+    declared = {("file", name) for name in config["files"]}
+    declared.update(
+        ("user-service" if spec.get("scope") == "user" else "service", name)
+        for name, spec in config["services"].items()
+    )
+    if check == "plan":
+        declared.update(("package", name) for name in config["packages"])
+
+    def report_for(resources: set[tuple[str, str]]) -> dict:
+        entries = [
+            (
+                kind,
+                {
+                    "id": {"kind": kind, "name": str(Path(name).expanduser())},
+                    "origin": None if kind == "package" else {"environment": ["pc"]},
+                    "action": "noop",
+                },
+            )
+            for kind, name in sorted(resources)
+        ]
+        if check == "plan":
+            return {"resources": [entry for _, entry in entries]}
+        return {
+            "files": [entry for kind, entry in entries if kind == "file"],
+            "services": [entry for kind, entry in entries if kind == "service"],
+            "user_services": [
+                {"name": name, "action": "noop"}
+                for kind, name in resources
+                if kind == "user-service"
+            ],
+        }
+
+    def fake_run(*args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert args[2] == check
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(report))
+
+    monkeypatch.setattr(pc_stack_doctor, "run", fake_run)
+    report = report_for(declared)
+    assert pc_stack_doctor.bootstrap(check) == f"{len(declared)} pc resources match"
+
+    for kind, name in sorted(declared):
+        report = report_for(declared - {(kind, name)})
+        with pytest.raises(ValueError) as error:
+            pc_stack_doctor.bootstrap(check)
+        assert str(error.value) == f"missing pc declarations: {kind}:{name}"
+
+
+@pytest.mark.parametrize("second_state", ["inactive", "activating", "failed"])
+def test_doctor_retries_activating_cdi_once(
+    pc_stack_doctor: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    second_state: str,
+) -> None:
+    states = iter(("activating", second_state))
+    shown = []
+    sleeps = []
+    spec = tmp_path / "nvidia.yaml"
+    spec.touch()
+
+    def fake_run(*args: str) -> subprocess.CompletedProcess[str]:
+        output = ""
+        if args[:2] == ("systemctl", "show"):
+            state = next(states)
+            shown.append(state)
+            output = (
+                f"LoadState=loaded\nUnitFileState=enabled\nActiveState={state}\n"
+                "Result=success\n"
+            )
+        elif args[0] == "nvidia-ctk":
+            output = "nvidia.com/gpu=all\n"
+        return subprocess.CompletedProcess(args, 0, stdout=output)
+
+    monkeypatch.setattr(pc_stack_doctor, "run", fake_run)
+    monkeypatch.setattr(pc_stack_doctor, "Path", lambda _: spec)
+    monkeypatch.setattr(pc_stack_doctor.os.path, "lexists", lambda _: False)
+    monkeypatch.setattr(pc_stack_doctor.time, "sleep", sleeps.append)
+    if second_state == "failed":
+        with pytest.raises(ValueError, match="outside its successful oneshot state"):
+            pc_stack_doctor.gpu_cdi()
+    else:
+        assert "device spec match" in pc_stack_doctor.gpu_cdi()
+    assert sleeps == [2]
+    assert shown == ["activating", second_state]

@@ -1,0 +1,447 @@
+#!/usr/bin/env bash
+# gha-slot: one-job GitHub Actions runner slots in fresh containers on the PC.
+# Installed at /usr/local/sbin/gha-slot; source of truth cpp-standard docs/standard/gha-runner/gha-slot.
+#
+#   gha-slot slot add <repo> [--name N] [--cpus N] [--memory SIZE] [--scope org|repo] [--label L]... [--group-verified]
+#                                  add a slot to the config (backup first, atomic replace), then dry-run it;
+#                                  enabling it stays separate: systemctl enable --now gha-slot@<name>.service;
+#                                  removing a slot is a manual step (README: "Retire a slot")
+#   gha-slot build                 build the runner image (Dockerfile next to the config)
+#   gha-slot smoke <slot>          start a job container with the slot's limits and run local checks (no GitHub)
+#   gha-slot exec <slot> <cmd...>  run a command in a fresh job container with the slot's limits (no GitHub)
+#   gha-slot warm <slot> [dir]     trusted step: install the repo's mise tools (default branch, or a local
+#                                  checkout dir for testing) into the slot's tools volume
+#   gha-slot wipe <slot>           delete the slot's tools and sccache volumes (rebuilt on the next job)
+#   gha-slot dry-run <slot>        print the docker command a job would use (no GitHub, nothing started)
+#   gha-slot compiler-once <run-id> <sha> --group-verified  one protected-main CPP compiler qualification
+#   gha-slot once <slot>           warm, then register one single-use (JIT) runner, run one job, clean up
+#   gha-slot run <slot>            loop `once` forever (what gha-slot@<slot>.service runs)
+#
+# Config: /etc/gha-runner/runner.json (override with GHA_RUNNER_CONFIG). Auth: a GitHub App JWT -> a 1-hour
+# installation token -> a single-use JIT runner config; nothing is written to disk and no token is printed.
+# Each slot names its app (`app`, default "main" in .apps) and its scope ("repo": runner registered on the slot's
+# repo; "org": on the owner org's default group), so org-level runners or a second App only need config.
+#
+# Jobs: a new container per job (--rm), user runner (uid 1001), no Docker socket, no sudo, all capabilities
+# dropped, no-new-privileges, CPU/memory/pids limits. Volumes (owner decision 2026-11-10):
+#   gha-tools-<slot>   -> /cache/mise     READ-ONLY in jobs; written only by `warm`, a trusted step that installs
+#                                         the tools named by the repo's default-branch mise config. Jobs read
+#                                         it as a mise shared install dir; a tool a branch adds installs into the
+#                                         job's own data dir (~/.local/share/mise), discarded with the container
+#   gha-sccache-<slot> -> /cache/sccache  writable compiler cache (sccache; CMake launcher env set)
+# Both are wiped automatically between jobs once older than cache_max_age_days (default 7).
+# Network: jobs and warm use Docker network gha-jobs (bridge br-gha): internet only, never LAN, tailnet or this host
+# (ufw rules in ufw-gha-jobs.rules plus netguard); a job does not start without that fence.
+set -euo pipefail
+
+CONF="${GHA_RUNNER_CONFIG:-/etc/gha-runner/runner.json}"
+SELF="$(realpath "$0")" # for the fresh-process dry-run of a candidate config
+DIR="$(dirname "$CONF")"
+STATE=/var/lib/gha-runner
+NET=gha-jobs NET_SUBNET=172.30.0.0/24
+# The host resolves through the router and Tailscale (both blocked for jobs), so jobs use public resolvers.
+DNS_ARGS="--dns 1.1.1.1 --dns 9.9.9.9"
+
+die() { echo "gha-slot: $*" >&2; exit 1; }
+cfg() { jq -er "$1" "$CONF"; }
+# A slot's value, falling back to defaults (empty if neither is set).
+slotval() { jq -r --arg s "$SLOT" --arg k "$1" '(.slots[$s][$k] // .defaults[$k]) // empty' "$CONF"; }
+
+load_slot() {
+  SLOT="${1:?slot name}"
+  [ -r "$CONF" ] || die "cannot read $CONF"
+  jq -e . "$CONF" >/dev/null 2>&1 || die "$CONF does not parse; fix it or restore a runner.json.bak-* first"
+  jq -e --arg s "$SLOT" '.slots[$s]' "$CONF" >/dev/null || die "no slot '$SLOT' in $CONF"
+  OWNER=$(cfg .github.owner)
+  REPO=$(jq -er --arg s "$SLOT" '.slots[$s].repo' "$CONF")
+  IMAGE=$(cfg .image)
+  CPUS=$(slotval cpus); MEM=$(slotval memory); PIDS=$(slotval pids_limit); SHM=$(slotval shm_size)
+  MAXMIN=$(slotval max_job_minutes); SCSIZE=$(slotval sccache_size); SCSIZE=${SCSIZE:-20G}
+  MAXAGE=$(slotval cache_max_age_days); MAXAGE=${MAXAGE:-7}
+  SCOPE=$(slotval scope); SCOPE=${SCOPE:-org}
+  APP=$(slotval app); APP=${APP:-main}
+  LABELS=$(jq -er --arg s "$SLOT" '((.defaults.labels // []) + (.slots[$s].labels_extra // [])) | unique | join(",")' "$CONF")
+  TOOLS="gha-tools-$SLOT"; SCC="gha-sccache-$SLOT"
+  # Optional pinned CPU list (e.g. "0-9"): then nproc inside the job reports the real count.
+  CPUSET=$(slotval cpuset)
+  # Build parallelism: the slot's "jobs", else whole CPUs (glaze: ~1.4 GB per GCC compile, so fewer jobs than CPUs).
+  JOBS=$(slotval jobs); JOBS=${JOBS:-${CPUS%.*}}
+  case "$JOBS" in ""|*[!0-9]*|0*) die "slot $SLOT: jobs must be a positive integer without leading zeros (got '$JOBS')" ;; esac
+  case "$SCOPE" in
+    repo) RUNNERS="/repos/$OWNER/$REPO/actions/runners" ;;
+    org)  RUNNERS="/orgs/$OWNER/actions/runners" ;;
+    *) die "slot $SLOT: scope must be repo or org" ;;
+  esac
+}
+
+limits() { # resource and security limits shared by job, warm and test containers
+  # USER: docker sets HOME but not USER, and repo configs may read it (dotfiles' mise.toml uses {{ env.USER }}).
+  printf '%s\n' --cpus "$CPUS" --memory "$MEM" --memory-swap "$MEM" --pids-limit "$PIDS" --shm-size "$SHM" \
+    --cap-drop ALL --security-opt no-new-privileges -u 1001:1001 -e USER=runner
+  [ -n "$CPUSET" ] && printf '%s\n' --cpuset-cpus "$CPUSET"
+  return 0
+}
+
+job_args() {
+  # $1 = container name. --cpus is a quota, so nproc still shows all 24 threads; tell build tools the real
+  # parallelism so they don't oversubscribe the slot.
+  printf '%s\n' run -d -e container=docker --name "$1" --network "$NET" $DNS_ARGS \
+    --log-driver journald --log-opt "tag=gha-slot-$SLOT" \
+    -v "$TOOLS:/cache/mise:ro" -v "$SCC:/cache/sccache" \
+    -e GHA_SLOT="$SLOT" -e GHA_SLOT_JOBS="$JOBS" \
+    -e CMAKE_BUILD_PARALLEL_LEVEL="$JOBS" -e CTEST_PARALLEL_LEVEL="$JOBS" -e MAKEFLAGS="-j$JOBS" \
+    -e SCCACHE_CACHE_SIZE="$SCSIZE" -e CMAKE_C_COMPILER_LAUNCHER=sccache -e CMAKE_CXX_COMPILER_LAUNCHER=sccache
+  limits
+}
+
+netguard() { # fail closed: no job or warm container starts unless the jobs network is fenced off
+  # Tailscale's ts-forward chain accepts anything routed out tailscale0 before DOCKER-USER runs, so the tailnet
+  # block lives in mangle FORWARD (Tailscale and ufw don't manage that chain); re-added here if a reboot dropped it.
+  iptables -t mangle -C FORWARD -i br-gha -o tailscale0 -j DROP 2>/dev/null \
+    || iptables -t mangle -I FORWARD 1 -i br-gha -o tailscale0 -j DROP \
+    || die "cannot install the br-gha tailnet block"
+  [ "$(docker network inspect -f '{{index .Options "com.docker.network.bridge.name"}}' "$NET" 2>/dev/null)" = br-gha ] \
+    || die "network $NET is not on bridge br-gha; remove it (docker network rm $NET) and retry"
+  [ "$(iptables -S DOCKER-USER 2>/dev/null | grep -c -- '-i br-gha .*ufw-docker-logging-deny')" -ge 6 ] \
+    || die "ufw's 6 br-gha drops are missing from DOCKER-USER (see ufw-gha-jobs.rules); refusing to start jobs"
+  iptables -S ufw-before-input 2>/dev/null | grep -q -- '-i br-gha .*-j DROP' \
+    || die "ufw's br-gha host-input drop is missing (see ufw-gha-jobs.rules); refusing to start jobs"
+}
+
+ensure_volumes() {
+  local v
+  # Jobs and warm run on their own bridge (br-gha). The PC's ufw rules (/etc/ufw/after.rules, before.rules) drop
+  # its new connections to LAN, tailnet, link-local and multicast ranges and to the host itself: internet only.
+  docker network inspect "$NET" >/dev/null 2>&1 || docker network create --driver bridge --subnet "$NET_SUBNET" \
+    -o com.docker.network.bridge.name=br-gha "$NET" >/dev/null
+  netguard
+  for v in "$TOOLS" "$SCC"; do
+    docker volume inspect "$v" >/dev/null 2>&1 && continue
+    docker volume create "$v" >/dev/null
+    docker run --rm -e container=docker --network none -u 0 -v "$v:/v" --entrypoint sh "$IMAGE" -c 'chown 1001:1001 /v'
+  done
+  install -d -m 700 "$STATE"
+  [ -e "$STATE/$SLOT.created" ] || date +%s > "$STATE/$SLOT.created"
+}
+
+wipe() {
+  docker volume rm -f "$TOOLS" "$SCC" >/dev/null
+  rm -f "$STATE/$SLOT.created"
+  echo "gha-slot $SLOT: tools and sccache volumes wiped"
+}
+
+maybe_wipe() { # between jobs only, so a wipe never hits a running job
+  local born
+  born=$(cat "$STATE/$SLOT.created" 2>/dev/null || echo 0)
+  [ "$born" -gt 0 ] && [ $(( $(date +%s) - born )) -gt $(( MAXAGE * 86400 )) ] && wipe
+  return 0
+}
+
+# Jobs keep mise's data dir in the job's home (image ENV) and read the tools volume as a shared install dir
+# (MISE_SHARED_INSTALL_DIRS=/cache/mise/installs). Build the job's shims for the shared tools before the runner starts.
+SEED='mise reshim 2>/dev/null || true;'
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+app_token() {
+  local app inst key now hdr pay sig jwt
+  app=$(jq -r --arg a "$APP" '.apps[$a].app_id // empty' "$CONF")
+  inst=$(jq -r --arg a "$APP" '.apps[$a].installation_id // empty' "$CONF")
+  key=$(jq -r --arg a "$APP" '.apps[$a].private_key_path // empty' "$CONF")
+  [ -n "$app" ] && [ -n "$inst" ] || die "apps.$APP.app_id / installation_id not set in $CONF"
+  [ -r "$key" ] || die "cannot read the app key $key"
+  now=$(date +%s)
+  hdr=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+  pay=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$app" | b64url)
+  sig=$(printf '%s.%s' "$hdr" "$pay" | openssl dgst -sha256 -sign "$key" | b64url)
+  jwt="$hdr.$pay.$sig"
+  # Bearer tokens go to curl on stdin (-H @-), never in its argv, where any local user could read them in ps.
+  curl -fsS --max-time 15 -X POST -H @- -H "Accept: application/vnd.github+json" \
+    "$(cfg .github.api)/app/installations/$inst/access_tokens" <<<"Authorization: Bearer $jwt" | jq -er .token
+}
+
+api() { # method path [json]
+  curl -fsS --max-time 15 -X "$1" -H @- -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" ${3:+-d "$3"} "$(cfg .github.api)$2" <<<"Authorization: Bearer $TOKEN"
+}
+
+# Trusted step: shallow-clone the default branch (or use a local dir) and `mise install` its tools into the
+# tools volume, writable only here. The token reaches git through GIT_CONFIG_* env, never a command line: docker
+# gets `-e NAME` with no value and copies it from its own environment, so it is not in docker's argv either.
+warm() {
+  local src="${1:-}" mounts=() envs=()
+  ensure_volumes
+  if [ -n "$src" ]; then
+    mounts=(-v "$(realpath "$src"):/src:ro")
+    envs=(-e WARM_SRC=/src)
+  else
+    [ -n "${TOKEN:-}" ] || TOKEN=$(app_token)
+    local GIT_CONFIG_VALUE_0
+    GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | openssl base64 -A)"
+    export GIT_CONFIG_VALUE_0
+    envs=(-e WARM_URL="https://github.com/$OWNER/$REPO.git" -e GIT_CONFIG_COUNT=1
+          -e GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader -e GIT_CONFIG_VALUE_0)
+  fi
+  mapfile -t lim < <(limits)
+  # --init: PID 1 in the container passes SIGTERM on, so a slot stop during warm ends it instead of waiting.
+  docker run --rm --init -e container=docker --name "pc-x86-$SLOT-warm-$$" --network "$NET" $DNS_ARGS "${lim[@]}" --log-driver journald --log-opt "tag=gha-slot-$SLOT" \
+    -v "$TOOLS:/cache/mise" "${mounts[@]}" "${envs[@]}" --entrypoint bash "$IMAGE" -c '
+      set -euo pipefail
+      export MISE_DATA_DIR=/cache/mise MISE_CACHE_DIR=/tmp/mise-cache MISE_STATE_DIR=/tmp/mise-state
+      unset MISE_SHARED_INSTALL_DIRS
+      if [ -n "${WARM_SRC:-}" ]; then cp -a "$WARM_SRC" /tmp/repo; else git clone -q --depth 1 "$WARM_URL" /tmp/repo; fi
+      cd /tmp/repo
+      # A config mise cannot read is an error, not "no config" (it used to be hidden by 2>/dev/null).
+      if ! cfgs=$(mise config ls 2>&1); then printf "warm: mise cannot read the repo config:\n%s\n" "$cfgs" >&2; exit 1; fi
+      if grep -q /tmp/repo <<<"$cfgs"; then
+        mise trust -q -a && mise install && mise reshim && echo "warm: tools ready: $(mise ls --current 2>/dev/null | awk "{print \$1\"@\"\$2}" | tr "\n" " ")"
+      else echo "warm: the repo has no mise config; nothing to install"; fi'
+}
+
+once() {
+  load_slot "$1"
+  maybe_wipe
+  ensure_volumes
+  local name body resp jit rid cid rc=0
+  name="pc-x86-$SLOT-$(date +%Y%m%d%H%M%S)"
+  cleanup() { # safe to run twice, and before the container or runner exists
+    # By name, so a container created just before a signal (cid not yet assigned) is removed too.
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    # A JIT runner deletes itself after its job; this only removes one that never got a job. A fresh token,
+    # because an installation token lasts one hour and a runner can wait for a job much longer than that.
+    # 204 or 404 means it is gone (GitHub answers 204 even for an id that no longer exists), so only other
+    # failures are logged.
+    if [ -n "${rid:-}" ]; then
+      local code
+      code=$( { TOKEN=$(app_token) && curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X DELETE \
+        -H @- -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" \
+        "$(cfg .github.api)$RUNNERS/$rid" <<<"Authorization: Bearer $TOKEN"; } 2>/dev/null ) || true
+      case "$code" in 204|404) ;; *) echo "gha-slot $SLOT: could not delete runner $rid (HTTP ${code:-none}); remove it by hand" >&2 ;; esac
+    fi
+  }
+  # On SIGTERM/SIGINT (systemctl stop or restart) clean up and leave. A trap that only cleaned up let the run
+  # loop register one more runner before systemd's SIGKILL, which left an orphan container and runner. Set
+  # before the runner is registered, so a signal at any point of the round removes what it made.
+  trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
+  TOKEN=$(app_token)
+  # A failed warm must not block the job: it still runs and fails visibly in GitHub if a tool is missing.
+  warm || echo "gha-slot $SLOT: warm step failed; the job runs with the tools already in the volume" >&2
+  body=$(jq -nc --arg n "$name" --arg l "$LABELS" '{name:$n, runner_group_id:1, labels:($l|split(",")), work_folder:"_work"}')
+  resp=$(api POST "$RUNNERS/generate-jitconfig" "$body")
+  jit=$(jq -er .encoded_jit_config <<<"$resp"); rid=$(jq -er .runner.id <<<"$resp")
+  echo "gha-slot $SLOT: runner $name (id $rid, $SCOPE scope) waiting for one job for $OWNER/$REPO (labels [$LABELS])"
+  mapfile -t args < <(job_args "$name")
+  # The runner reads its single-use config from ACTIONS_RUNNER_INPUT_JITCONFIG, so the config is in no process's
+  # argv (ps), on the host or in the container. The listener removes the variable from its environment when it
+  # reads its settings at startup (actions/runner CommandSettings.cs), before it starts any job (upstream code, not
+  # tested here). It stays in the startup processes' /proc environ, readable by the job's user (who can already
+  # read the runner's .credentials files in /home/runner), and in the container's settings, so root and the docker
+  # group see it with docker inspect and in docker exec shells. -e NAME without a value: docker copies it from this
+  # command's environment, so it is not in docker's argv either.
+  cid=$(ACTIONS_RUNNER_INPUT_JITCONFIG="$jit" docker "${args[@]}" -e ACTIONS_RUNNER_INPUT_JITCONFIG \
+    --entrypoint bash "$IMAGE" -c "$SEED"' exec ./run.sh')
+  unset jit
+  timeout "$((MAXMIN * 60))" docker wait "$cid" || rc=$?
+  # MAXMIN bounds the whole round, the wait for a job included, so an idle runner is also recycled here.
+  [ "$rc" = 124 ] && echo "gha-slot $SLOT: runner container passed ${MAXMIN} min (idle or a long job), killed" >&2
+  cleanup; trap - EXIT INT TERM
+  TOKEN=""
+}
+
+test_run() { # $1 = name suffix, rest = bash script; a job-shaped container without GitHub
+  local suffix="$1"; shift
+  ensure_volumes
+  mapfile -t args < <(job_args "pc-x86-$SLOT-$suffix-$$")
+  args=("${args[@]/#-d/--rm}")
+  docker "${args[@]}" --entrypoint bash "$IMAGE" -c "$SEED $*"
+}
+
+dry_run() {
+  load_slot "$1"
+  mapfile -t args < <(job_args "pc-x86-$SLOT-DRYRUN")
+  printf 'ACTIONS_RUNNER_INPUT_JITCONFIG=<single-use config> docker'; printf ' %q' "${args[@]}" -e ACTIONS_RUNNER_INPUT_JITCONFIG --entrypoint bash "$IMAGE" -c "$SEED"' exec ./run.sh'; echo
+  echo "labels: $LABELS   repo: $OWNER/$REPO   scope: $SCOPE   app: $APP   max ${MAXMIN} min"
+}
+
+# Config edits (slot add) follow one rule: take the lock first, run every check under it, then the
+# fresh-process dry-run of the candidate, the backup and the swap, all while the same lock is held. A failure before
+# the final rename leaves runner.json untouched. (2026-11-18: a `jq … | tee` edit without pipefail wrote an empty
+# runner.json.) The lock covers gha-slot's own config edits only.
+lock_conf() {
+  [ -r "$CONF" ] && [ -w "$CONF" ] && [ -w "$DIR" ] || die "need read/write access to $CONF and $DIR (run as root)"
+  # Lock the config directory itself through a read-only descriptor: no lock file to create, follow or truncate.
+  exec 9<"$DIR" || die "cannot open $DIR"
+  flock -n 9 || die "another gha-slot is editing $CONF"
+  jq -e . "$CONF" >/dev/null 2>&1 || die "$CONF does not parse; fix it or restore a runner.json.bak-* first"
+}
+
+# Args: jq filter, jq check on the result, slot to dry-run on the candidate ("" for none), then jq --arg args.
+commit_conf() {
+  local filter="$1" check="$2" slot="$3" tmp btmp bak sum; shift 3
+  # mktemp files are 0600 from the start: the config holds App settings.
+  tmp=$(mktemp "$DIR/.runner.json.XXXXXX") && btmp=$(mktemp "$DIR/.runner.json.bak.XXXXXX") \
+    || die "cannot create temp files in $DIR"
+  # shellcheck disable=SC2064 # expand the names now
+  trap "rm -f '$tmp' '$btmp'" EXIT
+  jq "$@" "$filter" "$CONF" >"$tmp" || die "jq failed; $CONF unchanged"
+  [ -s "$tmp" ] || die "jq wrote an empty file; $CONF unchanged"
+  jq -e "$@" "$check" "$tmp" >/dev/null || die "the new config fails its check; $CONF unchanged"
+  # A fresh process, so `set -e` applies to every config read (it is off inside `( … ) || …` in this one).
+  if [ -n "$slot" ]; then
+    echo "gha-slot: dry-run of the candidate config:"
+    GHA_RUNNER_CONFIG="$tmp" bash "$SELF" dry-run "$slot" || die "the new config fails its dry-run; $CONF unchanged"
+  fi
+  # Backup named by the full sha256 of the original. An existing one is reused only if it is a regular file (not a
+  # symlink) whose content still hashes to its name; otherwise a verified copy replaces it.
+  sum=$(sha256sum "$CONF" | cut -d' ' -f1)
+  bak="$CONF.bak-$sum"
+  if ! { [ -f "$bak" ] && [ ! -L "$bak" ] && [ "$(sha256sum <"$bak" | cut -d' ' -f1)" = "$sum" ]; }; then
+    { cp -p "$CONF" "$btmp" && cmp -s "$CONF" "$btmp" && mv -fT "$btmp" "$bak"; } \
+      || die "cannot write the backup $bak; $CONF unchanged"
+  fi
+  [ -f "$bak" ] && [ ! -L "$bak" ] && [ "$(sha256sum <"$bak" | cut -d' ' -f1)" = "$sum" ] \
+    || die "the backup $bak does not verify; $CONF unchanged"
+  if ! { chown --reference="$CONF" "$tmp" && chmod --reference="$CONF" "$tmp"; }; then
+    die "cannot copy owner/mode; $CONF unchanged"
+  fi
+  mv -fT "$tmp" "$CONF" || die "cannot replace $CONF; it is unchanged"
+  rm -f "$btmp"; trap - EXIT
+  echo "gha-slot: $CONF updated (backup $bak)"
+}
+
+# No dots, so a slot name can never end in ".service" and name a different systemd instance.
+valid_name() { [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || die "bad slot name '$1' (lowercase letters, digits, _ -)"; }
+
+check_no_volumes() { # a new slot must not inherit an old slot's tools or writable compiler cache by name
+  local vols v
+  vols=$(docker volume ls -q) || die "cannot list docker volumes; refusing to add a slot without checking for old ones"
+  for v in "gha-tools-$1" "gha-sccache-$1"; do
+    ! grep -qxF "$v" <<<"$vols" || die "volume $v from an earlier slot '$1' still exists; remove it (docker volume rm $v) or pick another --name"
+  done
+}
+
+# Org-scope runners register in the org's Default runner group (id 1). Owner decision 2026-11-18: that group allows
+# only selected repositories. Check with the App token, read-only: the group must be set to selected repositories,
+# must list the repo, and must allow public repositories if the repo is public. Fail closed: any token, request or
+# response failure refuses. An operator who has checked all of that by hand reruns with --group-verified.
+check_runner_group() {
+  local repo="$1" manual group vis pub resp page n hit
+  manual="check by hand: GitHub > $OWNER settings > Actions > Runner groups > Default must be set to selected repositories, list $repo, and allow public repositories if $repo is public; then rerun with --group-verified"
+  APP=$(jq -r '.defaults.app // "main"' "$CONF")
+  TOKEN=$(app_token 2>/dev/null) || die "cannot get an App token to check the Default runner group; $manual"
+  group=$(api GET "/orgs/$OWNER/actions/runner-groups/1" 2>/dev/null) \
+    && vis=$(jq -er '.visibility | strings' <<<"$group") \
+    && pub=$(jq -r '.allows_public_repositories | if type == "boolean" then tostring else error("missing") end' <<<"$group" 2>/dev/null) \
+    || { TOKEN=""; die "cannot read the Default runner group; $manual"; }
+  [ "$vis" = selected ] || { TOKEN=""; die "the $OWNER Default runner group allows '$vis' repositories, not selected ones; set it to selected repositories and add $repo, then retry"; }
+  hit=""
+  for page in $(seq 1 50); do
+    resp=$(api GET "/orgs/$OWNER/actions/runner-groups/1/repositories?per_page=100&page=$page" 2>/dev/null) \
+      && jq -e '.repositories | type == "array"' <<<"$resp" >/dev/null 2>&1 \
+      || { TOKEN=""; die "cannot list the Default runner group; $manual"; }
+    hit=$(jq -c --arg r "$repo" 'first(.repositories[] | select(.name == $r)) // empty' <<<"$resp")
+    [ -n "$hit" ] && break
+    n=$(jq '.repositories | length' <<<"$resp")
+    [ "$n" -lt 100 ] && break
+  done
+  TOKEN=""
+  [ -n "$hit" ] || die "$repo is not in the $OWNER Default runner group's selected repositories; add it there first, then retry"
+  case "$(jq -r '.private | if type == "boolean" then tostring else "unknown" end' <<<"$hit")" in
+    true) ;;
+    false) [ "$pub" = true ] || die "$repo is public but the $OWNER Default runner group does not allow public repositories; allow them there first, then retry" ;;
+    *) die "cannot tell whether $repo is public from the runner group listing; $manual" ;;
+  esac
+  echo "gha-slot: $repo is in the Default runner group (selected repositories)"
+}
+
+slot_add() {
+  local repo="${1:-}" name="" cpus="" mem="" scope="" verified="" labels=() l extra
+  [ -n "$repo" ] && [ "${repo#-}" = "$repo" ] || die "usage: gha-slot slot add <repo> [--name N] [--cpus N] [--memory SIZE] [--scope org|repo] [--label L]... [--group-verified]"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --group-verified) verified=1; shift; continue ;;
+    esac
+    [ $# -ge 2 ] || die "option $1 needs a value"
+    case "$1" in
+      --name) name="$2" ;; --cpus) cpus="$2" ;; --memory) mem="$2" ;; --scope) scope="$2" ;; --label) labels+=("$2") ;;
+      *) die "unknown option $1" ;;
+    esac
+    shift 2
+  done
+  [[ "$repo" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || die "bad repo name '$repo' (a name in the owner org, not owner/repo)"
+  name="${name:-$(tr '[:upper:]' '[:lower:]' <<<"$repo")}"
+  valid_name "$name"
+  [ -z "$cpus" ] || [[ "$cpus" =~ ^[1-9][0-9]*(\.[0-9]+)?$ ]] || die "bad --cpus '$cpus' (a positive number)"
+  [ -z "$mem" ] || [[ "$mem" =~ ^[1-9][0-9]*[bkmg]?$ ]] || die "bad --memory '$mem' (e.g. 14g)"
+  # Org scope unless asked: the App has no Administration permission, so repo-scope registration would fail
+  # (owner decision 2026-11-18). The scope is written into the slot, never left to the defaults.
+  scope="${scope:-org}"
+  case "$scope" in org|repo) ;; *) die "bad --scope '$scope' (org or repo)" ;; esac
+  for l in "${labels[@]}"; do [[ "$l" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "bad --label '$l'"; done
+  lock_conf
+  ! jq -e --arg n "$name" '.slots | has($n)' "$CONF" >/dev/null || die "slot '$name' already exists in $CONF"
+  check_no_volumes "$name"
+  OWNER=$(cfg .github.owner)
+  if [ "$scope" = org ]; then
+    echo "gha-slot: slot $name registers org-scope runners in $OWNER's Default runner group; only repositories that group allows can use it"
+    if [ -n "$verified" ]; then
+      echo "gha-slot: --group-verified: the operator checked the Default runner group by hand; no GitHub check"
+    else
+      check_runner_group "$repo"
+    fi
+  fi
+  check_no_volumes "$name" # again, after the GitHub requests
+  extra=$(printf '%s\n' "$name" "${labels[@]}" | jq -Rnc '[inputs | select(length > 0)] | unique')
+  commit_conf 'if .slots | has($n) then error("slot exists") else .slots[$n] = ({repo: $r, labels_extra: $l, scope: $s}
+      + (if $c == "" then {} else {cpus: ($c | tonumber)} end)
+      + (if $m == "" then {} else {memory: $m} end)) end' \
+    '(.slots | type == "object") and .slots[$n].repo == $r and .slots[$n].scope == $s' "$name" \
+    --arg n "$name" --arg r "$repo" --arg c "$cpus" --arg m "$mem" --arg s "$scope" --argjson l "$extra"
+  echo "gha-slot: next, run the repo's CI test commands in it (gha-slot exec $name '...'), then warm, then systemctl enable --now gha-slot@$name.service"
+}
+
+case "${1:-}" in
+  slot)
+    case "${2:-}" in
+      add) shift 2; slot_add "$@" ;;
+      *) die "usage: gha-slot slot add <repo> [options]  (removing a slot is a manual step: see the README)" ;;
+    esac ;;
+  build)
+    docker build -t "$(cfg .image)" -f "$DIR/Dockerfile" "$DIR" ;;
+  dry-run)
+    dry_run "${2:-}" ;;
+  smoke)
+    load_slot "${2:-}"
+    test_run smoke '
+      echo "user: $(id -un) uid $(id -u)"; echo "nproc: $(nproc)  mem limit: $(( $(cat /sys/fs/cgroup/memory.max) / 1073741824 )) GiB"
+      echo "build jobs: $GHA_SLOT_JOBS (cmake $CMAKE_BUILD_PARALLEL_LEVEL, make $MAKEFLAGS)"
+      echo "caps: $(grep CapEff /proc/self/status)"; echo "no_new_privs: $(grep NoNewPrivs /proc/self/status | cut -f2)"
+      sudo -n true 2>/dev/null && echo "sudo: ALLOWED (bad)" || echo "sudo: denied"
+      [ -S /var/run/docker.sock ] && echo "docker socket: PRESENT (bad)" || echo "docker socket: absent"
+      echo "mise: $(mise --version)"; echo "sccache: $(sccache --version)"
+      touch /cache/mise/.w 2>/dev/null && echo "tools volume: WRITABLE (bad)" || echo "tools volume: read-only"
+      touch /cache/sccache/.w && rm /cache/sccache/.w && echo "sccache volume: writable"
+      echo "runner: $(./bin/Runner.Listener --version 2>/dev/null)"' ;;
+  exec)
+    load_slot "${2:-}"; shift 2
+    test_run exec "$*" ;;
+  warm)
+    load_slot "${2:-}"; warm "${3:-}"; TOKEN="" ;;
+  wipe)
+    load_slot "${2:-}"; wipe ;;
+  compiler-once)
+    # Installed beside runner.json, never sourced from a job work directory.
+    helper="$DIR/pc-compiler-once.sh"
+    [[ -f "$helper" && ! -L "$helper" && "$(stat -c '%u:%a' "$helper")" == 0:555 ]] ||
+      die "missing root-owned CPP compiler launcher"
+    # shellcheck source-path=SCRIPTDIR source=pc-compiler-once.sh
+    source "$helper"
+    shift
+    compiler_once "$@"
+    ;;
+  once) once "${2:-}" ;;
+  run)
+    while true; do once "${2:-}" || { echo "gha-slot ${2:-}: round failed, retry in 30 s" >&2; sleep 30; }; done ;;
+  *) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'; exit 2 ;;
+esac

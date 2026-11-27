@@ -9,6 +9,126 @@ FNOX_AGE_KEY_FILE = "{{ env.HOME }}/.config/fnox/age.txt"
 
 [bootstrap.packages]
 "pacman:zsh" = "latest"
+"pacman:nvidia-container-toolkit" = "latest"
+
+# Runner and host services ported from cpp-standard (6eec09e).
+# Apply a firewall change only with the runner slots drained. Files do not
+# notify services, so routine bootstrap cannot restart active slots or the fence.
+[bootstrap.files."/etc/systemd/system/gha-slot@.service"]
+os = "linux"
+source = "assets/pc/gha-slot@.service"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/systemd/system/gha-fence.service"]
+os = "linux"
+source = "assets/pc/gha-fence.service"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/gha-runner/fence.rules"]
+os = "linux"
+source = "assets/pc/fence.rules"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/gha-runner/fence6.rules"]
+os = "linux"
+source = "assets/pc/fence6.rules"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/ufw/before.rules"]
+os = "linux"
+source = "assets/pc/ufw-before.rules"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/ufw/after.rules"]
+os = "linux"
+source = "assets/pc/ufw-after.rules"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/systemd/system/acu-trial.service"]
+os = "linux"
+source = "assets/pc/acu-trial.service"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/usr/local/sbin/gha-slot"]
+os = "linux"
+source = "assets/pc/gha-slot"
+owner = "root"
+group = "root"
+mode = "0755"
+
+[bootstrap.files."~/.local/bin/agent-secrets"]
+os = "linux"
+source = "assets/pc/agent-secrets.bash"
+mode = "0755"
+
+# The package provides the units in /usr/lib/systemd/system. Keep only the
+# dynamically refreshed CDI spec in /run/cdi.
+[bootstrap.files."/etc/cdi/nvidia.yaml"]
+os = "linux"
+state = "absent"
+
+[bootstrap.services."gha-fence.service"]
+state = "running"
+enabled = true
+
+[bootstrap.services.ufw]
+state = "running"
+enabled = true
+
+[bootstrap.services."gha-slot@glaze"]
+state = "running"
+enabled = true
+
+[bootstrap.services."gha-slot@cpp-utilities"]
+state = "running"
+enabled = true
+
+[bootstrap.services."gha-slot@dotfiles"]
+state = "running"
+enabled = true
+
+[bootstrap.services."gha-slot@hft-challenges-prototype"]
+state = "running"
+enabled = true
+
+[bootstrap.services."gha-slot@knowledge-base-v2"]
+state = "running"
+enabled = true
+
+[bootstrap.services."acu-trial.service"]
+state = "running"
+enabled = true
+
+[bootstrap.services."nvidia-cdi-refresh.path"]
+state = "running"
+enabled = true
+
+# The oneshot finishes inactive after a successful run.
+[bootstrap.services."nvidia-cdi-refresh.service"]
+state = "stopped"
+enabled = true
+
+[bootstrap.services.agent-secrets]
+scope = "user"
+command = "~/.local/bin/agent-secrets serve"
+description = "Short-lived GitHub tokens and agent keys for project agent containers (cpp-standard D155)"
+restart = "always"
+requires_tools = true
+environment = { PATH = "/usr/local/bin:/usr/bin:/bin" }
 
 [dotfiles]
 "~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/pc-env.sh" ] && . "${HOME}/.config/dotfiles-v2/pc-env.sh"', position = "prepend" }

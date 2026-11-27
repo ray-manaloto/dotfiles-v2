@@ -1,0 +1,15 @@
+[Unit]
+Description=Job fence: mangle drops for the gha-jobs bridge (br-gha)
+Documentation=file:///etc/gha-runner/README.md
+DefaultDependencies=no
+After=systemd-sysctl.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/iptables-restore --noflush /etc/gha-runner/fence.rules
+ExecStart=/usr/bin/ip6tables-restore --noflush /etc/gha-runner/fence6.rules
+
+[Install]
+WantedBy=multi-user.target

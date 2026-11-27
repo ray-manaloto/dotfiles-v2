@@ -1,0 +1,15 @@
+[Unit]
+Description=apt cache container (acu-trial), started once the tailnet address exists
+Documentation=https://github.com/ray-manaloto/dotfiles/issues/735
+After=docker.service tailscale-online.target
+Requires=docker.service tailscale-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/docker start -a acu-trial
+ExecStop=/usr/bin/docker stop acu-trial
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

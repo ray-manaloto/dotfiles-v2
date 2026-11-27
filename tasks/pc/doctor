@@ -1,16 +1,20 @@
 #!/usr/bin/env -S usage exec bash
 # shellcheck shell=bash
-#MISE description="Check the remote Option A config, login shell, Tailscale version, and fnox resolution"
+#MISE description="Check pc bootstrap drift, runtime guards, and Option A host configuration"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
 #USAGE flag "--dry-run" help="Describe the checks without connecting"
 set -euo pipefail
 
 host="${usage_host:-pc}"
 if [[ ${usage_dry_run:-false} == true ]]; then
-	echo "pc:doctor dry-run ($host): check standalone mise, Option A symlink, upgrade settings, Tailscale, zsh, and fnox"
+	echo "pc:doctor dry-run ($host): check bootstrap drift, kernel, container privilege, GPU CDI, pending updates, firewall, mise, Tailscale, zsh, and fnox"
 	exit 0
 fi
-ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
+taskdir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+result=0
+ssh -o BatchMode=yes -- "$host" /usr/bin/python3 -I -B - <"$taskdir/../py/pc_stack_doctor.py" || result=1
+ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE' || result=1
+export MISE_AUTO_INSTALL=0
 config="$HOME/.config/mise"
 [[ -L $config && $config -ef "$HOME/dev/dotfiles-v2/unix/home/.config/mise" ]]
 login_shell=$(getent passwd "$(id -un)" | cut -d: -f7)
@@ -24,12 +28,26 @@ env -u MISE_ENV -u ZDOTDIR -u MISE_SYSTEM_CONFIG_DIR zsh -l -e -s <<'ZSH'
 [[ $(mise settings get upgrade.prune_after) == 24h ]]
 version=$(/usr/bin/tailscale version)
 version=${version%%$'\n'*}
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-printf '%s\n' 1.104.4 "$version" | sort -VC
-[[ -s "$HOME/.config/fnox/age.txt" ]]
+result=0
+if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' 1.104.4 "$version" | sort -VC; then
+	printf 'PASS  tailscale: %s\n' "$version"
+else
+	printf 'FAIL  tailscale: %s (requires at least 1.104.4)\n' "$version" >&2
+	result=1
+fi
 [[ "$HOME/.config/fnox/config.toml" -ef "$HOME/.config/fnox/config.headless.toml" ]]
-unset FNOX_AGE_KEY
-mise exec -- fnox --non-interactive --no-daemon -P infra --no-defaults check --all --strict
+if [[ -s "$HOME/.config/fnox/age.txt" ]]; then
+	unset FNOX_AGE_KEY
+	mise exec -- fnox --non-interactive --no-daemon -P infra --no-defaults check --all --strict
+else
+	echo 'FAIL  fnox-age: missing or empty ~/.config/fnox/age.txt' >&2
+	result=1
+fi
+exit "$result"
 ZSH
 REMOTE
+if ((result)); then
+	echo "FAIL  pc:doctor ($host)" >&2
+	exit "$result"
+fi
 echo "PASS  pc:doctor ($host)"
