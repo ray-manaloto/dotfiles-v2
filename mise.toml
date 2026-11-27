@@ -42,6 +42,16 @@ run = [
 description = "Run full Python test suite via pytest-xdist in locked .venv"
 run = ["mise deps uv", "uv run --offline --locked pytest -n auto"]
 
+[tasks."worktree:audit"]
+description = "Classify every worktree and local branch: merged, squash-merged, upstream-gone, local-only, behind (deletes nothing unless --prune-merged)"
+dir = "{{cwd}}"
+usage = '''
+flag "--repo <path>" help="Repository to audit (default: the directory mise was run from)"
+flag "--base <ref>" help="Base ref for merge checks (default: the remote HEAD branch, else main or master)"
+flag "--prune-merged" help="Remove merged worktrees whose tree is clean and their merged branches (git branch -d)"
+'''
+run = 'exec python3 -I -B "{{ config_root }}/tasks/py/worktree_audit.py" --repo "${usage_repo:-.}" ${usage_base:+--base "$usage_base"} ${usage_prune_merged:+--prune-merged}'
+
 [tasks."doctor:bootstrap-skills"]
 description = "Check AgentsView skill installation and fallback behavior in a scratch home"
 run = "python3 -I -B tasks/py/doctor_bootstrap_skills.py"
@@ -138,6 +148,11 @@ hint = "Keep `env { [\"GIT_OPTIONAL_LOCKS\"] = \"0\" }` at the top of hk.pkl (jd
 [doctor.checks.roadmap-drift]
 description = "Warn-only: no ROADMAP.md \"Remaining:\" entry names a path or file task that already exists on main"
 run = "python3 -I -B tasks/py/doctor_checks.py roadmap-drift"
+
+[doctor.checks.worktree-stale]
+description = "Warn-only: name local branches and worktrees whose commits are on no remote and whose last commit is older than 3 days"
+run = "python3 -I -B tasks/py/worktree_audit.py --doctor --stale-days 3"
+hint = "Never fails; read the WARNING lines with `mise run doctor:explain worktree-stale`, then push or delete each named branch (`mise run worktree:audit` classifies them all)."
 
 [doctor.checks.mise-version-parity]
 description = "Pinned mise versions match across Dockerfile, tasks/vm/up, tasks/pc/up, env:doctor, CI workflows, AGENTS.md, and configs"
