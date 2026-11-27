@@ -71,6 +71,7 @@ SSH_ARG_OPTS = {
 }  # fmt: skip
 DOCKER_ARG_OPTS = {
     "-e", "--env", "-u", "--user", "-w", "--workdir", "--env-file", "--detach-keys",
+    "-v", "--volume", "--name", "--network", "--entrypoint", "--platform", "--mount",
 }  # fmt: skip
 UV_ARG_OPTS = {
     "--with", "-w", "--python", "-p", "--project", "--directory", "--extra",
@@ -411,10 +412,12 @@ def _command_of(words: list[_Word]) -> tuple[str, list[_Word]] | None:
             if i >= n:
                 return ("sh", [])
             return (REMOTE, [_Word(" ".join(w.value for w in words[i:]))])
-        elif name in ("docker", "podman") and nxt == "exec":
+        elif name in ("docker", "podman") and nxt in ("exec", "run"):
             i = (
                 _skip_options(words, i + 2, DOCKER_ARG_OPTS) + 1
-            )  # options, then container
+            )  # options, then container (exec) or image (run)
+        elif name == "tart" and nxt == "exec":
+            i = _skip_options(words, i + 2, set()) + 1  # -i/-t flags, then VM name
         elif (name == "kubectl" and nxt == "exec") or (
             name == "mise" and nxt in ("x", "exec")
         ):
@@ -610,7 +613,7 @@ def find_interpreter_heredoc(command: str, depth: int = 0) -> str | None:
     """Return the interpreter whose program is a non-empty heredoc in `command`, if any.
 
     Only the command word of each pipeline stage counts (after `VAR=` assignments and
-    wrappers such as sudo/env/ssh/docker exec/mise x --/uv run), and only when that
+    wrappers such as sudo/env/ssh/docker exec|run/tart exec/mise x --/uv run), and only when that
     interpreter reads its program from stdin (no script operand, no `-c`/`-e`/`-m`, or
     an explicit `-`/`-s`) or gets it via `-c "$(cat <<EOF ...)"`. Heredocs that are data
     for a script, module or `-c` program, or that feed non-interpreters, stay quiet.
@@ -682,6 +685,8 @@ def render(
       additionalContext. The model-visible Codex channel is therefore the PostToolUse
       registration (`--event post-tool-use`), whose additionalContext Codex adds as
       developer context after the command ran, so the next probe uses a script file.
+      Limit: when dcg blocks the command, PostToolUse never fires, so on that first block
+      Codex's model sees only dcg's own denial text, not this hint.
     * agy PreToolUse: decision=allow plus `reason` and an `injectSteps` systemMessage (the
       channel the SessionStart hooks use). Unverified on an allowed tool call.
     """
@@ -744,6 +749,8 @@ def _run_self_check(hooks_json_path: Path | None) -> list[str]:
         'cd /tmp && /usr/bin/python3 <<"EOF"\nprint(1)\nprint(2)\nEOF': "python3",
         "ssh pc bash -s <<EOF\nuname -a\nEOF": "bash",
         "cat <<'JS' | node\nconsole.log(1)\nJS": "node",
+        "docker run --rm -i -e container=docker -v /x:/x img python3 - <<EOF\nprint(1)\nEOF": "python3",
+        "tart exec -i vm bash -s <<EOF\nuname -a\nEOF": "bash",
         "docker exec -i c python3.12 - <<-PY\n\tprint(1)\n\tPY": "python3.12",
         'python3 - "$a" \\\n  "$b" <<\'PY\'\nprint(1)\nPY': "python3",
         "bash -c \"$(cat <<'EOF'\necho hi\nEOF\n)\"": "bash",
