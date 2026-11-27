@@ -460,6 +460,11 @@ depends = "py-deps-fresh"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-hook-trust"
 hint = "Inspect trust drift with `mise run codex:hook-trust --check --json`. Review changed user hooks before approving them in Codex /hooks. The `--repair` mode is for plugins."
 
+[doctor.checks.plugin-drift]
+description = "Warn-only: tracked plugins (planning-with-files) trail their latest upstream release"
+run = "python3 -I -B tasks/py/doctor_checks.py plugin-drift"
+hint = "Run `mise run plugins:update` (dry-run) then `--apply`; hook-code changes always need owner review (exit 3). Docs: docs/codex-hook-trust.md or the plugins:update section."
+
 [doctor.checks.codex-marketplaces]
 description = "Codex uses only allowlisted Codex-native plugin marketplaces and the ChatGPT desktop Claude importer stays off"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-marketplaces"

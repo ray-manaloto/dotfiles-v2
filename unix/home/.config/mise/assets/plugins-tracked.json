@@ -1,0 +1,11 @@
+{
+  "$schema": "../../../../../schemas/plugins_tracked.schema.json",
+  "plugins": [
+    {
+      "plugin": "planning-with-files",
+      "marketplace": "planning-with-files",
+      "repo": "OthmanAdi/planning-with-files",
+      "tag_prefix": "v"
+    }
+  ]
+}

@@ -154,6 +154,17 @@ from .pc_hub_schema import (
     PcHubTarget,
     PcHubValidationOutcome,
 )
+from .plugins_tracked_schema import PluginsTracked, TrackedPlugin
+from .plugins_update_schema import (
+    PluginsUpdateErrorCode,
+    PluginsUpdateErrorEntry,
+    PluginsUpdateModels,
+    PluginsUpdateResponse,
+    PluginsUpdateReturnCode,
+    PluginsUpdateReturnEntry,
+    PluginsUpdateStatus,
+    PluginUpdateResult,
+)
 from .responses_agent_schema import (
     CodingArtifacts,
     CodingEditArgs,
@@ -298,6 +309,15 @@ __all__ = [
     "PcHubStatusResponse",
     "PcHubTarget",
     "PcHubValidationOutcome",
+    "PluginUpdateResult",
+    "PluginsTracked",
+    "PluginsUpdateErrorCode",
+    "PluginsUpdateErrorEntry",
+    "PluginsUpdateModels",
+    "PluginsUpdateResponse",
+    "PluginsUpdateReturnCode",
+    "PluginsUpdateReturnEntry",
+    "PluginsUpdateStatus",
     "ProposalStatus",
     "ProvenanceRef",
     "ReceiptRecord",
@@ -315,4 +335,5 @@ __all__ = [
     "TargetInventory",
     "TerminalSnapshot",
     "Timing",
+    "TrackedPlugin",
 ]

@@ -773,12 +773,40 @@ def _run_hook_trust(
     )
 
 
+_COSMETIC_MANIFEST_KEYS = frozenset(
+    {
+        "version",
+        "description",
+        "author",
+        "authors",
+        "homepage",
+        "repository",
+        "bugs",
+        "license",
+        "keywords",
+        "displayName",
+        "display_name",
+        "interface",
+        "icon",
+        "logo",
+        "category",
+        "tags",
+        "funding",
+        "contributors",
+        "readme",
+    }
+)
+_MANIFEST_NAMES = frozenset({"plugin.json", "marketplace.json", "package.json"})
+
+
 def _normalize_plugin_manifest(raw_bytes: bytes) -> bytes:
-    """Strip ephemeral `version` from `.codex-plugin/plugin.json` when checking hook surface."""
+    """Drop cosmetic manifest fields (version, description, author, ...) before hashing."""
     try:
         parsed = orjson.loads(raw_bytes)
         if isinstance(parsed, dict):
-            parsed = {k: v for k, v in parsed.items() if k != "version"}
+            parsed = {
+                k: v for k, v in parsed.items() if k not in _COSMETIC_MANIFEST_KEYS
+            }
             return (
                 orjson.dumps(parsed, option=orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2)
                 + b"\n"
@@ -786,6 +814,13 @@ def _normalize_plugin_manifest(raw_bytes: bytes) -> bytes:
     except ValueError:
         pass
     return raw_bytes
+
+
+def _surface_bytes(path: Path) -> bytes:
+    raw = path.read_bytes()
+    if path.name in _MANIFEST_NAMES:
+        return _normalize_plugin_manifest(raw)
+    return raw
 
 
 def _is_safe_bundle_entry(path: Path, root: Path) -> bool:
@@ -805,26 +840,34 @@ def collect_hook_surface(plugin_root: Path) -> dict[str, bytes]:
     surface: dict[str, bytes] = {}
     root = plugin_root.resolve(strict=False)
 
-    plugin_dir = root / ".codex-plugin"
+    manifest_dirname = ".codex-plugin"
+    plugin_dir = root / manifest_dirname
     plugin_manifest = plugin_dir / "plugin.json"
+    referenced_rel_paths: set[str] = set()
     if (
         not plugin_dir.is_symlink()
         and _is_safe_bundle_entry(plugin_manifest, root)
         and plugin_manifest.is_file()
     ):
-        surface[".codex-plugin/plugin.json"] = _normalize_plugin_manifest(
-            plugin_manifest.read_bytes()
+        raw_manifest = plugin_manifest.read_bytes()
+        surface[f"{manifest_dirname}/plugin.json"] = _normalize_plugin_manifest(
+            raw_manifest
         )
+        try:
+            manifest_data = orjson.loads(raw_manifest)
+        except ValueError:
+            manifest_data = None
+        if isinstance(manifest_data, dict) and "hooks" in manifest_data:
+            _extract_referenced_paths(manifest_data["hooks"], referenced_rel_paths)
 
     hooks_dir = root / "hooks"
-    referenced_rel_paths: set[str] = set()
     if _is_safe_bundle_entry(hooks_dir, root) and hooks_dir.is_dir():
         for fpath in sorted(hooks_dir.rglob("*")):
             if not _is_safe_bundle_entry(fpath, root) or not fpath.is_file():
                 continue
             rel = fpath.relative_to(root).as_posix()
             raw = fpath.read_bytes()
-            surface[rel] = raw
+            surface[rel] = _surface_bytes(fpath)
             if fpath.suffix == ".json":
                 try:
                     data = orjson.loads(raw)
@@ -853,7 +896,7 @@ def collect_hook_surface(plugin_root: Path) -> dict[str, bytes]:
         if cand == root or not cand.is_relative_to(root):
             continue
         if cand.is_file():
-            surface[cand.relative_to(root).as_posix()] = cand.read_bytes()
+            surface[cand.relative_to(root).as_posix()] = _surface_bytes(cand)
             parent = cand.parent
             if parent != root and parent not in seen_dirs:
                 seen_dirs.add(parent)
@@ -865,7 +908,7 @@ def collect_hook_surface(plugin_root: Path) -> dict[str, bytes]:
                         and not sib.name.endswith(".pyc")
                         and "__pycache__" not in sib.parts
                     ):
-                        surface[sib.relative_to(root).as_posix()] = sib.read_bytes()
+                        surface[sib.relative_to(root).as_posix()] = _surface_bytes(sib)
         elif cand.is_dir() and cand not in seen_dirs:
             seen_dirs.add(cand)
             for sib in sorted(cand.rglob("*")):
@@ -876,22 +919,30 @@ def collect_hook_surface(plugin_root: Path) -> dict[str, bytes]:
                     and not sib.name.endswith(".pyc")
                     and "__pycache__" not in sib.parts
                 ):
-                    surface[sib.relative_to(root).as_posix()] = sib.read_bytes()
+                    surface[sib.relative_to(root).as_posix()] = _surface_bytes(sib)
 
     return surface
+
+
+def _add_command_paths(command: str, out: set[str]) -> None:
+    for m in _PLUGIN_ROOT_VAR_RE.finditer(command):
+        out.add(m.group(1))
+    for tok in re.findall(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", command):
+        if not tok.startswith("/"):
+            norm = tok[2:] if tok.startswith("./") else tok
+            if norm:
+                out.add(norm)
 
 
 def _extract_referenced_paths(obj: Any, out: set[str]) -> None:
     if isinstance(obj, dict):
         for k, v in obj.items():
             if k == "command" and isinstance(v, str):
-                for m in _PLUGIN_ROOT_VAR_RE.finditer(v):
-                    out.add(m.group(1))
-                for tok in re.findall(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", v):
-                    if not tok.startswith("/"):
-                        norm = tok[2:] if tok.startswith("./") else tok
-                        if norm:
-                            out.add(norm)
+                _add_command_paths(v, out)
+            elif k == "args" and isinstance(v, list):
+                for item in v:
+                    if isinstance(item, str):
+                        _add_command_paths(item, out)
             else:
                 _extract_referenced_paths(v, out)
     elif isinstance(obj, list):

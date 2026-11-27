@@ -9,3 +9,11 @@ mise = true
 port = 4100
 ready_http = { url = "http://127.0.0.1:4100/healthz", timeout = "30s" }
 retry = 3
+
+# Daily tracked-plugin update at 03:17 (6-field cron). `--scheduled` skips Linux, container,
+# and VM hosts; exit 3 (hook change needs owner review) raises a macOS notification.
+# See docs/plugin-updates.md.
+[daemons.plugins-update]
+run = "mise -C ~ run plugins:update --apply --scheduled"
+mise = true
+cron = { schedule = "0 17 3 * * *", retrigger = "finish" }

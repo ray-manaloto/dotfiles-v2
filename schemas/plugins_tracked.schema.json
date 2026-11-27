@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/plugins_tracked.schema.json",
+  "title": "PluginsTracked",
+  "description": "Tracked third-party plugins that `plugins:update` keeps current across Codex and Claude user scope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "plugins"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plugins": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/TrackedPlugin"
+      }
+    }
+  },
+  "$defs": {
+    "TrackedPlugin": {
+      "type": "object",
+      "description": "One plugin tracked against its upstream GitHub releases.",
+      "additionalProperties": false,
+      "required": ["plugin", "marketplace", "repo"],
+      "properties": {
+        "plugin": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Plugin id without the marketplace suffix."
+        },
+        "marketplace": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Marketplace name shared by Codex and Claude."
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "description": "Upstream GitHub owner/repo whose releases define the latest version."
+        },
+        "tag_prefix": {
+          "type": "string",
+          "default": "v",
+          "description": "Prefix stripped from the release tag to obtain the version."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#MISE description="Update tracked Codex/Claude plugins to the latest upstream release (dry-run by default; tree changes need owner review, exit 3)"
+#USAGE flag "--apply" help="Apply updates (otherwise dry-run)"
+#USAGE flag "--json" help="Emit PluginsUpdateResponse JSON"
+#USAGE flag "--plugin <plugin>" help="Only this tracked plugin"
+#USAGE flag "--scheduled" help="Scheduled mode: Mac host only, notify on exit-3 review needs"
+#USAGE flag "--approve <sha256>" help="Apply after owner review: only if the freshly computed gate diff hashes to this value"
+#USAGE flag "--tracked <path>" help="Override assets/plugins-tracked.json"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+lib_dir="$(cd "${script_dir}/../../lib" && pwd -P)"
+repo_root="$(cd "${lib_dir}/../../../../.." && pwd -P)"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} == /* ]]; then
+			common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		else
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		fi
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+
+args=()
+[[ ${usage_apply:-false} == "true" ]] && args+=(--apply)
+[[ ${usage_json:-false} == "true" ]] && args+=(--json)
+[[ -n ${usage_plugin:-} ]] && args+=(--plugin "${usage_plugin}")
+[[ ${usage_scheduled:-false} == "true" ]] && args+=(--scheduled)
+[[ -n ${usage_approve:-} ]] && args+=(--approve "${usage_approve}")
+[[ -n ${usage_tracked:-} ]] && args+=(--tracked "${usage_tracked}")
+
+run='import sys; sys.path.insert(0, sys.argv[1]); from plugins_update.cli import main; raise SystemExit(main(sys.argv[2:]))'
+if [[ -x ${venv_py} ]]; then
+	exec "${venv_py}" -I -B -c "${run}" "${lib_dir}" ${args[@]+"${args[@]}"}
+fi
+exec uv run --project "${repo_root}" --offline --locked --no-dev --quiet python -I -B -c "${run}" "${lib_dir}" ${args[@]+"${args[@]}"}

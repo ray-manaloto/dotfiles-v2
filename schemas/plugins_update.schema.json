@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles-v2.local/schemas/plugins_update.schema.json",
+  "title": "PluginsUpdateModels",
+  "description": "Schema-first models and typed responses for `plugins:update`.",
+  "$defs": {
+    "PluginsUpdateStatus": {
+      "type": "string",
+      "description": "Per-plugin outcome.",
+      "enum": ["up-to-date", "update-available", "updated", "needs-review", "error"]
+    },
+    "PluginsUpdateErrorCode": {
+      "type": "string",
+      "description": "Closed domain error codes for plugins_update operations.",
+      "enum": [
+        "ERR_UNKNOWN",
+        "ERR_INVALID_INPUT",
+        "ERR_TRACKED_LIST_INVALID",
+        "ERR_TOOL_MISSING",
+        "ERR_GITHUB_LOOKUP_FAILED",
+        "ERR_CODEX_LIST_FAILED",
+        "ERR_CLAUDE_LIST_FAILED",
+        "ERR_NOT_INSTALLED",
+        "ERR_CODEX_UPDATE_FAILED",
+        "ERR_CLAUDE_UPDATE_FAILED",
+        "ERR_SURFACE_COMPARE_FAILED",
+        "ERR_POST_INSTALL_MISMATCH"
+      ]
+    },
+    "PluginsUpdateReturnCode": {
+      "type": "string",
+      "description": "Closed domain return codes for plugins_update operations.",
+      "enum": ["RET_OK", "RET_DRY_RUN", "RET_UPDATED", "RET_NEEDS_REVIEW", "RET_SKIPPED"]
+    },
+    "PluginsUpdateErrorEntry": {
+      "type": "object",
+      "description": "Typed plugins_update domain error entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/PluginsUpdateErrorCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "PluginsUpdateReturnEntry": {
+      "type": "object",
+      "description": "Typed plugins_update domain return entry.",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/PluginsUpdateReturnCode"
+        },
+        "message": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "default": null
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "default": null
+        }
+      }
+    },
+    "PluginUpdateResult": {
+      "type": "object",
+      "description": "Result for one tracked plugin.",
+      "additionalProperties": false,
+      "required": ["plugin", "marketplace", "status"],
+      "properties": {
+        "plugin": {
+          "type": "string",
+          "minLength": 1
+        },
+        "marketplace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "$ref": "#/$defs/PluginsUpdateStatus"
+        },
+        "latest_tag": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "latest_sha": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "latest_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "codex_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "claude_version": {
+          "type": ["string", "null"],
+          "default": null
+        },
+        "review_command": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Command the owner runs to inspect a changed hook surface."
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginsUpdateErrorEntry"
+          },
+          "default": []
+        },
+        "clone_head_sha": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "HEAD of the Claude marketplace clone that was gated and installed."
+        }
+      }
+    },
+    "PluginsUpdateResponse": {
+      "type": "object",
+      "description": "Top-level typed response envelope for `mise run plugins:update`.",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "rc",
+        "apply",
+        "results",
+        "timestamp",
+        "timestamp_unix_ns",
+        "errors",
+        "returns"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rc": {
+          "type": "integer",
+          "description": "0 ok, 1 error, 3 needs owner review."
+        },
+        "apply": {
+          "type": "boolean"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginUpdateResult"
+          },
+          "default": []
+        },
+        "timestamp": {
+          "$ref": "common/envelope.schema.json#/$defs/NanosecondTimestamp"
+        },
+        "timestamp_unix_ns": {
+          "$ref": "common/envelope.schema.json#/$defs/UnixTimestampNs"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginsUpdateErrorEntry"
+          },
+          "default": []
+        },
+        "returns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginsUpdateReturnEntry"
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}
