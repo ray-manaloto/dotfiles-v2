@@ -63,7 +63,9 @@ def test_upgrade_requires_opt_in(opt_in: bool, offline_env: dict[str, str]) -> N
     if opt_in:
         expected.insert(
             0,
-            "-n -o BatchMode=yes -- fixture OMARCHY_PATH=/usr/share/omarchy omarchy update -y",
+            "-n -o BatchMode=yes -- fixture export OMARCHY_PATH=/usr/share/omarchy;"
+            " [[ $(omarchy-channel-current) == rc ]] || omarchy-channel-set rc;"
+            " omarchy update -y",
         )
     assert commands == expected
 
@@ -295,3 +297,10 @@ def test_doctor_retries_activating_cdi_once(
         assert "device spec match" in pc_stack_doctor.gpu_cdi()
     assert sleeps == [2]
     assert shown == ["activating", second_state]
+
+
+def test_omarchy_channel_pin_matches_up_and_doctor() -> None:
+    up = (TASKS / "up").read_text()
+    doctor = (TASKS / "doctor").read_text()
+    assert "omarchy_channel=rc" in up
+    assert "[[ $channel == rc ]]" in doctor
