@@ -30,7 +30,8 @@ mode=disable
 
 # The recipe travels base64-encoded and the script on stdin, so nothing needs remote shell quoting.
 recipe_b64="$(base64 <"${recipe}" | tr -d '\n')"
-ssh -o BatchMode=yes "${host}" env "MODE=${mode}" "DRY_RUN=${dry_run}" "RECIPE_B64=${recipe_b64}" /bin/bash -euo pipefail <<'REMOTE'
+printf -v remote_cmd 'env MODE=%q DRY_RUN=%q RECIPE_B64=%q /bin/bash -euo pipefail' "${mode}" "${dry_run}" "${recipe_b64}"
+ssh -o BatchMode=yes "${host}" "${remote_cmd}" <<'REMOTE'
 python3 - "${HOME}/.agentsview/config.toml" <<'PY'
 import base64
 import os
