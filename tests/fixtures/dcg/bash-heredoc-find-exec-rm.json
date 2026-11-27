@@ -1,0 +1,6 @@
+{
+  "issue": 116,
+  "summary": "Control for repro 2b: the same find -exec rm -rf in a quoted heredoc fed to bash is a script, so dcg must still block it.",
+  "command": "bash <<'EOF'\nfind ~/dev/tmp/av-status-probe -exec rm -rf {} +\nEOF",
+  "expect": "block"
+}

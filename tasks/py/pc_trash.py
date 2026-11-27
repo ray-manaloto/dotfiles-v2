@@ -1,13 +1,18 @@
 """Soft-delete one path on this host by moving it into the freedesktop Trash.
 
 `mise run pc:trash <path>` streams this file to the host as `python3 -I -B - <path>` (#116).
-`~/` and relative paths resolve against $HOME, and only paths inside $HOME are accepted.
+`~/` and relative paths resolve against $HOME, and only paths at least two levels inside
+$HOME are accepted. dcg sees only `mise run pc:trash ...`, so this script is the guard: it
+refuses the paths `custom.mise_protect` and AGENTS.md mark critical (PROTECTED), anything
+inside them, and anything that contains them.
 The item lands in ~/.local/share/Trash/files/<name>.<timestamp> next to a matching
 info/<name>.<timestamp>.trashinfo, so desktop trash tools can list and restore it.
+The move is a rename, so a path on another filesystem than the Trash is refused (EXDEV).
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
 import time
@@ -16,6 +21,18 @@ from pathlib import Path
 from urllib.parse import quote
 
 NS = 1_000_000_000
+# Relative to $HOME: credentials, the mise toolchain, the dcg policy and the dotfiles checkout.
+PROTECTED = (
+    ".ssh",
+    ".gnupg",
+    ".config/fnox",
+    ".config/mise",
+    ".config/dcg",
+    ".local/bin",
+    ".local/share/mise",
+    ".local/share/Trash",
+    "dev/dotfiles-v2",
+)
 
 
 def stamp(ns: int) -> str:
@@ -54,20 +71,31 @@ def reserve(files: Path, info: Path, base: str) -> tuple[str, int]:
     raise ValueError(f"no free Trash name for {base}")
 
 
+def refuse_protected(src: Path, home: Path) -> None:
+    """Raise unless *src* is a scratch path: deep inside *home* and clear of PROTECTED."""
+    if src == home or not src.is_relative_to(home):
+        raise ValueError(f"{src}: only paths inside {home} can be trashed")
+    if src.parent == home:
+        raise ValueError(f"{src}: top-level entries of {home} cannot be trashed")
+    for rel in PROTECTED:
+        lexical = home / rel
+        # Also the target, so trashing the checkout behind a ~/.config/mise symlink is refused.
+        for guarded in dict.fromkeys((lexical, lexical.resolve())):
+            if src.is_relative_to(guarded):
+                raise ValueError(f"{src}: inside protected ~/{rel}")
+            if guarded.is_relative_to(src):
+                raise ValueError(f"{src}: contains protected ~/{rel}")
+
+
 def trash(raw: str, home: Path, now_ns: int) -> Path:
     """Move *raw* into the home Trash and return its new location."""
     home = home.resolve(strict=True)
     src = resolve(raw, home)
     if not os.path.lexists(src):
         raise ValueError(f"{src}: no such file or directory")
-    if src == home or not src.is_relative_to(home):
-        raise ValueError(f"{src}: only paths inside {home} can be trashed")
+    refuse_protected(src, home)
     trash_dir = home / ".local/share/Trash"
     files, info = trash_dir / "files", trash_dir / "info"
-    if trash_dir.resolve().is_relative_to(src):
-        raise ValueError(f"{src}: contains the Trash itself")
-    if src.is_relative_to(trash_dir.resolve()):
-        raise ValueError(f"{src}: already in the Trash")
     for folder in (files, info):
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     name, fd = reserve(files, info, f"{src.name}.{stamp(now_ns)}")
@@ -78,8 +106,10 @@ def trash(raw: str, home: Path, now_ns: int) -> Path:
     dest = files / name
     try:
         os.rename(src, dest)
-    except OSError:
+    except OSError as exc:
         record.unlink(missing_ok=True)
+        if exc.errno == errno.EXDEV:
+            raise ValueError(f"{src}: on another filesystem than {trash_dir}") from exc
         raise
     return dest
 

@@ -30,10 +30,21 @@ Run `mise run pc:trash '~/dev/tmp/<task>'` to soft-delete a scratch path on
 pc. The task runs [`pc_trash.py`](../tasks/py/pc_trash.py) on the host. The
 script moves the path into `~/.local/share/Trash/files/` with a timestamp
 suffix and writes a matching `.trashinfo` file, so desktop trash tools can
-restore it. It resolves `~/` and relative paths against the remote home and
-refuses paths outside it, the Trash itself, and the folders that contain the
-Trash. Quote the path. If your shell expands `~` to the local home, the task
-maps it back to the remote home. Add `--dry-run` to preview the move.
+restore it. It resolves `~/` and relative paths against the remote home.
+
+It refuses:
+
+- paths outside the remote home
+- top-level entries of the home, such as `~/dev`
+- `~/.ssh`, `~/.gnupg`, `~/.config/fnox`, `~/.config/mise` and `~/.config/dcg`
+- `~/.local/bin`, `~/.local/share/mise` and the Trash
+- `~/dev/dotfiles-v2`
+- anything inside or containing those paths
+
+The move is a rename, so it also refuses a path on a different filesystem
+from `~/.local/share/Trash`, such as a bind mount or tmpfs. Nothing is moved
+in that case. Quote the path. If your shell expands `~` to the local home, the
+task maps it back to the remote home. Add `--dry-run` to preview the move.
 
 Agents use this task because dcg blocks `ssh pc 'mv ... Trash'`. See
 [dcg upstream report drafts](dcg-upstream-reports.md).

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S usage exec bash
 # shellcheck shell=bash
 #MISE description="Soft-delete a path on pc: move it into ~/.local/share/Trash/files/ with a timestamp suffix"
-#USAGE arg "<path>" help="Path on the host; ~/ and relative paths resolve against the remote home (only paths inside it are accepted)"
+#USAGE arg "<path>" help="Path on the host; ~/ and relative paths resolve against the remote home (top-level home entries, credentials, mise, dcg and the dotfiles checkout are refused)"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
 #USAGE flag "--dry-run" help="Describe the move without connecting"
 set -euo pipefail
