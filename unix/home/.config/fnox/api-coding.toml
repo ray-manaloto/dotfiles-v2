@@ -1,7 +1,8 @@
 #:schema https://fnox.jdx.dev/schema.json
 # Used by the checkout's api:code task. Resolve only the dedicated coding key.
 
-import = ["./shared.toml"]
+# The host config comes first so its providers (Keychain, age, or pc's Doppler login) win over shared.toml.
+import = ["./config.toml", "./shared.toml"]
 
 [proxy]
 egress = "strict"

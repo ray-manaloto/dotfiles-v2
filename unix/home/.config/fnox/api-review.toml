@@ -1,7 +1,8 @@
 #:schema https://fnox.jdx.dev/schema.json
 # Checkout-scoped credentials for the historical review replay.
 
-import = ["./shared.toml"]
+# The host config comes first so its providers (Keychain, age, or pc's Doppler login) win over shared.toml.
+import = ["./config.toml", "./shared.toml"]
 
 [proxy]
 egress = "strict"

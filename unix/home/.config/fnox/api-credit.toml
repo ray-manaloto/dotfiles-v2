@@ -4,7 +4,8 @@
 # Strict egress: the child can reach only api.anthropic.com, and only there does the proxy swap
 # the placeholder for the real key. Set the Console spend limit to the remaining credit balance.
 
-import = ["./shared.toml"]
+# The host config comes first so its providers (Keychain, age, or pc's Doppler login) win over shared.toml.
+import = ["./config.toml", "./shared.toml"]
 
 [proxy]
 egress = "strict"
