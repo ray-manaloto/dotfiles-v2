@@ -3312,8 +3312,14 @@ def test_python_ca_bundle_flags_interpreter_without_certs(
     assert (
         len(errors) == 1 and "python3.1" in errors[0] and "SSL_CERT_FILE" in errors[0]
     )
-    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/cert.pem")
-    assert doc_mod.check_python_ca_bundle()[0] == []
+    bundle = tmp_path / "cert.pem"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+    monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
+    errors, ok = doc_mod.check_python_ca_bundle()
+    # Still probed (SSL_CERT_FILE only reaches mise shells): passes, but names who relies on it.
+    assert errors == [] and "rely on SSL_CERT_FILE" in ok and "python3.1" in ok
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
+    assert "missing or empty" in doc_mod.check_python_ca_bundle()[0][0]
     monkeypatch.delenv("SSL_CERT_FILE")
     monkeypatch.setenv("DOTFILES_DOCTOR_SCOPE", "repo")
     assert doc_mod.check_python_ca_bundle()[0] == []
