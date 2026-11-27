@@ -1,0 +1,29 @@
+# AgentsView semantic-search recipe for the pc hub, applied by `mise run hub:vector --enable`.
+# Keys: https://github.com/kenn-io/agentsview/blob/main/docs/semantic-search.md
+# Changing model, dimension, max_input_chars or a prefix starts a new index generation and
+# re-embeds the whole archive.
+
+[vector]
+enabled = true
+
+[vector.embeddings]
+# Qwen3-Embedding-0.6B (Apache-2.0), served by the loopback dev.mise.ollama-hub.service.
+model = "qwen3-embedding:0.6b"
+dimension = 1024
+# Ollama serves this model with a 4096-token context; 8192 characters of English or code
+# stay well under it.
+max_input_chars = 8192
+model_context_tokens = 4096
+# Qwen3-Embedding takes an instruction on queries only; documents are embedded as-is.
+query_prefix = "Instruct: Given a search query, retrieve relevant passages from past coding-agent sessions\nQuery: "
+default_server = "local"
+
+[vector.embeddings.servers.local]
+endpoint = "http://127.0.0.1:11434/v1"
+batch_size = 32
+concurrency = 4
+timeout = "2m"
+
+[vector.embed]
+# After the first full build, embed new sessions after each sync.
+run_after_sync = true

@@ -25,6 +25,7 @@ class PcHubServiceName(StrEnum):
     VERCEL_BOARD = "vercel-board"
     AGENTSVIEW_HUB = "agentsview-hub"
     AGENTSVIEW_MAC_PULL = "agentsview-mac-pull"
+    OLLAMA = "ollama"
     QMD = "qmd"
     CODEBASE_MEMORY_MCP = "codebase-memory-mcp"
     TAILSCALE_SERVE = "tailscale-serve"
@@ -145,6 +146,7 @@ class PcHubPortMap(BaseModel):
     vercel_board: Annotated[StrictInt, Field(ge=1024, le=65535)]
     agentsview_hub: Annotated[StrictInt, Field(ge=1024, le=65535)]
     qmd: Annotated[StrictInt, Field(ge=1024, le=65535)]
+    ollama: Annotated[StrictInt, Field(ge=1024, le=65535)]
 
 
 class PcHubValidationOutcome(BaseModel):

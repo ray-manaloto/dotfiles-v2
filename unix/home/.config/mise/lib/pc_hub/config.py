@@ -27,6 +27,7 @@ LOGGER = get_logger("pc_hub")
 
 BESZEL_VERSION = "0.21.2"
 QMD_VERSION = "2.9.0"
+OLLAMA_VERSION = "0.40.18"
 CODEBASE_MEMORY_MCP_VERSION = "0.12.1"
 CODEBASE_MEMORY_MCP_LINUX_AMD64_SHA256 = (
     "8c3d0341064301e78ecc84cf7348d4e2c6562a0f57448243ea560aaa34de36c1"
@@ -43,6 +44,7 @@ DEFAULT_PORTS: dict[str, int] = {
     "vercel_board": 4100,
     "agentsview_hub": 8082,
     "qmd": 8181,
+    "ollama": 11434,
 }
 
 FORBIDDEN_OTEL_IMAGES = (
@@ -322,9 +324,12 @@ def render_systemd_units(
     agentsview_bin: str = "",
     qmd_bin: str = "",
     board_server_mjs: str = "",
+    ollama_bin: str = "",
 ) -> dict[str, str]:
     """Render user-level systemd unit definitions for pc Hub services."""
     av_exec = agentsview_bin or f"{home_dir}/.local/bin/agentsview"
+    ollama_exec = ollama_bin or f"{home_dir}/.local/bin/ollama"
+    ollama_port = DEFAULT_PORTS["ollama"]
     qmd_exec = qmd_bin or f"{home_dir}/.local/bin/qmd"
     board_mjs = board_server_mjs or f"{home_dir}/.config/mise/assets/board/server.mjs"
     board_port = DEFAULT_PORTS["vercel_board"]
@@ -399,10 +404,34 @@ def render_systemd_units(
         ]
     )
 
+    # Loopback-only embeddings server for AgentsView semantic search; cloud features off.
+    ollama_unit = "\n".join(
+        [
+            "[Unit]",
+            f"Description=dotfiles-v2 Ollama v{OLLAMA_VERSION} local embeddings server",
+            "After=network-online.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            f"Environment=PATH={service_path}",
+            f"Environment=OLLAMA_HOST=127.0.0.1:{ollama_port}",
+            f"Environment=OLLAMA_MODELS={home_dir}/.local/share/pc-hub/ollama/models",
+            "Environment=OLLAMA_NO_CLOUD=1",
+            f"ExecStart={ollama_exec} serve",
+            "Restart=on-failure",
+            "RestartSec=5",
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            "",
+        ]
+    )
+
     return {
         "dev.mise.vercel-board.service": board_unit,
         "dev.mise.agentsview-hub.service": agentsview_unit,
         "dev.mise.qmd-hub.service": qmd_unit,
+        "dev.mise.ollama-hub.service": ollama_unit,
     }
 
 

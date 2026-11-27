@@ -169,6 +169,10 @@ except Exception as exc:  # WARN-only: never lose the other rows
     mp_st, mp_det = "WARN", f"mac pull check failed: {type(exc).__name__}"
 rows.append({"service": "agentsview-mac-pull", "state": mp_st, "bind_target": "ssh:mac", "exposed_http": False, "detail": mp_det})
 
+ol_st, ol_det = check_systemd("dev.mise.ollama-hub.service")
+olh_st, olh_det = check_http("http://127.0.0.1:11434/api/version", ok_codes=(200,))
+rows.append({"service": "ollama", "state": "OK" if ol_st == "OK" and olh_st == "OK" else "FAIL", "bind_target": "127.0.0.1:11434", "exposed_http": False, "detail": f"{ol_det}; {olh_det}"})
+
 qmd_st, qmd_det = check_systemd("dev.mise.qmd-hub.service")
 rows.append({"service": "qmd", "state": qmd_st, "bind_target": "127.0.0.1:8181", "exposed_http": True, "detail": qmd_det})
 
