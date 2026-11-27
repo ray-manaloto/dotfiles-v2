@@ -66,11 +66,31 @@ def _branch_with(main: Path, branch: str, *files: str, days_ago: int = 0) -> Non
     _git(main, "checkout", "-q", "main")
 
 
-def _merged_worktree(main: Path, branch: str, path: Path) -> None:
-    """A worktree on *branch* with one commit, merged into local main with a merge commit."""
+def _ledger() -> Path:
+    return Path(os.environ["XDG_STATE_HOME"]) / "agy-learn" / "reviews.jsonl"
+
+
+def _pin_plan(path: Path, *, reviewed: bool = True) -> str:
+    """Pin PLAN_ID in the worktree's git-ignored mise.local.toml, as worktree:new does."""
+    plan_id = f"plan-{path.name}"
+    (path / "mise.local.toml").write_text(
+        f'[env]\nPLAN_ID = "{plan_id}"\n', encoding="utf-8"
+    )
+    if reviewed:
+        _ledger().parent.mkdir(parents=True, exist_ok=True)
+        with _ledger().open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"plan_id": plan_id, "outcome": "applied"}) + "\n")
+    return plan_id
+
+
+def _merged_worktree(main: Path, branch: str, path: Path, *, push: bool = True) -> None:
+    """A worktree on *branch* with one commit, merged into main (and origin/main) with a merge commit."""
     _git(main, "worktree", "add", "-q", "-b", branch, str(path))
     _commit(path, f"{path.name}.txt")
+    _pin_plan(path)
     _git(main, "merge", "-q", "--no-ff", "-m", f"merge {branch}", branch)
+    if push:
+        _git(main, "push", "-q", "origin", "main")
 
 
 def _branches(main: Path) -> set[str]:
@@ -106,8 +126,10 @@ def fixture_repo(tmp_path: Path, git_env: dict[str, str]) -> dict[str, Path]:
     (wt["merged"] / ".planning" / "plan-merged" / "task_plan.md").write_text(
         "# plan\n", encoding="utf-8"
     )
+    _pin_plan(wt["merged"])
     _git(main, "worktree", "add", "-q", "-b", "wt/dirty", str(wt["dirty"]))
     _commit(wt["dirty"], "dirty.txt")
+    _pin_plan(wt["dirty"])
     _branch_with(main, "merged-no-wt", "nowt.txt")
     for branch in ("wt/merged", "wt/dirty", "merged-no-wt"):
         _git(main, "merge", "-q", "--no-ff", "-m", f"merge {branch}", branch)
@@ -219,7 +241,9 @@ def test_prune_merged_removes_only_clean_merged_entries(
             main, "for-each-ref", "--format=%(refname:short)", "refs/heads"
         ).splitlines()
     )
-    assert branches == set(EXPECTED) - {"wt/merged", "merged-no-wt"}
+    # merged-no-wt is merged but not a wt/* worktree branch: report-only.
+    assert branches == set(EXPECTED) - {"wt/merged"}
+    assert "kept: merged-no-wt: merged (not pruned: needs owner approval)" in out
     assert not fixture_repo["merged"].exists()
     assert fixture_repo["dirty"].is_dir() and fixture_repo["fresh"].is_dir()
     assert "wt/dirty: worktree has uncommitted or untracked files" in out
@@ -324,6 +348,7 @@ def test_prune_merged_when_the_merge_is_only_on_origin_main(
     wt = tmp_path / "repo-remote"
     _git(main, "worktree", "add", "-q", "-b", "wt/remote", str(wt))
     _commit(wt, "remote.txt")
+    _pin_plan(wt)
     # Pushed without -u, as pr:ship does, so the branch has no upstream.
     _git(wt, "push", "-q", "origin", "HEAD:refs/heads/wt/remote")
     other = tmp_path / "other"
@@ -368,25 +393,28 @@ def test_prune_failure_exits_1_and_branch_names_do_not(
     mod = load_module("worktree_audit")
     main = fixture_repo["main"]
     # A dirty merged worktree whose branch name contains "failed" is kept, and that is not an error.
-    failed_wt = tmp_path / "repo-failed"
-    _merged_worktree(main, "failed-experiment", failed_wt)
+    failed_wt = tmp_path / "repo-failed-experiment"
+    _merged_worktree(main, "wt/failed-experiment", failed_wt)
     (failed_wt / "scratch.txt").write_text("unsaved\n", encoding="utf-8")
     assert mod.main(["--repo", str(main)]) == 0
     assert mod.main(["--repo", str(main), "--prune-merged"]) == 0
     assert (
-        "kept: failed-experiment: worktree has uncommitted" in capsys.readouterr().out
+        "kept: wt/failed-experiment: worktree has uncommitted"
+        in capsys.readouterr().out
     )
     # A git error while deleting a branch is a failure: exit 1, and the branch stays.
-    _branch_with(main, "merged-again", "again.txt")
-    _git(main, "merge", "-q", "--no-ff", "-m", "merge again", "merged-again")
+    _merged_worktree(main, "wt/merged-again", tmp_path / "repo-merged-again")
     lock = Path(_git(main, "rev-parse", "--git-common-dir"))
     lock = (
         main / lock if not lock.is_absolute() else lock
-    ) / "refs/heads/merged-again.lock"
+    ) / "refs/heads/wt/merged-again.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text("", encoding="utf-8")
     assert mod.main(["--repo", str(main), "--prune-merged"]) == 1
-    assert "failed: merged-again: deleting the branch failed" in capsys.readouterr().out
-    assert "merged-again" in _branches(main)
+    assert (
+        "failed: wt/merged-again: deleting the branch failed" in capsys.readouterr().out
+    )
+    assert "wt/merged-again" in _branches(main)
 
 
 def test_prune_keeps_a_worktree_whose_plan_has_no_learn_review(
@@ -397,8 +425,8 @@ def test_prune_keeps_a_worktree_whose_plan_has_no_learn_review(
     (fixture_repo["merged"] / "mise.local.toml").write_text(
         '[env]\nPLAN_ID = "plan-merged"\n', encoding="utf-8"
     )
-    ledger = Path(os.environ["XDG_STATE_HOME"]) / "agy-learn" / "reviews.jsonl"
-    ledger.parent.mkdir(parents=True)
+    ledger = _ledger()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
     # owing_learn is not a finished review.
     ledger.write_text(
         json.dumps({"plan_id": "plan-merged", "outcome": "owing_learn"}) + "\n",
@@ -414,6 +442,91 @@ def test_prune_keeps_a_worktree_whose_plan_has_no_learn_review(
         fh.write(json.dumps({"plan_id": "plan-merged", "outcome": "applied"}) + "\n")
     assert mod.main(["--repo", str(main), "--prune-merged"]) == 0
     assert not fixture_repo["merged"].exists() and "wt/merged" not in _branches(main)
+
+
+def test_prune_merged_rejects_base(
+    fixture_repo: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = load_module("worktree_audit")
+    main = fixture_repo["main"]
+    before = _branches(main)
+    assert mod.main(["--repo", str(main), "--base", "main", "--prune-merged"]) == 2
+    assert "--base cannot be combined with --prune-merged" in capsys.readouterr().err
+    assert _branches(main) == before and fixture_repo["merged"].is_dir()
+
+
+def test_prune_reports_non_wt_merged_branches_only(
+    fixture_repo: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """agent/*, claude/*, detached and out-of-sibling worktrees are never removed, even clean and reviewed."""
+    mod = load_module("worktree_audit")
+    main = fixture_repo["main"]
+    agent = tmp_path / "repo-agent-x"
+    _merged_worktree(main, "agent/x", agent)
+    outside = tmp_path / "elsewhere" / "repo-outside"
+    outside.parent.mkdir()
+    _merged_worktree(main, "wt/outside", outside)
+    wrong_name = tmp_path / "repo-other-name"
+    _merged_worktree(main, "wt/named", wrong_name)
+    detached = tmp_path / "repo-detached-merged"
+    _git(main, "worktree", "add", "-q", "--detach", str(detached), "wt/merged")
+    before = _branches(main)
+    assert mod.main(["--repo", str(main), "--prune-merged"]) == 0
+    out = capsys.readouterr().out
+    assert "kept: agent/x: merged (not pruned: needs owner approval)" in out
+    assert "kept: wt/outside: merged (not pruned: needs owner approval)" in out
+    assert "kept: wt/named: merged (not pruned: needs owner approval)" in out
+    for path in (agent, outside, wrong_name, detached):
+        assert path.is_dir(), path
+    assert {"agent/x", "wt/outside", "wt/named"} <= _branches(main)
+    assert "agent/x" in before
+
+
+def test_prune_keeps_stacked_fresh_branch_and_missing_plan_id(
+    fixture_repo: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A fresh wt/* branch at a merged tip is an ancestor of main but has no review of its own."""
+    mod = load_module("worktree_audit")
+    main = fixture_repo["main"]
+    _merged_worktree(main, "wt/base-merged", tmp_path / "repo-base-merged")
+    stacked = tmp_path / "repo-stacked"
+    _git(
+        main,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "wt/stacked",
+        str(stacked),
+        "wt/base-merged",
+    )
+    _pin_plan(stacked, reviewed=False)
+    bare = tmp_path / "repo-bare"
+    _git(main, "worktree", "add", "-q", "-b", "wt/bare", str(bare), "wt/base-merged")
+    entries = {e["branch"]: e for e in mod.audit(main)}
+    assert entries["wt/stacked"]["status"] == "merged"
+    assert mod.main(["--repo", str(main), "--prune-merged"]) == 0
+    out = capsys.readouterr().out
+    assert "kept: wt/stacked: PLAN_ID plan-repo-stacked has no recorded" in out
+    assert "kept: wt/bare: worktree pins no PLAN_ID" in out
+    assert stacked.is_dir() and bare.is_dir()
+    assert {"wt/stacked", "wt/bare"} <= _branches(main)
+    assert not (tmp_path / "repo-base-merged").exists()
+
+
+def test_prune_requires_the_merge_on_origin_main(
+    fixture_repo: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = load_module("worktree_audit")
+    main = fixture_repo["main"]
+    local = tmp_path / "repo-local-only-merge"
+    _merged_worktree(main, "wt/local-only-merge", local, push=False)
+    assert mod.main(["--repo", str(main), "--prune-merged"]) == 0
+    assert (
+        "kept: wt/local-only-merge: not merged into refs/remotes/origin/main"
+        in capsys.readouterr().out
+    )
+    assert local.is_dir() and "wt/local-only-merge" in _branches(main)
 
 
 def test_explicit_base(fixture_repo: dict[str, Path]) -> None:

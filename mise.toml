@@ -48,7 +48,7 @@ dir = "{{cwd}}"
 usage = '''
 flag "--repo <path>" help="Repository to audit (default: the directory mise was run from)"
 flag "--base <ref>" help="Base ref for merge checks (default: the remote HEAD branch, else main or master)"
-flag "--prune-merged" help="Remove merged worktrees whose tree is clean (and whose PLAN_ID has a learn review) and their merged branches"
+flag "--prune-merged" help="Remove merged wt/* worktrees (sibling dir, clean, PLAN_ID learn-reviewed, merged into origin/main) and their branches; other merged branches are report-only (needs owner approval); cannot combine with --base"
 '''
 run = '''
 set -- --repo "${usage_repo:-.}"

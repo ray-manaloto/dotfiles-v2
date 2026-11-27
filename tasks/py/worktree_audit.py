@@ -1,8 +1,14 @@
 """Classify every git worktree and local branch so stale or unpushed work is visible.
 
 Backs `mise run worktree:audit` and the warn-only `worktree-stale` doctor check. Stdlib only.
-Read-only unless `--prune-merged`, which removes only `merged` entries whose tree is clean and
-whose pinned PLAN_ID (if any) has a recorded post-task-learn review, as `pr:land` requires.
+Read-only unless `--prune-merged`. Branch deletion needs owner approval except for the `wt/*`
+branches `pr:land` removes, so `--prune-merged` acts only on an allowlist: a local `wt/<slug>`
+branch merged into the default branch's remote-tracking ref (origin/main; local main when there
+is no remote), whose worktree is the sibling `<repo>-<slug>` directory that
+`mise run worktree:new` creates, is clean, and pins a PLAN_ID with a recorded post-task-learn
+review (a missing PLAN_ID or review keeps it). Every other merged branch or worktree (agent/*,
+claude/*, detached HEADs, worktrees elsewhere) is report-only: "merged (not pruned: needs owner
+approval)". `--base` cannot be combined with `--prune-merged`.
 
 Statuses, first match wins:
   base           the default branch itself (still reported local-only/behind when that applies)
@@ -441,19 +447,54 @@ def _learn_reviewed(plan_id: str) -> bool:
     return False
 
 
+_NEEDS_OWNER = "merged (not pruned: needs owner approval)"
+
+
+def _prune_base(repo: Path) -> str:
+    """The only ref pruning trusts: <remote>/<default> with a remote, else the local default; '' if absent."""
+    name, refs = resolve_bases(repo, None)
+    remotes = _git(repo, "remote").split()
+    if remotes:
+        remote = "origin" if "origin" in remotes else remotes[0]
+        want = f"refs/remotes/{remote}/{name}"
+    else:
+        want = f"refs/heads/{name}"
+    return want if want in refs else ""
+
+
+def _allowlist_blocker(main_root: Path, entry: dict[str, object]) -> str:
+    """'' when *entry* is a wt/* branch in its worktree:new sibling directory; else why it is report-only."""
+    branch = str(entry["branch"]) if entry["branch"] else ""
+    slug = branch.removeprefix("wt/")
+    if not branch.startswith("wt/") or not slug:
+        return _NEEDS_OWNER
+    if entry["worktree"] is None:
+        return f"{_NEEDS_OWNER}; no worktree, so no PLAN_ID to check"
+    sibling = main_root.parent / f"{main_root.name}-{slug}"
+    if Path(str(entry["worktree"])).resolve() != sibling.resolve():
+        return f"{_NEEDS_OWNER}; worktree is not {sibling}"
+    return ""
+
+
 def _prune_blocker(
     main_root: Path,
     entry: dict[str, object],
     protected: set[Path],
     checked_out: dict[str, Path],
+    prune_base: str,
 ) -> str:
     """Why *entry* must be kept, re-checked against the repository as it is now; '' if prunable."""
     tip = str(entry["head"])
-    base = str(entry["merged_into"])
     branch = str(entry["branch"]) if entry["branch"] else ""
     path = Path(str(entry["worktree"])) if entry["worktree"] else None
+    blocker = _allowlist_blocker(main_root, entry)
+    if blocker:
+        return blocker
+    if not prune_base:
+        return "no origin/<default> (or local default) ref to verify the merge against"
+    base = prune_base
     if not _ok(main_root, "merge-base", "--is-ancestor", tip, base):
-        return f"no longer an ancestor of {base}"
+        return f"not merged into {base}"
     if branch:
         out = _run(
             main_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"
@@ -476,7 +517,9 @@ def _prune_blocker(
     if _run(path, "rev-parse", "HEAD")[1].decode().strip() != tip:
         return "worktree HEAD moved since the audit"
     plan_id = _plan_id(path)
-    if plan_id and not _learn_reviewed(plan_id):
+    if not plan_id:
+        return "worktree pins no PLAN_ID in mise.local.toml, so no learn review can be checked"
+    if not _learn_reviewed(plan_id):
         return (
             f"PLAN_ID {plan_id} has no recorded post-task-learn review; land it with "
             "`mise run pr:land` (only the owner may approve --skip-learn-check)"
@@ -487,7 +530,9 @@ def _prune_blocker(
 def prune_merged(
     repo: Path, entries: list[dict[str, object]]
 ) -> tuple[list[str], list[str], list[str]]:
-    """Remove merged worktrees with a clean tree, then their branches.
+    """Remove allowlisted merged wt/* worktrees with a clean tree, then their branches.
+
+    Every other merged entry is kept as report-only (needs owner approval).
 
     Returns (done, kept, failed): kept entries were skipped on purpose, failed ones hit a git error.
     """
@@ -503,6 +548,7 @@ def prune_merged(
         for t in trees
         if t.get("branch")
     }
+    prune_base = _prune_base(repo)
     done: list[str] = []
     kept: list[str] = []
     failed: list[str] = []
@@ -510,7 +556,7 @@ def prune_merged(
         if entry["status"] != "merged":
             continue
         label = _label(entry)
-        reason = _prune_blocker(main_root, entry, protected, checked_out)
+        reason = _prune_blocker(main_root, entry, protected, checked_out, prune_base)
         if reason:
             kept.append(f"{label}: {reason}")
             continue
@@ -599,7 +645,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--prune-merged",
         action="store_true",
-        help="remove merged worktrees with a clean tree and their merged branches",
+        help="remove merged wt/* worktrees (sibling dir, clean, PLAN_ID learn-reviewed, merged into "
+        "origin/main) and their branches; every other merged branch is report-only (needs owner "
+        "approval); cannot be combined with --base",
     )
     parser.add_argument(
         "--doctor", action="store_true", help="warn-only doctor output; always exits 0"
@@ -607,6 +655,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stale-days", type=float, default=3.0)
     args = parser.parse_args(argv)
     repo = args.repo.resolve()
+    if args.prune_merged and args.base:
+        sys.stderr.write(
+            "worktree:audit: --base cannot be combined with --prune-merged "
+            "(pruning always verifies against origin/<default>, else the local default)\n"
+        )
+        return 2
     if args.doctor:
         return doctor(repo, args.stale_days)
     try:
@@ -626,7 +680,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.prune_merged:
         if counts.get("merged"):
             sys.stdout.write(
-                "nothing deleted; --prune-merged removes merged entries with a clean tree\n"
+                "nothing deleted; --prune-merged removes only clean, learn-reviewed wt/* worktrees "
+                "merged into origin/main (other merged branches are report-only: needs owner approval)\n"
             )
         return 0
     done, kept, failed = prune_merged(repo, entries)
