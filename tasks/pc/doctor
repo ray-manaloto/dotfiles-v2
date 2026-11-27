@@ -57,15 +57,19 @@ else
 	result=1
 fi
 [[ "$HOME/.config/fnox/config.toml" -ef "$HOME/.config/fnox/config.pc.toml" ]]
-# fnox reads Doppler config `pc` through the Doppler CLI's stored read-only service token (no age key).
-identity=$(cd ~ && env -u DOPPLER_TOKEN mise exec doppler -- doppler me --json 2>/dev/null | jq -r '"\(.type) \(.name)"' 2>/dev/null)
-if [[ $identity == "service_token "* ]]; then
-	printf 'PASS  doppler-login: %s\n' "$identity"
-	unset FNOX_AGE_KEY FNOX_AGE_KEY_FILE
+# fnox reads Doppler config `pc` with the read-only service token in a 0600 file (no age key, no keyring).
+token_file="$HOME/.config/fnox/doppler-pc.env"
+mode=$(stat -c %a "$token_file" 2>/dev/null || echo missing)
+if [[ $mode == 600 ]] && grep -q '^DOPPLER_TOKEN=dp\.st\.' "$token_file"; then
+	printf 'PASS  doppler-token-file: ~/.config/fnox/doppler-pc.env (0600)\n'
+	unset FNOX_AGE_KEY FNOX_AGE_KEY_FILE DOPPLER_TOKEN FNOX_DOPPLER_TOKEN
 	mise exec -- fnox --non-interactive --no-daemon -P infra --no-defaults check --all --strict
 else
-	printf 'FAIL  doppler-login: %s (store the pc-fnox read token: doppler configure set token --scope ~)\n' "${identity:-none}" >&2
+	printf 'FAIL  doppler-token-file: ~/.config/fnox/doppler-pc.env is mode %s or has no DOPPLER_TOKEN=dp.st. line\n' "$mode" >&2
 	result=1
+fi
+if grep -qE '^[[:space:]]+token:' "$HOME/.doppler/.doppler.yaml" 2>/dev/null; then
+	printf 'WARN  doppler-keyring: a token is still stored for scope ~ (run: doppler configure unset token --scope ~)\n' >&2
 fi
 for key in age.txt age.pc.txt; do
 	[[ -e "$HOME/.config/fnox/$key" ]] && printf 'WARN  fnox-age: ~/.config/fnox/%s is no longer used; remove it\n' "$key" >&2

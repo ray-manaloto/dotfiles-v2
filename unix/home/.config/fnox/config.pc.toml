@@ -1,20 +1,27 @@
 #:schema https://fnox.jdx.dev/schema.json
 # pc-only fnox config (no age key). The Doppler provider reads config `pc`, which holds only the keys pc
-# needs; it authenticates with the Doppler CLI's stored read-only service token `pc-fnox`
-# (`doppler configure set token --scope ~`), because fnox falls back to the CLI login when no token is set.
+# needs, with the read-only service token `pc-fnox` from ~/.config/fnox/doppler-pc.env (0600,
+# `DOPPLER_TOKEN=...`). A file, not `doppler configure set token`: that stores the token in the system
+# keyring, which can be locked after a reboot or before a desktop login.
 # dev_personal references `pc` for these keys, so `pc` is their single source.
 
 import = ["./shared.toml"]
 
-# Replaces the shared provider as a whole: same name, so shared secrets keep resolving, but no token field.
+[providers.pc_doppler_token_file]
+type = "plain"
+file = "~/.config/fnox/doppler-pc.env"
+format = "env"
+
+# Replaces the shared provider as a whole: same name, so shared secrets keep resolving against config `pc`.
 [providers.doppler_dotfiles_dev_personal]
 type = "doppler"
 project = "dotfiles"
 config = "pc"
+token = { secret = "DOPPLER_TOKEN" }
 
-# The age-encrypted dev_personal token is not used on pc; the shared provider above no longer reads it.
+# Replaces the shared age-encrypted dev_personal token with pc's own token file.
 [secrets]
-DOPPLER_TOKEN = { default = "", env = false, if_missing = "ignore" }
+DOPPLER_TOKEN = { provider = "pc_doppler_token_file", value = "DOPPLER_TOKEN", env = false }
 # Shared keys deliberately not provisioned in Doppler config `pc`.
 KILO_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "KILO_API_KEY", env = false, if_missing = "ignore" }
 OPENAI_COMPATIBLE_API_KEY = { provider = "doppler_dotfiles_dev_personal", value = "KILO_API_KEY", env = false, if_missing = "ignore" }
@@ -28,4 +35,4 @@ PC_HOST = { provider = "doppler_dotfiles_dev_personal", value = "PC_HOST", env =
 PC_LAN_HOST = { provider = "doppler_dotfiles_dev_personal", value = "PC_LAN_HOST", env = "exec", if_missing = "ignore" }
 
 [profiles.doppler-auth.secrets]
-DOPPLER_TOKEN = { default = "", env = false, if_missing = "ignore" }
+DOPPLER_TOKEN = { provider = "pc_doppler_token_file", value = "DOPPLER_TOKEN", env = false }
