@@ -4,6 +4,7 @@
 #USAGE flag "--skip-learn-check" help="Land without a recorded post-task-learn review (prints a warning)"
 # Run from the merged wt/<slug> worktree. Read-only until every check passes; re-runnable.
 # After the fast-forward it runs the full live `mise doctor project` (host scope) on main; failures only WARN.
+# After removing the worktree it closes the finished Herdr agent tabs that worked in it (best effort, WARN only).
 # Exit: 0 landed, 3 refused (not merged, head mismatch, dirty tree, learn review missing), 4 GitHub API unavailable.
 set -euo pipefail
 
@@ -19,6 +20,7 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 slug="${branch#wt/}"
 [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || refuse "uncommitted or untracked files in ${slug}; commit or remove them first (they would be lost)"
 head="$(git rev-parse HEAD)"
+wt_path="$(git rev-parse --show-toplevel)"
 
 # 1. The PR merged, at exactly this worktree's head (nothing local left unshipped).
 gh_or_exit() {
@@ -124,6 +126,13 @@ fi
 cd "${main_root}"
 MISE_YES=1 mise run -q worktree:rm "${slug}" </dev/null
 echo "pr:land: removed worktree ${slug} and branch ${branch}"
+
+# 4b. Close the finished Herdr agent tabs that worked in this worktree (never a working agent, a plain
+# shell, or this terminal). Best effort: a failure only WARNs.
+if command -v hc >/dev/null 2>&1; then
+	python3 -I -B "${main_root}/tasks/py/herdr_tidy.py" --apply --cwd "${wt_path}" </dev/null ||
+		echo "pr:land: WARNING: herdr tab cleanup failed; run 'mise run herdr:tidy' to see what is left" >&2
+fi
 
 # 5. Read-only learn ledger health (owing reviews, escalations, already-shipped proposals).
 MISE_YES=1 mise run -q learn:heal --check --repo "${main_root}" </dev/null || echo "pr:land: WARNING: learn:heal --check reported issues; read them" >&2
