@@ -10,6 +10,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh -c 'HOOK=\"$HOME/.gemini/config/hooks/heredoc-script-hint.py\"; [ -f \"$HOOK\" ] || { echo \"{}\"; exit 0; }; command -v python3 >/dev/null 2>&1 && PY=python3 || PY=/usr/bin/python3; exec \"$PY\" -I -B \"$HOOK\" --harness claude'",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }

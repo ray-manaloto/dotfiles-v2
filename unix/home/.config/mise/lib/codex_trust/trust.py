@@ -420,13 +420,21 @@ def repair_hook_trust(
 def _is_repo_managed_user_hook(
     row: dict[str, Any], codex_home: Path, source_path: str
 ) -> bool:
-    """Recognize the dcg and learn commands merged into the shared hooks.json."""
+    """Recognize the dcg, heredoc-hint, and learn commands merged into the shared hooks.json."""
     if row.get("source") != "user" or Path(source_path) != codex_home / "hooks.json":
         return False
     command = str(row.get("command") or "")
     event = row.get("eventName")
     if event == "preToolUse":
-        return "/shims/dcg" in command and "--agent codex" in command
+        return ("/shims/dcg" in command and "--agent codex" in command) or (
+            "heredoc-script-hint.py" in command and "--harness codex" in command
+        )
+    if event == "postToolUse":
+        return (
+            "heredoc-script-hint.py" in command
+            and "--harness codex" in command
+            and "--event post-tool-use" in command
+        )
     if event in {"sessionStart", "stop"}:
         learn_event = "session-start" if event == "sessionStart" else "stop"
         return (
