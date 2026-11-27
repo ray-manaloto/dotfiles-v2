@@ -41,6 +41,15 @@ the restricted key and ssh alias; `hub:up --mac-ssh <alias>` writes the entry.
   are aborted attempts, not results. `hub:status` reads `debug.log` and
   `debug.log.1` this way.
 
+## Antigravity (agy) sessions
+
+The hub holds no `antigravity-cli` sessions yet (#90), so
+`agentsview session search` misses decisions made only in agy. Until it indexes
+them, agents run the `agy-history-fallback` skill
+([`SKILL.md`](../unix/home/.agents/skills/agy-history-fallback/SKILL.md)), which
+searches `~/.gemini/antigravity-cli/conversations/` and `brain/` on each
+machine. `mise doctor project` runs its `--self-check` (`agy-history-fallback`).
+
 ## Semantic search (embeddings)
 
 `hub:vector --enable` applies the tracked recipe

@@ -216,6 +216,16 @@ python3 -I -B unix/home/.gemini/config/hooks/post-task-learn.py --self-check --c
 '''
 hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-check and registers in hooks.json. Details: `mise run doctor:explain post-task-learn`."
 
+[doctor.checks.agy-history-fallback]
+description = "agy-history-fallback skill searches agy conversations and brain artifacts on a scratch fixture (#90)"
+run = '''
+test -f unix/home/.agents/skills/agy-history-fallback/SKILL.md
+py=python3
+if [ -x /usr/bin/python3 ]; then py=/usr/bin/python3; fi  # macOS 3.9.6: the script's target
+"$py" -I -B unix/home/.agents/skills/agy-history-fallback/scripts/agy-history.py --self-check >/dev/null
+'''
+hint = "Fix unix/home/.agents/skills/agy-history-fallback/scripts/agy-history.py until --self-check passes. Details: `mise run doctor:explain agy-history-fallback`."
+
 [doctor.checks.host-gemini-sync]
 description = "Local ~/.gemini/config/ hooks, rules, skills, and hooks.json match unix/home/.gemini/config/ and [dotfiles]"
 run = "sh tasks/py/host_check.sh mise run host:sync-gemini --check"

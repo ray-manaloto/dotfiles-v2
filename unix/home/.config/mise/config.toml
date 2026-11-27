@@ -161,6 +161,7 @@ mode = "symlink-each"
 exclude = ["*"]
 
 [dotfile_groups.agents-skills.entries]
+"~/.agents/skills/agy-history-fallback" = { source = "agy-history-fallback", mode = "symlink", main_checkout = true }
 "~/.agents/skills/agy-session-ops" = { source = "agy-session-ops", mode = "symlink", main_checkout = true }
 "~/.agents/skills/apify-ultimate-scraper" = { source = "apify-ultimate-scraper", mode = "symlink", main_checkout = true }
 "~/.agents/skills/egm-adversarial-review" = { source = "egm-adversarial-review", mode = "symlink", main_checkout = true }
