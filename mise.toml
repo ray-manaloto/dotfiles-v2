@@ -53,7 +53,13 @@ usage = '''
 flag "--outgoing" help="Scan every commit not yet on a remote, branches and tags (pre-push)"
 arg "[file]" var=#true help="Files to scan; default every tracked file"
 '''
-run = 'repotools privacy-scan --patterns="$PRIVATE_PATTERNS" --files="${usage_file:-}" ${usage_outgoing:+--outgoing}'
+run = '''
+if ! command -v repotools >/dev/null 2>&1; then
+  printf '%s\n' 'privacy:scan requires repotools. Install the managed global tools from dotfiles-v2 with mise install --locked.' >&2
+  exit 1
+fi
+exec repotools privacy-scan --patterns="$PRIVATE_PATTERNS" --files="${usage_file:-}" ${usage_outgoing:+--outgoing}
+'''
 
 [doctor.checks.no-project-tools]
 description = "Project mise TOMLs declare zero [tools], no root mise.lock, and slim pyproject.toml"

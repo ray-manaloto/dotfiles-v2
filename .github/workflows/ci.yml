@@ -73,8 +73,8 @@ jobs:
           fi
 
       - name: Run hk check suite
-        # private-paths scans for the *local* $HOME/$USER via repotools (a host-only uv tool);
-        # on the runner those patterns are /home/runner, so the step is meaningful only locally.
+        # private-paths uses repotools to scan for the machine's own $HOME and $USER paths.
+        # On the runner those patterns describe the runner account.
         run: hk check --all --skip-step private-paths
 
       - name: Run mise doctor project checks

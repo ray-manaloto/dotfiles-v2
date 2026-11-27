@@ -2338,6 +2338,33 @@ def test_mise_lock_integrity_accepts_pypi_uv_lock_dir(
     assert any("uv.lock" in e for e in errs) is (not with_uv_lock), errs
 
 
+@pytest.mark.parametrize("pin", ["a" * 40, "main"])
+def test_mise_lock_integrity_accepts_commit_pinned_pypi_git_subdirectory(
+    monkeypatch, tmp_path, pin
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    monkeypatch.setattr(doc_mod, "_load_mise_registry_map", lambda: {})
+    mise_dir = tmp_path / "unix" / "home" / ".config" / "mise"
+    mise_dir.mkdir(parents=True)
+    tool = "pypi:example/repo#subdirectory=python/cli"
+    (mise_dir / "config.toml").write_text(
+        f'[tools]\n"{tool}" = "{pin}"\n'
+        '[settings]\nlockfile_platforms = ["linux-x64"]\n',
+        encoding="utf-8",
+    )
+    lock = mise_dir / "mise.lock"
+    lock.write_text(
+        f'[[tools."{tool}"]]\nversion = "{pin}"\nbackend = "{tool}"\n',
+        encoding="utf-8",
+    )
+    lock.chmod(0o644)
+    errors = doc_mod.check_mise_lock_integrity(tmp_path)
+    if pin == "main":
+        assert errors == [f"mise.lock missing platforms.linux-x64 for {tool} ({pin})"]
+    else:
+        assert errors == []
+
+
 def test_config_hygiene_allows_backend_for_tools_not_in_registry(
     monkeypatch, tmp_path
 ) -> None:

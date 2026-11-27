@@ -312,7 +312,12 @@ def check_mise_lock_integrity(repo_root: Path) -> list[str]:
                 fpath = uv_dir / required_file
                 if not fpath.is_file():
                     errors.append(f"Missing {fpath.relative_to(resolved_root)}")
-        else:
+        elif not (
+            re.fullmatch(r"pypi:[\w.-]+/[\w.-]+#subdirectory=.+", tool_name)
+            and re.fullmatch(r"[0-9a-f]{40}", want_ver or "")
+            and any(entry.get("backend") == tool_name for entry in matching)
+        ):
+            # mise writes only a version for commit-pinned PyPI Git subdirectory sources.
             allowed_os = _tool_os_list(spec)
             for plat in platforms:
                 plat_os = "macos" if plat.startswith("macos-") else "linux"

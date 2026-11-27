@@ -66,6 +66,7 @@ osv-scanner = "2.7.1"
 oxfmt = "0.80.0"
 "packslip:grafana/flint" = "0.22.15"
 pinact = "5.0.2"
+"pypi:ray-manaloto/cpp-standard#subdirectory=python/repo" = "6eec09e90f98d53190662fef4519432c840fde71"
 "pypi:repowise" = { version = "0.62.0", python = "3.13", minimum_release_age = "0s" }
 pitchfork = { version = "2.36.0", workflow = "release.yml@refs/heads/main", minimum_release_age = "0s" }
 pkl = "0.33.1"
