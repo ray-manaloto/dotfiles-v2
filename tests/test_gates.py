@@ -2168,13 +2168,96 @@ def test_reviewer_plugins_repo_scope_rejects_drift(
     assert any(needle in e for e in errs), errs
 
 
-def test_reviewer_plugins_live_not_required_off_mac(monkeypatch, tmp_path) -> None:
+def test_reviewer_plugins_linux_checks_installed_harnesses(
+    monkeypatch, tmp_path
+) -> None:
     doc_mod = _load_task_module("doctor_checks")
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("DOTFILES_DOCTOR_SCOPE", raising=False)
     monkeypatch.setattr(doc_mod.sys, "platform", "linux")
-    errs, msg = doc_mod.check_reviewer_plugins(_reviewer_repo(tmp_path))
-    assert errs == [] and "not the Mac host" in msg
+    root = _reviewer_repo(tmp_path)
+    lib = doc_mod._load_reviewer_plugins_lib(root)
+    monkeypatch.setattr(doc_mod, "_load_reviewer_plugins_lib", lambda _r: lib)
+    monkeypatch.setattr(lib, "_bin", lambda name, _h: name if name == "codex" else None)
+    monkeypatch.setattr(lib, "repowise_repos", lambda _roots: [])
+    monkeypatch.setattr(lib, "codex_state", lambda _exe: (set(), set()))
+    errs, _ = doc_mod.check_reviewer_plugins(root)
+    assert "reviewer-plugins: codex marketplace missing: planning-with-files" in errs
+    assert (
+        "reviewer-plugins: codex plugin missing/disabled: planning-with-files@planning-with-files"
+        in errs
+    )
+    assert not any("agy plugin" in error for error in errs)
+
+
+@pytest.mark.parametrize(
+    ("machine", "container", "expected"),
+    [
+        ("x86_64", None, False),
+        ("aarch64", "docker", True),
+        ("aarch64", None, False),
+    ],
+)
+def test_reviewer_plugin_gates_match_in_sync_and_check(
+    monkeypatch, tmp_path, machine, container, expected
+) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    spec = {
+        "marketplaces": {"catalog": "example/plugin"},
+        "plugins": ["tool@catalog"],
+        "platforms": {
+            "tool@catalog": {"os": ["linux"], "arch": ["arm64"], "env": ["container"]}
+        },
+    }
+    manifest = {"codex": spec}
+    monkeypatch.setattr(lib.sys, "platform", "linux")
+    monkeypatch.setattr(lib.platform, "machine", lambda: machine)
+    is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: False if self == Path("/.dockerenv") else is_file(self),
+    )
+    monkeypatch.delenv("container", raising=False)
+    if container:
+        monkeypatch.setenv("container", container)
+    monkeypatch.setattr(lib, "_bin", lambda name, _h: name if name == "codex" else None)
+    monkeypatch.setattr(lib, "codex_state", lambda _exe: (set(), set()))
+    calls = []
+    monkeypatch.setattr(
+        lib, "_run", lambda argv, timeout=180: calls.append(argv) or (0, "")
+    )
+    lib.sync(manifest, tmp_path, plugins_only=True)
+    errors = lib.check(manifest, tmp_path, plugins_only=True)
+    if expected:
+        assert calls == [
+            ["codex", "plugin", "marketplace", "add", "example/plugin"],
+            ["codex", "plugin", "add", "tool@catalog"],
+        ]
+        assert errors == [
+            "codex marketplace missing: catalog",
+            "codex plugin missing/disabled: tool@catalog",
+        ]
+    else:
+        assert not calls
+        assert not errors
+
+
+def test_reviewer_gate_rejects_unknown_platform_values(monkeypatch, tmp_path) -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    lib = doc_mod._load_reviewer_plugins_lib(_reviewer_repo(tmp_path))
+    manifest = {
+        "agy": {
+            "plugins": {"tool": "example/tool"},
+            "platforms": {"tool": {"os": ["darwin"]}},
+        }
+    }
+    monkeypatch.setattr(
+        lib, "_bin", lambda *_: pytest.fail("invalid manifest probed live")
+    )
+    assert lib.sync_failed(lib.sync(manifest, tmp_path))
+    assert lib.check(manifest, tmp_path) == ["agy: invalid os selector for tool"]
 
 
 def test_reviewer_plugins_live_reports_unconnected_mcp(monkeypatch, tmp_path) -> None:
@@ -2195,7 +2278,12 @@ def test_reviewer_plugins_live_reports_unconnected_mcp(monkeypatch, tmp_path) ->
         lib, "_bin", lambda name, _h: name if name == "claude" else None
     )
     monkeypatch.setattr(
-        lib, "claude_state", lambda _c: (set(manifest["claude"]["plugins"]), set())
+        lib,
+        "claude_state",
+        lambda _c: (
+            set(manifest["claude"]["plugins"]),
+            set(manifest["claude"]["marketplaces"]),
+        ),
     )
     statuses = {"plugin:graphify:graphify": "! Needs authentication"}
     monkeypatch.setattr(lib.time, "sleep", lambda _s: None)

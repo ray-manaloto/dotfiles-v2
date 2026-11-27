@@ -434,7 +434,7 @@ run = "python3 -I -B tasks/py/doctor_checks.py claude-ship-env"
 hint = "Remove the flagged env var / override; keep disableClaudeAiConnectors=true unless a connector is really needed; scope telemetry opt-outs to a single command. See docs/pr-shipping-protocol.md. Details: `mise run doctor:explain claude-ship-env`."
 
 [doctor.checks.reviewer-plugins]
-description = "Reviewer-bot plugins (Graphify, Greptile, CodeRabbit, Repowise) declared in assets/reviewer-plugins.json are installed in Claude/Codex/agy/OpenCode, Claude plugin MCPs Connected, and Repowise's Bash rewrite disabled in indexed repos"
+description = "Applicable user plugins match the manifest, Claude plugin MCPs are Connected, and Repowise Bash rewriting is disabled"
 run = "python3 -I -B tasks/py/doctor_checks.py reviewer-plugins"
 timeout = "420s"
 hint = "Run `mise run bootstrap:reviewer-plugins` (and `mise run repowise:guard`), then in Claude Code run /mcp -> <server> -> Authenticate. Details: `mise run doctor:explain reviewer-plugins`."
