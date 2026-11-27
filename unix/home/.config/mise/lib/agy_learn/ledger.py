@@ -305,12 +305,69 @@ def is_non_placeholder_error_ref(plan_error_ref: str | None) -> bool:
     return any(tok not in _ERROR_REF_BOILERPLATE for tok in tokens)
 
 
+def explain_error_ref_failure(plan_error_ref: str | None) -> str:
+    """Name the specific rule that made *plan_error_ref* fail `is_non_placeholder_error_ref`."""
+    raw = (plan_error_ref or "").strip()
+    example = 'describe the rows, e.g. --plan-error-ref "E1 dcg block, E2 typo"'
+    if not raw:
+        return f"--plan-error-ref is missing; {example}"
+    norm = re.sub(r"\s+", " ", raw).strip(_STRIP_PUNCT).lower()
+    if len(norm) < 3 or re.search(r"[a-z0-9]", norm) is None:
+        return (
+            f"plan_error_ref {raw!r} is shorter than 3 characters (after trimming "
+            f"punctuation); {example}"
+        )
+    return (
+        f"plan_error_ref {raw!r} is a placeholder or only generic words; "
+        f'name the Errors Encountered rows, e.g. --plan-error-ref "E1 dcg block, E2 typo"'
+    )
+
+
+def count_plan_error_rows(plan_path: str | None) -> int | None:
+    """Count data rows of the plan's `## Errors Encountered` table; None if unreadable or absent."""
+    if not plan_path:
+        return None
+    try:
+        text = Path(plan_path).expanduser().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    bullets: list[str] = []
+    table_rows: list[str] = []
+    in_section = False
+    found_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if in_section:
+                break
+            in_section = stripped.lower().startswith("## errors encountered")
+            found_section = found_section or in_section
+            continue
+        if not in_section or not stripped:
+            continue
+        if re.match(r"^(?:[-*+]|\d+[.)])\s+\S", stripped):
+            bullets.append(stripped)  # bullet or numbered list entry
+            continue
+        if not stripped.startswith("|"):
+            continue
+        if re.fullmatch(r"\|[\s:|-]+\|?", stripped):
+            if table_rows:
+                table_rows.pop()  # the row just above a separator is its header
+            continue
+        cells = [c.strip().strip("*_`").lower() for c in stripped.strip("|").split("|")]
+        if any(c and c not in _PLACEHOLDER_STRINGS for c in cells):
+            table_rows.append(stripped)
+    # A table without a separator row has no reliable header, so every row counts (never a false reject).
+    rows = len(bullets) + len(table_rows)
+    return rows if found_section else None
+
+
 def validate_substantive_notes(notes: str | None) -> str | None:
     """Return an error reason if *notes* is missing, <40 chars, or trivial boilerplate; else None."""
     if notes is None or not notes.strip():
         return (
-            f"requires substantive notes (>= {MIN_SUBSTANTIVE_NOTES_LEN} non-whitespace chars "
-            "explaining why logged errors yielded 0 proposals)"
+            f"--notes is required: >= {MIN_SUBSTANTIVE_NOTES_LEN} non-whitespace chars "
+            "explaining why logged errors yielded 0 proposals"
         )
     raw_stripped = notes.strip()
     collapsed = " ".join(raw_stripped.split())
@@ -319,7 +376,7 @@ def validate_substantive_notes(notes: str | None) -> str | None:
         or len(collapsed) < MIN_SUBSTANTIVE_NOTES_LEN
     ):
         return (
-            f"notes must be >= {MIN_SUBSTANTIVE_NOTES_LEN} meaningful chars "
+            f"--notes must be >= {MIN_SUBSTANTIVE_NOTES_LEN} meaningful chars "
             f"(got {len(collapsed)})"
         )
     norm = collapsed.lower().strip(_STRIP_PUNCT)
@@ -510,7 +567,7 @@ def record_review(
             errors=[
                 LearnErrorEntry(
                     code=LearnErrorCode.ERR_MISSING_PROVENANCE,
-                    message="Provenance requires non-empty transcript_step or plan_error_ref.",
+                    message='Provenance is missing: pass --transcript-step "<what happened>" or --plan-error-ref "E1 <row>".',
                 )
             ],
             returns=[],
@@ -584,8 +641,11 @@ def record_review(
             if notes_err is not None:
                 reasons.append(notes_err)
             if not is_non_placeholder_error_ref(provenance.plan_error_ref):
+                reasons.append(explain_error_ref_failure(provenance.plan_error_ref))
+            if count_plan_error_rows(provenance.plan_path) == 0:
                 reasons.append(
-                    "requires non-empty plan_error_ref referencing Errors Encountered row(s)"
+                    f"the '## Errors Encountered' table in {provenance.plan_path} has no "
+                    f"rows but error_count={error_count}; add rows to that table first"
                 )
             if reasons:
                 ts, ns = now_ns_pair()

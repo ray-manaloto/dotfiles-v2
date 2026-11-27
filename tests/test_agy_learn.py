@@ -26,7 +26,7 @@ from agy_learn import (
     run_heal_check,
 )
 from agy_learn.cli import main as agy_learn_cli_main
-from agy_learn.ledger import apply_proposals, migrate_reviews
+from agy_learn.ledger import apply_proposals, count_plan_error_rows, migrate_reviews
 from dotfiles_py import NANOSECOND_TIMESTAMP_RE
 from dotfiles_py.generated import (
     EnforcementTier,
@@ -1434,3 +1434,160 @@ def test_learn_dedup_apply_guards_mini_toml_and_portable_hook_edges(
     ).read_text(encoding="utf-8")
     assert "usage_apply:-false" in mig_task
     assert "refusing uv run fallback without --apply" in mig_task
+
+
+def _rejection_message(
+    tmp_path: Path, provenance: ProvenanceRef, notes: str | None = None
+) -> str:
+    resp = record_review(
+        plan_key=str((tmp_path / ".planning" / "p1" / "task_plan.md").resolve()),
+        plan_sha256="sha-msg",
+        outcome=ReviewVerdict.NO_NEW_PROPOSALS,
+        error_count=1,
+        survivor_count=0,
+        provenance=provenance,
+        notes=notes,
+        state_dir=tmp_path / "agy-learn",
+    )
+    assert resp.rc == 1
+    return resp.errors[0].message or ""
+
+
+def test_gate_messages_name_the_failing_flag_and_condition(tmp_path: Path) -> None:
+    short_ref = _rejection_message(
+        tmp_path,
+        ProvenanceRef(transcript_step="t#1", plan_error_ref="E1"),
+        "Row 1 already enforced in hk.pkl ruff and ty static checks.",
+    )
+    assert "plan_error_ref 'E1' is shorter than 3 characters" in short_ref
+    assert "--plan-error-ref" in short_ref
+
+    no_notes = _rejection_message(
+        tmp_path,
+        ProvenanceRef(transcript_step="t#1", plan_error_ref="E1 dcg block"),
+        None,
+    )
+    assert "--notes is required" in no_notes
+    assert "40" in no_notes
+
+    short_notes = _rejection_message(
+        tmp_path,
+        ProvenanceRef(transcript_step="t#1", plan_error_ref="E1 dcg block"),
+        "too short",
+    )
+    assert "--notes must be >= 40" in short_notes
+
+
+def test_gate_message_flags_empty_errors_table_in_plan(tmp_path: Path) -> None:
+    plan = tmp_path / ".planning" / "p1" / "task_plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text(
+        "# Plan\n\n## Errors Encountered\n| Error | Resolution |\n|---|---|\n\n## Next\n",
+        encoding="utf-8",
+    )
+    msg = _rejection_message(
+        tmp_path,
+        ProvenanceRef(
+            transcript_step="t#1",
+            plan_error_ref="E1 dcg block",
+            plan_path=str(plan),
+        ),
+        "Row 1 already enforced in hk.pkl ruff and ty static checks.",
+    )
+    assert "table" in msg
+    assert str(plan) in msg
+    assert "add rows" in msg
+
+    plan.write_text(
+        "## Errors Encountered\n| Error | Resolution |\n|---|---|\n| dcg block | file |\n",
+        encoding="utf-8",
+    )
+    assert count_plan_error_rows(str(plan)) == 1
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        ("| Error | Resolution |\n|---|---|\n", 0),
+        (
+            "| Error | Resolution |\n|---|---|\n| E1 dcg block | file |\n\n| E2 typo | reword |\n",
+            2,
+        ),
+        ("- E1 dcg block\n2. E2 typo\n", 2),
+        ("| E1 dcg block | file |\n", 1),  # no separator: every row counts
+        (
+            "| | dcg block | file |\n|---|---|---|\n| | real row | fix |\n",
+            1,
+        ),  # empty first cell
+        ("| Error | Fix |\n|---|---|\n| n/a | |\n", 0),
+    ],
+)
+def test_count_plan_error_rows_shapes(
+    tmp_path: Path, section: str, expected: int
+) -> None:
+    plan = tmp_path / "task_plan.md"
+    plan.write_text(
+        f"# Plan\n\n## Errors Encountered (x)\n{section}\n## Next\n- not an error\n",
+        encoding="utf-8",
+    )
+    assert count_plan_error_rows(str(plan)) == expected
+
+
+def test_count_plan_error_rows_without_section(tmp_path: Path) -> None:
+    plan = tmp_path / "task_plan.md"
+    plan.write_text("# Plan\n\n## Phases\n- one\n", encoding="utf-8")
+    assert count_plan_error_rows(str(plan)) is None
+
+
+def test_record_review_wrapper_splits_repeated_refs(tmp_path: Path) -> None:
+    plan_dir = tmp_path / "p"
+    plan_dir.mkdir()
+    plan = plan_dir / "task_plan.md"
+    plan.write_text(
+        "# Plan\n\n## Errors Encountered\n| E | R |\n|---|---|\n| E1 dcg | file |\n",
+        encoding="utf-8",
+    )
+    sha = hashlib.sha256(plan.read_bytes()).hexdigest()
+    base = [
+        "mise",
+        "run",
+        "learn:record-review",
+        "--state-dir",
+        str(tmp_path / "state"),
+        "--worktree-slug",
+        "t",
+        "--plan-id",
+        "t",
+        "--plan-key",
+        str(plan),
+        "--plan-sha256",
+        sha,
+        "--outcome",
+        "no_new_proposals",
+        "--survivor-count",
+        "0",
+        "--error-count",
+        "1",
+        "--notes",
+        "a substantive explanation that is definitely longer than forty characters",
+    ]
+    env = {**os.environ, "MISE_YES": "1"}
+    runs = [
+        ["--plan-error-ref", "E1 it's dcg", "--plan-error-ref", "E2 typo"],
+        ["--plan-error-ref", "E1 dcg block"],
+    ]
+    for extra in runs:
+        p = subprocess.run(
+            [*base, *extra],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            cwd=REPO_ROOT,
+        )
+        assert '"rc":0' in p.stdout.replace(" ", ""), p.stdout + p.stderr
+    refs = [
+        json.loads(ln)["provenance"]["plan_error_ref"]
+        for ln in (tmp_path / "state" / "reviews.jsonl").read_text().splitlines()
+    ]
+    assert refs == ["E1 it's dcg; E2 typo", "E1 dcg block"]

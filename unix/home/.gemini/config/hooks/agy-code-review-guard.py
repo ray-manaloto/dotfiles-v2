@@ -643,6 +643,13 @@ def _record_receipt(repo: Path, ref: str, summary: str) -> dict[str, Any]:
     }
 
 
+def _run_syntax_error_hint(returncode: int, output: str) -> str:
+    """Return a one-line hint when a --run value failed as a shell syntax error."""
+    if returncode == 2 and "syntax error" in output.lower():
+        return "Hint: --run executes its value as a shell command; put the description in --proof."
+    return ""
+
+
 def _verify_receipt(
     repo: Path,
     ref: str,
@@ -716,6 +723,9 @@ def _verify_receipt(
         tail = combined[-MAX_OUTPUT_TAIL:]
         if proc.returncode != 0:
             msg = f"Verification command failed (exit {proc.returncode}): {cmd}\n{tail}".strip()
+            hint = _run_syntax_error_hint(proc.returncode, combined)
+            if hint:
+                msg = f"{msg}\n{hint}"
             raise RuntimeError(msg)
         cmd_ts, cmd_ns = _now_ns_pair()
         cmd_results.append(
@@ -1817,7 +1827,7 @@ def main() -> int:
         "--run",
         action="append",
         default=[],
-        help="Shell verification command to run in --verify mode (repeatable)",
+        help="Shell command that --verify EXECUTES via bash -c (repeatable); never prose, put descriptions in --proof",
     )
     parser.add_argument(
         "--evidence",
@@ -1827,7 +1837,7 @@ def main() -> int:
     parser.add_argument(
         "--proof",
         default="",
-        help="Concise summary of concrete observed verification proof (required for --verify)",
+        help="Free-text description of the observed result (required for --verify); NOT executed, unlike --run",
     )
     parser.add_argument(
         "--timeout",

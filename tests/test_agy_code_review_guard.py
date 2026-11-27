@@ -775,3 +775,15 @@ def test_hook_shell_unwrapping_tool_matching_and_guards(
         )
         is None
     )
+
+
+def test_run_syntax_error_hint_and_help_text() -> None:
+    guard = _load_guard()
+    hint = guard._run_syntax_error_hint(2, "bash: -c: line 1: syntax error near `(`")
+    assert "--run executes its value as a shell command" in hint
+    assert "--proof" in hint
+    assert guard._run_syntax_error_hint(1, "syntax error") == ""
+    assert guard._run_syntax_error_hint(2, "boom") == ""
+    source = HOOK_PATH.read_text(encoding="utf-8")
+    assert "EXECUTES" in source
+    assert "NOT executed" in source

@@ -118,7 +118,7 @@ def _build_app() -> cyclopts.App:
             str | None, cyclopts.Parameter(name="--transcript-step")
         ] = None,
         plan_error_ref: Annotated[
-            str | None, cyclopts.Parameter(name="--plan-error-ref")
+            list[str] | None, cyclopts.Parameter(name="--plan-error-ref")
         ] = None,
         transcript_path: Annotated[
             str | None, cyclopts.Parameter(name="--transcript-path")
@@ -153,7 +153,7 @@ def _build_app() -> cyclopts.App:
             survivor_count=survivor_count,
             provenance=ProvenanceRef(
                 transcript_step=transcript_step,
-                plan_error_ref=plan_error_ref,
+                plan_error_ref="; ".join(plan_error_ref) if plan_error_ref else None,
                 transcript_path=transcript_path,
                 plan_path=plan_path,
             ),

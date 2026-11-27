@@ -6,7 +6,7 @@
 #USAGE flag "--error-count <n>" help="Logged Errors Encountered count"
 #USAGE flag "--survivor-count <n>" help="Surviving proposal count (0 valid for no_new_proposals)"
 #USAGE flag "--transcript-step <step>" help="Transcript step provenance ref"
-#USAGE flag "--plan-error-ref <ref>" help="Plan error row provenance ref (required for no_new_proposals when error_count > 0)"
+#USAGE flag "--plan-error-ref <ref>" var=#true help="Plan error row provenance ref, repeatable and joined (>= 3 chars; required for no_new_proposals when error_count > 0)"
 #USAGE flag "--transcript-path <path>" help="Transcript file path provenance"
 #USAGE flag "--plan-path <path>" help="Plan file path provenance"
 #USAGE flag "--plan-id <id>" help="PWF PLAN_ID"
@@ -14,7 +14,7 @@
 #USAGE flag "--proposal-id <id>" var=#true help="Surviving proposal ID(s)"
 #USAGE flag "--repo-root <path>" help="Repository root path"
 #USAGE flag "--conversation-id <id>" help="Antigravity conversation ID"
-#USAGE flag "--notes <notes>" help="Review notes (>=40 non-boilerplate chars required for no_new_proposals when error_count > 0)"
+#USAGE flag "--notes <notes>" help="Review notes (--notes needs >=40 non-boilerplate chars, required for no_new_proposals when error_count > 0)"
 #USAGE flag "--state-dir <path>" help="Override agy-learn state directory"
 set -euo pipefail
 
@@ -43,7 +43,20 @@ args=(record-review)
 [[ -n ${usage_error_count:-} ]] && args+=(--error-count "${usage_error_count}")
 [[ -n ${usage_survivor_count:-} ]] && args+=(--survivor-count "${usage_survivor_count}")
 [[ -n ${usage_transcript_step:-} ]] && args+=(--transcript-step "${usage_transcript_step}")
-[[ -n ${usage_plan_error_ref:-} ]] && args+=(--plan-error-ref "${usage_plan_error_ref}")
+if [[ -n ${usage_plan_error_ref:-} ]]; then
+	# var=#true: usage hands over the repeated values as one shell-quoted string; split it without eval.
+	split_py="python3"
+	[[ -x ${venv_py} ]] && split_py="${venv_py}"
+	n_refs=0
+	while IFS= read -r -d '' ref; do
+		args+=(--plan-error-ref "${ref}")
+		n_refs=$((n_refs + 1))
+	done < <("${split_py}" -I -B -c 'import shlex, sys; sys.stdout.write("".join(v + "\0" for v in shlex.split(sys.argv[1])))' "${usage_plan_error_ref}")
+	if ((n_refs == 0)); then
+		printf 'learn:record-review: could not split --plan-error-ref value %q\n' "${usage_plan_error_ref}" >&2
+		exit 2
+	fi
+fi
 [[ -n ${usage_transcript_path:-} ]] && args+=(--transcript-path "${usage_transcript_path}")
 [[ -n ${usage_plan_path:-} ]] && args+=(--plan-path "${usage_plan_path}")
 [[ -n ${usage_plan_id:-} ]] && args+=(--plan-id "${usage_plan_id}")
