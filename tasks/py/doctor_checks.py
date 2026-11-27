@@ -3969,6 +3969,48 @@ def check_plugin_drift(repo_root: Path) -> tuple[list[str], str]:
     return [], " | ".join(parts)
 
 
+def check_foreign_agent_hooks(repo_root: Path) -> tuple[list[str], str]:
+    """Fail when denylisted foreign agent hooks (e.g. Orca) reappear in live harness configs."""
+    asset = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "assets"
+        / "foreign-agent-hooks.json"
+    )
+    lib_dir = repo_root / "unix" / "home" / ".config" / "mise" / "lib"
+    try:
+        sys.path.insert(0, str(lib_dir))
+        try:
+            from foreign_hooks import core
+        finally:
+            sys.path.remove(str(lib_dir))
+        markers = core.load_markers(asset)
+    except (ImportError, OSError, ValueError, KeyError, TypeError) as exc:
+        return [f"foreign-agent-hooks: cannot load marker asset ({exc})"], ""
+    if _live_host_skipped():
+        return [], _skip_reason("live foreign agent hooks not scanned")
+    hits, errors = core.scan(Path.home(), markers)
+    out = [f"foreign-agent-hooks: {e}" for e in errors]
+    out.extend(f"foreign-agent-hooks: foreign hook at {h}" for h in hits)
+    if out:
+        toml_only = bool(hits) and all(re.search(r"config\.toml:\d+$", h) for h in hits)
+        if toml_only:
+            out.append(
+                "foreign-agent-hooks: edit ~/.codex/config.toml manually to delete "
+                "the foreign hook lines (that file is never rewritten automatically)"
+            )
+        else:
+            out.append(
+                "foreign-agent-hooks: back up then remove with "
+                "`mise run hooks:remove-foreign` (dry-run), then `--apply`"
+            )
+        return out, ""
+    return [], f"no foreign agent hooks ({len(markers)} markers checked)"
+
+
 def _report(label: str, errors: list[str], ok_msg: str) -> int:
     if errors:
         sys.stderr.write("\n".join(errors) + "\n")
@@ -4009,6 +4051,7 @@ def main(argv: list[str] | None = None) -> int:
     p_trust.add_argument("--strict-host", action="store_true")
     sub.add_parser("mise-binary-integrity")
     sub.add_parser("plugin-drift")
+    sub.add_parser("foreign-agent-hooks")
     p_rc = sub.add_parser("agy-rc-health")
     p_rc.add_argument("--strict-host", action="store_true")
     sub.add_parser("skills-6harness-parity")
@@ -4132,6 +4175,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "plugin-drift":
         _errs, msg = check_plugin_drift(repo_root)
         return _report("plugin-drift", [], msg)
+    if args.cmd == "foreign-agent-hooks":
+        errs, msg = check_foreign_agent_hooks(repo_root)
+        return _report("foreign-agent-hooks", errs, msg)
     if args.cmd == "mise-binary-integrity":
         errs, msg = check_mise_binary_integrity(repo_root)
         return _report("mise-binary-integrity", errs, msg)

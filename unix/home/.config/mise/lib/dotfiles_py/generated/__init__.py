@@ -116,6 +116,7 @@ from .env_stats_schema import (
     EnvTargetState,
     HerdrModSyncState,
 )
+from .foreign_agent_hooks_schema import ForeignAgentHooks
 from .herdr_roll_schema import (
     AgyLogProof,
     GraphSnapshot,
@@ -257,6 +258,7 @@ __all__ = [
     "EnvTargetState",
     "EnvelopeMetadata",
     "ErrorEntry",
+    "ForeignAgentHooks",
     "GraphSnapshot",
     "Harness",
     "HarnessKind",

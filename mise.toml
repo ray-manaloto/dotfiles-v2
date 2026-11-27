@@ -465,6 +465,11 @@ description = "Warn-only: tracked plugins (planning-with-files) trail their late
 run = "python3 -I -B tasks/py/doctor_checks.py plugin-drift"
 hint = "Run `mise run plugins:update` (dry-run) then `--apply`; hook-code changes always need owner review (exit 3). Docs: docs/codex-hook-trust.md or the plugins:update section."
 
+[doctor.checks.foreign-agent-hooks]
+description = "No foreign agent hooks (Orca markers) in Claude, Codex, agy, or opencode configs"
+run = "python3 -I -B tasks/py/doctor_checks.py foreign-agent-hooks"
+hint = "Foreign app hooks reappeared. Preview with `mise run hooks:remove-foreign`, then `mise run hooks:remove-foreign --apply` (backs up to ~/dev/tmp/foreign-hook-removal/, moves opencode plugins to ~/.Trash). Denylist: unix/home/.config/mise/assets/foreign-agent-hooks.json."
+
 [doctor.checks.codex-marketplaces]
 description = "Codex uses only allowlisted Codex-native plugin marketplaces and the ChatGPT desktop Claude importer stays off"
 run = "python3 -I -B tasks/py/doctor_checks.py codex-marketplaces"
