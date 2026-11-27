@@ -30,9 +30,29 @@ NOT_WORD = re.compile(r"""["'`,\[\](){}]""")
 JOINERS = ("\\", ",", "[", "(")
 
 
+def in_quotes(prefix: str) -> bool:
+    """True if `prefix` ends inside a '...' or "..." string (backslash escapes count outside '...')."""
+    quote = ""
+    escaped = False
+    for ch in prefix:
+        if escaped:
+            escaped = False
+        elif ch == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+    return bool(quote)
+
+
 def code_part(line: str) -> str:
-    m = COMMENT.search(line)
-    return line[: m.start()] if m else line
+    """The line up to its first comment marker that is not inside a quoted string."""
+    for m in COMMENT.finditer(line):
+        if not in_quotes(line[: m.start()]):
+            return line[: m.start()]
+    return line
 
 
 def is_comment_only(line: str) -> bool:

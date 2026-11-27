@@ -92,6 +92,19 @@ def test_flags_keyring_token_invocations(tmp_path: Path) -> None:
             '      ##"DPL configure set token x"##\n', 1, id="pkl-raw-string-2"
         ),
         pytest.param("cd /tmp; DPL configure set token x\n", 1, id="after-terminator"),
+        pytest.param(
+            'echo "a # b"; DPL configure set token x\n', 1, id="hash-in-double-quotes"
+        ),
+        pytest.param(
+            "echo 'a // b' && DPL configure set token x\n",
+            1,
+            id="slashes-in-single-quotes",
+        ),
+        pytest.param(
+            'echo "a \\" # b"; DPL configure set token x\n',
+            1,
+            id="escaped-quote-then-hash",
+        ),
     ],
 )
 def test_flags_evasion_forms(tmp_path: Path, body: str, line: int) -> None:
@@ -165,6 +178,14 @@ def test_skips_binary_and_missing_files(tmp_path: Path) -> None:
     blob = tmp_path / "blob.bin"
     blob.write_bytes(b"\0" + f"{CMD} token x\n".encode())
     assert run(blob, tmp_path / "missing.sh", tmp_path).returncode == 0
+
+
+def test_invalid_utf8_is_scanned(tmp_path: Path) -> None:
+    bad = tmp_path / "latin1.sh"
+    bad.write_bytes(b"# calf\xe9\n" + f"{CMD} token x\n".encode())
+    proc = run(bad)
+    assert proc.returncode == 1, proc.stderr
+    assert "latin1.sh:2:" in proc.stderr
 
 
 def test_tracked_files_are_clean() -> None:
