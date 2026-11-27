@@ -3,7 +3,8 @@
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
 #USAGE flag "--caddy-port <port>" default="8880" help="Loopback HTTP port for Caddy front door on pc"
 #USAGE flag "--beszel-email <email>" help="Optional initial Beszel user email matching Tailscale-User-Login"
-#USAGE flag "--mac-ssh <dest>" help="Optional Mac SSH destination for pc agentsview [[remote_hosts]] pull sync"
+#USAGE flag "--mac-ssh <dest>" help="Optional Mac SSH destination (an ssh alias from hub:mac-pull-key) for pc agentsview [[remote_hosts]] pull sync"
+#USAGE flag "--mac-interval <duration>" default="15m" help="How often the hub pulls the Mac when --mac-ssh is set"
 #USAGE flag "--skip-systemd" help="Skip systemd --user unit installation/reload on pc"
 #USAGE flag "--dry-run" help="Validate configs and print planned remote steps without mutating pc"
 set -euo pipefail
@@ -12,6 +13,11 @@ host="${usage_host:-pc}"
 caddy_port="${usage_caddy_port:-8880}"
 beszel_email="${usage_beszel_email:-}"
 mac_ssh="${usage_mac_ssh:-}"
+mac_interval="${usage_mac_interval:-15m}"
+printf '%s' "${mac_interval}" | grep -qxE '[0-9]+(s|m|h)' || {
+	echo "hub:up: --mac-interval must look like 15m" >&2
+	exit 1
+}
 skip_systemd="${usage_skip_systemd:-false}"
 dry_run="${usage_dry_run:-false}"
 
@@ -120,7 +126,7 @@ beszel_pub="$(ssh -o BatchMode=yes "${host}" "awk '{print \$1\" \"\$2}' '${state
 	ssh -o BatchMode=yes "${host}" "umask 077 && cat >'${state_dir}/.env'"
 
 # Install/verify CLI-only codebase-memory-mcp 0.12.1 (zero HTTP exposure) + @tobilu/qmd 2.9.0 + agentsview on pc.
-ssh -o BatchMode=yes "${host}" env REMOTE_HOME="${remote_home}" MAC_SSH="${mac_ssh}" /bin/bash -euo pipefail <<'REMOTE_BINS'
+ssh -o BatchMode=yes "${host}" env REMOTE_HOME="${remote_home}" MAC_SSH="${mac_ssh}" MAC_INTERVAL="${mac_interval}" /bin/bash -euo pipefail <<'REMOTE_BINS'
 cbm_ver="0.12.1"
 cbm_sha="8c3d0341064301e78ecc84cf7348d4e2c6562a0f57448243ea560aaa34de36c1"
 cbm_bin="${REMOTE_HOME}/.local/bin/codebase-memory-mcp"
@@ -167,7 +173,7 @@ fi
 ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"
 
 av_tok="$(tr -d '\r\n' <"${REMOTE_HOME}/.config/agentsview/server-token")"
-python3 - "${REMOTE_HOME}/.agentsview/config.toml" "${av_tok}" "${MAC_SSH:-}" <<'PY'
+python3 - "${REMOTE_HOME}/.agentsview/config.toml" "${av_tok}" "${MAC_SSH:-}" "${MAC_INTERVAL:-15m}" <<'PY'
 import json
 import re
 import sys
@@ -177,6 +183,7 @@ from pathlib import Path
 cfg_path = Path(sys.argv[1])
 token = sys.argv[2]
 mac_ssh = sys.argv[3].strip()
+mac_interval = sys.argv[4].strip()
 original = cfg_path.read_text(encoding="utf-8") if cfg_path.is_file() else ""
 lines = original.splitlines()
 
@@ -262,9 +269,8 @@ def is_mac_table(table: list[str]) -> bool:
 
 
 if mac_ssh:
-    # Update the first Mac entry in place (keeping the owner's other keys such as
-    # interval) and drop duplicates, so reruns are idempotent.
-    managed = {"transport": toml_str("ssh"), "destination": toml_str(mac_ssh)}
+    # Update the first Mac entry in place (keeping the owner's other keys) and drop duplicates, so reruns are idempotent.
+    managed = {"transport": toml_str("ssh"), "destination": toml_str(mac_ssh), "interval": toml_str(mac_interval)}
     kept: list[list[str]] = []
     have_mac = False
     for table in tables:
@@ -278,7 +284,7 @@ if mac_ssh:
         rows = table[1:]
         row_clean = clean_starts(rows)
         for line, at_key in zip(rows, row_clean):
-            m = re.match(r"^\s*(transport|destination)\s*=", line) if at_key else None
+            m = re.match(r"^\s*(transport|destination|interval)\s*=", line) if at_key else None
             body.append(f"{m.group(1)} = {managed.pop(m.group(1))}" if m and m.group(1) in managed else line)
         has_host = any(ok and re.match(r"^\s*host\s*=", x) for x, ok in zip(rows, row_clean))
         head = [] if has_host else [f"host = {toml_str('mac')}"]
@@ -292,7 +298,7 @@ if mac_ssh:
                 f"host = {toml_str('mac')}",
                 'transport = "ssh"',
                 f"destination = {toml_str(mac_ssh)}",
-                'interval = "5m"',
+                f"interval = {toml_str(mac_interval)}",
             ]
         )
 
@@ -331,12 +337,12 @@ def mac_entries(d: dict) -> list[dict]:
 if unrelated(before) != unrelated(after):
     fail("rewrite would change settings it does not own")
 if mac_ssh:
-    # Exactly one Mac entry: the first prior one with only transport/destination
+    # Exactly one Mac entry: the first prior one with only transport/destination/interval
     # (and a missing host) set, so owner keys inside it cannot change either.
     prior = mac_entries(before)
-    expected = dict(prior[0]) if prior else {"interval": "5m"}
+    expected = dict(prior[0]) if prior else {}
     expected.setdefault("host", "mac")
-    expected.update(transport="ssh", destination=mac_ssh)
+    expected.update(transport="ssh", destination=mac_ssh, interval=mac_interval)
     if mac_entries(after) != [expected]:
         fail("rewrite would not update the Mac [[remote_hosts]] entry exactly")
 cfg_path.write_text(text, encoding="utf-8")
