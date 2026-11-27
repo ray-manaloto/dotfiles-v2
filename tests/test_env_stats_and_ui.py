@@ -369,6 +369,24 @@ def test_herdr_env_stats_mod_and_sync_tasks(tmp_path: Path) -> None:
     assert rt_json["space"] == "sp1"
     assert rt_json["grid"] is True
 
+    rt_q = subprocess.run(
+        ["bash", str(rt_task)],
+        env={
+            "HOME": str(fake_home),
+            "PATH": f"{bin_stub}:{jq_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "usage_dry_run": "true",
+            "usage_quotas": "true",
+            "usage_json": "true",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    rt_q_json = json.loads(rt_q.stdout)
+    assert rt_q_json["quotas"] is True
+    assert rt_q_json["env_stats"] is False
+    assert rt_q_json["space"] == "sp1"
+
     # Test host:prune cleans dangling symlinks in ~/.config/herdr-app/mods/ without deleting real mods
     dangling_mod = herdr_home / "mods" / "stale-mod"
     dangling_mod.symlink_to(tmp_path / "does-not-exist")

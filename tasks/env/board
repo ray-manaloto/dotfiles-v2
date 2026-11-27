@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#MISE description="Live-refreshing board of harness quotas, local usage, and API-credit status"
+#USAGE flag "--interval <seconds>" help="Redraw interval in seconds (default 10)"
+#USAGE flag "--window-days <days>" help="Usage window in days (default 7)"
+#USAGE flag "--once" help="Render one frame and exit"
+#USAGE flag "--ledger-root <path>" help="Directory holding api-credit-*/ledger.jsonl"
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+lib_dir="${repo_root}/unix/home/.config/mise/lib"
+venv_py="${repo_root}/.venv/bin/python"
+if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
+	common_dir="$(git -C "${repo_root}" rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n ${common_dir} ]]; then
+		if [[ ${common_dir} == /* ]]; then
+			common_root="$(cd "${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		else
+			common_root="$(cd "${repo_root}/${common_dir}/.." 2>/dev/null && pwd -P || true)"
+		fi
+		if [[ -n ${common_root} && -x "${common_root}/.venv/bin/python" ]]; then
+			venv_py="${common_root}/.venv/bin/python"
+		fi
+	fi
+fi
+
+if [[ ! -x ${venv_py} ]]; then
+	echo "env:board: missing .venv/bin/python; run 'mise deps uv'" >&2
+	exit 1
+fi
+run_py=(-I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from env_board.cli import main; raise SystemExit(main(sys.argv[2:]))' "${lib_dir}")
+if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
+	exec "${venv_py}" "${run_py[@]}" --help
+fi
+
+cmd=("${venv_py}" "${run_py[@]}")
+[[ -n ${usage_interval:-} ]] && cmd+=(--interval "${usage_interval}")
+[[ -n ${usage_window_days:-} ]] && cmd+=(--window-days "${usage_window_days}")
+[[ ${usage_once:-false} == "true" ]] && cmd+=(--once)
+[[ -n ${usage_ledger_root:-} ]] && cmd+=(--ledger-root "${usage_ledger_root}")
+
+exec "${cmd[@]}"

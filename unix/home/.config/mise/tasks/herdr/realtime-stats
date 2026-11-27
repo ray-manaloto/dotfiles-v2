@@ -2,16 +2,18 @@
 #MISE description="Ensure Herdr realtime-stats space, env-stats mod tab, and optional 5-pane env:top grid"
 #USAGE flag "--grid" help="Also open or refresh the 5-pane env:top --loop TUI grid tab (host, pc-host, pc, mac, vm)"
 #USAGE flag "--env-stats" help="Open or focus the native GPUI env-stats mod tab inside realtime-stats"
+#USAGE flag "--quotas" help="Open (or fill, if empty) the 'AI Harness Quotas & Usage' tab running the live env:board table"
 #USAGE flag "--dry-run" help="Print planned herdr-app commands without mutating live Herdr spaces"
 #USAGE flag "--json" help="Emit machine-readable JSON result"
 set -euo pipefail
 
 want_grid="${usage_grid:-false}"
 want_env_stats="${usage_env_stats:-false}"
+want_quotas="${usage_quotas:-false}"
 dry_run="${usage_dry_run:-false}"
 json_out="${usage_json:-false}"
 
-if [[ ${want_grid} != "true" && ${want_env_stats} != "true" ]]; then
+if [[ ${want_grid} != "true" && ${want_env_stats} != "true" && ${want_quotas} != "true" ]]; then
 	want_env_stats="true"
 fi
 
@@ -48,6 +50,23 @@ if [[ ${want_env_stats} == "true" ]]; then
 	fi
 fi
 
+if [[ ${want_quotas} == "true" ]]; then
+	quota_tab="AI Harness Quotas & Usage"
+	quota_cwd="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+	commands+=("tab.new --space ${space_id} --name ${quota_tab} --argv [\"mise\",\"run\",\"env:board\"]")
+	if [[ ${dry_run} != "true" ]]; then
+		# Reuse an existing tab by name: fill it when it has no terminal, else leave it running.
+		tab_json="$(herdr-app ls 2>/dev/null | jq -c --arg sp "${space_id}" --arg n "${quota_tab}" '[.spaces[]? | select(.id == $sp) | .tabs[]? | select(.name == $n)] | first // empty')"
+		if [[ -z ${tab_json} ]]; then
+			herdr-app "do" tab.new --space "${space_id}" --name "${quota_tab}" --folder "${quota_cwd}" --argv '["mise","run","env:board"]' >/dev/null
+		elif [[ "$(printf '%s' "${tab_json}" | jq '.terminals | length')" == "0" ]]; then
+			tab_id="$(printf '%s' "${tab_json}" | jq -r '.id')"
+			hc run --bg --no-parent --outlive-parent --name quota-board --cwd "${quota_cwd}" \
+				--label "herdr.space=${space_id}" --label "herdr.tab=${tab_id}" mise run env:board >/dev/null
+		fi
+	fi
+fi
+
 if [[ ${want_grid} == "true" ]]; then
 	commands+=(
 		"tab.new --space ${space_id} --name Top Grid --argv [\"mise\",\"run\",\"env:top\",\"host\",\"--loop\"]"
@@ -72,8 +91,9 @@ if [[ ${json_out} == "true" ]]; then
 		--argjson dry_run "${dry_run}" \
 		--argjson grid "${want_grid}" \
 		--argjson env_stats "${want_env_stats}" \
-		'{ok: true, dry_run: $dry_run, space: $space, grid: $grid, env_stats: $env_stats}'
+		--argjson quotas "${want_quotas}" \
+		'{ok: true, dry_run: $dry_run, space: $space, grid: $grid, env_stats: $env_stats, quotas: $quotas}'
 else
-	printf 'herdr:realtime-stats space=%s dry_run=%s env_stats=%s grid=%s\n' \
-		"${space_id}" "${dry_run}" "${want_env_stats}" "${want_grid}"
+	printf 'herdr:realtime-stats space=%s dry_run=%s env_stats=%s grid=%s quotas=%s\n' \
+		"${space_id}" "${dry_run}" "${want_env_stats}" "${want_grid}" "${want_quotas}"
 fi
