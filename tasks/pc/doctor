@@ -29,10 +29,19 @@ env -u MISE_ENV -u ZDOTDIR -u MISE_SYSTEM_CONFIG_DIR zsh -l -e -s <<'ZSH'
 version=$(/usr/bin/tailscale version)
 version=${version%%$'\n'*}
 result=0
+# Pinned Omarchy channel; keep in sync with tasks/pc/up.
+channel=$(OMARCHY_PATH=/usr/share/omarchy omarchy-channel-current 2>/dev/null || echo unknown)
+if [[ $channel == rc ]]; then
+	printf 'PASS  omarchy-channel: %s\n' "$channel"
+else
+	printf 'FAIL  omarchy-channel: %s (pinned rc; run: OMARCHY_PATH=/usr/share/omarchy omarchy-channel-set rc)\n' "$channel" >&2
+	result=1
+fi
 for shim in "${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"/shims/*(N); do
-	if [[ -L $shim && $shim -ef /usr/local/bin/mise && ${shim:t} != mise ]] &&
-		! mise which "${shim:t}" >/dev/null 2>&1; then
-		printf 'FAIL  mise shim: %s does not resolve (run mise reshim)\n' "${shim:t}" >&2
+	if [[ -L $shim && ${shim:A:t} == mise && ${shim:t} != mise ]] &&
+		mise which "${shim:t}" 2>&1 >/dev/null | grep -q 'is not a mise bin'; then
+		# Installed-but-inactive bins (e.g. a project-pinned python) are fine; only shims with no install are dead.
+		printf 'FAIL  mise shim: %s has no installed tool (run mise reshim --force)\n' "${shim:t}" >&2
 		result=1
 	fi
 done

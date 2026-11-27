@@ -3,21 +3,25 @@
 #MISE description="Provision standalone mise and sync Option A on the remote Linux host"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
 #USAGE flag "--dry-run" help="Describe provisioning without connecting"
-#USAGE flag "--upgrade-omarchy" default="false" help="Authorize an Omarchy system update before provisioning"
+#USAGE flag "--upgrade-omarchy" default="false" help="Authorize switching to the pinned Omarchy channel and a system update before provisioning"
 set -euo pipefail
 
 host="${usage_host:-pc}"
 upgrade="${usage_upgrade_omarchy:-false}"
+# pc follows Omarchy's rc channel: stable-mirror snapshots lag Arch by weeks (tailscale 1.104.4 floor).
+# Keep in sync with tasks/pc/doctor.
+omarchy_channel=rc
+omarchy_upgrade="export OMARCHY_PATH=/usr/share/omarchy; [[ \$(omarchy-channel-current) == $omarchy_channel ]] || omarchy-channel-set $omarchy_channel; omarchy update -y"
 if [[ ${usage_dry_run:-false} == true ]]; then
 	echo "pc:up dry-run ($host): install pinned mise via packslip and run pc:sync"
 	if [[ $upgrade == true ]]; then
-		echo "Requested Omarchy update: OMARCHY_PATH=/usr/share/omarchy omarchy update -y"
+		echo "Requested Omarchy channel $omarchy_channel and update: $omarchy_upgrade"
 	fi
 	exit 0
 fi
 
 if [[ $upgrade == true ]]; then
-	ssh -n -o BatchMode=yes -- "$host" 'OMARCHY_PATH=/usr/share/omarchy omarchy update -y'
+	ssh -n -o BatchMode=yes -- "$host" "$omarchy_upgrade"
 fi
 ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
 [[ $(uname -sm) == "Linux x86_64" ]]
