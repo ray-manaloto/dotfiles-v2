@@ -25,8 +25,8 @@ fi
 target="$checkout/unix/home/.config/mise"
 [[ -f "$target/config.pc.toml" && -x /usr/local/bin/mise ]]
 install -d -m 0700 "$HOME/.config/fnox"
-if ! (cd ~ && env -u DOPPLER_TOKEN mise exec doppler -- doppler me --json >/dev/null 2>&1); then
-	echo 'Continuing bootstrap. Before running pc:doctor, store the read-only Doppler service token for config pc on the remote host: doppler configure set token --scope ~' >&2
+if [[ ! -s "$HOME/.config/fnox/doppler-pc.env" ]]; then
+	echo 'Continuing bootstrap. Before running pc:doctor, write the read-only Doppler service token for config pc to ~/.config/fnox/doppler-pc.env on the remote host as DOPPLER_TOKEN=... with mode 0600.' >&2
 fi
 if [[ -e $config || -L $config ]]; then
 	if [[ ! -L $config || ! $config -ef $target ]]; then

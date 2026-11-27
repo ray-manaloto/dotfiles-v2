@@ -194,7 +194,7 @@ fi
         ]
     else:
         assert not sudo_calls.exists()
-    assert "doppler configure set token --scope ~" in result.stderr
+    assert "doppler-pc.env" in result.stderr and "0600" in result.stderr
     assert stat.S_IMODE((tmp_path / ".config/fnox").stat().st_mode) == 0o700
     assert not (tmp_path / ".config/fnox/age.txt").exists()
     assert (tmp_path / ".config/mise").resolve() == target
