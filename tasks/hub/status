@@ -9,12 +9,14 @@ set -euo pipefail
 host="${usage_host:-pc}"
 json_out="${usage_json:-false}"
 av_dir="${usage_agentsview_dir:-}"
-# ssh joins its arguments into one remote command line, so quote the value for the remote shell.
-printf -v probe_cmd 'env AV_DIR=%q /bin/bash -euo pipefail' "${av_dir}"
-
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 repo_root="$(cd "${script_dir}/../.." && pwd -P)"
 lib_dir="${repo_root}/unix/home/.config/mise/lib"
+
+# ssh joins its arguments into one remote command line, so quote the values for the remote shell.
+# remote.py travels base64-encoded so pc runs this checkout's copy (lib/pc_hub/remote.py mac-pull).
+hub_remote_b64="$(base64 <"${lib_dir}/pc_hub/remote.py" | tr -d '\n')"
+printf -v probe_cmd 'env AV_DIR=%q HUB_REMOTE_B64=%q /bin/bash -euo pipefail' "${av_dir}" "${hub_remote_b64}"
 
 venv_py="${repo_root}/.venv/bin/python"
 if [[ ! -x ${venv_py} ]] && command -v git >/dev/null 2>&1; then
@@ -37,16 +39,13 @@ fi
 probe_json="$(
 	ssh -o BatchMode=yes -o ConnectTimeout=5 "${host}" "${probe_cmd}" <<'REMOTE_PROBE'
 python3 - <<'PY'
+import base64
 import json
 import os
-import re
 import shutil
 import subprocess
-import time
-import tomllib
 import urllib.error
 import urllib.request
-from datetime import datetime
 from pathlib import Path
 
 def check_http(url: str, *, ok_codes=(200, 302, 401)) -> tuple[str, str]:
@@ -103,71 +102,18 @@ rows.append({"service": "vercel-board", "state": vb_st, "bind_target": "127.0.0.
 av_st, av_det = check_systemd("dev.mise.agentsview-hub.service")
 rows.append({"service": "agentsview-hub", "state": av_st, "bind_target": "127.0.0.1:8082", "exposed_http": True, "detail": av_det})
 
-def parse_duration(text: str) -> int:
-    m = re.fullmatch(r"([0-9]+)(s|m|h)", text.strip())
-    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600}[m.group(2)] if m else 0
-
-def ago(ts: float) -> str:
-    mins = int((time.time() - ts) // 60)
-    return f"{mins}m ago" if mins < 120 else f"{mins // 60}h ago"
-
-def check_mac_pull(av_dir: Path) -> tuple[str, str]:
-    """WARN-only freshness of the hub SSH pull of the Mac, read from config.toml and the debug log."""
-    try:
-        cfg = tomllib.loads((av_dir / "config.toml").read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return "SKIPPED", f"no config.toml in {av_dir}"
-    except Exception as exc:
-        return "WARN", f"config.toml unreadable: {type(exc).__name__}"
-    mac = [h for h in cfg.get("remote_hosts", []) if isinstance(h, dict) and h.get("host") == "mac"]
-    if not mac:
-        return "SKIPPED", "no Mac [[remote_hosts]] entry (run hub:mac-pull-key, then hub:up --mac-ssh)"
-    every = f"interval {mac[0].get('interval', '?')}"
-    interval = parse_duration(str(mac[0].get("interval", "")))
-    # AgentsView v0.48 logs no success line. The import of a pull ends with "remote sync delta import: host=mac";
-    # a failed pull then logs "remote sync mac failed: ..." and the next attempt starts with
-    # "remote sync: host=mac phase=targets". debug.log rotates to debug.log.1.
-    stamp = re.compile(r"^(\d{4}/\d\d/\d\d \d\d:\d\d:\d\d) ")
-    last_ok = last_fail = pending = None
-    fail_text = ""
-    for name in ("debug.log.1", "debug.log"):
-        try:
-            lines = (av_dir / name).read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            m = stamp.match(line)
-            if not m:
-                continue
-            try:
-                ts = datetime.strptime(m.group(1), "%Y/%m/%d %H:%M:%S").timestamp()
-            except ValueError:
-                continue
-            body = line[m.end():]
-            if "journal_outcome=retained(aborted-before-processing)" in body:
-                continue
-            if body.startswith(("remote sync mac failed: ", "scheduled remote sync mac: ")):
-                last_fail, pending = ts, None
-                fail_text = body.split(": ", 1)[1]
-            elif body.startswith("remote sync delta import: host=mac "):
-                pending = ts
-            elif body.startswith("remote sync: host=mac phase=targets ") and pending is not None:
-                last_ok, pending = pending, None
-    if pending is not None:
-        last_ok = pending
-    if last_fail is not None and (last_ok is None or last_fail > last_ok):
-        good = f"last good {ago(last_ok)}" if last_ok else "no good pull logged"
-        return "WARN", f"last pull failed {ago(last_fail)} ({good}, {every}): {fail_text[:120]}"
-    if last_ok is None:
-        return "WARN", f"no completed pull logged yet ({every})"
-    if interval and time.time() - last_ok > 2 * interval + 900:
-        return "WARN", f"stale: last good pull {ago(last_ok)} ({every})"
-    return "OK", f"last good pull {ago(last_ok)} ({every})"
-
+# The Mac-pull parser lives in lib/pc_hub/remote.py (shipped as HUB_REMOTE_B64); WARN-only, never lose other rows.
+mp = None
 try:
-    mp_st, mp_det = check_mac_pull(Path(os.environ.get("AV_DIR") or "~/.agentsview").expanduser())
-except Exception as exc:  # WARN-only: never lose the other rows
-    mp_st, mp_det = "WARN", f"mac pull check failed: {type(exc).__name__}"
+    mp = subprocess.run(
+        ["python3", "-I", "-B", "-c", base64.b64decode(os.environ["HUB_REMOTE_B64"]).decode("utf-8"), "mac-pull",
+         os.environ.get("AV_DIR") or "~/.agentsview"],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    mp_st, mp_det = json.loads(mp.stdout)
+except Exception as exc:
+    err = mp.stderr.strip()[-80:] if mp is not None else ""
+    mp_st, mp_det = "WARN", f"mac pull check failed: {type(exc).__name__} {err}".strip()
 rows.append({"service": "agentsview-mac-pull", "state": mp_st, "bind_target": "ssh:mac", "exposed_http": False, "detail": mp_det})
 
 ol_st, ol_det = check_systemd("dev.mise.ollama-hub.service")

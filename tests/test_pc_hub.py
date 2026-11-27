@@ -12,6 +12,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from dotfiles_py.generated.pc_hub_schema import (
     AgentsViewOffloadOutcome,
     PcHubStatusResponse,
@@ -634,16 +636,31 @@ def test_hub_status_and_agent_up_invariants() -> None:
     assert agent_up_text.count("trap - RETURN") >= 4
 
 
-def _hub_up_agentsview_config_script() -> str:
-    text = (REPO_ROOT / "tasks" / "hub" / "up").read_text(encoding="utf-8")
-    start = text.index('python3 - "${REMOTE_HOME}/.agentsview/config.toml"')
-    body = text[text.index("\n", start) + 1 :]
-    return body[: body.index("\nPY\n")]
+REMOTE_PY = (
+    REPO_ROOT / "unix" / "home" / ".config" / "mise" / "lib" / "pc_hub" / "remote.py"
+)
+
+
+def _hub_config(
+    tmp_path: Path, cfg: Path, token: str, mac: str, interval: str
+) -> list[str]:
+    """argv for remote.py hub-config, run the way hub:up runs it (stdlib only, isolated)."""
+    tok = tmp_path / "server-token"
+    tok.write_text(token + "\n", encoding="utf-8")
+    return [
+        sys.executable,
+        "-I",
+        "-B",
+        str(REMOTE_PY),
+        "hub-config",
+        str(cfg),
+        str(tok),
+        mac,
+        interval,
+    ]
 
 
 def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
-    script = tmp_path / "rewrite.py"
-    script.write_text(_hub_up_agentsview_config_script(), encoding="utf-8")
     cfg = tmp_path / "config.toml"
     # Simulates a config corrupted by the pre-fix rewrite: the Mac [[remote_hosts]]
     # entry lost its `host` key, and a top-level `host` bind must still be dropped.
@@ -655,19 +672,7 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
     )
     outputs = []
     for _ in range(3):
-        subprocess.run(
-            [
-                sys.executable,
-                "-I",
-                "-B",
-                str(script),
-                str(cfg),
-                'tok"1',
-                "me@mac",
-                "15m",
-            ],
-            check=True,
-        )
+        subprocess.run(_hub_config(tmp_path, cfg, 'tok"1', "me@mac", "15m"), check=True)
         outputs.append(cfg.read_text(encoding="utf-8"))
     assert outputs[0] == outputs[1] == outputs[2]
     data = tomllib.loads(outputs[-1])
@@ -688,10 +693,7 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
         "port = 8080\n\n[[remote_hosts]] # mac\nhost = 'mac'\ndestination = 'old@mac'\n",
         encoding="utf-8",
     )
-    subprocess.run(
-        [sys.executable, "-I", "-B", str(script), str(cfg), "tok", "me@mac", "15m"],
-        check=True,
-    )
+    subprocess.run(_hub_config(tmp_path, cfg, "tok", "me@mac", "15m"), check=True)
     hosts = tomllib.loads(cfg.read_text(encoding="utf-8"))["remote_hosts"]
     assert [(h["host"], h["destination"]) for h in hosts] == [("mac", "me@mac")]
 
@@ -699,14 +701,12 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
 def test_hub_up_agentsview_config_rewrite_preserves_owner_content(
     tmp_path: Path,
 ) -> None:
-    script = tmp_path / "rewrite.py"
-    script.write_text(_hub_up_agentsview_config_script(), encoding="utf-8")
     cfg = tmp_path / "config.toml"
 
     def run(text: str) -> subprocess.CompletedProcess[str]:
         cfg.write_text(text, encoding="utf-8")
         return subprocess.run(
-            [sys.executable, "-I", "-B", str(script), str(cfg), "tok", "me@mac", "2h"],
+            _hub_config(tmp_path, cfg, "tok", "me@mac", "2h"),
             capture_output=True,
             text=True,
             check=False,
@@ -756,25 +756,11 @@ def test_hub_up_agentsview_config_rewrite_preserves_owner_content(
         assert cfg.read_text(encoding="utf-8") == bad
 
 
-def _hub_status_mac_pull_check() -> dict:
-    text = (HUB_TASKS_DIR / "status").read_text(encoding="utf-8")
-    body = text[
-        text.index("def parse_duration") : text.index("try:\n    mp_st, mp_det = ")
-    ]
-    ns: dict = {}
-    exec(
-        "import re, time, tomllib\nfrom datetime import datetime\nfrom pathlib import Path\n"
-        + body,
-        ns,
-    )
-    return ns
-
-
 def test_hub_status_mac_pull_freshness(tmp_path: Path) -> None:
     import time
     from datetime import datetime
 
-    check = _hub_status_mac_pull_check()["check_mac_pull"]
+    from pc_hub.remote import mac_pull_state as check
 
     def stamp(ago: int) -> str:
         return datetime.fromtimestamp(time.time() - ago).strftime("%Y/%m/%d %H:%M:%S")
@@ -833,3 +819,159 @@ def test_hub_status_mac_pull_freshness(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert check(tmp_path) == ("WARN", "stale: last good pull 3h ago (interval 15m)")
+
+
+RECIPE = (
+    REPO_ROOT
+    / "unix"
+    / "home"
+    / ".config"
+    / "mise"
+    / "assets"
+    / "agentsview"
+    / "semantic-search.toml"
+).read_text(encoding="utf-8")
+
+
+def test_rewrite_vector_enable_disable_is_idempotent() -> None:
+    from pc_hub.remote import rewrite_vector
+
+    base = 'auth_token = "t"\n\n[[remote_hosts]]\nhost = "a"\n'
+    on = rewrite_vector(base, RECIPE, enable=True)
+    assert rewrite_vector(on, RECIPE, enable=True) == on
+    data = tomllib.loads(on)
+    assert data["vector"] == tomllib.loads(RECIPE)["vector"]
+    assert data["remote_hosts"] == [{"host": "a"}]
+    off = rewrite_vector(on, RECIPE, enable=False)
+    assert "vector" not in tomllib.loads(off)
+    assert rewrite_vector(off, RECIPE, enable=False) == off
+    # Disabling or re-enabling also replaces a hand-edited [vector] (including "quoted" headers).
+    hand = base + '\n["vector"]\nenabled = false\n[vector.embeddings]\nmodel = "x"\n'
+    assert (
+        tomllib.loads(rewrite_vector(hand, RECIPE, enable=True))["vector"]
+        == data["vector"]
+    )
+
+
+def test_rewrite_vector_ignores_headers_inside_strings() -> None:
+    from pc_hub.remote import rewrite_vector
+
+    text = 'motd = """\n[vector]\nnot a table\n"""\n'
+    out = rewrite_vector(text, RECIPE, enable=True)
+    assert tomllib.loads(out)["motd"] == "[vector]\nnot a table\n"
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        "vector = {}\n",
+        "vector.enabled = true\n",
+        "vector = {enabled = true}\nport = 1\n",
+    ],
+)
+def test_rewrite_vector_fails_closed_on_top_level_vector_keys(original: str) -> None:
+    from pc_hub.remote import RewriteError, rewrite_vector
+
+    for enable in (True, False):
+        with pytest.raises(RewriteError, match=r"top-level vector keys|outside"):
+            rewrite_vector(original, RECIPE, enable=enable)
+
+
+def test_rewrite_vector_rejects_bad_recipe() -> None:
+    from pc_hub.remote import RewriteError, rewrite_vector
+
+    with pytest.raises(RewriteError, match=r"only hold"):
+        rewrite_vector("", "port = 1\n[vector]\nenabled = true\n", enable=True)
+
+
+def test_remote_py_cli_vector_dry_run_and_mac_pull(tmp_path: Path) -> None:
+    import base64
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('auth_token = "t"\n', encoding="utf-8")
+    env = {**os.environ, "RECIPE_B64": base64.b64encode(RECIPE.encode()).decode()}
+    src = REMOTE_PY.read_text(encoding="utf-8")
+    # Run it exactly as the tasks do on pc: source via -c, isolated mode.
+    p = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", src, "vector", str(cfg), "enable", "true"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert p.returncode == 0, p.stderr
+    assert "enable: config changes" in p.stdout
+    assert (
+        cfg.read_text(encoding="utf-8") == 'auth_token = "t"\n'
+    )  # dry run writes nothing
+    p = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", src, "mac-pull", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(p.stdout) == [
+        "SKIPPED",
+        "no Mac [[remote_hosts]] entry (run hub:mac-pull-key, then hub:up --mac-ssh)",
+    ]
+    p = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", src, "bogus"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert p.returncode == 2 and "usage:" in p.stderr
+
+
+def test_remote_py_is_stdlib_only() -> None:
+    import ast
+
+    tree = ast.parse(REMOTE_PY.read_text(encoding="utf-8"))
+    mods = {
+        a.name.split(".")[0]
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Import)
+        for a in n.names
+    }
+    mods |= {
+        n.module.split(".")[0]
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ImportFrom) and n.module
+    }
+    assert mods <= set(sys.stdlib_module_names) | {"__future__"}, mods
+
+
+def test_hub_config_writes_through_symlink_and_tightens_stale_tmp(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real.toml"
+    real.write_text("port = 8080\n", encoding="utf-8")
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+    stale = tmp_path / "real.toml.new"
+    stale.write_text("junk", encoding="utf-8")
+    stale.chmod(0o644)
+    subprocess.run(_hub_config(tmp_path, link, "tok", "", "15m"), check=True)
+    assert link.is_symlink()
+    assert tomllib.loads(real.read_text(encoding="utf-8"))["auth_token"] == "tok"
+    assert real.stat().st_mode & 0o777 == 0o600
+    assert not stale.exists()
+
+
+def test_rewrite_vector_disable_keeps_bracket_text_in_strings() -> None:
+    from pc_hub.remote import rewrite_vector
+
+    text = 'motd = """\n[vector]\nnot a table\n"""\n\n[vector]\nenabled = true\n'
+    out = rewrite_vector(text, RECIPE, enable=False)
+    data = tomllib.loads(out)
+    assert data == {"motd": "[vector]\nnot a table\n"}
+
+
+def test_hub_tasks_ship_remote_py_isolated() -> None:
+    for name, sub in (("up", "hub-config"), ("vector", "vector")):
+        text = (HUB_TASKS_DIR / name).read_text(encoding="utf-8")
+        assert "HUB_REMOTE_B64=%q" in text
+        assert f'python3 -I -B -c "${{hub_remote_src}}" {sub}' in text
+        assert "[[ -n ${hub_remote_src} ]] ||" in text
+    status = (HUB_TASKS_DIR / "status").read_text(encoding="utf-8")
+    assert "HUB_REMOTE_B64=%q" in status and '"mac-pull"' in status
