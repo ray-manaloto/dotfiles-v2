@@ -96,7 +96,10 @@ echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_ro
 
 # 3b. Full live doctor on the merged main (host scope, not repo scope): guards from parallel lanes can conflict
 # with each other and only a live run sees it. The land already happened, so failures WARN and never change the exit code.
-doctor_out="$(cd "${main_root}" && env -u DOTFILES_DOCTOR_SCOPE MISE_YES=1 python3 -I -B -c '
+# Drop the caller's VIRTUAL_ENV so the result matches a fresh shell in main (#131): pr:land runs under
+# `mise run`, which loses the shell's __MISE_DIFF, so a venv a stale activation exported stays visible
+# here while a direct `mise doctor project` reverts it and passes.
+doctor_out="$(cd "${main_root}" && env -u DOTFILES_DOCTOR_SCOPE -u VIRTUAL_ENV MISE_YES=1 python3 -I -B -c '
 import subprocess, sys
 try:
     p = subprocess.run(["mise", "doctor", "project"], capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
