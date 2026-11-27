@@ -392,7 +392,24 @@ if [[ ${skip_systemd} != "true" ]]; then
 		--out-dir "${units_dir_tmp}"
 	ssh -o BatchMode=yes "${host}" "mkdir -p '${remote_home}/.config/systemd/user'"
 	COPYFILE_DISABLE=1 tar -C "${units_dir_tmp}" -cf - . | ssh -o BatchMode=yes "${host}" "tar -C '${remote_home}/.config/systemd/user' -xf - && find '${remote_home}/.config/systemd/user' -maxdepth 1 -name '._dev.mise.*.service' -type f -delete"
-	ssh -o BatchMode=yes "${host}" 'systemctl --user daemon-reload && systemctl --user enable --now dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service dev.mise.ollama-hub.service && systemctl --user restart dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service dev.mise.ollama-hub.service'
+	# Ollama restarts only when its unit file or binary changed (or it is down), so a long embedding
+	# build that is streaming requests to it is not interrupted by a routine hub:up.
+	ssh -o BatchMode=yes "${host}" /bin/bash -euo pipefail <<'REMOTE_UNITS'
+systemctl --user daemon-reload
+systemctl --user enable --now dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service dev.mise.ollama-hub.service
+systemctl --user restart dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service
+unit="${HOME}/.config/systemd/user/dev.mise.ollama-hub.service"
+stamp="${HOME}/.local/state/pc-hub/ollama-hub.stamp"
+want="$(sha256sum "${unit}" | cut -d' ' -f1) $(readlink -f "${HOME}/.local/bin/ollama")"
+if [[ "$(cat "${stamp}" 2>/dev/null)" == "${want}" ]] && systemctl --user is-active --quiet dev.mise.ollama-hub.service; then
+	echo "hub:up: ollama-hub unchanged, not restarted"
+else
+	systemctl --user restart dev.mise.ollama-hub.service
+	mkdir -p "$(dirname "${stamp}")"
+	printf '%s\n' "${want}" >"${stamp}"
+	echo "hub:up: ollama-hub restarted"
+fi
+REMOTE_UNITS
 fi
 
 if ! ssh -o BatchMode=yes "${host}" "tailscale serve --bg 'http://127.0.0.1:${caddy_port}'" >/dev/null 2>&1; then
