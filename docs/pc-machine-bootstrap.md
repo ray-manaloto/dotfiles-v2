@@ -4,8 +4,11 @@ The November 25, 2026 Option A cutover moved pc's machine bootstrap to
 dotfiles-v2. The canonical declaration is
 [`config.pc.toml`](../unix/home/.config/mise/config.pc.toml) in the
 `linux,pc` environment. The former cpp-standard `mise.pc.toml` is retired
-as a source of host configuration. cpp-standard still owns its CI workflows
-and compiler setup.
+as a source of host configuration. cpp-standard was sunset on November 27,
+2026, and nothing on pc is maintained from it. Its compiler-runner files on
+pc (`/etc/gha-runner/cpp-compiler` and the `cpp-standard-amd64` runner
+group) are legacy: do not extend them. This repository is the source of
+truth for the runner launcher and `agent-secrets`.
 
 Run `mise run pc:doctor` to check bootstrap drift, live kernel settings,
 the Docker `--privileged` flag, CDI, pending updates, and runner firewall. The

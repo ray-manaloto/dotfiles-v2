@@ -30,7 +30,14 @@
 - [ ] **Step 3:** Declarative C++26 core (`mise.ubuntu.toml`: pinned latest
   GCC 16, Clang 23, `lld`/`lldb`/`libc++`, `gdb`, `valgrind`, `cppcheck`,
   `cmake`, `ninja`, `vcpkg`, `gcovr`) + C++26 smoke test, followed by optional
-  extras (`clang-p2996`, IWYU, CUDA/NVPTX).
+  extras (`clang-p2996`, IWYU, CUDA/NVPTX). Seed it from the sunset
+  `cpp-standard` (`mise.ubuntu.toml` and the 83-item checklist in
+  `docs/standard/ubuntu.md`) and land everything here; `cpp-standard` takes no
+  new work.
+- [ ] **Follow-up (`cpp-standard` sunset, 2026-11-27):** stop its scheduled
+  workflows, save uncommitted worktree changes, move `repotools` and the `pc`
+  runner launcher's source of truth here, re-home the `clang-p2996` build and
+  the FIX encoder, then archive it and the legacy `dotfiles`.
 - [ ] **Step 4:** Tighten GitHub ruleset and CI gates after Step 2 and Step 3
   pass cold-build verification.
 - [ ] **Follow-up (Host Homebrew -> `mise` audit):** Migrate clean prebuilt

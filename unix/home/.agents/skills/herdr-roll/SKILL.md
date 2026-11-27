@@ -39,7 +39,7 @@ mise run roll:snapshot
 # 2. Dry-run rolling restart (defaults: zero-token deterministic, --concurrency 4, clean env -i)
 mise run roll:restart --tabs cos-shadow
 mise run roll:restart --spaces chief-of-staff --harnesses codex
-mise run roll:restart --all --exclude cpp-standard
+mise run roll:restart --all --exclude cpp-core
 
 # 3. Execute live restart after reviewing dry-run output
 mise run roll:restart --spaces chief-of-staff --apply

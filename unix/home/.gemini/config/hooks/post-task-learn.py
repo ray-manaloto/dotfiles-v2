@@ -30,8 +30,7 @@ EDIT_TOOLS = frozenset(
 TASK_CMD_RE = re.compile(
     r"(?:\b(?:git\s+(?:add|commit|push|merge|worktree\s+remove)|repotools\s+pr-create|pr-merge"
     r"|gh\s+pr\s+(?:create|merge)"
-    r"|workflowtools\s+(?:round-close|verify-receipt)"
-    r"|mise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+(?:ci|check|pins:apt-bump|worktree:rm|//repo:pr-merge|kb:(?:add|update|fix|judge|verify-fix|register|finish|retro))"
+    r"|mise\s+(?:(?:-C|--cd)\s+\S+\s+)?run\s+(?:ci|check|pins:apt-bump|worktree:rm|kb:(?:add|update|fix|judge|verify-fix|register|finish|retro))"
     r"|hc\s+send)\b|(?:^|[\s/])ship\.py\s+(?:commit|merge|cleanup)\b)"
 )
 WORKTREE_RM_RE = re.compile(

@@ -130,6 +130,8 @@ deletion, and verify with `claude plugin list --json`.
 - **Remote Linux host (`pc`) upgrades:** Upgrade `pc` only with owner approval
   via `OMARCHY_PATH=/usr/share/omarchy omarchy update -y` instead of
   `pacman -Syu`.
+- **Sunset repositories:** `ray-manaloto/cpp-standard` and the legacy
+  `ray-manaloto/dotfiles` are read-only. File and fix in `dotfiles-v2`.
 
 ## Large reviews fan out
 
