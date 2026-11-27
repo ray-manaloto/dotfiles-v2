@@ -8,7 +8,7 @@ as `python3 agy-history.py ...` (no shebang, so no executable bit to keep).
     agy-history.py read <uuid>        implementation_plan, walkthrough and learning_proposal
     agy-history.py --self-check       run every subcommand on a scratch fixture
 
-The root defaults to $AGY_HISTORY_ROOT or ~/.gemini/antigravity-cli. Conversation
+--json and --root go before or after the subcommand. The root defaults to $AGY_HISTORY_ROOT or ~/.gemini/antigravity-cli. Conversation
 files are binary, so text is pulled out like `strings` does: runs of printable
 ASCII or UTF-8 characters. The same text repeats several times per file, so
 snippets are deduplicated.
@@ -84,6 +84,8 @@ def snippets(data: bytes, term: str, context: int, limit: int) -> tuple[int, lis
     seen: set[str] = set()
     out: list[str] = []
     hits = 0
+    if not needle.strip():
+        return hits, out  # "".find("") never advances: refuse instead of spinning
     for text in extract_strings(data):
         low = text.lower()
         start = low.find(needle)
@@ -100,19 +102,26 @@ def snippets(data: bytes, term: str, context: int, limit: int) -> tuple[int, lis
 
 
 def search(root: Path, term: str, context: int = 80, limit: int = 5) -> list[dict]:
-    """Conversations under root/conversations holding *term* (case-insensitive), newest first."""
+    """Conversations under root/conversations holding *term* (case-insensitive), newest first.
+
+    Files sharing a conversation uuid (``<uuid>.db`` plus SQLite sidecars such as
+    ``<uuid>.db-wal``) merge into one row; ``paths`` lists every matching file.
+    """
     conv_dir = root / "conversations"
     brain_dir = root / "brain"
+    if not term.strip():
+        raise ValueError("search term is empty")
     # bytes.lower() folds ASCII only, so the cheap prefilter (what `rg -a -l -i`
     # does) is safe for ASCII terms; other terms go straight to string extraction.
     needle = term.lower().encode("utf-8") if term.isascii() else None
-    results: list[dict] = []
+    merged: dict[str, dict] = {}
     if not conv_dir.is_dir():
-        return results
+        return []
     for path in sorted(p for p in conv_dir.rglob("*") if p.is_file()):
         try:
             data = path.read_bytes()
-        except OSError:
+            modified = mtime_utc(path)
+        except OSError:  # vanished mid-scan, unreadable, ...
             continue
         if needle is not None and needle not in data.lower():
             continue
@@ -120,19 +129,28 @@ def search(root: Path, term: str, context: int = 80, limit: int = 5) -> list[dic
         if not hits:
             continue
         conv_id = path.name.split(".", 1)[0]
-        results.append(
-            {
+        row = merged.get(conv_id)
+        if row is None:
+            merged[conv_id] = {
                 "conversation": conv_id,
                 "path": str(path),
-                "modified": iso(mtime_utc(path)),
+                "paths": [str(path)],
+                "modified": iso(modified),
                 "hits": hits,
                 "brain": str(brain_dir / conv_id)
                 if (brain_dir / conv_id).is_dir()
                 else None,
                 "snippets": found,
             }
-        )
-    results.sort(key=lambda r: r["modified"], reverse=True)
+            continue
+        row["paths"].append(str(path))
+        row["modified"] = max(row["modified"], iso(modified))
+        row["hits"] += hits
+        for snip in found:
+            if snip not in row["snippets"] and len(row["snippets"]) < limit:
+                row["snippets"].append(snip)
+    results = list(merged.values())
+    results.sort(key=lambda r: (r["modified"], r["conversation"]), reverse=True)
     return results
 
 
@@ -153,13 +171,18 @@ def brain(root: Path, term: str | None = None, limit: int = 20) -> list[dict]:
         return rows
     needle = term.lower() if term else None
     for md_path in sorted(brain_dir.glob("*/*.md")):
+        if not md_path.is_file():  # a directory named *.md, a dangling symlink
+            continue
         meta = _read_metadata(md_path)
         summary = str(meta.get("summary") or "")
-        if needle is not None:
-            body = md_path.read_text(encoding="utf-8", errors="replace")
-            if needle not in body.lower() and needle not in summary.lower():
-                continue
-        updated = parse_ts(meta.get("updatedAt")) or mtime_utc(md_path)
+        try:
+            if needle is not None:
+                body = md_path.read_text(encoding="utf-8", errors="replace")
+                if needle not in body.lower() and needle not in summary.lower():
+                    continue
+            updated = parse_ts(meta.get("updatedAt")) or mtime_utc(md_path)
+        except OSError:  # vanished mid-scan or unreadable
+            continue
         rows.append(
             {
                 "updated_at": iso(updated),
@@ -196,15 +219,20 @@ def read(root: Path, conv: str, kinds: tuple[str, ...] = DEFAULT_KINDS) -> list[
     out: list[dict] = []
     for kind in kinds:
         md_path = target / f"{kind}.md"
-        if md_path.is_file():
-            out.append(
-                {
-                    "conversation": target.name,
-                    "artifact": kind,
-                    "path": str(md_path),
-                    "text": md_path.read_text(encoding="utf-8", errors="replace"),
-                }
-            )
+        if not md_path.is_file():
+            continue
+        try:
+            text = md_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        out.append(
+            {
+                "conversation": target.name,
+                "artifact": kind,
+                "path": str(md_path),
+                "text": text,
+            }
+        )
     return out
 
 
@@ -242,6 +270,8 @@ def build_fixture(root: Path) -> None:
     (conv_dir / f"{conv_id}.db").write_bytes(
         blob * 3 + b"\xff\x00caf\xc3\xa9 notes\x00"
     )
+    # A SQLite sidecar of the same conversation: must merge into the .db row.
+    (conv_dir / f"{conv_id}.db-wal").write_bytes(b"\x37\x7f\x06\x82" + text + b"\x00")
     (conv_dir / f"{other_id}.db").write_bytes(b"\x00\x01unrelated wave3 chatter\x00")
     plans = {
         "implementation_plan": (
@@ -262,6 +292,8 @@ def build_fixture(root: Path) -> None:
             json.dumps(meta), encoding="utf-8"
         )
     (brain_dir / "task.md").write_text("# task without metadata\n", encoding="utf-8")
+    (brain_dir / "notes.md").mkdir()  # a directory that matches *.md: skipped
+    (brain_dir / ".system_generated" / "logs").mkdir(parents=True)
 
 
 def self_check() -> int:
@@ -270,8 +302,20 @@ def self_check() -> int:
         build_fixture(root)
         errors = []
         hits = search(root, "doppler")
-        if len(hits) != 1 or hits[0]["hits"] != 3 or len(hits[0]["snippets"]) != 1:
-            errors.append(f"search: expected 1 file, 3 hits, 1 deduped snippet: {hits}")
+        if (
+            len(hits) != 1
+            or hits[0]["hits"] != 4
+            or len(hits[0]["paths"]) != 2
+            or len(hits[0]["snippets"]) != 1
+        ):
+            errors.append(
+                f"search: expected 1 row (.db + .db-wal), 4 hits, 1 snippet: {hits}"
+            )
+        try:
+            search(root, " ")
+            errors.append("search: an empty term was accepted")
+        except ValueError:
+            pass
         if search(root, "café") == []:
             errors.append("search: UTF-8 text was not found")
         order = [r["artifact"] for r in brain(root) if r["artifact"] != "task"]
@@ -290,23 +334,34 @@ def self_check() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    def add_common(target: argparse.ArgumentParser, root: object, flag: object) -> None:
+        target.add_argument(
+            "--root",
+            type=Path,
+            default=root,
+            help="agy home (default ~/.gemini/antigravity-cli)",
+        )
+        target.add_argument(
+            "--json", action="store_true", default=flag, help="emit JSON"
+        )
+
     parser = argparse.ArgumentParser(
         description="Search agy conversations and brain artifacts on disk."
     )
-    parser.add_argument(
-        "--root",
-        type=Path,
-        default=None,
-        help="agy home (default ~/.gemini/antigravity-cli)",
-    )
-    parser.add_argument("--json", action="store_true", help="emit JSON")
+    add_common(parser, None, False)
     parser.add_argument(
         "--self-check",
         action="store_true",
         help="test every subcommand on a scratch fixture",
     )
+    # --root/--json also go after the subcommand. SUPPRESS keeps the subparser from
+    # overwriting a value given before it with its own default.
+    common = argparse.ArgumentParser(add_help=False)
+    add_common(common, argparse.SUPPRESS, argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command")
-    p_search = sub.add_parser("search", help="conversations holding a term")
+    p_search = sub.add_parser(
+        "search", parents=[common], help="conversations holding a term"
+    )
     p_search.add_argument("term")
     p_search.add_argument(
         "--context", type=int, default=80, help="characters around each hit"
@@ -314,12 +369,16 @@ def main(argv: list[str] | None = None) -> int:
     p_search.add_argument(
         "--snippets", type=int, default=5, help="distinct snippets per file"
     )
-    p_brain = sub.add_parser("brain", help="brain artifacts, newest updatedAt first")
+    p_brain = sub.add_parser(
+        "brain", parents=[common], help="brain artifacts, newest updatedAt first"
+    )
     p_brain.add_argument(
         "--term", default=None, help="keep artifacts whose body or summary holds this"
     )
     p_brain.add_argument("--limit", type=int, default=20, help="rows to show (0 = all)")
-    p_read = sub.add_parser("read", help="print one conversation's brain artifacts")
+    p_read = sub.add_parser(
+        "read", parents=[common], help="print one conversation's brain artifacts"
+    )
     p_read.add_argument("conversation", help="brain/<uuid> name or unique prefix")
     p_read.add_argument(
         "--kind",
@@ -334,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_usage(sys.stderr)
         return 2
+    if args.command == "search" and not args.term.strip():
+        p_search.error("term must not be empty")
     if args.root is None:
         args.root = default_root()
     args.root = args.root.expanduser()

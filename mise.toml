@@ -220,7 +220,9 @@ hint = "Ensure unix/home/.gemini/config/hooks/post-task-learn.py passes --self-c
 description = "agy-history-fallback skill searches agy conversations and brain artifacts on a scratch fixture (#90)"
 run = '''
 test -f unix/home/.agents/skills/agy-history-fallback/SKILL.md
-python3 -I -B unix/home/.agents/skills/agy-history-fallback/scripts/agy-history.py --self-check >/dev/null
+py=python3
+if [ -x /usr/bin/python3 ]; then py=/usr/bin/python3; fi  # macOS 3.9.6: the script's target
+"$py" -I -B unix/home/.agents/skills/agy-history-fallback/scripts/agy-history.py --self-check >/dev/null
 '''
 hint = "Fix unix/home/.agents/skills/agy-history-fallback/scripts/agy-history.py until --self-check passes. Details: `mise run doctor:explain agy-history-fallback`."
 
