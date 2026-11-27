@@ -1,0 +1,11 @@
+[Unit]
+Description=Pin the NZXT H1 AIO pump (nct6798 pwm2) at 100%
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/h1-pump-full
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

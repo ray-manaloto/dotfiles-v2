@@ -65,6 +65,13 @@ local const shellGroup = picked["shell"] as Group
 // These scripts are byte-for-byte cpp-standard imports used by pc bootstrap.
 local const pcRunnerLauncher = "unix/home/.config/mise/assets/pc/gha-slot"
 local const pcAgentSecrets = "unix/home/.config/mise/assets/pc/agent-secrets.bash"
+// Preserve the live pc scripts exactly, including their existing formatting.
+local const pcHardwareScripts =
+  List(
+    "unix/home/.config/mise/assets/pc/h1-pump-full",
+    "unix/home/.config/mise/assets/pc/h1-radfan-curve",
+    "unix/home/.config/mise/assets/pc/hw-watch",
+  )
 // KB validates these mirrored schemas with jq. Both repositories enforce the same bytes.
 local const openaiReviewSchemas =
   List(".github/openai-review/findings.schema.json", ".github/openai-review/repo.schema.json")
@@ -122,6 +129,8 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
       (typosStep.exclude ?? List())
         + lockfileExcludes
         + List("unix/home/.config/mise/assets/pc/ufw-before.rules")
+        // Preserve the radiator fan model name in the byte-identical live import.
+        + List("unix/home/.config/mise/assets/pc/h1-radfan-curve")
   }
   ["shell"] = (shellGroup) {
     steps {
@@ -129,14 +138,17 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
         exclude =
           ((shellGroup.steps["shfmt"] as Step).exclude ?? List())
             + List(pcRunnerLauncher, pcAgentSecrets)
+            + pcHardwareScripts
       }
       ["shellcheck"] = (shellGroup.steps["shellcheck"] as Step) {
         exclude =
-          ((shellGroup.steps["shellcheck"] as Step).exclude ?? List()) + List(pcRunnerLauncher)
+          ((shellGroup.steps["shellcheck"] as Step).exclude ?? List())
+            + List(pcRunnerLauncher)
+            + pcHardwareScripts
       }
-      ["shellcheck-pc-runner-launcher"] = new Step {
-        glob = List(pcRunnerLauncher)
-        // The upstream script has advisory notes, including an external compiler helper.
+      ["shellcheck-pc-imports"] = new Step {
+        glob = List(pcRunnerLauncher) + pcHardwareScripts
+        // The imported scripts have advisory notes that would require changing their bytes.
         check = "shellcheck --external-sources --severity=warning --format=gcc {{ files }}"
         diagnostic_format = "gcc"
       }

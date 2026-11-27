@@ -1,0 +1,15 @@
+[Unit]
+Description=Quieter NZXT H1 radiator fan curve (nct6798 pwm5 from CPU Tctl: 50C 40%, 70C 70%, 80C+ 100%)
+After=systemd-modules-load.service
+
+[Service]
+Type=simple
+Environment="CURVE=50:40 70:70 80:100" INTERVAL=2 SAMPLES=5
+ExecStart=/usr/local/sbin/h1-radfan-curve
+# Whatever happens to the loop, leave the fan at 100%.
+ExecStopPost=/usr/local/sbin/h1-radfan-curve full
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

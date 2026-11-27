@@ -38,7 +38,17 @@ PC_BOOTSTRAP_REQUIRED = {
     "file:/etc/ufw/before.rules",
     "file:/etc/ufw/after.rules",
     "file:/etc/systemd/system/acu-trial.service",
+    "file:/etc/modules-load.d/nct6775.conf",
+    "file:/etc/systemd/system/h1-pump-full.service",
+    "file:/etc/systemd/system/h1-radfan-curve.service",
+    "file:/etc/systemd/system/hw-heartbeat.service",
+    "file:/etc/systemd/system/hw-heartbeat.timer",
+    "file:/etc/systemd/system/hw-watch.service",
+    "file:/etc/systemd/system/hw-watch.timer",
     "file:/usr/local/sbin/gha-slot",
+    "file:/usr/local/sbin/h1-pump-full",
+    "file:/usr/local/sbin/h1-radfan-curve",
+    "file:/usr/local/sbin/hw-watch",
     "file:~/.local/bin/agent-secrets",
     "file:/etc/cdi/nvidia.yaml",
     "service:gha-fence.service",
@@ -49,11 +59,17 @@ PC_BOOTSTRAP_REQUIRED = {
     "service:gha-slot@hft-challenges-prototype",
     "service:gha-slot@knowledge-base-v2",
     "service:acu-trial.service",
+    "service:h1-pump-full.service",
+    "service:h1-radfan-curve.service",
+    "service:hw-heartbeat.timer",
+    "service:hw-watch.timer",
     "service:nvidia-cdi-refresh.path",
     "service:nvidia-cdi-refresh.service",
     "user-service:agent-secrets",
 }
 PC_BOOTSTRAP_PACKAGES = {
+    "package:pacman:lm_sensors",
+    "package:pacman:nvme-cli",
     "package:pacman:zsh",
     "package:pacman:nvidia-container-toolkit",
 }
@@ -201,6 +217,30 @@ def gpu_cdi() -> str:
     return "refresh units and generated device spec match"
 
 
+def cooling() -> str:
+    for unit in ("h1-pump-full.service", "h1-radfan-curve.service"):
+        run("systemctl", "is-active", "--quiet", unit)
+
+    try:
+        chips = [
+            name.parent
+            for name in Path("/sys/class/hwmon").glob("hwmon*/name")
+            if name.read_text().strip() == "nct6798"
+        ]
+        if len(chips) != 1:
+            raise ValueError("expected one nct6798 cooling controller")
+        pump = int((chips[0] / "fan2_input").read_text())
+        fan = int((chips[0] / "fan5_input").read_text())
+    except OSError as error:
+        raise ValueError("could not read cooling speeds from hwmon") from error
+
+    if pump < 1500 or fan < 400:
+        raise ValueError(
+            f"cooling speeds below threshold: pump {pump} RPM, fan {fan} RPM"
+        )
+    return f"both units active, pump {pump} RPM, radiator fan {fan} RPM"
+
+
 def pending_updates() -> str:
     summaries = []
     with tempfile.TemporaryDirectory(prefix="pc-doctor-") as directory:
@@ -303,6 +343,7 @@ def main() -> int:
         ("kernel-watch", kernel_watch),
         ("docker-privileged-flag", privileged),
         ("gpu-cdi", gpu_cdi),
+        ("cooling", cooling),
         ("pending-updates", pending_updates),
         ("fence-drops", fence_drops),
         ("apt-cache-route", apt_cache_route),

@@ -1,0 +1,6 @@
+[Unit]
+Description=Log sensors and warn on thermal/fan/NVMe thresholds (thermals.md)
+[Service]
+Type=oneshot
+SyslogIdentifier=hw-watch
+ExecStart=/usr/local/sbin/hw-watch

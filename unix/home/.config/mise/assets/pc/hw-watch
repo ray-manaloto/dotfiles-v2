@@ -1,0 +1,47 @@
+#!/bin/sh
+# hw-watch: run every minute by hw-watch.timer (as root). Logs key sensors to the journal (tag hw-watch) and
+# checks the thermals.md thresholds. Warnings go to the journal every minute; the owner's phone (ntfy) and the
+# PC screen (omarchy notification) get them via hw-notify when the set of warnings changes, and hourly while
+# it persists, plus one "all clear" when it ends.
+# Installed at /usr/local/sbin/hw-watch; source of truth: windows-desktop/omarchy/hw-watch.
+S=$(sensors -j 2>/dev/null) || exit 0
+get() { printf "%s" "$S" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get(sys.argv[1],{}).get(sys.argv[2],{}); print(int(next((x for k,x in v.items() if k.endswith('_input')),-1)))" "$1" "$2"; }
+T=$(get k10temp-pci-00c3 Tctl); P=$(get nct6798-isa-0290 fan2); F=$(get nct6798-isa-0290 fan5)
+N=$(get nvme-pci-0100 Composite); V=$(get asusec-isa-000a VRM)
+# The chipset fan shares its label with the chipset temperature, which hides it in `sensors -j`; read sysfs.
+CF=-1
+for h in /sys/class/hwmon/hwmon*; do
+  [ "$(cat "$h/name")" = asusec ] || continue
+  for l in "$h"/fan*_label; do [ "$(cat "$l")" = Chipset ] && CF=$(cat "${l%_label}_input"); done
+done
+ME=$(nvme smart-log /dev/nvme0 -o json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('media_errors',-1))")
+echo "tctl=$T pump=$P radfan=$F chipsetfan=$CF vrm=$V nvme=$N media_errors=$ME"
+
+W=""
+add() { W="$W$1
+"; }
+st=/run/hw-watch.hot
+if [ "$T" -ge 90 ]; then echo x >> $st; else rm -f $st; fi
+[ -f $st ] && [ "$(wc -l < $st)" -ge 5 ] && add "<4>WARN CPU Tctl >= 90 C for 5+ minutes ($T C)"
+[ "$P" -ge 0 ] && [ "$P" -lt 1500 ] && add "<2>CRIT AIO pump at $P RPM: shut the PC down"
+[ "$F" -ge 0 ] && [ "$F" -lt 400 ] && add "<4>WARN radiator fan at $F RPM"
+[ "$CF" -eq 0 ] && add "<4>WARN chipset fan at 0 RPM"
+[ "$N" -gt 70 ] && add "<4>WARN NVMe at $N C"
+[ "$V" -gt 100 ] && add "<4>WARN VRM at $V C"
+[ "$ME" -gt 2455 ] && add "<3>ERR NVMe media_errors rose to $ME (baseline 2455): plan a drive replacement"
+[ -n "$W" ] && printf "%s" "$W"
+
+last=/run/hw-watch.last; now=$(date +%s)
+if [ -n "$W" ]; then
+  msg=$(printf "%s" "$W" | sed 's/^<[0-9]>//')
+  key=$(printf "%s" "$msg" | sed 's/[0-9]//g' | md5sum | cut -c1-16)
+  if [ ! -f $last ] || [ "$(cut -d' ' -f1 $last)" != "$key" ] || [ $((now - $(cut -d' ' -f2 $last))) -ge 3600 ]; then
+    case "$msg" in *CRIT*|*ERR*) prio=urgent ;; *) prio=high ;; esac
+    /usr/local/sbin/hw-notify "$prio" "$msg"
+    echo "$key $now" > $last
+  fi
+elif [ -f $last ]; then
+  rm -f $last
+  /usr/local/sbin/hw-notify default "hw-watch: all clear"
+fi
+exit 0

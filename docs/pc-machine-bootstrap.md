@@ -20,3 +20,20 @@ its refresh units with the toolkit package. Its settled CDI specification
 lives under `/run/cdi`.
 
 Drain the slots before changing `gha-slot`, as Bash reads it incrementally.
+
+## Cooling and hardware monitoring
+
+The `linux,pc` bootstrap declares the NCT6775 module-load file, the NZXT H1
+pump and radiator fan services, and the hardware watch and weekly heartbeat
+timers. The timers start their static oneshot services. The cooling scripts
+and unit files mirror the live files and have no automatic restart on file
+changes. On a rebuild, verify the cooling units and tachometer readings
+before putting the machine under load. The `cooling` line in `mise run pc:doctor`
+checks both units and reads the pump and radiator fan speeds from hwmon.
+
+Restore `/usr/local/sbin/hw-heartbeat`, `/usr/local/sbin/hw-notify`,
+`/usr/local/bin/ntfy-qr`, and the root-only `/etc/hw-watch/ntfy-topic`
+from the private machine configuration before enabling the monitoring timers
+on a rebuild. These files carry host-specific notification details. Without
+them, hardware watch still logs sensor readings to the journal, but phone
+and desktop alerts and the weekly heartbeat are unavailable.

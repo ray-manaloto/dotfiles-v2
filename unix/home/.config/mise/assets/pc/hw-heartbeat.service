@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly heartbeat push to the owner's phone (ntfy) and PC screen
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hw-heartbeat
+SyslogIdentifier=hw-heartbeat
