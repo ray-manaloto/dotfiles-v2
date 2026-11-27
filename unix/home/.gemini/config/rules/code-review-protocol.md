@@ -13,6 +13,9 @@ description: Require ordered /code-review:code-review (--record) followed by pos
      - Run `/code-review:code-review` over `git diff -U5 --merge-base origin/HEAD`
        (or `main..HEAD` in a linked worktree); fan out diffs >~1,000 lines across
        parallel read-only subagent slices and verify every finding at `path:line`.
+     - Apply every matching section of `~/.agents/review-standards.md`
+       (credential/config migrations, degraded input, destructive targets,
+       narrowed environments, secrets in errors and argv size).
      - Fix confirmed `CRITICAL`, `HIGH`, and `MEDIUM` findings and commit cleanly.
      - Record Stage 1 immediately (`--record` clears any prior Stage 2 receipt):
        `python3 -I -B ~/.gemini/config/hooks/agy-code-review-guard.py --record --summary "<summary>"`

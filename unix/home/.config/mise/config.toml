@@ -176,6 +176,7 @@ exclude = ["*"]
 
 [dotfiles]
 "~/.agents/AGENTS.md" = { main_checkout = true }
+"~/.agents/review-standards.md" = { main_checkout = true }
 "~/.config/agent-secrets/env.sh" = { main_checkout = true }
 "~/.config/dcg/config.toml" = { main_checkout = true }
 "~/.config/dcg/packs/mise-protect.yaml" = { main_checkout = true }
