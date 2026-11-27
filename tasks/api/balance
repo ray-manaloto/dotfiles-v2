@@ -54,19 +54,21 @@ const r = await fetch(`/api/organizations/${ids[0]}/prepaid/credits`, { credenti
 if (!r.ok) return { ok: false, error: `prepaid/credits returned HTTP ${r.status}` };
 const j = await r.json();
 const num = v => typeof v === "number" && Number.isFinite(v);
-if (!num(j.amount) || !Array.isArray(j.promo_tranches)) return { ok: false, error: "prepaid/credits response shape changed" };
+if (!num(j.amount) || !num(j.amount_without_scoped_credits) || !Array.isArray(j.promo_tranches)) return { ok: false, error: "prepaid/credits response shape changed" };
 const now = Date.now();
 let left_cents = 0;
 const promo = [];
 for (const t of j.promo_tranches) {
   if (!num(t.remaining_amount_minor_units) || !num(t.granted_amount_minor_units)) return { ok: false, error: "promo tranche shape changed" };
   const expires_at = t.shown_expires_at || t.expires_at || null;
-  const expired = expires_at !== null && Date.parse(expires_at) <= now;
+  const expires_ms = expires_at === null ? null : Date.parse(expires_at);
+  if (expires_ms !== null && !Number.isFinite(expires_ms)) return { ok: false, error: "promo tranche expiry is unparsable" };
+  const expired = expires_ms !== null && expires_ms <= now;
   if (!expired) left_cents += t.remaining_amount_minor_units;
   promo.push({ name: t.name, program: t.program_id, remaining_usd: t.remaining_amount_minor_units / 100,
     granted_usd: t.granted_amount_minor_units / 100, granted_at: t.granted_at, expires_at, expired });
 }
-return { ok: true, total_usd: j.amount / 100, purchased_usd: (j.amount_without_scoped_credits ?? 0) / 100,
+return { ok: true, total_usd: j.amount / 100, purchased_usd: j.amount_without_scoped_credits / 100,
   auto_reload: j.auto_reload_settings != null, promo, promo_left_usd: left_cents / 100, read_at: new Date().toISOString() };
 JS
 
