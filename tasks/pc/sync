@@ -1,13 +1,13 @@
 #!/usr/bin/env -S usage exec bash
 # shellcheck shell=bash
-#MISE description="Fast-forward the remote checkout and bootstrap the linux,pc environment"
+#MISE description="Fast-forward the remote checkout, bootstrap linux,pc, and refresh Python dependencies"
 #USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux SSH host alias"
 #USAGE flag "--dry-run" help="Describe synchronization without connecting"
 set -euo pipefail
 
 host="${usage_host:-pc}"
 if [[ ${usage_dry_run:-false} == true ]]; then
-	echo "pc:sync dry-run ($host): fast-forward checkout, migrate legacy config, mise bootstrap --force-dotfiles (linux,pc)"
+	echo "pc:sync dry-run ($host): fast-forward checkout, migrate legacy config, mise bootstrap --force-dotfiles (linux,pc), mise deps uv in checkout"
 	exit 0
 fi
 ssh -o BatchMode=yes -- "$host" /bin/bash -euo pipefail <<'REMOTE'
@@ -52,4 +52,5 @@ fi
 /usr/local/bin/mise bootstrap --from "$repo" --from-dir "$checkout" \
 	--config-dir unix/home/.config/mise --force-dotfiles --yes </dev/null
 [[ -L $config && $config -ef $target ]]
+/usr/local/bin/mise -C "$checkout" deps uv </dev/null
 REMOTE

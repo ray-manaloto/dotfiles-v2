@@ -143,7 +143,22 @@ def test_sync_bootstraps_without_identity(tmp_path: Path, login_shell: str) -> N
         "getent": f'printf "fixture:x:1000:1000::/tmp:{login_shell}\\n"',
         "zsh": "exit 0",
         "sudo": f'printf "%s\\n" "$*" >> "{sudo_calls}"',
-        "mise": 'test "$MISE_SYSTEM_CONFIG_DIR" = "/nonexistent" && test "$1" = bootstrap && ln -s "$HOME/dev/dotfiles-v2/unix/home/.config/mise" "$HOME/.config/mise"',
+        "mise": """
+set -eu
+test "$MISE_SYSTEM_CONFIG_DIR" = "/nonexistent"
+test "$MISE_YES" = "1"
+if [ "$1" = bootstrap ]; then
+    ln -s "$HOME/dev/dotfiles-v2/unix/home/.config/mise" "$HOME/.config/mise"
+else
+    test "$#" -eq 4
+    test "$1" = "-C"
+    test "$2" = "$HOME/dev/dotfiles-v2"
+    test "$3" = "deps"
+    test "$4" = "uv"
+    test -L "$HOME/.config/mise"
+    touch "$2/deps-uv-ran"
+fi
+""",
     }.items():
         stub = tmp_path / name
         stub.write_text(f"#!/bin/sh\n{body}\n")
@@ -175,3 +190,4 @@ def test_sync_bootstraps_without_identity(tmp_path: Path, login_shell: str) -> N
     assert stat.S_IMODE((tmp_path / ".config/fnox").stat().st_mode) == 0o700
     assert not (tmp_path / ".config/fnox/age.txt").exists()
     assert (tmp_path / ".config/mise").resolve() == target
+    assert (checkout / "deps-uv-ran").is_file()
