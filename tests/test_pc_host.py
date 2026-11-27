@@ -307,3 +307,69 @@ def test_omarchy_channel_pin_matches_up_and_doctor() -> None:
     doctor = (TASKS / "doctor").read_text()
     assert "omarchy_channel=rc" in up
     assert "[[ $channel == rc ]]" in doctor
+
+
+def test_pc_reviewer_plugins_match_manifest(pc_stack_doctor: ModuleType) -> None:
+    """pc runs the doctor from stdin and cannot read the manifest, so its plugin list is inlined."""
+    manifest = json.loads((MISE / "assets/reviewer-plugins.json").read_text())["claude"]
+    assert not manifest.get("platforms"), "gated plugins need per-host filtering in pc"
+    assert list(pc_stack_doctor.REVIEWER_CLAUDE_PLUGINS) == manifest["plugins"]
+
+
+def test_pc_reviewer_plugins_flags_missing_and_disabled(
+    pc_stack_doctor: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugins = pc_stack_doctor.REVIEWER_CLAUDE_PLUGINS
+    rows = [{"id": p, "enabled": True, "scope": "user"} for p in plugins]
+
+    def fake_run(*args: str, **_kw: object) -> subprocess.CompletedProcess[str]:
+        assert args[1:] == ("plugin", "list", "--json")
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(rows))
+
+    monkeypatch.setattr(pc_stack_doctor, "run", fake_run)
+    assert "installed" in pc_stack_doctor.reviewer_plugins()
+    rows.pop(0)
+    rows[0]["enabled"] = False
+    with pytest.raises(ValueError, match="2 claude plugins missing/disabled"):
+        pc_stack_doctor.reviewer_plugins()
+
+
+def test_pc_dead_shims_reports_count_and_first_names(
+    pc_stack_doctor: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    live_bin = tmp_path / "bin"
+    live_bin.mkdir()
+    for name in ("alive", "gone1", "gone2", "gone3", "gone4", "gone5", "gone6", "mise"):
+        (shims / name).touch()
+    (live_bin / "alive").touch()
+    probed: list[str] = []
+
+    def fake_run(*args: str, **_kw: object) -> subprocess.CompletedProcess[str]:
+        if args[1] == "bin-paths":
+            return subprocess.CompletedProcess(args, 0, stdout=f"{live_bin}\n")
+        probed.append(args[2])
+        if (
+            args[2] == "gone6"
+        ):  # installed but outside the active config, like hub:up's ollama
+            msg = "mise ERROR gone6 is a mise bin however it is not currently active."
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr=msg)
+        return subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="mise ERROR no tool"
+        )
+
+    monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(pc_stack_doctor, "run", fake_run)
+    with pytest.raises(ValueError, match="5 of 8 mise shims are dead") as error:
+        pc_stack_doctor.dead_shims()
+    assert "gone1, gone2, gone3, gone4, gone5;" in str(error.value)
+    assert "1 installed but inactive: gone6" in str(error.value)
+    assert probed == [f"gone{i}" for i in range(1, 7)]  # live shims are never probed
+    for name in probed[:5]:
+        (live_bin / name).touch()
+    assert pc_stack_doctor.dead_shims() == (
+        "no dead mise shims among 8 (1 installed but inactive: gone6)"
+    )
+    (live_bin / "gone6").touch()
+    assert pc_stack_doctor.dead_shims() == "no dead mise shims among 8"

@@ -8,6 +8,8 @@
 # Re-runnable: every step reads current state first, so a crashed or repeated run picks up where it left off.
 # It never merges. On READY it prints the owner-sanctioned merge command for the lead to run.
 # Exit: 0 READY, 1 required check failed, 2 wait timed out, 3 preflight refused, 4 GitHub API unavailable.
+# A required check that never started is reported as "NOT STARTED" (distinct from a failed check); a disabled
+# workflow that produces a required check is refused up front (exit 3), since its check can never appear.
 set -euo pipefail
 
 repo="ray-manaloto/dotfiles-v2"
@@ -71,6 +73,27 @@ while IFS= read -r ctx; do
 	[[ -n ${ctx} ]] && required+=("${ctx}")
 done <<<"${rules}"
 ((${#required[@]} > 0)) || refuse "could not read required checks for main from the ruleset"
+# Refuse when a workflow that produces a required check is disabled: its check never starts, so the wait
+# would only time out. A required context matches a workflow by the workflow name or a `name:` in its file.
+disabled_workflow_blockers() {
+	local wfs wf_name wf_state wf_path text jobs ctx
+	wfs="$(ghq api "repos/${repo}/actions/workflows?per_page=100" --jq '.workflows[]|"\(.name)\t\(.state)\t\(.path)"')"
+	while IFS=$'\t' read -r wf_name wf_state wf_path; do
+		[[ ${wf_state} == disabled_manually || ${wf_state} == disabled_inactivity ]] || continue
+		text="$(git show "${head}:${wf_path}" 2>/dev/null || true)"
+		# Check-run names are job names: an indented `name:` (job-level; step names start with `- `) or a bare
+		# two-space job key. Match whole names only, so `lint` never matches `name: lint-docs`.
+		jobs="$(sed -nE -e "s/^[[:space:]]+name:[[:space:]]*[\"']?([^\"']*[^\"'[:space:]])[\"']?[[:space:]]*$/\1/p" \
+			-e 's/^  ([A-Za-z0-9_-]+):[[:space:]]*$/\1/p' <<<"${text}")"
+		for ctx in "${required[@]}"; do
+			if [[ ${ctx} == "${wf_name}" ]] || grep -qxF -- "${ctx}" <<<"${jobs}"; then
+				printf '%s\n' "${wf_name} (${wf_path}) is ${wf_state} and produces required check '${ctx}'"
+			fi
+		done
+	done <<<"${wfs}"
+}
+blockers="$(disabled_workflow_blockers)"
+[[ -z ${blockers} ]] || refuse "required check cannot start: ${blockers//$'\n'/; }; enable it (gh workflow enable <name> -R ${repo}) and re-run pr:ship"
 state() {
 	ghq api "repos/${repo}/commits/${head}/check-runs?per_page=100" --jq '.check_runs[]|"\(.name)\t\(.status)\t\(.conclusion // "")"'
 }
@@ -80,14 +103,16 @@ for ((i = 0; i <= max_waits; i++)); do
 	runs="$(state)"
 	done_n=0
 	failed=""
+	not_started=""
 	for name in "${required[@]}"; do
 		# Exact name match on the first field; the API lists the newest run of a re-run check first.
 		line="$(awk -F '\t' -v n="${name}" '$1 == n { print; exit }' <<<"${runs}")"
+		[[ -n ${line} ]] || not_started+="${name}; "
 		[[ ${line} == *$'\tcompleted\t'* ]] || continue
 		done_n=$((done_n + 1))
 		[[ ${line} == *$'\tcompleted\tsuccess' ]] || failed+="${name}; "
 	done
-	echo "pr:ship: required ${done_n}/${#required[@]} complete${failed:+, failed: ${failed}}"
+	echo "pr:ship: required ${done_n}/${#required[@]} complete${failed:+, failed: ${failed}}${not_started:+, no check run yet: ${not_started}}"
 	if [[ -n ${failed} ]]; then
 		verdict="RED"
 		break
@@ -127,6 +152,7 @@ RED)
 	exit 1
 	;;
 *)
+	[[ -z ${not_started} ]] || echo "pr:ship: NOT STARTED (no check run exists on ${head:0:7}, not a failure): ${not_started}check that the workflow triggers on this PR and is enabled" >&2
 	echo "pr:ship: TIMEOUT after ${max_waits} waits; re-run pr:ship to resume" >&2
 	exit 2
 	;;

@@ -448,3 +448,9 @@ hint = "Follow the fix command in each diagnostic and record approved decisions 
 description = "Canonical ~/.agents/skills parity across Codex, OpenCode, AGY, Claude, ZCode, and Hermes"
 run = "python3 -I -B tasks/py/doctor_checks.py skills-6harness-parity"
 hint = "Run `mise run bootstrap:skills` and keep canonical skills under unix/home/.agents/skills/. Details: `mise run doctor:explain skills-6harness-parity`."
+
+[doctor.checks.python-ca-bundle]
+description = "Every python3 on PATH has a CA bundle (or SSL_CERT_FILE is set)"
+run = "python3 -I -B tasks/py/doctor_checks.py python-ca-bundle"
+timeout = "60s"
+hint = "Set SSL_CERT_FILE=/etc/ssl/cert.pem or run the Python framework's 'Install Certificates.command'. Details: `mise run doctor:explain python-ca-bundle`."

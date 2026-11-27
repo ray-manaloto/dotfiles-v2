@@ -3638,6 +3638,75 @@ def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
     )
 
 
+_CA_PROBE = (
+    "import os, ssl\n"
+    "c = ssl.create_default_context()\n"
+    "v = ssl.get_default_verify_paths()\n"
+    "d = v.capath and os.path.isdir(v.capath) and bool(os.listdir(v.capath))\n"
+    "print(c.cert_store_stats()['x509_ca'], int(bool(d)))\n"
+)
+_PYTHON_NAME_RE = re.compile(r"python3(\.\d+)?")
+
+
+def _path_pythons() -> list[Path]:
+    """Distinct (by realpath) python3 / python3.N executables on PATH."""
+    seen: dict[Path, Path] = {}
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            names = sorted(os.listdir(entry))
+        except OSError:
+            continue
+        for name in names:
+            exe = Path(entry) / name
+            if not (_PYTHON_NAME_RE.fullmatch(name) and os.access(exe, os.X_OK)):
+                continue
+            real = exe.resolve(strict=False)
+            # mise shims resolve to the mise binary, not a python: skip them (mise's own pythons are
+            # python-build-standalone with a bundled CA path) so a shim never hides a real interpreter.
+            if real.name.startswith("python"):
+                seen.setdefault(real, exe)
+    return list(seen.values())
+
+
+def check_python_ca_bundle() -> tuple[list[str], str]:
+    """Every python3 on PATH can verify TLS: python.org framework builds ship an empty openssl dir."""
+    if _live_host_skipped():
+        return [], _skip_reason("python3 CA bundle probes are live-host only")
+    if os.environ.get("SSL_CERT_FILE"):
+        return [], "SSL_CERT_FILE is set; python3 CA bundle probes skipped"
+    exes = _path_pythons()
+    env = {k: v for k, v in os.environ.items() if k != "SSL_CERT_DIR"}
+
+    def probe(exe: Path) -> str | None:
+        try:
+            out = subprocess.run(
+                [str(exe), "-I", "-B", "-c", _CA_PROBE],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=env,
+                check=False,
+            ).stdout.split()
+        except (OSError, subprocess.SubprocessError):  # fmt: skip
+            return None
+        if len(out) == 2 and out[0] == "0" and out[1] == "0":
+            return str(exe)
+        return None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        bad = [b for b in pool.map(probe, exes) if b]
+    if bad:
+        return [
+            f"python-ca-bundle: {exe} has zero CA certs and SSL_CERT_FILE is unset; "
+            "TLS fails with CERTIFICATE_VERIFY_FAILED (set SSL_CERT_FILE=/etc/ssl/cert.pem "
+            "or run the framework's 'Install Certificates.command')"
+            for exe in bad
+        ], ""
+    return [], f"{len(exes)} distinct python3 interpreter(s) on PATH have a CA bundle"
+
+
 def _report(label: str, errors: list[str], ok_msg: str) -> int:
     if errors:
         sys.stderr.write("\n".join(errors) + "\n")
@@ -3658,6 +3727,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("reviewer-plugins")
     sub.add_parser("mcp-policy")
     sub.add_parser("claude-ship-env")
+    sub.add_parser("python-ca-bundle")
     sub.add_parser("jouet-rules")
     sub.add_parser("usage-lint")
     sub.add_parser("pitchfork-config")
@@ -3802,6 +3872,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "claude-ship-env":
         errs, msg = check_claude_ship_env(repo_root)
         return _report("claude-ship-env", errs, msg)
+    if args.cmd == "python-ca-bundle":
+        errs, msg = check_python_ca_bundle()
+        return _report("python-ca-bundle", errs, msg)
     if args.cmd == "skills-6harness-parity":
         errs, msg = check_skills_6harness_parity(repo_root)
         return _report("skills-6harness-parity", errs, msg)

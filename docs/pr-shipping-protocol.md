@@ -25,6 +25,15 @@ Applies to every agent-authored change in this public repository.
 
 Single writer: one agent owns a worktree until its PR merges or closes.
 
+Lane and worker briefs, and any scratch harness a lane builds, set `MISE_AUTO_INSTALL=0` and `MISE_NOT_FOUND_AUTO_INSTALL=0`
+(and scope `MISE_CONFIG_DIR` to the scratch directory) before running checks, so a dependency probe can never trigger a live
+`mise` install. A stray auto-install, or a cancelled bulk install, leaves unhardened binaries and orphaned staging dirs that
+fail host doctor.
+
+Briefs state live-write authority explicitly. When the work could touch a live repository or organization setting (Actions
+policy, environment, ruleset), say either "commit only, propose the live call" or "live write authorized". "Implement it" is
+ambiguous and has produced live settings without owner approval.
+
 ## Steps
 
 1. **Worktree**: `mise run worktree:new <slug>`; commit on `wt/<slug>`.
@@ -41,7 +50,9 @@ Single writer: one agent owns a worktree until its PR merges or closes.
    `gh event listen --resource <PR> --event ...check_suite.status.changed.v1,...head.changed.v1,...state.changed.v1 --timeout 10m`,
    then read state again. Events are not replayed, so state is always re-read after a wait or timeout. The task stops on a
    red required check (exit 1), on a moved head (exit 3), after `--max-waits` (exit 2; re-run to resume), or when the GitHub
-   API fails three times in a row (exit 4). No sleep loops; if event streams are unavailable it falls back to a 60 s re-read.
+   API fails three times in a row (exit 4). It refuses up front (exit 3) when a workflow that produces a required check is
+   `disabled_manually` or `disabled_inactivity` (such a check can never start), and a required check with no check run on the head
+   after the waits is reported as `NOT STARTED`, distinct from a failed one. No sleep loops; if event streams are unavailable it falls back to a 60 s re-read.
 5. **Bot sweep**: read every bot line comment once; fix real findings by going back to step 2. At most three pushes for one
    cause; after that, report to the owner.
 6. **Merge** after `pr:ship` prints READY: re-run `hk check --all` on that exact head with a clean tree, then
@@ -52,8 +63,9 @@ Single writer: one agent owns a worktree until its PR merges or closes.
    nothing survives). The retro is this step: corrections, failed attempts and bot findings become ledger proposals.
 8. **Land** (no owner prompt): `mise run pr:land` from the merged worktree. It refuses unless the PR is MERGED at the
    worktree's exact head, the tree is clean and the learn review from step 7 is recorded; then it fast-forwards the main
-   checkout, checks the merge commit is on `main`, removes the worktree and its `wt/*` branch with `worktree:rm`, and runs
-   `learn:heal --check`. Verify the change is live afterwards.
+   checkout, checks the merge commit is on `main`, removes the worktree and its `wt/*` branch with `worktree:rm`, runs `learn:heal --check`, and runs the full live
+   `mise doctor project` (host scope) on the merged `main`, printing its summary; a failure there only warns, because the land
+   already happened. Verify the change is live afterwards.
 
 ## Preconditions kept by guards
 
@@ -72,4 +84,6 @@ Scope telemetry opt-outs to the one command that needs them (for example `DO_NOT
 
 - `gh event listen` is a preview feature; if it fails, `pr:ship` falls back to re-reading state every 60 s.
 - Bots review only when a PR opens; their silence after a follow-up push is expected, not a failure.
+- `gh run rerun` of a `pull_request_target` workflow replays the original workflow definition, not the fixed one on `main`.
+  After fixing such a workflow, retrigger it by closing and reopening the PR (or pushing), so the run loads the current `main`.
 - A crashed lead resumes by re-running `pr:ship`; it rebuilds its state from the PR.
