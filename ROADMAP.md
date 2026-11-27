@@ -92,11 +92,11 @@
     Responses coding-agent profile using linked API credits (bounded
     `mise run api:code` profile, `docs/responses-coding-profile.md`; shipped on
     `main` at `e32a280`).
-  - [x] [#3](https://github.com/ray-manaloto/dotfiles-v2/issues/3) Add a
-    self-run Claude coding agent using linked API credits (fail-closed,
-    read-only `mise run api:review` `claude -p` runner on the `api-credit` fnox
-    profile; shipped on `main` at `4270119`, PR `#31`). A write-capable Claude
-    coding mode is not on `main`; re-scope `#3` on GitHub if it is still wanted.
+  - [ ] [#3](https://github.com/ray-manaloto/dotfiles-v2/issues/3) Add a
+    self-run Claude coding agent using linked API credits. **Shipped:**
+    fail-closed, read-only `mise run api:review` `claude -p` runner on the
+    `api-credit` fnox profile (`4270119`, PR `#31`). **Remaining:** a
+    write-capable Claude coding mode (or re-scope `#3` on GitHub to review-only).
 - [ ] **Follow-up (Option A cutover, `@vercel/board@0.55.0`, schema-first
   Python & self-healing `/learn`):**
   - [x] [#9](https://github.com/ray-manaloto/dotfiles-v2/issues/9) Execute
@@ -118,9 +118,12 @@
     `templates/swarm` + `factory` orchestration (`PLAN_ID` / worktree slug:
     `vercel-board-pc-orchestration`; `@vercel/board@0.56.1` now live behind
     `pc` Caddy/Tailscale and synced across `host`/`pc`/`mac`/`vm` in
-    `806d74c`–`5d6b945`; loopback-only `board:up --no-tailscale` is on `main`
-    since `7251f2d`). **Remaining:** `templates/swarm`/`factory` board channel
-    conventions (`ops/kb-queue`, `work/*`) and tailnet ACL cleanup.
+    `806d74c`–`5d6b945`; the separate `--no-tailscale` Mac fallback check is
+    dropped in this re-scope; loopback-only `board:up --no-tailscale` has
+    existed since `board:up` was added in
+    `965ba43d7a8f31d330631591c244e1accfc627b6`). **Remaining:**
+    `templates/swarm`/`factory` board channel conventions (`ops/kb-queue`,
+    `work/*`) and tailnet ACL cleanup.
 - [ ] **Follow-up (Deep Audit, Full `mise`/`jdx` & Dependency Upgrades, Hardened Tier 1–3 Health Gates):**
   - [x] [#13](https://github.com/ray-manaloto/dotfiles-v2/issues/13) Upgrade
     `mise` (`2026.11.13`), `packslip` (`1.11.5`), `hk` (`2.14.0`), all outdated
