@@ -19,7 +19,9 @@ import sys
 from pathlib import Path
 
 SSH_WORD = re.compile(r"(?:^|[\s(|;&!])ssh\s")
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# `<<` but not the `<<<` here-string.
+HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+GLOB = re.compile(r"[*?]|\[[^\]\s]+\]")
 ENV_ASSIGN = re.compile(r"""^["']?[A-Za-z_][A-Za-z0-9_]*=""")
 SKIP_OPTS_WITH_ARG = {
     "-o",
@@ -46,16 +48,46 @@ SKIP_OPTS_WITH_ARG = {
 TERMINATORS = ("|", ";", "&&", "||", "<", ">", ")", "&")
 
 
+def scan(s: str) -> tuple[str, bool]:
+    """Return the code part of a line (an unquoted `#` comment cut off) and whether a quote is left open."""
+    i, quote = 0, ""
+    while i < len(s):
+        c = s[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+        elif c in "'\"":
+            quote = c
+        elif c == "\\":
+            i += 2
+            continue
+        elif c == "#" and (i == 0 or s[i - 1].isspace()):
+            return s[:i], False
+        i += 1
+    return s, bool(quote)
+
+
 def logical_lines(text: str) -> list[tuple[int, str]]:
-    """Join backslash continuations and drop heredoc bodies; keep the first line number."""
+    """Join continuations and multi-line quotes, drop comments and heredoc bodies; keep the first line number."""
     out: list[tuple[int, str]] = []
     lines = text.splitlines()
     i = 0
     while i < len(lines):
         start, buf = i + 1, lines[i]
-        while buf.endswith("\\") and i + 1 < len(lines):
-            i += 1
-            buf = buf[:-1] + " " + lines[i].lstrip()
+        while i + 1 < len(lines):
+            code, open_quote = scan(buf)
+            if open_quote:
+                i += 1
+                buf = buf + "\n" + lines[i]
+            elif code.endswith("\\"):
+                i += 1
+                buf = code[:-1] + " " + lines[i].lstrip()
+            else:
+                break
+        buf = scan(buf)[0]
         out.append((start, buf))
         terms = [m.group(2) for m in HEREDOC.finditer(buf)]
         for term in terms:  # skip each heredoc body in order
@@ -155,9 +187,10 @@ def check_line(path: str, lineno: int, line: str) -> list[str]:
             ):
                 continue  # one prebuilt command variable, e.g. "${probe_cmd}"
             view = remote_view(w)
-            if re.search(r"[*?]", re.sub(r"\$[?*#@]", "", view)):
+            if GLOB.search(re.sub(r"\$[?*#@]", "", view)):
+                shown = w[:80].replace("\n", " ")
                 found.append(
-                    f"{path}:{lineno}: ssh-glob: unquoted glob in remote command `{w[:80]}`; zsh aborts on no match, use find -name '<pattern>' or a bash heredoc"
+                    f"{path}:{lineno}: ssh-glob: unquoted glob in remote command `{shown}`; zsh aborts on no match, use find -name '<pattern>' or a bash heredoc"
                 )
     return found
 
@@ -168,8 +201,9 @@ def main(argv: list[str]) -> int:
     for name in argv:
         p = Path(name)
         try:
-            text = p.read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+            # Decode leniently so only OSError can escape; keeps the file 3.9-syntax safe after ruff format.
+            text = p.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
             continue
         if not text.startswith("#!") or "sh" not in text.splitlines()[0]:
             continue
