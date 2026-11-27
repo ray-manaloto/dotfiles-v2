@@ -294,6 +294,15 @@ python3 -I -B unix/home/.gemini/config/hooks/agy-hc-send-guard.py --self-check -
 '''
 hint = "Ensure unix/home/.gemini/config/hooks/agy-hc-send-guard.py is executable, passes --self-check, and registers with agy-peer-messaging.md. Details: `mise run doctor:explain agy-hc-send-guard`."
 
+[doctor.checks.heredoc-script-hint]
+description = "Non-blocking heredoc-script-hint PreToolUse hook passes --self-check and is registered for Antigravity, Claude, and Codex"
+run = '''
+python3 -I -B unix/home/.gemini/config/hooks/heredoc-script-hint.py --self-check --check-hooks-json unix/home/.gemini/config/hooks.json >/dev/null
+grep -q 'heredoc-script-hint.py.*--harness claude' unix/home/.config/mise/assets/claude/dcg-hooks.json
+grep -q 'heredoc-script-hint.py.*--harness codex' unix/home/.config/mise/assets/codex/dcg-hooks.json
+'''
+hint = "Ensure unix/home/.gemini/config/hooks/heredoc-script-hint.py passes --self-check, and is registered in hooks.json and both dcg-hooks.json assets. Details: `mise run doctor:explain heredoc-script-hint`."
+
 [doctor.checks.vercel-board-config]
 description = "jdx tools, @vercel/board, pitchfork config, bootstrap:skills, and canonical skills are valid"
 run = '''

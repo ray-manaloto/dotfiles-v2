@@ -273,15 +273,28 @@ def test_inspect_and_repair_hook_trust_fixes_modified_unmigrated_and_orphans(
 
 
 @pytest.mark.parametrize(
-    ("asset", "event", "event_name", "status"),
+    ("asset", "event", "group", "event_name", "status"),
     [
-        ("dcg-hooks.json", "PreToolUse", "preToolUse", CodexHookStatus.MODIFIED),
-        ("learn-hooks.json", "SessionStart", "sessionStart", CodexHookStatus.UNTRUSTED),
-        ("learn-hooks.json", "Stop", "stop", CodexHookStatus.MODIFIED),
+        ("dcg-hooks.json", "PreToolUse", 0, "preToolUse", CodexHookStatus.MODIFIED),
+        # heredoc-script-hint (#93) is the second PreToolUse group in the dcg asset.
+        ("dcg-hooks.json", "PreToolUse", 1, "preToolUse", CodexHookStatus.UNTRUSTED),
+        (
+            "learn-hooks.json",
+            "SessionStart",
+            0,
+            "sessionStart",
+            CodexHookStatus.UNTRUSTED,
+        ),
+        ("learn-hooks.json", "Stop", 0, "stop", CodexHookStatus.MODIFIED),
     ],
 )
 def test_check_reports_user_hook_drift_without_approving_it(
-    tmp_path: Path, asset: str, event: str, event_name: str, status: CodexHookStatus
+    tmp_path: Path,
+    asset: str,
+    event: str,
+    group: int,
+    event_name: str,
+    status: CodexHookStatus,
 ) -> None:
     assets = Path(__file__).resolve().parents[1] / "unix/home/.config/mise/assets/codex"
     declaration = json.loads((assets / asset).read_text(encoding="utf-8"))
@@ -294,7 +307,7 @@ def test_check_reports_user_hook_drift_without_approving_it(
         "key": key,
         "sourcePath": str(tmp_path / "hooks.json"),
         "eventName": event_name,
-        "command": declaration["hooks"][event][0]["hooks"][0]["command"],
+        "command": declaration["hooks"][event][group]["hooks"][0]["command"],
         "enabled": True,
         "trustStatus": status.value,
         "currentHash": "sha256:new",
