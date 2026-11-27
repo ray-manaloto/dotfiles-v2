@@ -2,7 +2,8 @@
 # Paid OpenCode proxy overlay; invoke via `opencode-paid` shell alias:
 # `fnox --non-interactive -c ~/.config/fnox/opencode-paid.toml -P opencode-paid --no-defaults proxy run -- opencode --standalone`
 
-import = ["./shared.toml"]
+# The host config comes first so its providers (Keychain, age, or pc's Doppler login) win over shared.toml.
+import = ["./config.toml", "./shared.toml"]
 
 [proxy]
 egress = "permissive"

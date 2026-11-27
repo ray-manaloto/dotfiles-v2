@@ -2,7 +2,8 @@
 # Strict MCP egress profile overlay; invoke with:
 # `fnox --non-interactive -c ~/.config/fnox/mcp.toml -P mcp --no-defaults proxy run -- <cmd>`
 
-import = ["./shared.toml"]
+# The host config comes first so its providers (Keychain, age, or pc's Doppler login) win over shared.toml.
+import = ["./config.toml", "./shared.toml"]
 
 [proxy]
 egress = "strict"

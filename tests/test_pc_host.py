@@ -78,14 +78,17 @@ def test_pc_overlay_and_zsh(tmp_path: Path) -> None:
     assert source.splitlines()[0] == "#:schema https://mise.jdx.dev/schema/mise.json"
     config = tomllib.loads(source)
     assert config["settings"]["upgrade"] == {"auto_prune": True, "prune_after": "24h"}
-    assert config["env"] == {"FNOX_AGE_KEY_FILE": "{{ env.HOME }}/.config/fnox/age.txt"}
+    assert (
+        "env" not in config
+    )  # no age key on pc: fnox uses the Doppler CLI's stored token
     dotfiles = config["dotfiles"]
     assert "~/.zshenv" not in dotfiles
-    headless = "~/.config/fnox/config.headless.toml"
+    pc_fnox = "~/.config/fnox/config.pc.toml"
+    assert dotfiles[pc_fnox] == {"main_checkout": True}
     assert dotfiles["~/.config/fnox/config.toml"] == {
-        "source": headless,
+        "source": pc_fnox,
         "main_checkout": True,
-        "depends": [headless],
+        "depends": [pc_fnox],
     }
     (tmp_path / ".zshenv").symlink_to(ROOT / "unix/home/.zshenv")
     (tmp_path / ".bashrc").write_text("return\n")
@@ -191,7 +194,7 @@ fi
         ]
     else:
         assert not sudo_calls.exists()
-    assert "age.txt" in result.stderr and "0600" in result.stderr
+    assert "doppler configure set token --scope ~" in result.stderr
     assert stat.S_IMODE((tmp_path / ".config/fnox").stat().st_mode) == 0o700
     assert not (tmp_path / ".config/fnox/age.txt").exists()
     assert (tmp_path / ".config/mise").resolve() == target

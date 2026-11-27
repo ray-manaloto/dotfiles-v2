@@ -4,9 +4,6 @@
 upgrade.auto_prune = true
 upgrade.prune_after = "24h"
 
-[env]
-FNOX_AGE_KEY_FILE = "{{ env.HOME }}/.config/fnox/age.txt"
-
 [bootstrap.packages]
 "pacman:zsh" = "latest"
 "pacman:lm_sensors" = "latest"
@@ -225,7 +222,9 @@ environment = { PATH = "/usr/local/bin:/usr/bin:/bin", MISE_SYSTEM_CONFIG_DIR = 
 "~/.bashrc/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/pc-env.sh" ] && . "${HOME}/.config/dotfiles-v2/pc-env.sh"', position = "prepend" }
 "~/.config/dotfiles-v2/pc-env.sh/mise-env" = { line = "export MISE_ENV=linux,pc" }
 "~/.config/dotfiles-v2/pc-env.sh/mise-system-config-dir" = { line = "export MISE_SYSTEM_CONFIG_DIR=/nonexistent" }
-"~/.config/fnox/config.toml" = { source = "~/.config/fnox/config.headless.toml", main_checkout = true, depends = [
-  "~/.config/fnox/config.headless.toml",
+# pc reads Doppler config `pc` with the Doppler CLI's stored read-only token; no age key (config.pc.toml).
+"~/.config/fnox/config.pc.toml" = { main_checkout = true }
+"~/.config/fnox/config.toml" = { source = "~/.config/fnox/config.pc.toml", main_checkout = true, depends = [
+  "~/.config/fnox/config.pc.toml",
 ] }
 "~/.profile/dotfiles-v2" = { line = '[ -r "${HOME}/.config/dotfiles-v2/pc-env.sh" ] && . "${HOME}/.config/dotfiles-v2/pc-env.sh"', position = "append" }
