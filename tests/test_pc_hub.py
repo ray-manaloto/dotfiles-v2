@@ -734,7 +734,9 @@ def test_hub_up_agentsview_config_rewrite_preserves_owner_content(
 
 def _hub_status_mac_pull_check() -> dict:
     text = (HUB_TASKS_DIR / "status").read_text(encoding="utf-8")
-    body = text[text.index("def parse_duration") : text.index("mp_st, mp_det = ")]
+    body = text[
+        text.index("def parse_duration") : text.index("try:\n    mp_st, mp_det = ")
+    ]
     ns: dict = {}
     exec(
         "import re, time, tomllib\nfrom datetime import datetime\nfrom pathlib import Path\n"
@@ -775,6 +777,28 @@ def test_hub_status_mac_pull_freshness(tmp_path: Path) -> None:
         fh.write(f"{stamp(120)} remote sync: host=mac phase=targets duration=1s\n")
         fh.write(f"{stamp(60)} remote sync delta import: host=mac pending_paths=0\n")
     assert check(tmp_path) == ("OK", "last good pull 1m ago (interval 15m)")
+
+    # Other hosts, aborted imports and invalid dates are ignored; the daemon's failure form counts.
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(f"{stamp(50)} remote sync delta import: host=mac2 pending_paths=0\n")
+        fh.write(f"{stamp(49)} remote sync mac2 failed: other host\n")
+        fh.write("2026/00/99 10:00:00 remote sync mac failed: bad date\n")
+    assert check(tmp_path)[0] == "OK"
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(f"{stamp(40)} remote sync: host=mac phase=targets duration=1s\n")
+        fh.write(
+            f"{stamp(39)} remote sync delta import: host=mac full_reason= "
+            "journal_outcome=aborted_before_processing\n"
+        )
+        fh.write(f"{stamp(38)} scheduled remote sync mac: ssh exploded\n")
+    state, detail = check(tmp_path)
+    assert state == "WARN" and detail.endswith(": ssh exploded")
+    assert "last good 1m ago" in detail
+    log.write_text(
+        f"{stamp(120)} remote sync: host=mac phase=targets duration=1s\n"
+        f"{stamp(60)} remote sync delta import: host=mac pending_paths=0\n",
+        encoding="utf-8",
+    )
 
     log.rename(tmp_path / "debug.log.1")
     log.write_text(f"{stamp(30)} unrelated\n", encoding="utf-8")

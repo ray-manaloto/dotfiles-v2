@@ -132,14 +132,19 @@ def check_mac_pull(av_dir: Path) -> tuple[str, str]:
     for name in ("debug.log.1", "debug.log"):
         try:
             lines = (av_dir / name).read_text(encoding="utf-8", errors="replace").splitlines()
-        except FileNotFoundError:
+        except OSError:
             continue
         for line in lines:
             m = stamp.match(line)
             if not m:
                 continue
-            ts = datetime.strptime(m.group(1), "%Y/%m/%d %H:%M:%S").timestamp()
+            try:
+                ts = datetime.strptime(m.group(1), "%Y/%m/%d %H:%M:%S").timestamp()
+            except ValueError:
+                continue
             body = line[m.end():]
+            if "journal_outcome=aborted" in body:
+                continue
             if body.startswith(("remote sync mac failed: ", "scheduled remote sync mac: ")):
                 last_fail, pending = ts, None
                 fail_text = body.split(": ", 1)[1]
@@ -158,7 +163,10 @@ def check_mac_pull(av_dir: Path) -> tuple[str, str]:
         return "WARN", f"stale: last good pull {ago(last_ok)} ({every})"
     return "OK", f"last good pull {ago(last_ok)} ({every})"
 
-mp_st, mp_det = check_mac_pull(Path(os.environ.get("AV_DIR") or "~/.agentsview").expanduser())
+try:
+    mp_st, mp_det = check_mac_pull(Path(os.environ.get("AV_DIR") or "~/.agentsview").expanduser())
+except Exception as exc:  # WARN-only: never lose the other rows
+    mp_st, mp_det = "WARN", f"mac pull check failed: {type(exc).__name__}"
 rows.append({"service": "agentsview-mac-pull", "state": mp_st, "bind_target": "ssh:mac", "exposed_http": False, "detail": mp_det})
 
 qmd_st, qmd_det = check_systemd("dev.mise.qmd-hub.service")
