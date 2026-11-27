@@ -16,6 +16,7 @@ repo_url="https://github.com/nozikov/herdr-usage-limits.git"
 mods_dir="${herdr_home}/mods"
 ul_dst="${mods_dir}/usage-limits"
 env_stats_dst="${mods_dir}/env-stats"
+controls_dst="${mods_dir}/env-board-controls"
 layouts_dir="${herdr_home}/layouts"
 main_layout="${layouts_dir}/main.json"
 stats_layout="${layouts_dir}/main-stats.json"
@@ -29,9 +30,14 @@ if [[ ${check_only} == "true" ]]; then
 		echo "bootstrap:herdr-mods: missing ${env_stats_dst}" >&2
 		exit 1
 	fi
+	if [[ ! -d ${controls_dst} || ! -f "${controls_dst}/main.js" ]]; then
+		echo "bootstrap:herdr-mods: missing ${controls_dst}" >&2
+		exit 1
+	fi
 	if command -v herdr-app >/dev/null 2>&1; then
 		herdr-app check "${ul_dst}"
 		herdr-app check "${env_stats_dst}"
+		herdr-app check "${controls_dst}"
 	fi
 	exit 0
 fi
@@ -121,4 +127,5 @@ fi
 if command -v herdr-app >/dev/null 2>&1; then
 	[[ -d ${ul_dst} ]] && herdr-app check "${ul_dst}"
 	[[ -d ${env_stats_dst} ]] && herdr-app check "${env_stats_dst}"
+	[[ -d ${controls_dst} ]] && herdr-app check "${controls_dst}"
 fi

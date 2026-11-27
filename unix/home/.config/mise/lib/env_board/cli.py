@@ -15,6 +15,7 @@ from typing import Any
 import cyclopts
 
 from env_board import board
+from env_board.balance import BalanceScheduler, BalanceTicker
 
 DEFAULT_LEDGER_ROOT = Path.home() / "dev" / "tmp"
 CLEAR = "\x1b[H\x1b[J"
@@ -91,7 +92,24 @@ class Poller:
         return None if self.updated is None else int(time.monotonic() - self.updated)
 
 
-def frame(pollers: dict[str, Poller], window_days: int, interval_s: int) -> str:
+def frame(
+    pollers: dict[str, Poller],
+    window_days: int,
+    interval_s: int,
+    scheduler: BalanceScheduler | None = None,
+) -> str:
+    try:
+        return _frame(pollers, window_days, interval_s, scheduler)
+    except Exception as exc:
+        return f"env:board render error: {type(exc).__name__}\n"
+
+
+def _frame(
+    pollers: dict[str, Poller],
+    window_days: int,
+    interval_s: int,
+    scheduler: BalanceScheduler | None,
+) -> str:
     errors = [p.error for p in pollers.values() if p.error]
     return board.render(
         now=datetime.now(UTC),
@@ -102,6 +120,7 @@ def frame(pollers: dict[str, Poller], window_days: int, interval_s: int) -> str:
         window_days=window_days,
         errors=errors,
         interval_s=interval_s,
+        balance=None if scheduler is None else scheduler.view(),
     )
 
 
@@ -122,22 +141,28 @@ def run(
         "usage": Poller("usage", lambda: collect_usage(window_days), 30),
         "ledger": Poller("ledger", lambda: collect_ledger(ledger_root), 10),
     }
+    scheduler = BalanceScheduler()
     for poller in pollers.values():
         poller.start()
     if once:
+        # One synchronous step: calls api:balance only if the cache is stale.
+        scheduler.tick()
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline and any(
             p.updated is None and p.error is None for p in pollers.values()
         ):
             time.sleep(0.2)
-        sys.stdout.write(frame(pollers, window_days, interval))
+        sys.stdout.write(frame(pollers, window_days, interval, scheduler))
         return 0
+    ticker = BalanceTicker(scheduler)
+    ticker.start()
     try:
         while True:
-            sys.stdout.write(CLEAR + frame(pollers, window_days, interval))
+            sys.stdout.write(CLEAR + frame(pollers, window_days, interval, scheduler))
             sys.stdout.flush()
             time.sleep(interval)
     except KeyboardInterrupt:
+        ticker.stop()
         return 0
 
 

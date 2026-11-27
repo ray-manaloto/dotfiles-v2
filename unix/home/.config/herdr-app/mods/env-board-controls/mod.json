@@ -1,0 +1,15 @@
+{
+  "place": "none",
+  "focusable": true,
+  "palette": [
+    {
+      "title": "Env Board Controls (API balance)",
+      "command": "pane.split",
+      "args": {
+        "direction": "right",
+        "mod": "env-board-controls"
+      },
+      "words": "board balance api credit refresh interval pause quotas"
+    }
+  ]
+}

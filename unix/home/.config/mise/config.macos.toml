@@ -39,6 +39,12 @@ target = "~/.config/herdr-app/mods/env-stats"
 mode = "copy"
 exclude = ["gpui-kit.d.ts", "jsconfig.json", ".DS_Store"]
 
+[dotfile_groups.herdr-env-board-controls]
+root = ".config/herdr-app/mods/env-board-controls"
+target = "~/.config/herdr-app/mods/env-board-controls"
+mode = "copy"
+exclude = ["gpui-kit.d.ts", "jsconfig.json", ".DS_Store"]
+
 [shell_alias]
 df-pc = "mise -C ~ run env:enter pc"
 df-mac = "mise -C ~ run env:enter mac"
