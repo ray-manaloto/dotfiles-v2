@@ -341,6 +341,9 @@ elif [ -d ~/.gemini/config/skills ]; then
   for d in ~/.gemini/config/skills/*; do
     [ -e "$d" ] || [ -L "$d" ] || continue
     b="$(basename "$d")"
+    # Omarchy's omarchy-agent-skills-link owns links to its bundled skills in every harness dir and
+    # recreates them on each update; leave them alone.
+    case "$(readlink "$d" 2>/dev/null || true)" in */omarchy/default/agents/skills/*) continue ;; esac
     if [ -d "$d" ] && [ ! -L "$d" ]; then rm -f "$d/.DS_Store"; fi
     _is_legacy=0
     if [ -L "$d" ]; then
@@ -360,7 +363,16 @@ elif [ -d ~/.gemini/config/skills ]; then
       mv "$d" ~/.agents/skills/"$b"
     fi
   done
-  rmdir ~/.gemini/config/skills 2>/dev/null || echo "WARN: ~/.gemini/config/skills still holds non-migrated entries; inspect manually" >&2
+  _gem_left=0
+  for d in ~/.gemini/config/skills/* ~/.gemini/config/skills/.[!.]*; do
+    { [ -e "$d" ] || [ -L "$d" ]; } || continue
+    case "$(readlink "$d" 2>/dev/null || true)" in */omarchy/default/agents/skills/*) ;; *) _gem_left=1 ;; esac
+  done
+  if [ "${_gem_left}" -eq 1 ]; then
+    echo "WARN: ~/.gemini/config/skills still holds non-migrated entries; inspect manually" >&2
+  else
+    rmdir ~/.gemini/config/skills 2>/dev/null || true
+  fi
 fi
 '''
 
