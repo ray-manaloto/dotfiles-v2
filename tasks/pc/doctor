@@ -37,10 +37,15 @@ else
 	printf 'FAIL  omarchy-channel: %s (pinned rc; run: OMARCHY_PATH=/usr/share/omarchy omarchy-channel-set rc)\n' "$channel" >&2
 	result=1
 fi
-for shim in "${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"/shims/*(N); do
-	if [[ -L $shim && ${shim:A:t} == mise && ${shim:t} != mise ]] &&
-		mise which "${shim:t}" 2>&1 >/dev/null | grep -q 'is not a mise bin'; then
-		# Installed-but-inactive bins (e.g. a project-pinned python) are fine; only shims with no install are dead.
+# A shim is dead when no installed tool ships that bin. `mise which` cannot tell: a shim's own
+# presence makes mise call the name "a mise bin", so the installs tree is the ground truth.
+mise_data="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
+typeset -A installed_bins
+for bin in "$mise_data"/installs/*/*/{bin/,*/bin/,*/,.mise-bins/,node_modules/.bin/,}*(N-*); do
+	installed_bins[${bin:t}]=1
+done
+for shim in "$mise_data"/shims/*(N@); do
+	if [[ ${shim:A:t} == mise && ${shim:t} != mise && -z ${installed_bins[${shim:t}]-} ]]; then
 		printf 'FAIL  mise shim: %s has no installed tool (run mise reshim --force)\n' "${shim:t}" >&2
 		result=1
 	fi
