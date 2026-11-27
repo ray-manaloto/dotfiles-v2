@@ -9,13 +9,13 @@ importers:
   .:
     dependencies:
       zcode-app-cli:
-        specifier: 4.0.0-49
-        version: 4.0.0-49
+        specifier: 4.0.0-50
+        version: 4.0.0-50
 
 packages:
 
-  '@earendil-works/pi-tui@1.6.0':
-    resolution: {integrity: sha512-nVtWZ4rYr3KHDla3skGAWG5XoITEUJCoEx1AsWv1yKxV7+v86ulD2hxVn/P+COI6jsoeQmj3orqHbCHZwAUsUg==}
+  '@earendil-works/pi-tui@1.7.0':
+    resolution: {integrity: sha512-C6vkUYGTeDdl/cMIbFOabSEPMRy9HuaUV76PS2BhvSmWifO5y8Rz8/LgFWqGIIFS7RMqu0gdeEpdXfH8jIp05g==}
     engines: {node: '>=22.19.0'}
 
   '@napi-rs/keyring-darwin-arm64@2.1.2':
@@ -119,14 +119,14 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  zcode-app-cli@4.0.0-49:
-    resolution: {integrity: sha512-A5LgA29czZ28iiLa7ntQDicFNIGrodjYk845/ByLPPgGXwhsbA+KjIDyGLM5iORAeZ5UxTAHoROtcVraa3ZHKA==}
+  zcode-app-cli@4.0.0-50:
+    resolution: {integrity: sha512-tlveYkRY3tj/M/rY/nq72WMbzx7zjsBgfeDTR68VkYrIvD2qnhfj3OK3ewaR3FVolM7/Ce7DXdIwyZKJFCkxiA==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
 snapshots:
 
-  '@earendil-works/pi-tui@1.6.0':
+  '@earendil-works/pi-tui@1.7.0':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.11
@@ -193,8 +193,8 @@ snapshots:
 
   playwright-core@1.59.1: {}
 
-  zcode-app-cli@4.0.0-49:
+  zcode-app-cli@4.0.0-50:
     dependencies:
-      '@earendil-works/pi-tui': 1.6.0
+      '@earendil-works/pi-tui': 1.7.0
       '@napi-rs/keyring': 2.1.2
       playwright-core: 1.59.1
