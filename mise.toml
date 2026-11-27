@@ -42,6 +42,10 @@ run = [
 description = "Run full Python test suite via pytest-xdist in locked .venv"
 run = ["mise deps uv", "uv run --offline --locked pytest -n auto"]
 
+[tasks."doctor:bootstrap-skills"]
+description = "Check AgentsView skill installation and fallback behavior in a scratch home"
+run = "python3 -I -B tasks/py/doctor_bootstrap_skills.py"
+
 [tasks."privacy:scan"]
 description = "Refuse this machine's home path in tracked files, given files, or outgoing commits"
 env = { PRIVATE_PATTERNS = "{{ vars.private_home }}\n/Users/{{ vars.private_user }}/\n/home/{{ vars.private_user }}/" }
@@ -356,13 +360,10 @@ for key in (
 ):
     assert has_target(key), f"Missing {key} across unix/home/.config/mise/config*.toml [dotfiles]/[dotfile_groups] and bootstrap:skills"
 assert "~/.gemini/config/skills" not in all_dotfiles, "Retired ~/.gemini/config/skills mirror must not be declared in [dotfiles]"
-assert (
-    "av_args=(skills install --harness agents --force)" in skills_task_txt
-    and '$("${av_bin}" "${av_args[@]}"' in skills_task_txt
-), "bootstrap:skills must install the official agentsview skill for ~/.agents"
 deps = set(cfg.get("tasks", {}).get("bootstrap", {}).get("depends", []))
 assert "bootstrap:skills" in deps, f"bootstrap:skills missing from [tasks.bootstrap].depends: {deps}"
 PY
+mise run doctor:bootstrap-skills
 '''
 hint = "Ensure pitchfork config, jdx tools, npm:@vercel/board, bootstrap:skills, and canonical ~/.agents/skills are configured cleanly. Details: `mise run doctor:explain vercel-board-config`."
 
