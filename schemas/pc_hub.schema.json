@@ -17,6 +17,7 @@
         "vercel-board",
         "agentsview-hub",
         "agentsview-mac-pull",
+        "ollama",
         "qmd",
         "codebase-memory-mcp",
         "tailscale-serve"
@@ -130,7 +131,8 @@
         "searxng",
         "vercel_board",
         "agentsview_hub",
-        "qmd"
+        "qmd",
+        "ollama"
       ],
       "properties": {
         "caddy": { "type": "integer", "minimum": 1024, "maximum": 65535 },
@@ -140,7 +142,8 @@
         "searxng": { "type": "integer", "minimum": 1024, "maximum": 65535 },
         "vercel_board": { "type": "integer", "minimum": 1024, "maximum": 65535 },
         "agentsview_hub": { "type": "integer", "minimum": 1024, "maximum": 65535 },
-        "qmd": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+        "qmd": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "ollama": { "type": "integer", "minimum": 1024, "maximum": 65535 }
       }
     },
     "PcHubValidationOutcome": {

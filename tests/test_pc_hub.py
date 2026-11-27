@@ -164,7 +164,12 @@ def test_render_env_systemd_and_launchd_plists() -> None:
         "dev.mise.vercel-board.service",
         "dev.mise.agentsview-hub.service",
         "dev.mise.qmd-hub.service",
+        "dev.mise.ollama-hub.service",
     }
+    ollama_unit = units["dev.mise.ollama-hub.service"]
+    assert "Environment=OLLAMA_HOST=127.0.0.1:11434" in ollama_unit
+    assert "Environment=OLLAMA_NO_CLOUD=1" in ollama_unit
+    assert "ExecStart=/home/dev/.local/bin/ollama serve" in ollama_unit
     assert "BOARD_PORT=4100" in units["dev.mise.vercel-board.service"]
     for unit_name, unit_text in units.items():
         assert "Environment=PATH=/home/dev/.local/share/mise/shims:" in unit_text, (
@@ -182,6 +187,20 @@ def test_render_env_systemd_and_launchd_plists() -> None:
     assert (
         "mcp --http --host 127.0.0.1 --port 8181" in units["dev.mise.qmd-hub.service"]
     )
+
+
+def test_agentsview_vector_recipe_is_complete() -> None:
+    recipe = tomllib.loads(
+        (
+            REPO_ROOT / "unix/home/.config/mise/assets/agentsview/semantic-search.toml"
+        ).read_text(encoding="utf-8")
+    )
+    assert set(recipe) == {"vector"}
+    emb = recipe["vector"]["embeddings"]
+    server = emb["servers"][emb["default_server"]]
+    assert server["endpoint"] == "http://127.0.0.1:11434/v1"
+    assert emb["model"] and emb["dimension"] > 0
+    assert "document_prefix" not in emb
 
     mac_plist = plistlib.loads(
         render_launchd_beszel_agent_plist(

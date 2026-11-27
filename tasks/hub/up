@@ -50,7 +50,7 @@ if [[ ${dry_run} == "true" ]]; then
 	printf '  1. Stage docker/pc-hub/{compose.yaml,Caddyfile,searxng/settings.yml} to ~/.local/state/pc-hub/stack on %s\n' "${host}"
 	printf '  2. Ensure runtime secrets, @tobilu/qmd@2.9.0, agentsview, and CLI-only codebase-memory-mcp 0.12.1 on %s\n' "${host}"
 	printf '  3. Run docker compose up -d --remove-orphans (beszel 0.21.2, caddy 2.11.9-alpine, docker-socket-proxy POST=0, searxng, valkey)\n'
-	printf '  4. Install/enable systemd --user units (vercel-board, agentsview-hub, qmd-hub) and tailscale serve --bg http://127.0.0.1:%s\n' "${caddy_port}"
+	printf '  4. Install/enable systemd --user units (vercel-board, agentsview-hub, qmd-hub, ollama-hub) and tailscale serve --bg http://127.0.0.1:%s\n' "${caddy_port}"
 	exit 0
 fi
 
@@ -163,6 +163,19 @@ if [[ ! -x "${REMOTE_HOME}/.local/bin/agentsview" ]]; then
 	fi
 	ln -sfn "${av_dir}/agentsview" "${REMOTE_HOME}/.local/bin/agentsview"
 fi
+# Ollama (loopback embeddings server for AgentsView semantic search). The release tarball
+# ships lib/ollama/cuda_* beside bin/ollama, so link the binary in place rather than copying it.
+ollama_ver="0.40.18"
+if [[ $(readlink "${REMOTE_HOME}/.local/bin/ollama" 2>/dev/null) != */ollama/${ollama_ver}/bin/ollama ]]; then
+	MISE_YES=1 mise -C "${REMOTE_HOME}" install "ollama@${ollama_ver}" >/dev/null
+	ollama_dir="$(mise -C "${REMOTE_HOME}" where "ollama@${ollama_ver}")"
+	if [[ ! -x "${ollama_dir}/bin/ollama" || ! -d "${ollama_dir}/lib/ollama" ]]; then
+		echo "hub:up: missing ollama binary or lib/ollama in ${ollama_dir}" >&2
+		exit 1
+	fi
+	ln -sfn "${ollama_dir}/bin/ollama" "${REMOTE_HOME}/.local/bin/ollama"
+fi
+mkdir -p "${REMOTE_HOME}/.local/share/pc-hub/ollama/models"
 board_prefix="${REMOTE_HOME}/.local/share/pc-hub/board"
 vb_bin="${board_prefix}/node_modules/.bin/vb"
 board_pkg="${board_prefix}/node_modules/@vercel/board/package.json"
@@ -372,10 +385,11 @@ if [[ ${skip_systemd} != "true" ]]; then
 		--agentsview-bin "${av_bin}" \
 		--qmd-bin "${qmd_bin}" \
 		--board-server-mjs "${board_mjs}" \
+		--ollama-bin "${remote_home}/.local/bin/ollama" \
 		--out-dir "${units_dir_tmp}"
 	ssh -o BatchMode=yes "${host}" "mkdir -p '${remote_home}/.config/systemd/user'"
 	COPYFILE_DISABLE=1 tar -C "${units_dir_tmp}" -cf - . | ssh -o BatchMode=yes "${host}" "tar -C '${remote_home}/.config/systemd/user' -xf - && rm -f '${remote_home}/.config/systemd/user'/._dev.mise.*.service"
-	ssh -o BatchMode=yes "${host}" 'systemctl --user daemon-reload && systemctl --user enable --now dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service && systemctl --user restart dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service'
+	ssh -o BatchMode=yes "${host}" 'systemctl --user daemon-reload && systemctl --user enable --now dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service dev.mise.ollama-hub.service && systemctl --user restart dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service dev.mise.ollama-hub.service'
 fi
 
 if ! ssh -o BatchMode=yes "${host}" "tailscale serve --bg 'http://127.0.0.1:${caddy_port}'" >/dev/null 2>&1; then

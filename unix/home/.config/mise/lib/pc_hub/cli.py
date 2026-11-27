@@ -124,9 +124,10 @@ def _build_app() -> cyclopts.App:
         board_server_mjs: Annotated[
             str, cyclopts.Parameter(name="--board-server-mjs")
         ] = "",
+        ollama_bin: Annotated[str, cyclopts.Parameter(name="--ollama-bin")] = "",
         out_dir: Annotated[Path | None, cyclopts.Parameter(name="--out-dir")] = None,
     ) -> int:
-        """Render or write user systemd unit files for vercel-board, agentsview-hub, and qmd."""
+        """Render or write user systemd unit files for vercel-board, agentsview-hub, qmd, and ollama."""
         units = render_systemd_units(
             home_dir=home_dir,
             ts_host=ts_host,
@@ -134,6 +135,7 @@ def _build_app() -> cyclopts.App:
             agentsview_bin=agentsview_bin,
             qmd_bin=qmd_bin,
             board_server_mjs=board_server_mjs,
+            ollama_bin=ollama_bin,
         )
         if out_dir is not None:
             out_dir.mkdir(parents=True, exist_ok=True)

@@ -17,7 +17,7 @@ fi
 remote_home="$(ssh -o BatchMode=yes "${host}" 'printf "%s" "$HOME"')"
 state_dir="${remote_home}/.local/state/pc-hub"
 
-ssh -o BatchMode=yes "${host}" 'systemctl --user stop dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service 2>/dev/null || true'
+ssh -o BatchMode=yes "${host}" 'systemctl --user stop dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service dev.mise.ollama-hub.service 2>/dev/null || true'
 ssh -o BatchMode=yes "${host}" "if [ -f '${state_dir}/stack/compose.yaml' ]; then docker compose -f '${state_dir}/stack/compose.yaml' --env-file '${state_dir}/.env' down; fi"
 
 if [[ ${unserve} == "true" ]]; then

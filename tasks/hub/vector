@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#MISE description="Turn AgentsView semantic search on or off on the pc hub from the tracked semantic-search.toml recipe"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--enable" help="Pull the recipe's model and write its [vector] tables into the hub config (starts the first full embedding build)"
+#USAGE flag "--disable" help="Remove every [vector] table from the hub config"
+#USAGE flag "--recipe <file>" help="Recipe TOML to apply (default: unix/home/.config/mise/assets/agentsview/semantic-search.toml)"
+#USAGE flag "--dry-run" help="Print what would change without writing anything"
+# Only [vector...] tables in ~/.agentsview/config.toml are touched; every other setting is checked
+# unchanged before the file is written. The hub service restarts so the new config loads.
+set -euo pipefail
+
+host="${usage_host:-pc}"
+enable="${usage_enable:-false}"
+disable="${usage_disable:-false}"
+dry_run="${usage_dry_run:-false}"
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+recipe="${usage_recipe:-${repo_root}/unix/home/.config/mise/assets/agentsview/semantic-search.toml}"
+
+if [[ ${enable} == "${disable}" ]]; then
+	echo "hub:vector: pass exactly one of --enable or --disable" >&2
+	exit 1
+fi
+[[ -f ${recipe} ]] || {
+	echo "hub:vector: recipe not found: ${recipe}" >&2
+	exit 1
+}
+mode=disable
+[[ ${enable} == true ]] && mode=enable
+
+# The recipe travels base64-encoded and the script on stdin, so nothing needs remote shell quoting.
+recipe_b64="$(base64 <"${recipe}" | tr -d '\n')"
+ssh -o BatchMode=yes "${host}" env "MODE=${mode}" "DRY_RUN=${dry_run}" "RECIPE_B64=${recipe_b64}" /bin/bash -euo pipefail <<'REMOTE'
+python3 - "${HOME}/.agentsview/config.toml" <<'PY'
+import base64
+import os
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1])
+mode, dry_run = os.environ["MODE"], os.environ["DRY_RUN"] == "true"
+
+
+def fail(msg: str) -> None:
+    sys.exit(f"hub:vector: {msg}; {cfg_path} left unchanged")
+
+
+recipe_text = base64.b64decode(os.environ["RECIPE_B64"]).decode("utf-8")
+recipe = tomllib.loads(recipe_text)
+if set(recipe) != {"vector"}:
+    fail("the recipe may only hold [vector] tables")
+original = cfg_path.read_text(encoding="utf-8")
+before = tomllib.loads(original)
+
+# Drop every [vector] / [vector.*] table; a table ends at the next header.
+header = re.compile(r"^\s*\[")
+vector_header = re.compile(r"^\s*\[\s*vector\s*(\]|\.)")
+kept, skip = [], False
+for line in original.splitlines():
+    if header.match(line):
+        skip = bool(vector_header.match(line))
+    if not skip:
+        kept.append(line)
+while kept and not kept[-1].strip():
+    kept.pop()
+text = "\n".join(kept) + "\n"
+if mode == "enable":
+    body = [ln for ln in recipe_text.splitlines() if not ln.lstrip().startswith("#")]
+    text += "\n" + "\n".join(body).strip() + "\n"
+
+after = tomllib.loads(text)
+rest = lambda d: {k: v for k, v in d.items() if k != "vector"}
+if rest(before) != rest(after):
+    fail("rewrite would change settings outside [vector]")
+if after.get("vector") != (recipe["vector"] if mode == "enable" else None):
+    fail("rewrite would not produce the recipe [vector] tables exactly")
+changed = text != original
+print(f"hub:vector: {mode}: config {'changes' if changed else 'already current'}")
+if mode == "enable":
+    emb = recipe["vector"]["embeddings"]
+    print(f"hub:vector: model {emb['model']} dimension {emb['dimension']} via {emb['servers'][emb['default_server']]['endpoint']}")
+if dry_run:
+    sys.exit(0)
+if mode == "enable":
+    subprocess.run([os.path.expanduser("~/.local/bin/ollama"), "pull", recipe["vector"]["embeddings"]["model"]],
+                   check=True, env={**os.environ, "OLLAMA_HOST": "127.0.0.1:11434"}, stdout=subprocess.DEVNULL)
+if changed:
+    tmp = cfg_path.with_name(cfg_path.name + ".new")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.chmod(0o600)
+    os.replace(tmp, cfg_path)
+    subprocess.run(["systemctl", "--user", "restart", "dev.mise.agentsview-hub.service"], check=True)
+    print("hub:vector: restarted dev.mise.agentsview-hub.service")
+PY
+REMOTE
