@@ -59,10 +59,11 @@ missing, the script refuses to send patches.
 
 ## Data and cost
 
-- **OpenAI:** one Responses API request with storage disabled and up to one
-  Decisions API request for the candidates in the diff.
-- **Claude:** one Messages API request. It does not use Claude Code Action or
-  an OpenAI fallback.
+- **OpenAI:** one Responses API request with storage disabled per patch
+  chunk (at most four), and up to one Decisions API request per chunk for the
+  candidates in that chunk.
+- **Claude:** one Messages API request per patch chunk (at most four). It does
+  not use Claude Code Action or an OpenAI fallback.
 - **Cost:** neither workflow checks credit eligibility or balance, and neither
   guarantees a free run. Check the provider's billing settings before running:
   purchased credits or auto-reload can keep usage going after any included
@@ -75,9 +76,15 @@ missing, the script refuses to send patches.
   or a script or doc about secrets (`tasks/secret/`, `agent-secrets.sh`) is
   still reviewed, but its text is scanned. Edits near the fake-secret fixtures in
   `test_review.py` always fail closed, so they need a human review.
-- **Size limits:** the reviewer skips oversized, unavailable, and incomplete
-  patches. It starts with the first file that fits the serialized patch
-  budget and follows GitHub file order until the next file would exceed it.
-  It lists files that fall outside the budget as
-  `over-budget`. When no files fit or the file-count cap is exceeded, the run
-  reports the reason and succeeds without a findings artifact.
+- **Size limits:** the reviewer skips unavailable and incomplete patches, and
+  patches over four times the 24,000-byte chunk budget as `oversized`. It
+  packs files in GitHub file order into at most four review requests of up to
+  24,000 serialized bytes each. It splits a file too large for one request at
+  line boundaries into hunks with recomputed headers, so a large new module
+  is reviewed in parts. It starts with the first file that fits and stops at
+  the first later file that no longer fits, listing the rest as `over-budget`.
+  When an `oversized` or `over-budget` file is skipped, the comment says
+  **Not reviewed** first and names those files, so a "no findings" result is
+  not read as a clean review. When no files fit or the file-count cap is
+  exceeded, the run reports the reason and succeeds without a findings
+  artifact.
