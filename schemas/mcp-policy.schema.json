@@ -36,7 +36,7 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "enum": ["agy", "claude", "codex", "opencode"]
+            "enum": ["agy", "claude", "codex", "opencode", "zcode"]
           }
         },
         "decision": {

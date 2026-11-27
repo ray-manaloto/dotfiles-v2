@@ -100,9 +100,9 @@
     {
       "name": "openwiki",
       "kind": "server",
-      "harnesses": ["agy", "claude", "codex"],
+      "harnesses": ["agy", "claude", "codex", "zcode"],
       "decision": "keep",
-      "reason": "User-wide workspace-scoped OpenWiki lookup.",
+      "reason": "User-wide workspace-scoped OpenWiki lookup; zcode also drives the resumable page-job lifecycle through it.",
       "replacement": "openwiki CLI for non-workspace queries"
     },
     {
