@@ -102,6 +102,9 @@ last30days_memory_dir = "{% if os() == 'macos' %}{{ [xdg_data_home, 'last30days'
 GIT_TERMINAL_PROMPT = "0"
 LAST30DAYS_CONFIG_DIR = "{{ vars.last30days_config_dir }}"
 LAST30DAYS_MEMORY_DIR = "{{ vars.last30days_memory_dir }}"
+# YouTube search and transcripts via local yt-dlp only, so an empty ScrapeCreators balance (HTTP 402)
+# cannot take YouTube down with it (last30days env.py LAST30DAYS_YOUTUBE_BACKEND; only valid value).
+LAST30DAYS_YOUTUBE_BACKEND = "yt-dlp"
 # mise manages OpenAI CLI upgrades.
 OPENAI_CLI_NO_AUTO_UPDATE = "1"
 REPOWISE_TELEMETRY_DISABLED = "1"
