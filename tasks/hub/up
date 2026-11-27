@@ -65,7 +65,7 @@ state_dir="${remote_home}/.local/state/pc-hub"
 stack_dir="${state_dir}/stack"
 
 ssh -o BatchMode=yes "${host}" "mkdir -p '${stack_dir}/searxng' '${state_dir}/beszel_data' '${state_dir}/beszel_agent_data' '${remote_home}/.config/board' '${remote_home}/.config/agentsview' '${remote_home}/.local/bin' '${remote_home}/.agentsview' && chmod 0700 '${state_dir}' '${remote_home}/.config/board' '${remote_home}/.config/agentsview'"
-COPYFILE_DISABLE=1 tar -C "${repo_root}/docker/pc-hub" -cf - compose.yaml Caddyfile searxng/settings.yml | ssh -o BatchMode=yes "${host}" "tar -C '${stack_dir}' -xf - && rm -f '${stack_dir}'/._* '${stack_dir}'/searxng/._*"
+COPYFILE_DISABLE=1 tar -C "${repo_root}/docker/pc-hub" -cf - compose.yaml Caddyfile searxng/settings.yml | ssh -o BatchMode=yes "${host}" "tar -C '${stack_dir}' -xf - && find '${stack_dir}' -maxdepth 2 -name '._*' -type f -delete"
 
 # Mint/preserve runtime tokens and Beszel ed25519 keypair on pc (never leaves pc except explicit client sync).
 ssh -o BatchMode=yes "${host}" env STATE_DIR="${state_dir}" REMOTE_HOME="${remote_home}" /bin/bash -euo pipefail <<'REMOTE_SECRETS'
@@ -388,7 +388,7 @@ if [[ ${skip_systemd} != "true" ]]; then
 		--ollama-bin "${remote_home}/.local/bin/ollama" \
 		--out-dir "${units_dir_tmp}"
 	ssh -o BatchMode=yes "${host}" "mkdir -p '${remote_home}/.config/systemd/user'"
-	COPYFILE_DISABLE=1 tar -C "${units_dir_tmp}" -cf - . | ssh -o BatchMode=yes "${host}" "tar -C '${remote_home}/.config/systemd/user' -xf - && rm -f '${remote_home}/.config/systemd/user'/._dev.mise.*.service"
+	COPYFILE_DISABLE=1 tar -C "${units_dir_tmp}" -cf - . | ssh -o BatchMode=yes "${host}" "tar -C '${remote_home}/.config/systemd/user' -xf - && find '${remote_home}/.config/systemd/user' -maxdepth 1 -name '._dev.mise.*.service' -type f -delete"
 	ssh -o BatchMode=yes "${host}" 'systemctl --user daemon-reload && systemctl --user enable --now dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service dev.mise.ollama-hub.service && systemctl --user restart dev.mise.vercel-board.service dev.mise.agentsview-hub.service dev.mise.qmd-hub.service dev.mise.ollama-hub.service'
 fi
 

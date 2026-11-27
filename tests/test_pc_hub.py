@@ -188,20 +188,6 @@ def test_render_env_systemd_and_launchd_plists() -> None:
         "mcp --http --host 127.0.0.1 --port 8181" in units["dev.mise.qmd-hub.service"]
     )
 
-
-def test_agentsview_vector_recipe_is_complete() -> None:
-    recipe = tomllib.loads(
-        (
-            REPO_ROOT / "unix/home/.config/mise/assets/agentsview/semantic-search.toml"
-        ).read_text(encoding="utf-8")
-    )
-    assert set(recipe) == {"vector"}
-    emb = recipe["vector"]["embeddings"]
-    server = emb["servers"][emb["default_server"]]
-    assert server["endpoint"] == "http://127.0.0.1:11434/v1"
-    assert emb["model"] and emb["dimension"] > 0
-    assert "document_prefix" not in emb
-
     mac_plist = plistlib.loads(
         render_launchd_beszel_agent_plist(
             agent_bin="/home/alice/.local/bin/beszel-agent",
@@ -229,6 +215,20 @@ def test_agentsview_vector_recipe_is_complete() -> None:
     )
     assert "GPU_COLLECTOR" not in vm_plist["EnvironmentVariables"]
     assert vm_plist["EnvironmentVariables"]["ALL_PROXY"] == "socks5://127.0.0.1:1055"
+
+
+def test_agentsview_vector_recipe_is_complete() -> None:
+    recipe = tomllib.loads(
+        (
+            REPO_ROOT / "unix/home/.config/mise/assets/agentsview/semantic-search.toml"
+        ).read_text(encoding="utf-8")
+    )
+    assert set(recipe) == {"vector"}
+    emb = recipe["vector"]["embeddings"]
+    server = emb["servers"][emb["default_server"]]
+    assert server["endpoint"] == "http://127.0.0.1:11434/v1"
+    assert emb["model"] and emb["dimension"] > 0
+    assert "document_prefix" not in emb
 
 
 def test_offload_agentsview_local_dry_run_and_apply(
@@ -581,8 +581,13 @@ def test_hub_up_script_invariants() -> None:
 
     # All three macOS -> pc tar streams must disable AppleDouble metadata and clean stale ._*.
     assert up_text.count("COPYFILE_DISABLE=1 tar ") == 3
-    assert "rm -f '${stack_dir}'/._* '${stack_dir}'/searxng/._*" in up_text
-    assert "rm -f '${remote_home}/.config/systemd/user'/._dev.mise.*.service" in up_text
+    # pc's login shell is zsh, where an unmatched ._* glob is an error; find never is.
+    assert "find '${stack_dir}' -maxdepth 2 -name '._*' -type f -delete" in up_text
+    assert (
+        "find '${remote_home}/.config/systemd/user' -maxdepth 1 -name '._dev.mise.*.service' -type f -delete"
+        in up_text
+    )
+    assert "/._*" not in up_text
 
     # ssh-keygen writes ${key_priv}.pub, so migrate legacy .key.pub and rename after keygen.
     assert 'if [[ ! -s ${key_pub} && -s "${key_priv}.pub" ]]; then' in up_text
