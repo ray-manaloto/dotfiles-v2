@@ -632,7 +632,16 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
     outputs = []
     for _ in range(3):
         subprocess.run(
-            [sys.executable, "-I", "-B", str(script), str(cfg), 'tok"1', "me@mac"],
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(script),
+                str(cfg),
+                'tok"1',
+                "me@mac",
+                "15m",
+            ],
             check=True,
         )
         outputs.append(cfg.read_text(encoding="utf-8"))
@@ -643,9 +652,10 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
     assert "host" not in data
     assert data["port"] == 8080
     hosts = data["remote_hosts"]
-    # The Mac entry is repaired in place (keeping its position and interval).
+    # The Mac entry is repaired in place (keeping its position); --mac-interval owns its interval.
     assert [h.get("host") for h in hosts] == ["mac", "other"]
     assert hosts[0]["destination"] == "me@mac"
+    assert hosts[0]["interval"] == "15m"
     assert all("host" in h for h in hosts)
     assert cfg.stat().st_mode & 0o777 == 0o600
 
@@ -655,7 +665,7 @@ def test_hub_up_agentsview_config_rewrite_is_idempotent(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     subprocess.run(
-        [sys.executable, "-I", "-B", str(script), str(cfg), "tok", "me@mac"],
+        [sys.executable, "-I", "-B", str(script), str(cfg), "tok", "me@mac", "15m"],
         check=True,
     )
     hosts = tomllib.loads(cfg.read_text(encoding="utf-8"))["remote_hosts"]
@@ -672,7 +682,7 @@ def test_hub_up_agentsview_config_rewrite_preserves_owner_content(
     def run(text: str) -> subprocess.CompletedProcess[str]:
         cfg.write_text(text, encoding="utf-8")
         return subprocess.run(
-            [sys.executable, "-I", "-B", str(script), str(cfg), "tok", "me@mac"],
+            [sys.executable, "-I", "-B", str(script), str(cfg), "tok", "me@mac", "2h"],
             capture_output=True,
             text=True,
             check=False,
@@ -684,7 +694,7 @@ def test_hub_up_agentsview_config_rewrite_preserves_owner_content(
     assert data["motd"] == "[fake]\nx\n"
     assert data["grid"] == [[1], [2]]
 
-    # A customised Mac entry keeps its own host name and extra keys.
+    # A customised Mac entry keeps its own host name and extra keys; --mac-interval replaces its interval.
     assert (
         run(
             '[[remote_hosts]]\nhost = "box"\ndestination = "me@mac"\n'
@@ -696,7 +706,7 @@ def test_hub_up_agentsview_config_rewrite_preserves_owner_content(
     assert host == {
         "host": "box",
         "destination": "me@mac",
-        "interval": "1m",
+        "interval": "2h",
         "user_note": "keep",
         "transport": "ssh",
     }

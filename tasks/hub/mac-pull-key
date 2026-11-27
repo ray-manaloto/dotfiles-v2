@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+#MISE description="Let the pc AgentsView hub pull this Mac's sessions over SSH with a dedicated, restricted key (run on the Mac)"
+#USAGE flag "--host <ssh_host>" default="pc" help="Remote Linux hub SSH host alias"
+#USAGE flag "--alias <name>" default="agentsview-mac" help="SSH alias written on the hub and used as the [[remote_hosts]] destination"
+#USAGE flag "--dry-run" help="Print the planned changes without writing anything"
+# Idempotent. On the hub: a dedicated ed25519 key, a pinned host key for this Mac, and an `ssh_config`
+# alias, so no hostname is committed. On this Mac: one `authorized_keys` line for that key, limited to
+# the hub's tailnet IPv4 with `restrict` (no pty, no forwarding). AgentsView's SSH transport runs
+# `sh -c` and installs its helper under ~/.cache/agentsview/bin, so no `command=` is set.
+set -euo pipefail
+
+host="${usage_host:-pc}"
+alias_name="${usage_alias:-agentsview-mac}"
+dry_run="${usage_dry_run:-false}"
+
+[[ $(uname -s) == Darwin ]] || {
+	echo "hub:mac-pull-key: run this on the Mac" >&2
+	exit 1
+}
+printf '%s' "${alias_name}" | grep -qxE '[A-Za-z0-9][A-Za-z0-9._-]*' || {
+	echo "hub:mac-pull-key: --alias must be a plain ssh alias" >&2
+	exit 1
+}
+
+mac_dns="$(tailscale status --json | jq -er '.Self.DNSName | sub("\\.$"; "")')"
+mac_user="$(id -un)"
+mac_hostkey="$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
+hub_ip="$(ssh -o BatchMode=yes "${host}" 'tailscale ip -4 | head -n1' </dev/null)"
+printf '%s' "${hub_ip}" | grep -qxE '100\.([0-9]{1,3}\.){2}[0-9]{1,3}' || {
+	echo "hub:mac-pull-key: ${host} reported no tailnet IPv4 (${hub_ip:-empty})" >&2
+	exit 1
+}
+
+if [[ ${dry_run} == true ]]; then
+	printf 'hub:mac-pull-key dry-run:\n'
+	printf '  %s: ensure ~/.ssh/agentsview_mac_ed25519, pin this Mac host key, write ssh alias %s\n' "${host}" "${alias_name}"
+	printf '  Mac: authorized_keys line from="%s",restrict for that key\n' "${hub_ip}"
+	exit 0
+fi
+
+# Hub side: key, pinned host key, alias block. Prints the public key.
+# ssh joins its arguments into one remote command line, so quote each value for the remote shell.
+printf -v hub_cmd 'env ALIAS=%q MAC_DNS=%q MAC_USER=%q MAC_HOSTKEY=%q /bin/bash -euo pipefail' \
+	"${alias_name}" "${mac_dns}" "${mac_user}" "${mac_hostkey}"
+pub="$(
+	ssh -o BatchMode=yes "${host}" "${hub_cmd}" <<'HUB'
+umask 077
+mkdir -p "$HOME/.ssh"
+key="$HOME/.ssh/agentsview_mac_ed25519"
+[[ -f $key ]] || ssh-keygen -q -t ed25519 -N '' -C "agentsview-pull@$(hostname -s)" -f "$key"
+[[ -s $key.pub ]] || ssh-keygen -y -f "$key" >"$key.pub"
+printf '%s %s\n' "$MAC_DNS" "$MAC_HOSTKEY" >"$HOME/.ssh/known_hosts_agentsview"
+cfg="$HOME/.ssh/config"
+touch "$cfg"
+begin="# >>> ${ALIAS} (dotfiles-v2 hub:mac-pull-key)"
+end="# <<< ${ALIAS}"
+block=$(printf '%s\nHost %s\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/agentsview_mac_ed25519\n  IdentitiesOnly yes\n  UserKnownHostsFile ~/.ssh/known_hosts_agentsview\n  StrictHostKeyChecking yes\n%s' \
+	"$begin" "$ALIAS" "$MAC_DNS" "$MAC_USER" "$end")
+cfg="$(readlink -f "$cfg")"
+if grep -qxF -- "$begin" "$cfg" && ! grep -qxF -- "$end" "$cfg"; then
+	echo "hub:mac-pull-key: $cfg has '$begin' without its end marker; fix it by hand" >&2
+	exit 1
+fi
+awk -v b="$begin" -v e="$end" '$0==b{skip=1;next} skip&&$0==e{skip=0;next} !skip' "$cfg" >"$cfg.new"
+printf '%s\n' "$block" >>"$cfg.new"
+chmod 600 "$cfg.new"
+mv -f "$cfg.new" "$cfg"
+cat "$key.pub"
+HUB
+)"
+pub="$(printf '%s\n' "${pub}" | tail -n1)"
+printf '%s' "${pub}" | grep -qxE 'ssh-ed25519 [A-Za-z0-9+/=]+ [^ ]+' || {
+	echo "hub:mac-pull-key: ${host} returned no public key" >&2
+	exit 1
+}
+
+# Mac side: one managed authorized_keys line for this key.
+/usr/bin/python3 -I -B - "${HOME}/.ssh/authorized_keys" "${hub_ip}" "${pub}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+path, ip, pub = Path(sys.argv[1]), sys.argv[2], sys.argv[3].strip()
+blob = pub.split()[1]
+line = f'from="{ip}",restrict {pub}'
+rows = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+kept = [r for r in rows if blob not in r.split()]
+if kept + [line] != rows:
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    tmp = path.with_name(path.name + ".new")
+    tmp.write_text("\n".join(kept + [line]) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    print("hub:mac-pull-key: authorized_keys updated")
+else:
+    print("hub:mac-pull-key: authorized_keys already current")
+PY
+
+# Prove the alias works non-interactively from the hub, the way AgentsView calls it.
+if ssh -o BatchMode=yes "${host}" "ssh -T -o BatchMode=yes -o ConnectTimeout=10 -- '${alias_name}' sh -c 'uname -s'" </dev/null | grep -qx Darwin; then
+	echo "PASS  hub:mac-pull-key: ${host} reaches this Mac as ${alias_name}"
+	echo "next: test a scratch-archive sync first (AGENTSVIEW_DATA_DIR=<dir> agentsview sync) and confirm the Mac host goes green;"
+	echo "      only then wire the live hub with: mise run hub:up --mac-ssh ${alias_name}"
+else
+	echo "FAIL  hub:mac-pull-key: ${host} cannot ssh to ${alias_name}" >&2
+	exit 1
+fi
