@@ -56,7 +56,13 @@ and C++26 workstation setup.
   `gui/$(id -u)` with socket `~/.local/state/tailscale/tailscaled.sock`); it
   cannot run Docker (`kern.hv_support=0`).
 - **Parallel worktrees & `planning-with-files`:** Create isolated task
-  worktrees with `mise run worktree:new <slug>` (remove with `worktree:rm`).
+  worktrees with `mise run worktree:new <slug>` (remove with `worktree:rm`;
+  classify stale ones with read-only `worktree:audit`, whose `--prune-merged`
+  removes only clean `wt/*` worktrees merged into `origin/main` whose `PLAN_ID`
+  has a `post-task-learn` review (every other merged branch is report-only:
+  deletion needs owner approval; `--base` is rejected with it); doctor `worktree-stale` never fails and its
+  warnings on unpushed branches older than 3 days show in `pr:land`,
+  `doctor:matrix` and `doctor:explain worktree-stale`).
   Each worktree pins its own `PLAN_ID` inside git-ignored `mise.local.toml` and
   stores git-ignored plan files under `.planning/<PLAN_ID>/` inheriting root
   `.mode` (`autonomous`). `agy-pwf-guard.py` (`PreToolUse`) enforces an active

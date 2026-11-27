@@ -42,6 +42,21 @@ run = [
 description = "Run full Python test suite via pytest-xdist in locked .venv"
 run = ["mise deps uv", "uv run --offline --locked pytest -n auto"]
 
+[tasks."worktree:audit"]
+description = "Classify every worktree and local branch: merged, squash-merged, upstream-gone, local-only, behind (deletes nothing unless --prune-merged)"
+dir = "{{cwd}}"
+usage = '''
+flag "--repo <path>" help="Repository to audit (default: the directory mise was run from)"
+flag "--base <ref>" help="Base ref for merge checks (default: the remote HEAD branch, else main or master)"
+flag "--prune-merged" help="Remove merged wt/* worktrees (sibling dir, clean, PLAN_ID learn-reviewed, merged into origin/main) and their branches; other merged branches are report-only (needs owner approval); cannot combine with --base"
+'''
+run = '''
+set -- --repo "${usage_repo:-.}"
+if [ -n "${usage_base:-}" ]; then set -- "$@" --base "$usage_base"; fi
+if [ "${usage_prune_merged:-false}" = "true" ]; then set -- "$@" --prune-merged; fi
+exec python3 -I -B "{{ config_root }}/tasks/py/worktree_audit.py" "$@"
+'''
+
 [tasks."doctor:bootstrap-skills"]
 description = "Check AgentsView skill installation and fallback behavior in a scratch home"
 run = "python3 -I -B tasks/py/doctor_bootstrap_skills.py"
@@ -138,6 +153,13 @@ hint = "Keep `env { [\"GIT_OPTIONAL_LOCKS\"] = \"0\" }` at the top of hk.pkl (jd
 [doctor.checks.roadmap-drift]
 description = "Warn-only: no ROADMAP.md \"Remaining:\" entry names a path or file task that already exists on main"
 run = "python3 -I -B tasks/py/doctor_checks.py roadmap-drift"
+
+[doctor.checks.worktree-stale]
+description = "Warn-only, always passes (mise hides its output; pr:land and doctor:matrix print it, or run `mise run doctor:explain worktree-stale`): branches and worktrees with commits on no remote whose last commit is older than 3 days"
+run = "python3 -I -B tasks/py/worktree_audit.py --doctor --stale-days 3"
+# The script gives up after 45s and reports "skipped", so this timeout never fires on a healthy host.
+timeout = "60s"
+hint = "Push or delete each branch named in the WARNING lines; `mise run worktree:audit` classifies them all."
 
 [doctor.checks.mise-version-parity]
 description = "Pinned mise versions match across Dockerfile, tasks/vm/up, tasks/pc/up, env:doctor, CI workflows, AGENTS.md, and configs"

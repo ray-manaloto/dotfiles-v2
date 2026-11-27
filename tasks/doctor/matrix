@@ -40,6 +40,9 @@ else
 	echo "zsh not found: skipped the three login-shell variants" >&2
 fi
 
+# worktree-stale always passes and mise hides a passing check's output; print its warnings once.
+python3 -I -B "${repo_root}/tasks/py/worktree_audit.py" --doctor --repo "${repo_root}" </dev/null | grep '^WARNING' >&2 || true
+
 if [[ ${failed} -ne 0 ]]; then
 	echo "doctor:matrix: at least one shell failed; for details run: mise run doctor:explain <check>" >&2
 	exit 1
