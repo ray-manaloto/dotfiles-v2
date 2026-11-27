@@ -1,15 +1,43 @@
 {
   "claude": {
     "marketplaces": {
+      "astral-sh": "astral-sh/claude-code-plugins",
+      "claude-community": "anthropics/claude-plugins-community",
       "claude-plugins-official": "anthropics/claude-plugins-official",
+      "dotfiles": "ray-manaloto/dotfiles",
+      "egm": "google/elephant-goldfish-model",
       "graphify": "Graphify-Labs/graphify-claude-plugin",
-      "repowise": "repowise-dev/repowise"
+      "hyperresearch": "jordan-gibbs/hyperresearch",
+      "last30days-skill": "mvanhorn/last30days-skill",
+      "mattpocock": "mattpocock/skills",
+      "openai-codex": "openai/codex-plugin-cc",
+      "planning-with-files": "OthmanAdi/planning-with-files",
+      "ray-manaloto-skills": "ray-manaloto/skills",
+      "repowise": "repowise-dev/repowise",
+      "tokeneconomizer": "microsoft/TokenEconomizer"
     },
     "plugins": [
+      "astral@astral-sh",
+      "clangd-lsp@claude-plugins-official",
+      "code-modernization@claude-plugins-official",
       "coderabbit@claude-plugins-official",
+      "codex@openai-codex",
+      "egm@egm",
+      "eli5@claude-community",
+      "fleet-agents@ray-manaloto-skills",
       "graphify@graphify",
       "greptile@claude-plugins-official",
-      "repowise@repowise"
+      "html-plan@claude-community",
+      "hyperresearch@hyperresearch",
+      "last30days@last30days-skill",
+      "mattpocock-skills@mattpocock",
+      "next-steps@claude-community",
+      "planning-with-files@planning-with-files",
+      "plugin-dev@claude-plugins-official",
+      "repowise@repowise",
+      "skills@ray-manaloto-skills",
+      "tokeneconomizer@tokeneconomizer",
+      "typescript-native-lsp@dotfiles"
     ],
     "connected_mcps": [
       "plugin:coderabbit:coderabbit",
@@ -20,21 +48,45 @@
   },
   "codex": {
     "marketplaces": {
+      "egm": "google/elephant-goldfish-model",
       "graphify": "Graphify-Labs/graphify-codex-plugin",
       "greptile-plugin": "greptileai/skills",
-      "repowise": "repowise-dev/repowise"
+      "hyperresearch": "jordan-gibbs/hyperresearch",
+      "last30days-skill": "mvanhorn/last30days-skill",
+      "mattpocock": "mattpocock/skills",
+      "planning-with-files": "OthmanAdi/planning-with-files",
+      "ray-manaloto-skills": "ray-manaloto/skills",
+      "repowise": "repowise-dev/repowise",
+      "skillopt": "microsoft/SkillOpt",
+      "tokeneconomizer": "microsoft/TokenEconomizer"
     },
     "plugins": [
       "coderabbit@openai-curated",
       "codex@repowise",
+      "egm@egm",
+      "fleet-agents@ray-manaloto-skills",
       "graphify@graphify",
-      "greptile@greptile-plugin"
+      "greptile@greptile-plugin",
+      "hyperresearch@hyperresearch",
+      "last30days@last30days-skill",
+      "mattpocock-skills@mattpocock",
+      "planning-with-files@planning-with-files",
+      "skillopt-sleep@skillopt",
+      "skills@ray-manaloto-skills",
+      "tokeneconomizer@tokeneconomizer"
     ]
   },
   "agy": {
     "plugins": {
-      "coderabbit": "coderabbit",
-      "graphify": "https://github.com/Graphify-Labs/graphify-antigravity"
+      "astral": "https://github.com/astral-sh/agent-plugins/tree/main/plugins/astral",
+      "chrome-devtools-plugin": "chrome-devtools-plugin@antigravity-plugins-official",
+      "code-review": "https://github.com/gemini-cli-extensions/code-review",
+      "coderabbit": "coderabbit@antigravity-plugins-partners",
+      "egm": "https://github.com/google/elephant-goldfish-model",
+      "google-antigravity-sdk": "google-antigravity-sdk@antigravity-plugins-official",
+      "graphify": "https://github.com/Graphify-Labs/graphify-antigravity",
+      "last30days-skill": "https://github.com/mvanhorn/last30days-skill",
+      "skills": "https://github.com/ray-manaloto/skills"
     }
   },
   "opencode": {

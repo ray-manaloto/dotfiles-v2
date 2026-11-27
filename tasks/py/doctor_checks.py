@@ -3536,7 +3536,7 @@ def check_mcp_policy(repo_root: Path) -> tuple[list[str], str]:
 
 
 def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
-    """Declared reviewer-bot plugins are well-formed (repo) and installed/Connected (live Mac host)."""
+    """Declared harness plugins are well-formed and checked wherever the CLI is installed."""
     errors: list[str] = []
     mise_dir = repo_root / "unix/home/.config/mise"
     for rel in (
@@ -3552,6 +3552,11 @@ def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
         manifest = lib.load_manifest(mise_dir / "assets/reviewer-plugins.json")
     except (OSError, ImportError, ValueError) as exc:
         return [*errors, f"reviewer-plugins: cannot load manifest/lib: {exc}"], ""
+
+    for harness, spec in manifest.items():
+        errors.extend(
+            f"reviewer-plugins: {harness}: {e}" for e in lib.gate_errors(spec)
+        )
 
     pid_re = re.compile(r"[a-z0-9-]+@[a-z0-9-]+")
     # Marketplaces each harness ships built in; a Claude marketplace is never built in for Codex.
@@ -3608,18 +3613,28 @@ def check_reviewer_plugins(repo_root: Path) -> tuple[list[str], str]:
             else ""
         )
     home = Path.home()
-    # Installs + OAuth sign-ins are per host and need a browser; only the Mac host is required.
-    if sys.platform != "darwin" or (home / ".config/dotfiles-v2/vm-env.sh").is_file():
-        return [], "not the Mac host; live plugin status not required"
-    live = [f"reviewer-plugins: {e}" for e in lib.check(manifest, home)]
+    plugins_only = (
+        sys.platform != "darwin"
+        or (home / ".config" / "dotfiles-v2" / "vm-env.sh").is_file()
+    )
+    live = [
+        f"reviewer-plugins: {e}"
+        for e in lib.check(manifest, home, plugins_only=plugins_only)
+    ]
     if live:
         live.append(
-            "reviewer-plugins: fix with `mise run bootstrap:reviewer-plugins`; sign in via Claude /mcp -> <server> -> Authenticate"
+            "reviewer-plugins: run `mise run bootstrap:reviewer-plugins` to sync plugins"
         )
+        if not plugins_only:
+            live.append(
+                "reviewer-plugins: sign in via Claude /mcp -> <server> -> Authenticate"
+            )
         return live, ""
+    if plugins_only:
+        return [], "applicable harness plugin checks passed"
     return (
         [],
-        "declared reviewer plugins installed across harnesses and Claude plugin MCPs Connected",
+        "applicable harness plugin, Claude MCP and Repowise checks passed",
     )
 
 

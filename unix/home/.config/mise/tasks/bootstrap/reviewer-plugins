@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-#MISE description="Install declared reviewer-bot plugins (Graphify, Greptile, CodeRabbit, Repowise) across Claude/Codex/agy at user scope; OAuth stays a one-time human step"
-#MISE depends=["bootstrap:claude"]
+#MISE description="Install declared Claude/Codex/agy plugins at user scope; OAuth stays a one-time human step"
+#MISE depends=["bootstrap:claude", "bootstrap:codex"]
 set -euo pipefail
 
 # Source of truth: assets/reviewer-plugins.json (OpenCode entries live in ~/.config/opencode/opencode.json).

@@ -408,6 +408,206 @@
       "decision": "deny",
       "reason": "Keep Claude account connectors disabled.",
       "replacement": null
+    },
+    {
+      "name": "astral",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Astral uv, ruff and ty CLIs"
+    },
+    {
+      "name": "astral@astral-sh",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Astral uv, ruff and ty CLIs"
+    },
+    {
+      "name": "chrome-devtools-plugin",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Chrome DevTools and Puppeteer"
+    },
+    {
+      "name": "clangd-lsp@claude-plugins-official",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "clangd CLI"
+    },
+    {
+      "name": "code-modernization@claude-plugins-official",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Claude Code modernization prompts"
+    },
+    {
+      "name": "code-review",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Gemini CLI code-review extension"
+    },
+    {
+      "name": "codex@openai-codex",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Codex CLI"
+    },
+    {
+      "name": "egm",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "EGM upstream skills and scripts"
+    },
+    {
+      "name": "egm@egm",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "EGM upstream skills and scripts"
+    },
+    {
+      "name": "eli5@claude-community",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Claude Code explanation prompt"
+    },
+    {
+      "name": "fleet-agents@ray-manaloto-skills",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Fleet scripts in the skills repository"
+    },
+    {
+      "name": "html-plan@claude-community",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Claude Code planning prompt"
+    },
+    {
+      "name": "google-antigravity-sdk",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "The bundled SDK examples include local model operation without an API key.",
+      "replacement": "Antigravity SDK local model examples"
+    },
+    {
+      "name": "hyperresearch@hyperresearch",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "hyperresearch CLI with keyless sources"
+    },
+    {
+      "name": "last30days-skill",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "last30days keyless sources"
+    },
+    {
+      "name": "last30days@last30days-skill",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "last30days keyless sources"
+    },
+    {
+      "name": "mattpocock-skills@mattpocock",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Upstream standalone engineering skills"
+    },
+    {
+      "name": "next-steps@claude-community",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Claude Code continuation prompt"
+    },
+    {
+      "name": "planning-with-files@planning-with-files",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Upstream standalone skill for manual planning only"
+    },
+    {
+      "name": "plugin-dev@claude-plugins-official",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Claude Code plugin CLI"
+    },
+    {
+      "name": "skillopt-sleep@skillopt",
+      "kind": "plugin",
+      "harnesses": ["codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "SkillOpt standalone local/mock workflow"
+    },
+    {
+      "name": "skills",
+      "kind": "plugin",
+      "harnesses": ["agy"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Upstream standalone skills"
+    },
+    {
+      "name": "skills@ray-manaloto-skills",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "Upstream standalone skills"
+    },
+    {
+      "name": "tokeneconomizer@tokeneconomizer",
+      "kind": "plugin",
+      "harnesses": ["claude", "codex"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "TokenEconomizer local scripts"
+    },
+    {
+      "name": "typescript-native-lsp@dotfiles",
+      "kind": "plugin",
+      "harnesses": ["claude"],
+      "decision": "keep",
+      "reason": "Reproduce the enabled harness plugin with its native integration on supported environments.",
+      "replacement": "TypeScript native CLI where the dotfiles TypeScript toolchain is provisioned"
     }
   ]
 }

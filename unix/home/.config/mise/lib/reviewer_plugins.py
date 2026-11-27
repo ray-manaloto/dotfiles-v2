@@ -1,13 +1,13 @@
-"""Declarative reviewer-bot plugins (Graphify, Greptile, CodeRabbit, Repowise) across harnesses.
+"""Declarative user-scope harness plugins and existing reviewer integration checks.
 
 Stdlib only. The manifest (assets/reviewer-plugins.json) is the single source of truth for:
   sync   - idempotently add marketplaces / install plugins via each harness CLI (user scope),
-           retire superseded direct MCPs, and apply the Repowise rewrite guard.
+           and apply the Repowise rewrite guard.
   check  - report drift: missing plugins, Claude plugin MCPs not Connected, unguarded repos.
   guard  - ensure every Repowise-indexed repo turns off the auto-approved Bash rewrite hook.
 
 OpenCode entries live directly in ~/.config/opencode/opencode.json (a managed dotfile); the
-manifest lists them so the repo-scope check can assert they stay declared.
+manifest lists them for repo and live checks.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -31,6 +32,71 @@ GUARD_YAML = f"# {GUARD_LINE}\ndistill:\n  commands:\n    enabled: false\n"
 
 def load_manifest(path: Path = MANIFEST) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+PLATFORMS = {
+    "os": {"macos", "linux"},
+    "arch": {"amd64", "arm64"},
+    "env": {"host", "vm", "container"},
+}
+
+
+def gate_errors(spec: dict) -> list[str]:
+    """Reject unknown gated items, dimensions, and values before syncing."""
+    gates = spec.get("platforms", {})
+    if not isinstance(gates, dict):
+        return ["platforms must map declared plugin IDs to platform selectors"]
+    errors = []
+    for name, gate in gates.items():
+        if (
+            name not in spec.get("plugins", ())
+            or not isinstance(gate, dict)
+            or not gate
+        ):
+            errors.append(f"invalid platform gate for {name}")
+            continue
+        for key, values in gate.items():
+            if (
+                key not in PLATFORMS
+                or not isinstance(values, list)
+                or not values
+                or any(
+                    not isinstance(v, str) or v not in PLATFORMS[key] for v in values
+                )
+            ):
+                errors.append(f"invalid {key} selector for {name}")
+    return errors
+
+
+def _platform(home: Path) -> dict[str, str]:
+    system = {"darwin": "macos", "linux": "linux"}.get(sys.platform, sys.platform)
+    machine = platform.machine().lower()
+    arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(machine, machine)
+    env = "host"
+    # Docker runs in this repo set the lowercase container variable.
+    in_container = os.environ.get("container") == "docker"  # noqa: SIM112
+    if in_container or Path("/.dockerenv").is_file():
+        env = "container"
+    elif (home / ".config/dotfiles-v2/vm-env.sh").is_file():
+        env = "vm"
+    return {"os": system, "arch": arch, "env": env}
+
+
+def _applies(spec: dict, name: str, host: dict[str, str]) -> bool:
+    return all(
+        host[key] in values
+        for key, values in spec.get("platforms", {}).get(name, {}).items()
+    )
+
+
+def _marketplaces(spec: dict, host: dict[str, str]) -> dict[str, str]:
+    """Gate a marketplace when every declared plugin using it is gated out."""
+    marketplaces = {}
+    for name, source in spec.get("marketplaces", {}).items():
+        ids = [pid for pid in spec.get("plugins", []) if pid.partition("@")[2] == name]
+        if not ids or any(_applies(spec, pid, host) for pid in ids):
+            marketplaces[name] = source
+    return marketplaces
 
 
 def _run(argv: list[str], timeout: int = 180) -> tuple[int, str]:
@@ -352,39 +418,49 @@ def default_roots(home: Path) -> list[Path]:
 # --- sync / check -------------------------------------------------------------------------
 
 
-def sync(manifest: dict, home: Path) -> list[str]:
-    log: list[str] = []
+def sync(manifest: dict, home: Path, *, plugins_only: bool = False) -> list[str]:
+    log = [
+        f"{FAIL}{harness}: {err}"
+        for harness, spec in manifest.items()
+        for err in gate_errors(spec)
+    ]
+    if log:
+        return log
+    host = _platform(home)
     claude = _bin("claude", home)
     if claude and "claude" in manifest:
         spec = manifest["claude"]
         plugins, mps = claude_state(claude)
-        for name, src in spec.get("marketplaces", {}).items():
+        for name, src in _marketplaces(spec, host).items():
             if name not in mps:
                 rc, out = _run([claude, "plugin", "marketplace", "add", src])
                 log.append(_result(f"claude marketplace add {src}", rc, out))
         for pid in spec.get("plugins", []):
-            if pid not in plugins:
+            if pid not in plugins and _applies(spec, pid, host):
                 rc, out = _run([claude, "plugin", "install", pid])
                 log.append(_result(f"claude plugin install {pid}", rc, out))
     codex = _bin("codex", home)
     if codex and "codex" in manifest:
         spec = manifest["codex"]
         installed, mps = codex_state(codex)
-        for name, src in spec.get("marketplaces", {}).items():
+        for name, src in _marketplaces(spec, host).items():
             if name not in mps:
                 rc, out = _run([codex, "plugin", "marketplace", "add", src])
                 log.append(_result(f"codex marketplace add {src}", rc, out))
         for pid in spec.get("plugins", []):
-            if pid not in installed:
+            if pid not in installed and _applies(spec, pid, host):
                 rc, out = _run([codex, "plugin", "add", pid])
                 log.append(_result(f"codex plugin add {pid}", rc, out))
     agy = _bin("agy", home)
     if agy and "agy" in manifest:
         have = agy_state(agy)
-        for name, target in manifest["agy"].get("plugins", {}).items():
-            if name not in have:
+        spec = manifest["agy"]
+        for name, target in spec.get("plugins", {}).items():
+            if name not in have and _applies(spec, name, host):
                 rc, out = _run([agy, "plugin", "install", target])
                 log.append(_result(f"agy plugin install {target}", rc, out))
+    if plugins_only:
+        return log
     repowise = _bin("repowise", home)
     if repowise and repowise_telemetry_enabled(home):
         # Persistent opt-out: Codex starts MCP servers with a cleared env, so DO_NOT_TRACK never reaches them.
@@ -415,20 +491,44 @@ def repowise_telemetry_enabled(home: Path) -> bool:
     return not (isinstance(state, dict) and state.get("telemetry_enabled") is False)
 
 
-def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list[str]:
-    errors: list[str] = []
+def check(
+    manifest: dict,
+    home: Path,
+    *,
+    require_connected: bool = True,
+    plugins_only: bool = False,
+) -> list[str]:
+    errors = [
+        f"{harness}: {err}"
+        for harness, spec in manifest.items()
+        for err in gate_errors(spec)
+    ]
+    if errors:
+        return errors
+    host = _platform(home)
     claude = _bin("claude", home)
     if claude and "claude" in manifest:
         spec = manifest["claude"]
-        plugins, _ = claude_state(claude)
+        plugins, mps = claude_state(claude)
+        errors += [
+            f"claude marketplace missing: {name}"
+            for name in _marketplaces(spec, host)
+            if name not in mps
+        ]
         errors += [
             f"claude plugin missing/disabled: {p}"
             for p in spec.get("plugins", [])
-            if p not in plugins
+            if p not in plugins and _applies(spec, p, host)
         ]
-        if require_connected:
+        if require_connected and not plugins_only:
             retry_deadline = time.monotonic() + MCP_RETRY_BUDGET_S
             for name in spec.get("connected_mcps", []):
+                plugin = name.partition(":")[2].partition(":")[0]
+                if not any(
+                    p.partition("@")[0] == plugin and _applies(spec, p, host)
+                    for p in spec.get("plugins", [])
+                ):
+                    continue
                 status = claude_mcp_status_settled(
                     claude, name, deadline=retry_deadline
                 )
@@ -438,20 +538,59 @@ def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list
                     )
     codex = _bin("codex", home)
     if codex and "codex" in manifest:
-        installed, _ = codex_state(codex)
+        spec = manifest["codex"]
+        installed, mps = codex_state(codex)
         errors += [
-            f"codex plugin missing: {p}"
-            for p in manifest["codex"].get("plugins", [])
-            if p not in installed
+            f"codex marketplace missing: {name}"
+            for name in _marketplaces(spec, host)
+            if name not in mps
+        ]
+        errors += [
+            f"codex plugin missing/disabled: {p}"
+            for p in spec.get("plugins", [])
+            if p not in installed and _applies(spec, p, host)
         ]
     agy = _bin("agy", home)
     if agy and "agy" in manifest:
+        spec = manifest["agy"]
         have = agy_state(agy)
         errors += [
-            f"agy plugin missing: {n}"
-            for n in manifest["agy"].get("plugins", {})
-            if n not in have
+            f"agy plugin missing/disabled: {n}"
+            for n in spec.get("plugins", {})
+            if n not in have and _applies(spec, n, host)
         ]
+    if _bin("opencode", home) and "opencode" in manifest:
+        spec = manifest["opencode"]
+        config_dir = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+        try:
+            config = json.loads(
+                (config_dir / "opencode/opencode.json").read_text(encoding="utf-8")
+            )
+            if not isinstance(config, dict):
+                raise ValueError
+        except (OSError, ValueError):  # fmt: skip
+            errors.append(
+                "opencode: cannot read user opencode.json (run mise dot apply)"
+            )
+        else:
+            plugins = config.get("plugins")
+            plugins = plugins if isinstance(plugins, list) else []
+            errors += [
+                f"opencode plugin missing: {name} (run mise dot apply)"
+                for name in spec.get("plugins", [])
+                if name not in plugins and _applies(spec, name, host)
+            ]
+            mcp = config.get("mcp") or {}
+            servers = mcp.get("servers") if isinstance(mcp, dict) else {}
+            servers = servers if isinstance(servers, dict) else {}
+            errors += [
+                f"opencode MCP missing/disabled: {name} (run mise dot apply)"
+                for name in spec.get("mcp_servers", [])
+                if not isinstance(servers.get(name), dict)
+                or servers[name].get("disabled") is True
+            ]
+    if plugins_only:
+        return errors
     repowise = _bin("repowise", home)
     if repowise and repowise_telemetry_enabled(home):
         errors.append("repowise telemetry enabled (run `repowise telemetry disable`)")
@@ -466,8 +605,16 @@ def check(manifest: dict, home: Path, *, require_connected: bool = True) -> list
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="reviewer_plugins")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("sync")
-    sub.add_parser("check")
+    sub.add_parser("sync").add_argument(
+        "--plugins-only",
+        action="store_true",
+        help="skip Repowise telemetry and project writes",
+    )
+    sub.add_parser("check").add_argument(
+        "--plugins-only",
+        action="store_true",
+        help="check installs without Claude OAuth or Repowise host checks",
+    )
     g = sub.add_parser("guard")
     g.add_argument("repos", nargs="*", type=Path)
     g.add_argument(
@@ -486,11 +633,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if any(o.startswith("MANUAL") for o in out) else 0
     manifest = load_manifest()
     if args.cmd == "sync":
-        log = sync(manifest, home)
+        log = sync(manifest, home, plugins_only=args.plugins_only)
         _emit(log, "reviewer-plugins: up to date")
         return 1 if sync_failed(log) else 0
-    errs = check(manifest, home)
-    _emit(errs, "reviewer-plugins: all declared plugins installed and Connected")
+    errs = check(manifest, home, plugins_only=args.plugins_only)
+    _emit(errs, "reviewer-plugins: applicable checks passed")
     return 1 if errs else 0
 
 

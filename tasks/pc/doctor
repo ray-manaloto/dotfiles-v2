@@ -7,7 +7,7 @@ set -euo pipefail
 
 host="${usage_host:-pc}"
 if [[ ${usage_dry_run:-false} == true ]]; then
-	echo "pc:doctor dry-run ($host): check bootstrap drift, kernel, container privilege, GPU CDI, pending updates, firewall, mise, Tailscale, zsh, and fnox"
+	echo "pc:doctor dry-run ($host): check bootstrap drift, kernel, container privilege, GPU CDI, pending updates, firewall, mise, stale mise shims, Tailscale, zsh, and fnox"
 	exit 0
 fi
 taskdir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -29,6 +29,13 @@ env -u MISE_ENV -u ZDOTDIR -u MISE_SYSTEM_CONFIG_DIR zsh -l -e -s <<'ZSH'
 version=$(/usr/bin/tailscale version)
 version=${version%%$'\n'*}
 result=0
+for shim in "${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"/shims/*(N); do
+	if [[ -L $shim && $shim -ef /usr/local/bin/mise && ${shim:t} != mise ]] &&
+		! mise which "${shim:t}" >/dev/null 2>&1; then
+		printf 'FAIL  mise shim: %s does not resolve (run mise reshim)\n' "${shim:t}" >&2
+		result=1
+	fi
+done
 if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' 1.104.4 "$version" | sort -VC; then
 	printf 'PASS  tailscale: %s\n' "$version"
 else
