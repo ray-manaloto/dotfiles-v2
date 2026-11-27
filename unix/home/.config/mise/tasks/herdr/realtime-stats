@@ -85,6 +85,8 @@ if [[ ${want_quotas} == "true" ]]; then
 			elif herdr-app "do" pane.split --direction right --pane "${board_pane}" --mod env-board-controls >/dev/null; then
 				install -d -m 700 "${controls_dir}"
 				(umask 077 && printf '%s' "${board_pane}" >"${controls_marker}")
+				# The split is 50/50; move the divider 100px toward the widget so the board gets the width.
+				herdr-app "do" pane.resize --direction right --pane "${board_pane}" --px 100 >/dev/null 2>&1 || true
 			fi
 		fi
 	fi

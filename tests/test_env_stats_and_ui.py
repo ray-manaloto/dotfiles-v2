@@ -446,6 +446,8 @@ def test_realtime_stats_places_board_controls_once(tmp_path: Path) -> None:
     assert splits == [
         "do pane.split --direction right --pane p9 --mod env-board-controls"
     ]
+    resizes = [c for c in calls if c.startswith("do pane.resize")]
+    assert resizes == ["do pane.resize --direction right --pane p9 --px 100"]
     marker = fake_home / ".local" / "state" / "env-board" / "controls-pane"
     assert marker.read_text(encoding="utf-8") == "p9"
     assert (marker.stat().st_mode & 0o777) == 0o600

@@ -100,6 +100,23 @@ def clamp_interval(value: int) -> int:
     return max(MIN_INTERVAL_MIN, min(MAX_INTERVAL_MIN, value))
 
 
+def tighten_settings_mode(path: Path) -> None:
+    """Make an owned, regular settings file owner-only (0600), like the cache.
+
+    The Herdr widget's writeTextFile cannot set a mode, so the board enforces
+    it too. Symlinks, foreign-owned files and missing files are left alone.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+        return
+    if st.st_mode & 0o077:
+        with contextlib.suppress(OSError, NotImplementedError):
+            os.chmod(path, 0o600, follow_symlinks=False)
+
+
 def load_settings(
     path: Path, last_good: EnvBoardSettings = DEFAULT_SETTINGS
 ) -> EnvBoardSettings:
@@ -108,6 +125,7 @@ def load_settings(
     Integers outside 5..240 are clamped; non-integers, non-booleans, and
     unparsable instants fall back field by field.
     """
+    tighten_settings_mode(path)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except OSError, ValueError:

@@ -136,12 +136,11 @@ def balance_lines(balance: Mapping[str, Any], now: datetime) -> list[str]:
         promo += f" (expires in {fmt_until(soonest, now)})"
     reload_state = "on" if reading.get("auto_reload") else "off"
     lines = [
-        f"{indent}live balance: {fmt_usd(reading['total_usd'])} total  {promo}"
-        f"  purchased {fmt_usd(reading['purchased_usd'])}  auto-reload {reload_state}"
+        f"{indent}live balance: {fmt_usd(reading['total_usd'])} total  {promo}",
+        f"{indent}purchased {fmt_usd(reading['purchased_usd'])}  auto-reload {reload_state}",
     ]
-    cadence = (
-        "PAUSED" if balance.get("paused") else f"every {balance.get('interval_min')}m"
-    )
+    every = f"every {balance.get('interval_min')}m"
+    cadence = f"PAUSED ({every})" if balance.get("paused") else every
     due = balance.get("next_due")
     nxt = "" if balance.get("paused") or not due else f"  next {fmt_until(due, now)}"
     lines.append(

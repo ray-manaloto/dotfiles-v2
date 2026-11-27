@@ -534,7 +534,7 @@ def test_render_balance_ok_stale_and_paused(tmp_path):
         window_days=7,
         balance=h.sched.view(),
     )
-    assert "PAUSED" in text and "stale: console login required" in text
+    assert "PAUSED (every 10m)" in text and "stale: console login required" in text
     assert "$12.50 total" in text  # last good values still shown
 
 
@@ -696,3 +696,40 @@ def test_lockfile_symlink_not_followed(tmp_path):
     with __import__("pytest").raises(OSError):
         h.sched.tick()
     assert target.read_text() == "keep"
+
+
+def test_balance_lines_fit_narrow_pane(tmp_path):
+    h = Harness(tmp_path)
+    h.ok(NOW - timedelta(minutes=7))
+    h.sched.tick()
+    h.now = NOW
+    lines = board.balance_lines(h.sched.view(), NOW)
+    assert max(len(line) for line in lines) <= 80
+
+
+def test_settings_tightened_to_owner_only(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"balance_interval_min": 15}', encoding="utf-8")
+    os.chmod(path, 0o644)
+    assert balance.load_settings(path).balance_interval_min == 15
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_settings_tighten_skips_symlink(tmp_path):
+    target = tmp_path / "target.json"
+    target.write_text('{"balance_interval_min": 15}', encoding="utf-8")
+    os.chmod(target, 0o644)
+    link = tmp_path / "settings.json"
+    link.symlink_to(target)
+    balance.tighten_settings_mode(link)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_widget_chmods_settings_after_write():
+    main_js = (
+        Path(__file__).resolve().parents[1]
+        / "unix/home/.config/herdr-app/mods/env-board-controls/main.js"
+    ).read_text(encoding="utf-8")
+    write = main_js.index("await writeTextFile(path")
+    chmod = main_js.index('exec("/bin/chmod", ["-h", "600", path]')
+    assert 0 < chmod - write < 300

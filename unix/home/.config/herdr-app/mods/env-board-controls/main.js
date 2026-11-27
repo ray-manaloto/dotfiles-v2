@@ -106,6 +106,8 @@ export default class EnvBoardControls extends View {
         );
         try {
           await writeTextFile(path, `${JSON.stringify(next, null, 2)}\n`, raw);
+          // writeTextFile takes no mode: keep settings owner-only like the cache (-h: never follow a symlink).
+          await exec("/bin/chmod", ["-h", "600", path], { timeout: 2000 }).catch(() => null);
           this.settings = next;
           this.note = "";
           break;
@@ -179,6 +181,7 @@ export default class EnvBoardControls extends View {
       )
       .child(
         h_flex()
+          .flex_wrap()
           .gap(8)
           .child(
             this.button(
