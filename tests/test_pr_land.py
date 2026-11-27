@@ -95,7 +95,7 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
     # Step 4b runs main's copy of herdr_tidy.py against a fake hc: only the finished tab in the
     # landed worktree is closed, never the working one.
     tidy = main / "tasks" / "py" / "herdr_tidy.py"
-    tidy.parent.mkdir(parents=True)
+    tidy.parent.mkdir(parents=True, exist_ok=True)
     tidy.write_bytes((LAND.parents[1] / "py" / "herdr_tidy.py").read_bytes())
     hc_log = tmp_path / "hc.log"
     tabs = [
