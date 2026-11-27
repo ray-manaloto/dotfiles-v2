@@ -7,6 +7,7 @@ min_version = "2026.11.14"
 locked = true
 
 [tools]
+"aqua:anthropics/anthropic-cli" = "2.14.0"
 "aqua:docker/buildx" = { version = "0.39.1", os = [
   "macos",
 ], postinstall = { when = "always", run = '''d="$HOME/.local/share/docker/cli-plugins" f="$HOME/.docker/config.json"; mkdir -p "$d" "$HOME/.docker"; ln -sfn "$MISE_TOOL_INSTALL_PATH/docker-cli-plugin-docker-buildx" "$d/docker-buildx"; [ -s "$f" ] || echo '{}' > "$f"; if command -v jq >/dev/null 2>&1; then jq -e --arg d "$d" '.cliPluginsExtraDirs[0] == $d' "$f" >/dev/null || { jq --arg d "$d" '.cliPluginsExtraDirs = [$d] + ((.cliPluginsExtraDirs // []) - [$d])' "$f" > "$f.new" && mv "$f.new" "$f"; }; fi''' } }
