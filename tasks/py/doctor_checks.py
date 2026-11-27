@@ -2447,9 +2447,22 @@ def post_commit_advisory(repo_root: Path) -> int:
             f"post-commit advisory: {len(home_changes)} unix/home/ file(s) changed; "
             "run `mise run host:sync-gemini` or `mise dot apply` if syncing live host.\n"
         )
-    # `mise doctor project` hides a passing check's output, so surface roadmap drift here.
-    for warning in check_roadmap_drift(repo_root)[0]:
-        sys.stdout.write(f"post-commit advisory: {warning}\n")
+    # `mise doctor project` hides a passing check's output, so surface roadmap drift here,
+    # but only on `main`: ROADMAP.md is sole-writer there, so wt/* commits stay quiet.
+    try:
+        branch = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True,
+            timeout=5,
+            env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"),
+        ).strip()
+    except (OSError, subprocess.SubprocessError):  # fmt: skip
+        return 0
+    if branch == "main":
+        for warning in check_roadmap_drift(repo_root)[0]:
+            sys.stdout.write(
+                f"post-commit advisory: {warning} (update ROADMAP.md on main)\n"
+            )
     return 0
 
 

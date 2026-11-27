@@ -3238,7 +3238,7 @@ def test_roadmap_drift_flags_remaining_paths_on_main_only() -> None:
 
 def test_roadmap_drift_reads_main_and_never_fails(tmp_path: Path) -> None:
     doc_mod = _load_task_module("doctor_checks")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = _clean_git_env()  # no host hk hooks, global gitconfig or commit signing
     env.update(
         GIT_AUTHOR_NAME="t",
         GIT_AUTHOR_EMAIL="t@example.invalid",
@@ -3275,41 +3275,33 @@ def test_roadmap_drift_reads_main_and_never_fails(tmp_path: Path) -> None:
     warnings, _ = doc_mod.check_roadmap_drift(tmp_path)
     assert len(warnings) == 1 and "ROADMAP.md:1 " in warnings[0]
 
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            "-B",
-            str(Path(__file__).resolve().parents[1] / "tasks/py/doctor_checks.py"),
-            "roadmap-drift",
-        ],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    script = Path(__file__).resolve().parents[1] / "tasks/py/doctor_checks.py"
+
+    def run(cmd: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-I", "-B", str(script), cmd],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    proc = run("roadmap-drift")
     assert proc.returncode == 0, proc.stderr  # warn-only
     assert proc.stdout.startswith("WARN  roadmap-drift: ROADMAP.md:1 ")
     assert "`tasks/env/quota`" in proc.stdout
 
-    # mise doctor hides a passing check's stdout; the post-commit advisory shows it.
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            "-B",
-            str(Path(__file__).resolve().parents[1] / "tasks/py/doctor_checks.py"),
-            "post-commit-advisory",
-        ],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # mise doctor hides a passing check's stdout; the post-commit advisory shows it,
+    # but only in the main checkout, where ROADMAP.md is edited.
+    proc = run("post-commit-advisory")
     assert proc.returncode == 0, proc.stderr
     assert "post-commit advisory: roadmap-drift: ROADMAP.md:1 " in proc.stdout
+    assert "update ROADMAP.md on main" in proc.stdout
+    git("checkout", "-q", "wt/side")
+    proc = run("post-commit-advisory")
+    assert proc.returncode == 0, proc.stderr
+    assert "roadmap-drift" not in proc.stdout
 
 
 def _codex_policy() -> tuple[dict, dict, dict]:

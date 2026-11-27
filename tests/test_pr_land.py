@@ -50,7 +50,18 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
         ).strip()
 
     git("init", "-q", "-b", "main", str(origin))
-    git("-C", str(origin), "commit", "-q", "--allow-empty", "-m", "Merged PR")
+    # The merged main still lists a shipped path as Remaining: pr:land surfaces the drift.
+    (origin / "tasks/py").mkdir(parents=True)
+    (origin / "tasks/env").mkdir(parents=True)
+    (origin / "tasks/py/doctor_checks.py").write_bytes(
+        (LAND.parents[1] / "py/doctor_checks.py").read_bytes()
+    )
+    (origin / "tasks/env/quota").write_text("#!/bin/sh\n", encoding="utf-8")
+    (origin / "ROADMAP.md").write_text(
+        "- [ ] Work. **Remaining:** `tasks/env/quota`.\n", encoding="utf-8"
+    )
+    git("-C", str(origin), "add", "ROADMAP.md", "tasks")
+    git("-C", str(origin), "commit", "-q", "-m", "Merged PR")
     merged = git("-C", str(origin), "rev-parse", "HEAD")
     git("clone", "-q", str(origin), str(main))
     git("-C", str(main), "worktree", "add", "-q", "-b", "wt/fixture", str(feature))
@@ -140,6 +151,11 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
             "rm t1",
         ]
         assert "herdr:tidy: closed lane (t1)" in result.stdout
+        # Warn-only roadmap drift on the merged main is printed, never fatal.
+        assert (
+            "pr:land: WARNING: roadmap-drift: ROADMAP.md:1 " in result.stderr
+            and "`tasks/env/quota`" in result.stderr
+        ), result.stderr
         if doctor_fails:
             # The land already happened: the doctor failure warns loudly but keeps exit 0.
             assert "WARNING: live 'mise doctor project' on main failed" in result.stderr
