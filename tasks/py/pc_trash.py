@@ -12,6 +12,7 @@ The move is a rename, so a path on another filesystem than the Trash is refused 
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import os
 import sys
@@ -71,6 +72,43 @@ def reserve(files: Path, info: Path, base: str) -> tuple[str, int]:
     raise ValueError(f"no free Trash name for {base}")
 
 
+def _renameat2():
+    """libc `renameat2`, or None where the platform has none (only Linux does)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        return ctypes.CDLL(None, use_errno=True).renameat2
+    except OSError, AttributeError:
+        return None
+
+
+def move_noreplace(src: Path, dest: Path) -> None:
+    """Rename *src* to *dest*, raising FileExistsError instead of overwriting *dest*."""
+    renameat2 = _renameat2()
+    if renameat2 is not None:
+        at_fdcwd, rename_noreplace = -100, 1
+        if (
+            renameat2(
+                at_fdcwd,
+                os.fsencode(src),
+                at_fdcwd,
+                os.fsencode(dest),
+                rename_noreplace,
+            )
+            == 0
+        ):
+            return
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise FileExistsError(code, os.strerror(code), str(dest))
+        if code not in (errno.ENOSYS, errno.EINVAL):
+            raise OSError(code, os.strerror(code), str(src))
+        # The filesystem or kernel lacks RENAME_NOREPLACE: fall back to a last-moment check.
+    if os.path.lexists(dest):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(dest))
+    os.rename(src, dest)
+
+
 def refuse_protected(src: Path, home: Path) -> None:
     """Raise unless *src* is a scratch path: deep inside *home* and clear of PROTECTED."""
     if src == home or not src.is_relative_to(home):
@@ -98,20 +136,33 @@ def trash(raw: str, home: Path, now_ns: int) -> Path:
     files, info = trash_dir / "files", trash_dir / "info"
     for folder in (files, info):
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    name, fd = reserve(files, info, f"{src.name}.{stamp(now_ns)}")
-    record = info / f"{name}.trashinfo"
     deleted = datetime.fromtimestamp(now_ns // NS).strftime("%Y-%m-%dT%H:%M:%S")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(f"[Trash Info]\nPath={quote(str(src))}\nDeletionDate={deleted}\n")
-    dest = files / name
-    try:
-        os.rename(src, dest)
-    except OSError as exc:
-        record.unlink(missing_ok=True)
-        if exc.errno == errno.EXDEV:
-            raise ValueError(f"{src}: on another filesystem than {trash_dir}") from exc
-        raise
-    return dest
+    body = f"[Trash Info]\nPath={quote(str(src))}\nDeletionDate={deleted}\n"
+    for _ in range(10):
+        name, fd = reserve(files, info, f"{src.name}.{stamp(now_ns)}")
+        record = info / f"{name}.trashinfo"
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(body)
+        except OSError:
+            record.unlink(missing_ok=True)
+            raise
+        dest = files / name
+        try:
+            move_noreplace(src, dest)
+        except FileExistsError:
+            # Someone took the name after reserve() looked; never overwrite, pick another.
+            record.unlink(missing_ok=True)
+            continue
+        except OSError as exc:
+            record.unlink(missing_ok=True)
+            if exc.errno == errno.EXDEV:
+                raise ValueError(
+                    f"{src}: on another filesystem than {trash_dir}"
+                ) from exc
+            raise
+        return dest
+    raise ValueError(f"no free Trash name for {src.name}")
 
 
 def main(argv: list[str]) -> int:

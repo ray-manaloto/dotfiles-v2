@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import IO
 from urllib.parse import quote
 
 import pytest
@@ -183,11 +184,66 @@ def test_trash_rename_failure_cleans_up(
     def fail(src: Path, dest: Path) -> None:
         raise OSError(code, os.strerror(code), str(src))
 
+    monkeypatch.setattr(pc_trash, "_renameat2", lambda: None)
     monkeypatch.setattr(pc_trash.os, "rename", fail)
     with pytest.raises(raised):
         pc_trash.trash("~/dev/tmp/probe", home, NOW_NS)
     assert (home / "dev/tmp/probe/out.txt").exists()
     assert not list((home / ".local/share/Trash/info").iterdir())
+
+
+def test_trashinfo_write_failure_leaves_no_partial_file(
+    pc_trash: ModuleType, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = os.fdopen
+
+    class Failing:
+        def __init__(self, fh: IO[str]) -> None:
+            self.fh = fh
+
+        def __enter__(self) -> Failing:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self.fh.close()
+
+        def write(self, _text: str) -> None:
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    monkeypatch.setattr(pc_trash.os, "fdopen", lambda *a, **k: Failing(real(*a, **k)))
+    with pytest.raises(OSError):
+        pc_trash.trash("~/dev/tmp/probe", home, NOW_NS)
+    assert (home / "dev/tmp/probe/out.txt").exists()
+    assert not list((home / ".local/share/Trash/info").iterdir())
+
+
+def test_collision_never_overwrites_existing_destination(
+    pc_trash: ModuleType, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    taken = home / f".local/share/Trash/files/probe.{pc_trash.stamp(NOW_NS)}"
+    taken.mkdir()
+    (taken / "keep").write_text("k")
+    real = os.path.lexists
+    calls = iter([False])
+    # The first existence check is blind (a racing writer), so only the move can notice.
+    monkeypatch.setattr(
+        pc_trash.os.path, "lexists", lambda p: next(calls, None) or real(p)
+    )
+    dest = pc_trash.trash("~/dev/tmp/probe", home, NOW_NS)
+    assert dest.name == f"{taken.name}.1"
+    assert (taken / "keep").read_text() == "k" and not (taken / "out.txt").exists()
+    assert (dest / "out.txt").read_text() == "x"
+    infos = {p.name for p in (home / ".local/share/Trash/info").iterdir()}
+    assert infos == {f"{dest.name}.trashinfo"}
+
+
+@pytest.mark.parametrize("bad", ["a\nb", "a\tb", "a\x7fb", "a\x01b"])
+def test_task_rejects_control_characters_before_ssh(
+    stub_env: dict[str, str], bad: str
+) -> None:
+    out = _task("--host", "fixture", f"~/dev/tmp/{bad}", env=stub_env)
+    assert out.returncode == 1 and "control characters" in out.stderr
+    assert not Path(stub_env["PC_CALLS"]).exists()
 
 
 def test_script_runs_as_streamed_stdin(home: Path) -> None:

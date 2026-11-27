@@ -9,6 +9,11 @@ set -euo pipefail
 # The one sanctioned remote soft-delete for agents (#116): dcg blocks `ssh pc 'mv ... Trash'`.
 host="${usage_host:-pc}"
 path="${usage_path:?}"
+# printf %q would emit $'..' for control characters, which a POSIX remote shell cannot parse.
+if [[ $path == *[[:cntrl:]]* ]]; then
+	echo "pc:trash: refusing a path with control characters (newline, tab, DEL, ...)" >&2
+	exit 1
+fi
 # An unquoted ~ was expanded by this machine's shell; point it back at the remote home.
 # shellcheck disable=SC2088 # the literal ~ is resolved on the host by pc_trash.py
 if [[ $path == "$HOME" ]]; then

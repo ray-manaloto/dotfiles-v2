@@ -40,10 +40,14 @@ It refuses:
 - `~/.local/bin`, `~/.local/share/mise` and the Trash
 - `~/dev/dotfiles-v2`
 - anything inside or containing those paths
+- paths with control characters (newline, tab, DEL), checked before connecting
+
+Besides `/`, `$HOME` and its top-level entries, only these paths and the
+dotfiles-v2 checkout are protected.
 
 The move is a rename, so it also refuses a path on a different filesystem
 from `~/.local/share/Trash`, such as a bind mount or tmpfs. Nothing is moved
-in that case. Quote the path. If your shell expands `~` to the local home, the
+in that case, and there is no copy fallback. Quote the path. If your shell expands `~` to the local home, the
 task maps it back to the remote home. Add `--dry-run` to preview the move.
 
 Agents use this task because dcg blocks `ssh pc 'mv ... Trash'`. See
