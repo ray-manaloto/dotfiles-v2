@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from functools import cmp_to_key
 from pathlib import Path
@@ -3893,6 +3893,82 @@ def check_python_ca_bundle() -> tuple[list[str], str]:
     return [], f"{len(exes)} distinct python3 interpreter(s) on PATH have a CA bundle"
 
 
+def check_plugin_drift(repo_root: Path) -> tuple[list[str], str]:
+    """Warn-only: report tracked plugins whose installed version trails the latest release.
+
+    Never returns errors. GitHub lookups are cached for ~6h; offline or missing tools skip.
+    """
+    if _live_host_skipped():
+        return [], _skip_reason("live plugin drift not checked")
+    lib_dir = repo_root / "unix" / "home" / ".config" / "mise" / "lib"
+    tracked_file = (
+        repo_root
+        / "unix"
+        / "home"
+        / ".config"
+        / "mise"
+        / "assets"
+        / "plugins-tracked.json"
+    )
+    try:
+        sys.path.insert(0, str(lib_dir))
+        try:
+            from plugins_update import drift
+        finally:
+            sys.path.remove(str(lib_dir))
+        entries = json.loads(tracked_file.read_text(encoding="utf-8"))["plugins"]
+    except (ImportError, OSError, ValueError, KeyError, TypeError) as exc:
+        return [], f"WARN plugin-drift skipped: cannot load tracked list ({exc})"
+    cache_file = drift.drift_cache_path(
+        Path(os.environ["XDG_CACHE_HOME"]) if os.environ.get("XDG_CACHE_HOME") else None
+    )
+    stale: list[str] = []
+    skipped: list[str] = []
+    checked = 0
+
+    def short_runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return drift.run_cmd(argv, timeout=15)
+
+    for ent in entries:
+        try:
+            plugin, mkt, repo = ent["plugin"], ent["marketplace"], ent["repo"]
+            latest = drift.cached_latest(
+                repo,
+                ent.get("tag_prefix", "v"),
+                cache_file=cache_file,
+                runner=short_runner,
+            )
+            installed: list[tuple[str, str]] = []
+            if shutil.which("codex"):
+                ver = drift.codex_installed_version(plugin, mkt, short_runner)
+                if ver:
+                    installed.append(("codex", ver))
+            if shutil.which("claude"):
+                inst = drift.claude_user_install(plugin, mkt, short_runner)
+                if inst:
+                    installed.append(("claude", inst[0]))
+            checked += 1
+            for harness, ver in installed:
+                if drift.version_lt(ver, latest):
+                    stale.append(f"{plugin}@{mkt} {harness} {ver} < {latest}")
+        except (drift.LookupFailure, KeyError, TypeError) as exc:
+            skipped.append(
+                f"{ent.get('plugin', '?') if isinstance(ent, dict) else '?'}: {exc}"
+            )
+    parts: list[str] = []
+    if stale:
+        parts.append(
+            "WARN plugin-drift: "
+            + "; ".join(stale)
+            + " (run `mise run plugins:update --apply`)"
+        )
+    if skipped:
+        parts.append("plugin-drift skipped: " + "; ".join(skipped))
+    if not parts:
+        parts.append(f"{checked} tracked plugin(s) current")
+    return [], " | ".join(parts)
+
+
 def _report(label: str, errors: list[str], ok_msg: str) -> int:
     if errors:
         sys.stderr.write("\n".join(errors) + "\n")
@@ -3932,6 +4008,7 @@ def main(argv: list[str] | None = None) -> int:
     p_trust = sub.add_parser("codex-hook-trust")
     p_trust.add_argument("--strict-host", action="store_true")
     sub.add_parser("mise-binary-integrity")
+    sub.add_parser("plugin-drift")
     p_rc = sub.add_parser("agy-rc-health")
     p_rc.add_argument("--strict-host", action="store_true")
     sub.add_parser("skills-6harness-parity")
@@ -4052,6 +4129,9 @@ def main(argv: list[str] | None = None) -> int:
         if errs and msg:
             sys.stderr.write(msg + "\n")
         return _report("codex-hook-trust", errs, msg)
+    if args.cmd == "plugin-drift":
+        _errs, msg = check_plugin_drift(repo_root)
+        return _report("plugin-drift", [], msg)
     if args.cmd == "mise-binary-integrity":
         errs, msg = check_mise_binary_integrity(repo_root)
         return _report("mise-binary-integrity", errs, msg)

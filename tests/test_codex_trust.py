@@ -668,3 +668,72 @@ def test_codex_trust_security_toml_comments_and_rpc_edges(
     )
     assert bad_ver_resp.rc == 1
     assert bad_ver_resp.errors[0].code is CodexTrustErrorCode.ERR_INVALID_INPUT
+
+
+def _add_foreign_harness(root: Path, *, version: str) -> None:
+    """Add an unrelated harness dir whose hooks file lives under hooks/."""
+    (root / ".qoder-plugin").mkdir(parents=True, exist_ok=True)
+    (root / ".qoder-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "pwf", "version": version, "description": "q"}),
+        encoding="utf-8",
+    )
+    (root / ".qoder-plugin" / "run-hook.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (root / "hooks" / "qoder-hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {"hooks": [{"command": "sh .qoder-plugin/run-hook.sh stop"}]}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_hook_surface_ignores_foreign_harness_manifest_version_bump(
+    tmp_path: Path,
+) -> None:
+    old_root = _write_fake_plugin(tmp_path / "old", version="3.29.0")
+    new_root = _write_fake_plugin(tmp_path / "new", version="3.29.1")
+    _add_foreign_harness(old_root, version="3.29.0")
+    _add_foreign_harness(new_root, version="3.29.1")
+
+    unchanged, changes, _ = diff_hook_surface(old_root, new_root)
+    assert unchanged is True
+    assert changes == []
+
+
+def test_hook_surface_normalizes_referenced_manifest_and_flags_hook_changes(
+    tmp_path: Path,
+) -> None:
+    old_root = _write_fake_plugin(tmp_path / "old", version="1.0.0")
+    new_same = _write_fake_plugin(tmp_path / "new_same", version="1.0.1")
+    for root, ver in ((old_root, "1.0.0"), (new_same, "1.0.1")):
+        (root / "scripts" / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "x",
+                    "version": ver,
+                    "description": f"d{ver}",
+                    "author": f"a{ver}",
+                    "keywords": [ver],
+                    "scripts": {"stop": "sh stop.sh"},
+                }
+            ),
+            encoding="utf-8",
+        )
+    unchanged, _, _ = diff_hook_surface(old_root, new_same)
+    assert unchanged is True
+
+    # A real change to a manifest's scripts, hooks.json command, or hook script is flagged.
+    (new_same / "scripts" / "package.json").write_text(
+        json.dumps({"name": "x", "version": "9", "scripts": {"stop": "sh evil.sh"}}),
+        encoding="utf-8",
+    )
+    assert diff_hook_surface(old_root, new_same)[0] is False
+
+    new_cmd = _write_fake_plugin(tmp_path / "new_cmd", version="1.0.0", stop_cmd="--x")
+    _, changes, _ = diff_hook_surface(old_root, new_cmd)
+    assert any(c.path == "hooks/hooks.json" for c in changes)
