@@ -16,6 +16,7 @@
         "searxng",
         "vercel-board",
         "agentsview-hub",
+        "agentsview-mac-pull",
         "qmd",
         "codebase-memory-mcp",
         "tailscale-serve"

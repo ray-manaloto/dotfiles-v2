@@ -24,6 +24,7 @@ class PcHubServiceName(StrEnum):
     SEARXNG = "searxng"
     VERCEL_BOARD = "vercel-board"
     AGENTSVIEW_HUB = "agentsview-hub"
+    AGENTSVIEW_MAC_PULL = "agentsview-mac-pull"
     QMD = "qmd"
     CODEBASE_MEMORY_MCP = "codebase-memory-mcp"
     TAILSCALE_SERVE = "tailscale-serve"
