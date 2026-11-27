@@ -2,6 +2,6 @@
   "name": "mise-npm-install",
   "private": true,
   "dependencies": {
-    "renovate": "44.260.3"
+    "zcode-app-cli": "4.0.0-50"
   }
 }

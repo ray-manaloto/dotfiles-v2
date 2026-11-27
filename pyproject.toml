@@ -23,7 +23,7 @@ dev = [
 lint = [
   "datamodel-code-generator[ruff]==0.101.0",
   "ruff==0.17.6",
-  "ty==0.0.109",
+  "ty==0.0.112",
 ]
 test = [
   "dirty-equals==0.11.0",

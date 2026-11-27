@@ -13,7 +13,7 @@ locked = true
 ], postinstall = { when = "always", run = '''d="$HOME/.local/share/docker/cli-plugins" f="$HOME/.docker/config.json"; mkdir -p "$d" "$HOME/.docker"; ln -sfn "$MISE_TOOL_INSTALL_PATH/docker-cli-plugin-docker-buildx" "$d/docker-buildx"; [ -s "$f" ] || echo '{}' > "$f"; if command -v jq >/dev/null 2>&1; then jq -e --arg d "$d" '.cliPluginsExtraDirs[0] == $d' "$f" >/dev/null || { jq --arg d "$d" '.cliPluginsExtraDirs = [$d] + ((.cliPluginsExtraDirs // []) - [$d])' "$f" > "$f.new" && mv "$f.new" "$f"; }; fi''' } }
 "aqua:owenlamont/ryl" = "0.30.0"
 age = "1.3.2"
-agent-browser = "0.44.0"
+agent-browser = "0.45.0"
 aube = { version = "2.11.0", workflow = [
   "release-plz.yml@refs/heads/main",
   "release.yml@refs/heads/main",
@@ -21,12 +21,12 @@ aube = { version = "2.11.0", workflow = [
 bat = "0.26.1"
 betterleaks = "1.10.1"
 bottom = "0.15.0"
-bun = "1.4.4"
+bun = "1.4.5"
 cmake = "4.5.1"
 communique = { version = "1.9.0", workflow = "release.yml@refs/heads/main", minimum_release_age = "0s" }
 delta = "0.22.0"
 docker-cli = { version = "29.10.0", os = ["macos"] }
-docker-compose = { version = "5.8.0", os = ["macos"] }
+docker-compose = { version = "5.8.1", os = ["macos"] }
 doppler = "3.77.1"
 editorconfig-checker = "4.0.2"
 fd = "10.5.2"
@@ -53,16 +53,16 @@ ninja = "1.13.2"
 node = "26.13.1"
 "npm:@vercel/board" = { version = "0.56.1", minimum_release_age = "0s" }
 "npm:apify-cli" = "1.14.0"
-"npm:ctx7" = { version = "0.13.0", minimum_release_age = "0s" }
+"npm:ctx7" = { version = "0.13.1", minimum_release_age = "0s" }
 "npm:firecrawl-cli" = { version = "1.30.0", minimum_release_age = "0s" }
 "npm:openwiki" = { version = "0.9.0", allow_builds = [
   "better-sqlite3",
 ], minimum_release_age = "0s" }
-"npm:renovate" = { version = "44.260.3", trust_policy_excludes = [
+"npm:renovate" = { version = "45.3.2", trust_policy_excludes = [
   "@yarnpkg/libzip@3.2.2",
 ] }
-"npm:skills" = { version = "1.9.0", minimum_release_age = "0s" }
-"npm:zcode-app-cli" = { version = "4.0.0-49", prerelease = true, minimum_release_age = "0s" }
+"npm:skills" = { version = "1.9.1", minimum_release_age = "0s" }
+"npm:zcode-app-cli" = { version = "4.0.0-50", prerelease = true, minimum_release_age = "0s" }
 osv-scanner = "2.7.1"
 oxfmt = "0.80.0"
 "packslip:grafana/flint" = "0.22.15"
@@ -77,14 +77,14 @@ python = "3.15.2"
 ripgrep = "16.0.0"
 ruff = "0.17.6"
 rumdl = "0.3.5"
-sccache = "0.20.0"
+sccache = "0.20.1"
 shellcheck = "0.11.0"
 shfmt = "3.14.1"
 starship = "1.27.0"
 syft = "1.57.2"
 tart = { version = "2.42.0", os = ["macos"] }
 tombi = "1.11.3"
-ty = "0.0.109"
+ty = "0.0.112"
 typos = "1.52.2"
 usage = { version = "7.4.1", workflow = "publish-cli.yml", minimum_release_age = "0s" }
 uv = "0.13.9"
