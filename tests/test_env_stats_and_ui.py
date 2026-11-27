@@ -412,22 +412,37 @@ def test_herdr_env_stats_mod_and_sync_tasks(tmp_path: Path) -> None:
     assert (herdr_home / "mods" / "env-stats" / "main.js").is_file()
 
 
-def test_realtime_stats_places_board_controls_once(tmp_path: Path) -> None:
+def _quota_stubs(
+    tmp_path: Path, start_with_tab: bool
+) -> tuple[dict[str, str], Path, Path]:
     bin_stub = tmp_path / "bin"
     bin_stub.mkdir()
     log = tmp_path / "calls.log"
-    ls_json = (
+    log.write_text("", encoding="utf-8")
+    no_tab = '{"spaces":[{"id":"sp1","name":"realtime-stats","tabs":[]}]}'
+    empty_tab = (
+        '{"spaces":[{"id":"sp1","name":"realtime-stats","tabs":[{"id":"tb1",'
+        '"name":"AI Harness Quotas & Usage","terminals":[]}]}]}'
+    )
+    with_board = (
         '{"spaces":[{"id":"sp1","name":"realtime-stats","tabs":[{"id":"tb1",'
         '"name":"AI Harness Quotas & Usage","terminals":[{"terminal":"t1",'
         '"pane":"p9","name":"quota-board"}]}]}]}'
     )
+    first = empty_tab if start_with_tab else no_tab
+    # ls shows the board once a tab.new or hc run has started it.
     _make_stub(
         bin_stub,
         "herdr-app",
-        f'if [ "$1" = "ls" ]; then echo \'{ls_json}\'; exit 0; fi\n'
+        f'if [ "$1" = "ls" ]; then if grep -q -e "tab.new" -e "^hc run" "{log}"; then echo \'{with_board}\'; '
+        f"else echo '{first}'; fi; exit 0; fi\n"
         f'echo "$@" >> "{log}"\necho \'{{"pane":"p10"}}\'\n',
     )
-    _make_stub(bin_stub, "hc", "echo '[]'\n")
+    _make_stub(
+        bin_stub,
+        "hc",
+        f'if [ "$1" = "run" ]; then echo "hc $@" >> "{log}"; fi\necho \'[]\'\n',
+    )
     jq_dir = str(Path(shutil.which("jq") or "/usr/bin/jq").parent)
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -436,33 +451,34 @@ def test_realtime_stats_places_board_controls_once(tmp_path: Path) -> None:
         "PATH": f"{bin_stub}:{jq_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
         "usage_quotas": "true",
     }
-    task = MISE_TASKS_DIR / "herdr" / "realtime-stats"
-    for _ in range(2):  # the second run must not split again
+    return env, log, MISE_TASKS_DIR / "herdr" / "realtime-stats"
+
+
+def test_realtime_stats_splits_controls_only_in_new_tab(tmp_path: Path) -> None:
+    env, log, task = _quota_stubs(tmp_path, start_with_tab=False)
+    subprocess.run(
+        ["bash", str(task)], env=env, capture_output=True, text=True, check=True
+    )
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert [c for c in calls if c.startswith("do pane.split")] == [
+        "do pane.split --direction right --pane p9 --mod env-board-controls"
+    ]
+    assert [c for c in calls if c.startswith("do pane.resize")] == [
+        "do pane.resize --direction right --pane p9 --px 100"
+    ]
+
+
+def test_realtime_stats_refill_after_restart_adds_no_second_widget(
+    tmp_path: Path,
+) -> None:
+    env, log, task = _quota_stubs(tmp_path, start_with_tab=True)
+    for _ in range(2):
         subprocess.run(
             ["bash", str(task)], env=env, capture_output=True, text=True, check=True
         )
     calls = log.read_text(encoding="utf-8").splitlines()
-    splits = [c for c in calls if c.startswith("do pane.split")]
-    assert splits == [
-        "do pane.split --direction right --pane p9 --mod env-board-controls"
-    ]
-    resizes = [c for c in calls if c.startswith("do pane.resize")]
-    assert resizes == ["do pane.resize --direction right --pane p9 --px 100"]
-    marker = fake_home / ".local" / "state" / "env-board" / "controls-pane"
-    assert marker.read_text(encoding="utf-8") == "p9"
-    assert (marker.stat().st_mode & 0o777) == 0o600
-
-    # A symlinked marker is refused: no split, target untouched.
-    victim = tmp_path / "victim"
-    victim.write_text("keep", encoding="utf-8")
-    marker.unlink()
-    marker.symlink_to(victim)
-    log.write_text("", encoding="utf-8")
-    subprocess.run(
-        ["bash", str(task)], env=env, capture_output=True, text=True, check=True
-    )
-    assert "pane.split" not in log.read_text(encoding="utf-8")
-    assert victim.read_text(encoding="utf-8") == "keep"
+    assert any(c.startswith("hc run") for c in calls)
+    assert not any("pane.split" in c or "pane.resize" in c for c in calls)
 
 
 def test_agy_statusline_atomic_output_cache_and_sub25ms_latency(tmp_path: Path) -> None:

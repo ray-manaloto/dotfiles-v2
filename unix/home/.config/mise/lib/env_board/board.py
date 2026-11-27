@@ -316,9 +316,9 @@ def render(
         lines.append("  Anthropic  ledger not found; no local spend record")
     else:
         lines.append(
-            f"  Anthropic  ledger spend {fmt_usd(ledger['spent_usd'])} over {ledger['runs']} runs"
-            f" (derived, last event {ledger['last_ts'] or '?'})"
+            f"  Anthropic  ledger spend {fmt_usd(ledger['spent_usd'])} over {ledger['runs']} runs (derived)"
         )
+        lines.append(f"             last ledger event {ledger['last_ts'] or '?'}")
     if balance is None:
         lines.append(
             "             live balance: n/a (no public balance endpoint; cost_report needs Admin key)"
