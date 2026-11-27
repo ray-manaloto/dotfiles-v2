@@ -148,3 +148,7 @@ fi
 
 # 5. Read-only learn ledger health (owing reviews, escalations, already-shipped proposals).
 MISE_YES=1 mise run -q learn:heal --check --repo "${main_root}" </dev/null || echo "pr:land: WARNING: learn:heal --check reported issues; read them" >&2
+
+# 6. Unpushed branches older than 3 days. The worktree-stale doctor check always passes and mise hides a
+# passing check's output, so the 3b doctor run cannot show these; print them here. Warn-only.
+python3 -I -B "${main_root}/tasks/py/worktree_audit.py" --doctor --repo "${main_root}" </dev/null | grep '^WARNING' >&2 || true

@@ -48,9 +48,14 @@ dir = "{{cwd}}"
 usage = '''
 flag "--repo <path>" help="Repository to audit (default: the directory mise was run from)"
 flag "--base <ref>" help="Base ref for merge checks (default: the remote HEAD branch, else main or master)"
-flag "--prune-merged" help="Remove merged worktrees whose tree is clean and their merged branches (git branch -d)"
+flag "--prune-merged" help="Remove merged worktrees whose tree is clean (and whose PLAN_ID has a learn review) and their merged branches"
 '''
-run = 'exec python3 -I -B "{{ config_root }}/tasks/py/worktree_audit.py" --repo "${usage_repo:-.}" ${usage_base:+--base "$usage_base"} ${usage_prune_merged:+--prune-merged}'
+run = '''
+set -- --repo "${usage_repo:-.}"
+if [ -n "${usage_base:-}" ]; then set -- "$@" --base "$usage_base"; fi
+if [ "${usage_prune_merged:-false}" = "true" ]; then set -- "$@" --prune-merged; fi
+exec python3 -I -B "{{ config_root }}/tasks/py/worktree_audit.py" "$@"
+'''
 
 [tasks."doctor:bootstrap-skills"]
 description = "Check AgentsView skill installation and fallback behavior in a scratch home"
@@ -150,9 +155,11 @@ description = "Warn-only: no ROADMAP.md \"Remaining:\" entry names a path or fil
 run = "python3 -I -B tasks/py/doctor_checks.py roadmap-drift"
 
 [doctor.checks.worktree-stale]
-description = "Warn-only: name local branches and worktrees whose commits are on no remote and whose last commit is older than 3 days"
+description = "Warn-only, always passes (mise hides its output; pr:land and doctor:matrix print it, or run `mise run doctor:explain worktree-stale`): branches and worktrees with commits on no remote whose last commit is older than 3 days"
 run = "python3 -I -B tasks/py/worktree_audit.py --doctor --stale-days 3"
-hint = "Never fails; read the WARNING lines with `mise run doctor:explain worktree-stale`, then push or delete each named branch (`mise run worktree:audit` classifies them all)."
+# The script gives up after 45s and reports "skipped", so this timeout never fires on a healthy host.
+timeout = "60s"
+hint = "Push or delete each branch named in the WARNING lines; `mise run worktree:audit` classifies them all."
 
 [doctor.checks.mise-version-parity]
 description = "Pinned mise versions match across Dockerfile, tasks/vm/up, tasks/pc/up, env:doctor, CI workflows, AGENTS.md, and configs"

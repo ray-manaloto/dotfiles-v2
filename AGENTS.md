@@ -58,8 +58,10 @@ and C++26 workstation setup.
 - **Parallel worktrees & `planning-with-files`:** Create isolated task
   worktrees with `mise run worktree:new <slug>` (remove with `worktree:rm`;
   classify stale ones with read-only `worktree:audit`, whose `--prune-merged`
-  removes only clean merged entries; doctor `worktree-stale` warns, never
-  fails, on local-only branches older than 3 days).
+  removes only clean merged entries and keeps any whose `PLAN_ID` lacks a
+  `post-task-learn` review; doctor `worktree-stale` never fails and its
+  warnings on unpushed branches older than 3 days show in `pr:land`,
+  `doctor:matrix` and `doctor:explain worktree-stale`).
   Each worktree pins its own `PLAN_ID` inside git-ignored `mise.local.toml` and
   stores git-ignored plan files under `.planning/<PLAN_ID>/` inheriting root
   `.mode` (`autonomous`). `agy-pwf-guard.py` (`PreToolUse`) enforces an active
