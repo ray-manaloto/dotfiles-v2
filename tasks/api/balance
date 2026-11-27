@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#MISE description="Read the linked Claude Console API-credit balance and expiry through the browse extension (no cookies leave Chrome)"
+#USAGE flag "--min-usd <usd>" help="Exit 2 when unexpired promotional credit is below this many USD"
+#USAGE flag "--json" help="Print JSON: {ok: true, total_usd, purchased_usd, auto_reload, promo[], promo_left_usd, read_at} or {ok: false, error}"
+# There is no public balance endpoint (anthropics/claude-code#111609, #95713; anthropic-sdk-python#505, #1942), and
+# the Admin API refuses individual Console orgs. Every known tool (claude-spend-pulse, claude_conductor, ai-usage,
+# browser-login) reads the Console's private GET /api/organizations/<org>/prepaid/credits with the browser session,
+# usually by copying the `sessionKey` cookie out of Chrome. This task instead runs that one fetch inside a background
+# tab of the owner's signed-in Chrome via the browse extension, so no cookie is extracted or stored.
+# Response shape: `amount` is total cents; `promo_tranches[]` are grants (program_id `subscription_api_credit` is the
+# subscriber monthly grant); `tranches[]` are purchased credit.
+set -euo pipefail
+
+want_json="${usage_json:-false}"
+console="https://platform.claude.com/settings/organization"
+
+# Failures print {"ok": false, "error": ...} under --json so a consumer can tell "no data" from "zero".
+fail() {
+	echo "api:balance: $1" >&2
+	if [[ ${want_json} == "true" ]]; then
+		jq -cn --arg e "${1:0:300}" '{ok: false, error: $e}' 2>/dev/null || printf '{"ok":false,"error":"jq is required"}\n'
+	fi
+	exit 1
+}
+command -v jq >/dev/null 2>&1 || fail "jq is required"
+command -v browse >/dev/null 2>&1 || fail "the browse CLI is not installed (run: browse install)"
+[[ -z ${usage_min_usd:-} || ${usage_min_usd} =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+	fail "--min-usd must be a non-negative number, got: ${usage_min_usd}"
+
+tab=""
+close_tab() {
+	if [[ -n ${tab} ]]; then
+		browse tabs --json "{\"action\":\"close\",\"tab\":${tab}}" >/dev/null 2>&1 || true
+	fi
+}
+trap close_tab EXIT
+opened="$(browse tabs --json "{\"action\":\"new\",\"url\":\"${console}\",\"group\":\"api-balance\",\"allowedOrigins\":[\"platform.claude.com\"]}")" ||
+	fail "browse could not open a tab (is Chrome running with the browse extension?)"
+new_tab="$(jq -r '.tab // empty' <<<"${opened}" 2>/dev/null || true)"
+[[ ${new_tab} =~ ^[0-9]+$ ]] || fail "browse returned no tab id: ${opened:0:200}"
+tab="${new_tab}"
+
+# Runs in the Console page. The org id comes from the page's own API calls, which the single-page app issues
+# shortly after load, so wait for them. Any unexpected shape fails closed instead of reading as zero.
+read -r -d '' expr <<'JS' || true
+let ids = [];
+for (let i = 0; i < 30 && ids.length === 0; i++) {
+  ids = [...new Set(performance.getEntriesByType("resource")
+    .map(e => (e.name.match(/\/api\/organizations\/([0-9a-f-]{36})\//) || [])[1]).filter(Boolean))];
+  if (ids.length === 0) await new Promise(r => setTimeout(r, 500));
+}
+if (ids.length !== 1) return { ok: false, error: `expected one organization id on the page, found ${ids.length}; is Chrome signed in to the Console?` };
+const r = await fetch(`/api/organizations/${ids[0]}/prepaid/credits`, { credentials: "include" });
+if (!r.ok) return { ok: false, error: `prepaid/credits returned HTTP ${r.status}` };
+const j = await r.json();
+const num = v => typeof v === "number" && Number.isFinite(v);
+if (!num(j.amount) || !num(j.amount_without_scoped_credits) || !Array.isArray(j.promo_tranches)) return { ok: false, error: "prepaid/credits response shape changed" };
+const now = Date.now();
+let left_cents = 0;
+const promo = [];
+for (const t of j.promo_tranches) {
+  if (!num(t.remaining_amount_minor_units) || !num(t.granted_amount_minor_units)) return { ok: false, error: "promo tranche shape changed" };
+  const expires_at = t.shown_expires_at || t.expires_at || null;
+  const expires_ms = expires_at === null ? null : Date.parse(expires_at);
+  if (expires_ms !== null && !Number.isFinite(expires_ms)) return { ok: false, error: "promo tranche expiry is unparsable" };
+  const expired = expires_ms !== null && expires_ms <= now;
+  if (!expired) left_cents += t.remaining_amount_minor_units;
+  promo.push({ name: t.name, program: t.program_id, remaining_usd: t.remaining_amount_minor_units / 100,
+    granted_usd: t.granted_amount_minor_units / 100, granted_at: t.granted_at, expires_at, expired });
+}
+return { ok: true, total_usd: j.amount / 100, purchased_usd: j.amount_without_scoped_credits / 100,
+  auto_reload: j.auto_reload_settings != null, promo, promo_left_usd: left_cents / 100, read_at: new Date().toISOString() };
+JS
+
+# The app can still be redirecting when the tab reports loaded, which detaches browse mid-command; retry once.
+args="$(jq -cn --argjson t "${tab}" --arg e "${expr}" '{tab: $t, world: "main", expression: $e, timeout: 30000}')"
+out="$(browse eval --json "${args}" 2>/dev/null)" || out="$(browse eval --json "${args}")" || fail "browse eval failed"
+if ! jq -e '.ok == true' >/dev/null 2>&1 <<<"${out}"; then
+	fail "$(jq -r '.error // "unexpected browse output"' <<<"${out}" 2>/dev/null || echo "unexpected browse output")"
+fi
+
+if [[ ${want_json} == "true" ]]; then
+	jq -c . <<<"${out}"
+else
+	jq -r '"Total balance: $\(.total_usd)  (purchased $\(.purchased_usd), auto-reload \(if .auto_reload then "on" else "off" end))",
+		(.promo[] | "\(.name): $\(.remaining_usd) of $\(.granted_usd) left, expires \(.expires_at)\(if .expired then " (expired)" else "" end)"),
+		"read at \(.read_at)"' <<<"${out}"
+fi
+
+if [[ -n ${usage_min_usd:-} ]]; then
+	below="$(jq -r --argjson m "${usage_min_usd}" '.promo_left_usd < $m' <<<"${out}")" || fail "could not evaluate --min-usd"
+	if [[ ${below} == true ]]; then
+		echo "api:balance: unexpired promotional credit \$$(jq -r .promo_left_usd <<<"${out}") is below --min-usd \$${usage_min_usd}" >&2
+		exit 2
+	fi
+fi
