@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly heartbeat push, Sunday 09:00 local time
+
+[Timer]
+OnCalendar=Sun *-*-* 09:00:00
+# If the PC was off or asleep at 09:00 Sunday, send it at the next boot instead.
+Persistent=true
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target
