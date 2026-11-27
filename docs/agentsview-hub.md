@@ -68,6 +68,37 @@ the restricted key and ssh alias; `hub:up --mac-ssh <alias>` writes the entry.
 - **`hub:up` restarts Ollama.** A running build survives the restart, but run
   `hub:up` sparingly during a long build.
 
+### Long builds: size the watchdog from a measured rate
+
+The 2026-11-27 build ran as transient `systemd-run --user` units (a scratch
+`agentsview serve` plus `index embeddings build`) with a `RuntimeMaxSec`
+watchdog. The cap came from a benchmark, and the benchmark was wrong:
+
+- **A small sample overstates the rate.** 847 chunks gave 2.3 chunks/s, so the
+  cap was set to 60h for a ~32h estimate. The full build ran at 1.5 chunks/s
+  after 1.5h, 1.07 after 2.2h and 1.42 after 5.2h. Chunk length varies across
+  sessions, so the rate swings for hours.
+
+- **Measure first, then cap.** Prefix each progress line with `date +%s`, let
+  the build run at least an hour, then project the remaining time from that
+  rate. Set `RuntimeMaxSec` to at least twice the projection.
+
+- **Raise the cap live with a drop-in.** On systemd 262,
+  `systemctl --user set-property <unit> RuntimeMaxSec=...` is refused
+  (`Cannot set property RuntimeMaxUSec`). A drop-in works on a running
+  transient unit, keeping the same PID:
+
+  ```sh
+  mkdir -p ~/.config/systemd/user/<unit>.service.d
+  printf '[Service]\nRuntimeMaxSec=96h\n' \
+    > ~/.config/systemd/user/<unit>.service.d/runtime-max.conf
+  systemctl --user daemon-reload
+  systemctl --user show <unit> -p RuntimeMaxUSec -p DropInPaths
+  ```
+
+  Raise both units, the daemon and the build, because the build needs the
+  daemon. Remove the drop-ins once the units have exited.
+
 ## Watching upstream
 
 A read-only cloud scheduled task checks #3437 and new releases every 6 hours.
