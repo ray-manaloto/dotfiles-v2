@@ -27,6 +27,13 @@ from pathlib import Path
 
 DEFAULT_KINDS = ("implementation_plan", "walkthrough", "learning_proposal")
 METADATA_SUFFIX = ".metadata.json"
+CHUNK = 1 << 20  # conversation files are scanned 1 MiB at a time
+MAX_FILE_BYTES = 256 << 20  # larger conversation files are skipped and counted
+MAX_BRAIN_BYTES = 16 << 20  # larger brain artifacts are skipped by --term and counted
+MAX_META_BYTES = 1 << 20
+MAX_READ_BYTES = 200 << 10  # `read` prints at most this much per artifact
+# C0 controls except \n and \t, DEL, and C1 controls (ESC starts terminal escapes).
+_CONTROLS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 # Printable ASCII (plus tab) or a whole UTF-8 multibyte sequence, 4 or more in a row.
 _PRINTABLE_RUN = re.compile(rb"(?:[\x20-\x7e\t]|[\xc2-\xf4][\x80-\xbf]{1,3}){4,}")
 _ISO_TS = re.compile(
@@ -70,6 +77,24 @@ def iso(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def clean(text: str) -> str:
+    """Drop control characters (keeps newline and tab) so output cannot drive a terminal."""
+    return _CONTROLS.sub("", text)
+
+
+class Stats:
+    """What a command could and could not read, so degraded input is not a quiet miss."""
+
+    def __init__(self) -> None:
+        self.readable = 0
+        self.skipped = 0
+        self.missing: list[str] = []
+
+    def skip(self, why: str) -> None:
+        self.skipped += 1
+        sys.stderr.write(f"agy-history: skipped {clean(why)}\n")
+
+
 def extract_strings(data: bytes) -> list[str]:
     """Return printable runs of *data*, like `strings`, but keeping UTF-8 text whole."""
     return [
@@ -78,35 +103,93 @@ def extract_strings(data: bytes) -> list[str]:
     ]
 
 
-def snippets(data: bytes, term: str, context: int, limit: int) -> tuple[int, list[str]]:
-    """Count runs holding *term* and return up to *limit* distinct snippets around it."""
+class _Found:
+    def __init__(self) -> None:
+        self.hits = 0
+        self.seen: set[str] = set()
+        self.out: list[str] = []
+
+
+def _scan_text(text: str, term: str, context: int, limit: int, found: _Found) -> None:
     needle = term.lower()
-    seen: set[str] = set()
-    out: list[str] = []
-    hits = 0
-    if not needle.strip():
-        return hits, out  # "".find("") never advances: refuse instead of spinning
-    for text in extract_strings(data):
-        low = text.lower()
-        start = low.find(needle)
-        while start != -1:
-            hits += 1
-            lo = max(0, start - context)
-            hi = min(len(text), start + len(term) + context)
-            snippet = " ".join(text[lo:hi].split())
-            if snippet not in seen and len(out) < limit:
-                seen.add(snippet)
-                out.append(snippet)
-            start = low.find(needle, start + len(needle))
-    return hits, out
+    low = text.lower()
+    start = low.find(needle)
+    while start != -1:
+        found.hits += 1
+        lo = max(0, start - context)
+        hi = min(len(text), start + len(term) + context)
+        snippet = clean(" ".join(text[lo:hi].split()))
+        if snippet not in found.seen and len(found.out) < limit:
+            found.seen.add(snippet)
+            found.out.append(snippet)
+        start = low.find(needle, start + len(needle))
 
 
-def search(root: Path, term: str, context: int = 80, limit: int = 5) -> list[dict]:
+def _contains(path: Path, needle: bytes) -> bool:
+    """Chunked case-insensitive (ASCII) substring test; *needle* is already lowercase."""
+    keep = len(needle) - 1
+    tail = b""
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(CHUNK)
+            if not chunk:
+                return False
+            buf = tail + chunk.lower()
+            if needle in buf:
+                return True
+            tail = buf[-keep:] if keep else b""
+
+
+def snippets_in_file(
+    path: Path, term: str, context: int, limit: int
+) -> tuple[int, list[str]]:
+    """Stream *path* in chunks: count printable runs holding *term*, keep distinct snippets."""
+    found = _Found()
+    if not term.strip():
+        return 0, []  # "".find("") never advances: refuse instead of spinning
+    carry = b""
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(CHUNK)
+            buf = carry + chunk
+            matches = list(_PRINTABLE_RUN.finditer(buf))
+            carry = b""
+            if chunk:  # not EOF: hold back a run that may continue in the next chunk
+                if matches and matches[-1].end() >= len(buf) - 3:
+                    last = matches[-1]
+                    if len(buf) - last.start() <= CHUNK:
+                        carry = buf[last.start() :]
+                        matches = matches[:-1]
+                    else:
+                        carry = b""
+                else:
+                    end = matches[-1].end() if matches else 0
+                    carry = buf[max(end, len(buf) - 8) :]
+            for m in matches:
+                _scan_text(
+                    m.group(0).decode("utf-8", errors="replace"),
+                    term,
+                    context,
+                    limit,
+                    found,
+                )
+            if not chunk:
+                return found.hits, found.out
+
+
+def search(
+    root: Path,
+    term: str,
+    context: int = 80,
+    limit: int = 5,
+    stats: Stats | None = None,
+) -> list[dict]:
     """Conversations under root/conversations holding *term* (case-insensitive), newest first.
 
     Files sharing a conversation uuid (``<uuid>.db`` plus SQLite sidecars such as
     ``<uuid>.db-wal``) merge into one row; ``paths`` lists every matching file.
     """
+    stats = stats or Stats()
     conv_dir = root / "conversations"
     brain_dir = root / "brain"
     if not term.strip():
@@ -119,13 +202,19 @@ def search(root: Path, term: str, context: int = 80, limit: int = 5) -> list[dic
         return []
     for path in sorted(p for p in conv_dir.rglob("*") if p.is_file()):
         try:
-            data = path.read_bytes()
+            size = path.stat().st_size
+            if size > MAX_FILE_BYTES:
+                stats.skip(f"{path} (over {MAX_FILE_BYTES >> 20} MiB)")
+                continue
+            if needle is not None and not _contains(path, needle):
+                stats.readable += 1
+                continue
+            hits, found = snippets_in_file(path, term, context, limit)
             modified = mtime_utc(path)
-        except OSError:  # vanished mid-scan, unreadable, ...
+        except OSError as error:  # vanished mid-scan, unreadable, ...
+            stats.skip(f"{path} ({error.strerror or 'unreadable'})")
             continue
-        if needle is not None and needle not in data.lower():
-            continue
-        hits, found = snippets(data, term, context, limit)
+        stats.readable += 1
         if not hits:
             continue
         conv_id = path.name.split(".", 1)[0]
@@ -154,17 +243,32 @@ def search(root: Path, term: str, context: int = 80, limit: int = 5) -> list[dic
     return results
 
 
-def _read_metadata(md_path: Path) -> dict:
+def _read_metadata(md_path: Path) -> tuple[dict, bool]:
+    """Return (metadata, malformed). A missing sidecar is normal, not malformed."""
     meta_path = md_path.with_name(md_path.name + METADATA_SUFFIX)
     try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        with meta_path.open("rb") as fh:
+            raw = fh.read(MAX_META_BYTES + 1)
+        if len(raw) > MAX_META_BYTES:
+            return {}, True
+        data = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        return {}, False
     except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return {}, True
+    if not isinstance(data, dict):
+        return {}, True
+    return data, False
 
 
-def brain(root: Path, term: str | None = None, limit: int = 20) -> list[dict]:
+def brain(
+    root: Path,
+    term: str | None = None,
+    limit: int = 20,
+    stats: Stats | None = None,
+) -> list[dict]:
     """brain/<uuid>/*.md artifacts sorted by metadata updatedAt (file mtime if absent)."""
+    stats = stats or Stats()
     brain_dir = root / "brain"
     rows: list[dict] = []
     if not brain_dir.is_dir():
@@ -173,16 +277,28 @@ def brain(root: Path, term: str | None = None, limit: int = 20) -> list[dict]:
     for md_path in sorted(brain_dir.glob("*/*.md")):
         if not md_path.is_file():  # a directory named *.md, a dangling symlink
             continue
-        meta = _read_metadata(md_path)
-        summary = str(meta.get("summary") or "")
+        meta, malformed = _read_metadata(md_path)
+        raw_summary = meta.get("summary")
+        if raw_summary is not None and not isinstance(raw_summary, str):
+            malformed = True
+            raw_summary = None
+        if malformed:
+            stats.skip(f"bad metadata for {md_path}")
+        summary = clean(" ".join((raw_summary or "").split()))
         try:
             if needle is not None:
+                if md_path.stat().st_size > MAX_BRAIN_BYTES:
+                    stats.skip(f"{md_path} (over {MAX_BRAIN_BYTES >> 20} MiB)")
+                    continue
                 body = md_path.read_text(encoding="utf-8", errors="replace")
                 if needle not in body.lower() and needle not in summary.lower():
+                    stats.readable += 1
                     continue
             updated = parse_ts(meta.get("updatedAt")) or mtime_utc(md_path)
-        except OSError:  # vanished mid-scan or unreadable
+        except OSError as error:  # vanished mid-scan or unreadable
+            stats.skip(f"{md_path} ({error.strerror or 'unreadable'})")
             continue
+        stats.readable += 1
         rows.append(
             {
                 "updated_at": iso(updated),
@@ -196,11 +312,33 @@ def brain(root: Path, term: str | None = None, limit: int = 20) -> list[dict]:
     return rows[:limit] if limit > 0 else rows
 
 
-def read(root: Path, conv: str, kinds: tuple[str, ...] = DEFAULT_KINDS) -> list[dict]:
-    """Artifacts of one brain/<uuid> (a unique uuid prefix is enough), in *kinds* order."""
+def _inside(path: Path, root_real: Path) -> bool:
+    try:
+        path.resolve().relative_to(root_real)
+    except (ValueError, OSError, RuntimeError):
+        return False
+    return True
+
+
+def read(
+    root: Path,
+    conv: str,
+    kinds: tuple[str, ...] = DEFAULT_KINDS,
+    stats: Stats | None = None,
+) -> list[dict]:
+    """Artifacts of one brain/<uuid> (a unique uuid prefix is enough), in *kinds* order.
+
+    Symlinks and anything resolving outside *root* are refused; each artifact is cut
+    at MAX_READ_BYTES and stripped of control characters.
+    """
+    stats = stats or Stats()
     brain_dir = root / "brain"
+    root_real = root.resolve()
     if not conv or "/" in conv or conv in (".", ".."):
         raise LookupError(f"brain/{conv}: not a conversation uuid")
+    for kind in kinds:
+        if not kind or "/" in kind or kind.startswith("."):
+            raise LookupError(f"artifact {kind!r}: not an artifact name")
     exact = brain_dir / conv
     if exact.is_dir():
         target = exact
@@ -216,15 +354,29 @@ def read(root: Path, conv: str, kinds: tuple[str, ...] = DEFAULT_KINDS) -> list[
             names = ", ".join(p.name for p in matches) or "none"
             raise LookupError(f"brain/{conv}: expected one match, found {names}")
         target = matches[0]
+    if target.is_symlink() or not _inside(target, root_real):
+        raise LookupError(f"brain/{target.name}: symlink or outside the root, refused")
     out: list[dict] = []
     for kind in kinds:
         md_path = target / f"{kind}.md"
+        if md_path.is_symlink():
+            stats.skip(f"{md_path} (symlink refused)")
+            continue
         if not md_path.is_file():
             continue
-        try:
-            text = md_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        if not _inside(md_path, root_real):
+            stats.skip(f"{md_path} (outside the root refused)")
             continue
+        try:
+            with md_path.open("rb") as fh:
+                raw = fh.read(MAX_READ_BYTES + 1)
+        except OSError as error:
+            stats.skip(f"{md_path} ({error.strerror or 'unreadable'})")
+            continue
+        stats.readable += 1
+        text = clean(raw[:MAX_READ_BYTES].decode("utf-8", errors="replace"))
+        if len(raw) > MAX_READ_BYTES:
+            text += f"\n[truncated at {MAX_READ_BYTES >> 10} KiB]"
         out.append(
             {
                 "conversation": target.name,
@@ -323,6 +475,8 @@ def self_check() -> int:
             errors.append(f"brain: wrong updatedAt order {order}")
         if [r["artifact"] for r in brain(root, term="D155")] != ["learning_proposal"]:
             errors.append("brain --term: summary filter failed")
+        if clean("a\x1b[31mb\x07c\td\n") != "a[31mbc\td\n":
+            errors.append("clean: control characters survived")
         docs = [r["artifact"] for r in read(root, "0f3c")]
         if docs != list(DEFAULT_KINDS):
             errors.append(f"read: expected {list(DEFAULT_KINDS)}, got {docs}")
@@ -331,6 +485,34 @@ def self_check() -> int:
         return 1
     sys.stdout.write("agy-history: self-check ok\n")
     return 0
+
+
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text} must be >= 1")
+    return value
+
+
+def _nonneg_int(text: str) -> int:
+    value = _positive_int(text) if text.strip() != "0" else 0
+    return value
+
+
+def _warn_missing(root: Path, names: tuple[str, ...], stats: Stats) -> None:
+    if not root.is_dir():
+        stats.missing.append(str(root))
+        sys.stderr.write(f"agy-history: warning: root {root} does not exist\n")
+        return
+    for name in names:
+        if not (root / name).is_dir():
+            stats.missing.append(str(root / name))
+            sys.stderr.write(
+                f"agy-history: warning: {root / name} does not exist or is not a directory\n"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -364,10 +546,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_search.add_argument("term")
     p_search.add_argument(
-        "--context", type=int, default=80, help="characters around each hit"
+        "--context", type=_nonneg_int, default=80, help="characters around each hit"
     )
     p_search.add_argument(
-        "--snippets", type=int, default=5, help="distinct snippets per file"
+        "--snippets", type=_positive_int, default=5, help="distinct snippets per file"
     )
     p_brain = sub.add_parser(
         "brain", parents=[common], help="brain artifacts, newest updatedAt first"
@@ -375,7 +557,7 @@ def main(argv: list[str] | None = None) -> int:
     p_brain.add_argument(
         "--term", default=None, help="keep artifacts whose body or summary holds this"
     )
-    p_brain.add_argument("--limit", type=int, default=20, help="rows to show (0 = all)")
+    p_brain.add_argument("--limit", type=_positive_int, default=20, help="rows to show")
     p_read = sub.add_parser(
         "read", parents=[common], help="print one conversation's brain artifacts"
     )
@@ -398,18 +580,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.root is None:
         args.root = default_root()
     args.root = args.root.expanduser()
+    stats = Stats()
+    wanted = {"search": ("conversations", "brain"), "brain": ("brain",)}
+    _warn_missing(args.root, wanted.get(args.command, ("brain",)), stats)
     if args.command == "search":
-        rows = search(args.root, args.term, args.context, args.snippets)
+        rows = search(args.root, args.term, args.context, args.snippets, stats)
     elif args.command == "brain":
-        rows = brain(args.root, args.term, args.limit)
+        rows = brain(args.root, args.term, args.limit, stats)
     else:
+        if stats.missing:
+            return 2
         try:
-            rows = read(args.root, args.conversation, tuple(args.kind or DEFAULT_KINDS))
+            rows = read(
+                args.root, args.conversation, tuple(args.kind or DEFAULT_KINDS), stats
+            )
         except LookupError as error:
             sys.stderr.write(f"agy-history read: {error}\n")
             return 1
     _emit(args, rows)
-    return 0 if rows else 1
+    if stats.skipped:
+        sys.stderr.write(
+            f"agy-history: {stats.skipped} files skipped (unreadable/malformed)\n"
+        )
+    if rows:
+        return 0
+    return 2 if stats.readable == 0 and (stats.missing or stats.skipped) else 1
 
 
 if __name__ == "__main__":

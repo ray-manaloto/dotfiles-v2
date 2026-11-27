@@ -32,15 +32,20 @@ Under `~/.gemini/antigravity-cli/` (override with `--root` or `AGY_HISTORY_ROOT`
 ## Scripted fallback
 
 `scripts/agy-history.py` is stdlib-only and runs under `/usr/bin/python3`
-(3.9). `--json` and `--root` go before or after the subcommand. Each command
-exits 1 when nothing matches; `search` rejects an empty term (exit 2).
+(3.9). `--json` and `--root` go before or after the subcommand. Exit codes: 0
+matches, 1 searched but nothing matched, 2 nothing could be read (missing root or
+`conversations/`/`brain/` dir, every file unreadable) or bad usage (empty term,
+`--limit`/`--snippets` below 1). Warnings and "N files skipped
+(unreadable/malformed)" go to stderr: a miss with skipped files is not proof of
+absence. `read` refuses symlinks and paths outside the root, caps output at
+200 KiB and strips control characters.
 
 ```sh
 py=~/.agents/skills/agy-history-fallback/scripts/agy-history.py
 python3 "$py" search "D155"          # conversations holding the term (case-insensitive), deduped snippets
 python3 "$py" search "D155" --json   # same, as JSON (one row per uuid; .db-wal sidecars merged)
 python3 "$py" brain --term Doppler   # brain artifacts, newest updatedAt first, with summaries
-python3 "$py" brain --limit 0        # every artifact
+python3 "$py" brain --limit 1000     # many artifacts (default 20)
 python3 "$py" read 0f3c9a51          # implementation_plan, walkthrough, learning_proposal of one uuid (prefix ok)
 python3 "$py" read <uuid> --kind task
 python3 "$py" --self-check           # verify the script on a scratch fixture

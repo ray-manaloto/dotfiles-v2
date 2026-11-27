@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -85,7 +86,7 @@ def test_runs_under_system_python(agy_home: Path) -> None:
     for args in (
         ("--self-check",),
         ("search", "infisical", "--json", "--root", str(agy_home)),
-        ("brain", "--limit", "0", "--json", "--root", str(agy_home)),
+        ("brain", "--limit", "1000", "--json", "--root", str(agy_home)),
     ):
         proc = subprocess.run(
             [str(PY39), "-I", "-B", str(SCRIPT), *args],
@@ -153,7 +154,7 @@ def test_search_reads_utf8_and_root_env(agy_home: Path) -> None:
 
 
 def test_brain_lists_by_updated_at_and_filters(agy_home: Path) -> None:
-    proc = _run("--json", "brain", "--limit", "0", root=agy_home)
+    proc = _run("--json", "brain", "--limit", "1000", root=agy_home)
     assert proc.returncode == 0, proc.stderr
     assert "Traceback" not in proc.stderr
     all_rows = json.loads(proc.stdout)
@@ -201,11 +202,128 @@ def test_read_prints_plan_walkthrough_and_learning_proposal(agy_home: Path) -> N
     assert "not a conversation uuid" in escape.stderr
 
 
-def test_missing_root_is_a_clean_miss(tmp_path: Path) -> None:
-    for args in (("search", "x"), ("brain",)):
-        proc = _run(*args, root=tmp_path / "absent")
-        assert proc.returncode == 1
+def test_missing_root_exits_2_with_warning(tmp_path: Path) -> None:
+    absent = tmp_path / "absent"
+    for args in (("search", "x"), ("brain",), ("read", "abcd")):
+        proc = _run(*args, root=absent)
+        assert proc.returncode == 2, (args, proc.stderr)
         assert "Traceback" not in proc.stderr
+        assert f"root {absent} does not exist" in proc.stderr
+
+
+def test_missing_brain_dir_warns_but_search_still_runs(agy_home: Path) -> None:
+    import shutil
+
+    shutil.rmtree(agy_home / "brain")
+    proc = _run("search", "infisical", root=agy_home)
+    assert proc.returncode == 0, proc.stderr
+    assert f"{agy_home / 'brain'} does not exist" in proc.stderr
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root reads anything"
+)
+def test_unreadable_file_is_counted_not_silent(agy_home: Path) -> None:
+    locked = agy_home / "conversations" / f"{OTHER}.db"
+    locked.chmod(0)
+    try:
+        proc = _run("search", "infisical", root=agy_home)
+    finally:
+        locked.chmod(0o600)
+    assert proc.returncode == 0, proc.stderr
+    assert "1 files skipped (unreadable/malformed)" in proc.stderr
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root reads anything"
+)
+def test_nothing_readable_exits_2(tmp_path: Path) -> None:
+    root = tmp_path / "agy"
+    (root / "conversations").mkdir(parents=True)
+    (root / "brain").mkdir()
+    only = root / "conversations" / f"{CONV}.db"
+    only.write_bytes(b"secret text here")
+    only.chmod(0)
+    try:
+        proc = _run("search", "secret", root=root)
+    finally:
+        only.chmod(0o600)
+    assert proc.returncode == 2
+    assert "1 files skipped" in proc.stderr
+
+
+def test_bad_metadata_is_counted(agy_home: Path) -> None:
+    meta = agy_home / "brain" / CONV / "walkthrough.md.metadata.json"
+    meta.write_text("{not json", encoding="utf-8")
+    proc = _run("brain", "--limit", "1000", root=agy_home)
+    assert proc.returncode == 0, proc.stderr
+    assert "1 files skipped (unreadable/malformed)" in proc.stderr
+
+
+def test_read_refuses_symlinked_artifact(agy_home: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("TOP-SECRET-OUTSIDE", encoding="utf-8")
+    link = agy_home / "brain" / CONV / "walkthrough.md"
+    link.unlink()
+    link.symlink_to(outside)
+    proc = _run("read", CONV, "--kind", "walkthrough", root=agy_home)
+    assert "TOP-SECRET-OUTSIDE" not in proc.stdout
+    assert proc.returncode == 2
+    assert "symlink refused" in proc.stderr
+
+
+def test_read_refuses_symlinked_conversation_dir(
+    agy_home: Path, tmp_path: Path
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "walkthrough.md").write_text("TOP-SECRET-OUTSIDE", encoding="utf-8")
+    (agy_home / "brain" / "feedface-0000").symlink_to(elsewhere)
+    proc = _run("read", "feedface", root=agy_home)
+    assert proc.returncode == 1
+    assert "TOP-SECRET-OUTSIDE" not in proc.stdout
+    assert "refused" in proc.stderr
+
+
+def test_read_strips_escape_sequences(agy_home: Path) -> None:
+    (agy_home / "brain" / CONV / "task.md").write_text(
+        "ok\x1b[31mred\x07\x7f\x9b done\n\tindented\n", encoding="utf-8"
+    )
+    proc = _run("read", CONV, "--kind", "task", root=agy_home)
+    assert proc.returncode == 0, proc.stderr
+    assert "\x1b" not in proc.stdout
+    assert "\x07" not in proc.stdout
+    assert "\x7f" not in proc.stdout
+    assert "ok[31mred done\n\tindented" in proc.stdout
+
+
+def test_read_output_is_capped(agy_home: Path) -> None:
+    (agy_home / "brain" / CONV / "task.md").write_text("x" * 300_000, encoding="utf-8")
+    proc = _run("read", CONV, "--kind", "task", root=agy_home)
+    assert proc.returncode == 0, proc.stderr
+    assert "[truncated at 200 KiB]" in proc.stdout
+    assert len(proc.stdout) < 210_000
+
+
+def test_summary_is_one_clean_line(agy_home: Path) -> None:
+    meta = agy_home / "brain" / CONV / "task.md.metadata.json"
+    meta.write_text(
+        json.dumps({"summary": "line one\n\x1b[2Jline two", "updatedAt": "x"}),
+        encoding="utf-8",
+    )
+    proc = _run("brain", "--term", "task without", root=agy_home)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.count("\n") == 1
+    assert "\x1b" not in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "args", [("brain", "--limit", "0"), ("search", "x", "--snippets", "0")]
+)
+def test_non_positive_counts_rejected(agy_home: Path, args: tuple[str, ...]) -> None:
+    proc = _run(*args, root=agy_home)
+    assert proc.returncode == 2
+    assert "must be >= 1" in proc.stderr
 
 
 def test_skill_documents_fallback_and_is_registered() -> None:

@@ -40,9 +40,8 @@ hosts, Linux containers, and macOS VMs.
   `apify`, `firecrawl`, `webclaw`); never prune locally configured MCP servers
   or plugins during sync; keep `openwiki mcp` user-wide in Claude, Codex, and
   Antigravity. When the AgentsView MCP tools are not registered, run the
-  agentsview-finding-history skill's ## CLI fallback; after any AgentsView
-  history search, also run the agy-history-fallback skill on machines that ran
-  agy (AgentsView indexes no agy sessions yet, #90). Preserve `NODE_EXTRA_CA_CERTS` under `fnox proxy run`
+  agentsview-finding-history skill's ## CLI fallback (also run the
+  agy-history-fallback skill, #90). Preserve `NODE_EXTRA_CA_CERTS` under `fnox proxy run`
   for Node 26 CLI TLS, and on Env 2-4 guests use
   `env -u ALL_PROXY -u all_proxy HTTPS_PROXY=http://127.0.0.1:1055 NODE_USE_ENV_PROXY=1`.
   Prefer `mise`, `hk`, `fnox`, `aube`, and `jdx` ecosystem tools, native compiled
