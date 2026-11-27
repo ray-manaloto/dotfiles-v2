@@ -48,6 +48,29 @@ checksum_source = "mise-versions"
 url = "https://github.com/vercel-labs/agent-browser/releases/download/v0.44.0/agent-browser-darwin-arm64"
 url_api = "https://api.github.com/repos/vercel-labs/agent-browser/releases/assets/784826793"
 
+[[tools."aqua:anthropics/anthropic-cli"]]
+version = "2.14.0"
+backend = "aqua:anthropics/anthropic-cli"
+specifiers = ["2.14.0"]
+
+[tools."aqua:anthropics/anthropic-cli"."platforms.linux-arm64"]
+checksum = "sha256:fea08806588183f0db8cd01832ad2056cc743807a9d3b1608e117eb53f38741c"
+checksum_source = "mise-versions"
+url = "https://github.com/anthropics/anthropic-cli/releases/download/v2.14.0/ant_2.14.0_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/anthropics/anthropic-cli/releases/assets/788938293"
+
+[tools."aqua:anthropics/anthropic-cli"."platforms.linux-x64"]
+checksum = "sha256:5a63b771bc9f9658e38865cede2077e0562757a4555e0cf241390d52beaedd55"
+checksum_source = "mise-versions"
+url = "https://github.com/anthropics/anthropic-cli/releases/download/v2.14.0/ant_2.14.0_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/anthropics/anthropic-cli/releases/assets/788938301"
+
+[tools."aqua:anthropics/anthropic-cli"."platforms.macos-arm64"]
+checksum = "sha256:ec4ebf6ccc8d017b7feb44efec00f89975733c63371d7ed1cf0a277833e7aa6f"
+checksum_source = "mise-versions"
+url = "https://github.com/anthropics/anthropic-cli/releases/download/v2.14.0/ant_2.14.0_macos_arm64.zip"
+url_api = "https://api.github.com/repos/anthropics/anthropic-cli/releases/assets/788938354"
+
 [[tools."aqua:docker/buildx"]]
 version = "0.39.1"
 backend = "aqua:docker/buildx"
