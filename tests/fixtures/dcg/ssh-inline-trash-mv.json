@@ -1,0 +1,6 @@
+{
+  "issue": 116,
+  "summary": "Repro 1: the Trash move that dcg's own block message suggests, sent as an ssh inline command, is blocked by core.filesystem:mv-sensitive-source-root-home.",
+  "command": "ssh pc 'mv ~/dev/tmp/av-status-probe ~/.local/share/Trash/files/'",
+  "expect": "allow"
+}

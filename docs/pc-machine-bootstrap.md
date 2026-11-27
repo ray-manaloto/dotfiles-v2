@@ -24,6 +24,20 @@ lives under `/run/cdi`.
 
 Drain the slots before changing `gha-slot`, as Bash reads it incrementally.
 
+## Removing scratch files
+
+Run `mise run pc:trash '~/dev/tmp/<task>'` to soft-delete a scratch path on
+pc. The task runs [`pc_trash.py`](../tasks/py/pc_trash.py) on the host. The
+script moves the path into `~/.local/share/Trash/files/` with a timestamp
+suffix and writes a matching `.trashinfo` file, so desktop trash tools can
+restore it. It resolves `~/` and relative paths against the remote home and
+refuses paths outside it, the Trash itself, and the folders that contain the
+Trash. Quote the path. If your shell expands `~` to the local home, the task
+maps it back to the remote home. Add `--dry-run` to preview the move.
+
+Agents use this task because dcg blocks `ssh pc 'mv ... Trash'`. See
+[dcg upstream report drafts](dcg-upstream-reports.md).
+
 ## Cooling and hardware monitoring
 
 The `linux,pc` bootstrap declares the NCT6775 module-load file, the NZXT H1

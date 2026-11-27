@@ -1,0 +1,6 @@
+{
+  "issue": 116,
+  "summary": "Control for repro 1: the same move without ssh. If this also blocks, the rule (not ssh parsing) misses the Trash/files/ target.",
+  "command": "mv ~/dev/tmp/av-status-probe ~/.local/share/Trash/files/",
+  "expect": "allow"
+}
