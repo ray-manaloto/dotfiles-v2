@@ -3196,11 +3196,11 @@ _DRIFT_ROADMAP = """\
 # Roadmap
 
 - [ ] [#23](x) Wave 2A: **Shipped:** `tasks/hub/up` (`abc1234`). **Remaining:**
-  `config.pc.toml` + `tasks/pc/{up,sync}` Option A cutover
+  `unix/home/.config/mise/config.pc.toml` + `tasks/pc/{up,sync}` Option A cutover
   and `ops/kb-queue` / `work/*` board channels.
 - [ ] [#24](x) Wave 2B: **Shipped:** `tasks/hub/up`. **Remaining:** standalone
   `tasks/env/quota` (`env:doctor --smoke`) and `bootstrap:agy`.
-  - [ ] Nested item, lowercase marker; remaining: the `docs/` directory.
+  - [ ] Nested item, lowercase marker; remaining: the `docs/x.md` file.
 - [ ] Still to do. **Remaining:** `bootstrap:missing`, `@vercel/board@0.56.1`,
   `0.55.0`, `fnox-age.key`, `kb-v2-pc`, `work/*`, `env:doctor --smoke`.
 """
@@ -3222,18 +3222,36 @@ def test_roadmap_drift_flags_remaining_paths_on_main_only() -> None:
     first, second, third = warnings
     # Reported on the line holding "Remaining:", never for Shipped paths.
     assert first.startswith("roadmap-drift: ROADMAP.md:3 ")
-    assert "`config.pc.toml`" in first and "`tasks/pc/up`" in first
+    assert (
+        "`unix/home/.config/mise/config.pc.toml`" in first and "`tasks/pc/up`" in first
+    )
     assert "`tasks/pc/sync`" in first and "tasks/hub/up" not in first
     assert "ops/kb-queue" not in first
     assert second.startswith("roadmap-drift: ROADMAP.md:6 ")
     assert "`tasks/env/quota`" in second
     assert "`bootstrap:agy (unix/home/.config/mise/tasks/bootstrap/agy)`" in second
-    assert third.startswith("roadmap-drift: ROADMAP.md:8 ") and "`docs`" in third
+    assert third.startswith("roadmap-drift: ROADMAP.md:8 ") and "`docs/x.md`" in third
 
     # Task names, versions, globs and commands that are not on main never warn.
     files.update({"work/a", "env/doctor", "kb-v2-pc", "fnox-age.key.bak"})
     assert len(doc_mod.find_roadmap_drift(_DRIFT_ROADMAP, files)) == 3
     assert doc_mod.find_roadmap_drift(_DRIFT_ROADMAP, {"tasks/hub/up"}) == []
+
+
+def test_roadmap_drift_ignores_loose_matches() -> None:
+    doc_mod = _load_task_module("doctor_checks")
+    files = {"README.md", "mise.toml", "docs/a.md", "tasks/pr/land", "tasks/env/doctor"}
+
+    def drift(text: str) -> list[str]:
+        return doc_mod.find_roadmap_drift(f"- [ ] Item. {text}\n", files)
+
+    assert drift("**Remaining:** `README.md` and `mise.toml`.") == []  # basenames
+    assert drift("**Remaining:** the `docs/` dir and `tasks/pr` dir.") == []  # dirs
+    assert drift("**Remaining:** extend `tasks/env/doctor`.") == []
+    assert drift("**Remaining:** Harden the existing `tasks/env/doctor`.") == []
+    assert drift("**Remaining:** X. **Shipped:** `tasks/pr/land`") == []
+    assert drift("Remaining: X. Shipped: `tasks/pr/land`") == []
+    assert len(drift("**Remaining:** build `tasks/pr/land`.")) == 1  # exact path
 
 
 def test_roadmap_drift_reads_main_and_never_fails(tmp_path: Path) -> None:

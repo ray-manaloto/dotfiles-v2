@@ -1639,6 +1639,10 @@ def check_git_index_locks(
 
 
 _ROADMAP_REMAINING = re.compile(r"remaining:", re.IGNORECASE)
+_ROADMAP_SHIPPED = re.compile(r"\*\*Shipped|Shipped:", re.IGNORECASE)
+_ROADMAP_EXTEND = re.compile(
+    r"\b(?:extend|update|edit|fix|harden)\w*(?:\s+[^\s`]+){0,3}\s*$", re.IGNORECASE
+)
 _ROADMAP_ITEM = re.compile(r"^\s*(?:[-*+]|\d+\.)\s")
 _ROADMAP_CODE = re.compile(r"`([^`\n]+)`")
 _ROADMAP_BRACES = re.compile(r"\{([^{}]*)\}")
@@ -1710,7 +1714,12 @@ def find_roadmap_drift(text: str, files: set[str]) -> list[str]:
     """Return `ROADMAP.md:<line>` warnings for "Remaining:" text naming a path in ``files``.
 
     A list item is the bullet line plus its continuation lines; only text after the
-    item's "Remaining:" marker is scanned, so "Shipped:" paths never warn.
+    item's "Remaining:" marker is scanned, and scanning stops at the next
+    "Shipped:" / "**Shipped" marker, so "Shipped:" paths never warn. A hit needs a
+    backticked candidate containing "/" that is an exact tracked file path (bare
+    basenames and directories never warn). A candidate preceded within ~3 words by
+    extend/update/edit/fix/harden (case-insensitive) is an "extend an existing file"
+    item and is not a hit.
     """
     lines = text.splitlines()
     items: list[list[int]] = []
@@ -1725,8 +1734,6 @@ def find_roadmap_drift(text: str, files: set[str]) -> list[str]:
             items.append([idx])
         else:
             items[-1].append(idx)
-    dirs = {str(p) for f in files for p in Path(f).parents if str(p) != "."}
-    basenames = {Path(f).name for f in files}
     warnings: list[str] = []
     for item in items:
         offset = 0
@@ -1740,14 +1747,17 @@ def find_roadmap_drift(text: str, files: set[str]) -> list[str]:
             continue
         lineno = item[max(i for i, s in enumerate(starts) if s <= m.start())] + 1
         found: list[str] = []
-        for code in _ROADMAP_CODE.findall(joined[m.end() :]):
+        tail = joined[m.end() :]
+        stop = _ROADMAP_SHIPPED.search(tail)
+        if stop is not None:
+            tail = tail[: stop.start()]
+        for cm in _ROADMAP_CODE.finditer(tail):
+            if _ROADMAP_EXTEND.search(tail[: cm.start()]):
+                continue
+            code = cm.group(1)
             for label, candidates in _roadmap_path_candidates(code):
                 hit = next(
-                    (
-                        c
-                        for c in candidates
-                        if c in files or c in dirs or ("/" not in c and c in basenames)
-                    ),
+                    (c for c in candidates if "/" in c and c in files),
                     None,
                 )
                 if hit is not None and label not in found:
