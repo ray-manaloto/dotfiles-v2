@@ -333,6 +333,11 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
     exclude = List(".github/openai-review/test_*.py")
     check = "python3 -I -B tasks/py/metadata_gate_lint.py {{ files }}"
   }
+  // `doppler configure set token` puts the token in the system keyring; keep it in a 0600 file (#88/#89, #91).
+  // Scans every file; allow a reviewed line with `doppler-token: ok <reason>`.
+  ["doppler-token-lint"] = new Step {
+    check = "python3 -I -B tasks/py/doppler_token_lint.py {{ files }}"
+  }
   // /usr/bin/python3 is 3.9.6 on macOS and runs these; ruff targets py315 elsewhere (#112). Keep the glob in
   // step with pyproject.toml per-file-target-version.
   ["py39-compat"] = new Step {
@@ -341,6 +346,7 @@ local const fastSteps: Mapping<String, Step | Group> = (picked) {
         "unix/home/.gemini/config/hooks/*.py",
         "tasks/py/metadata_gate_lint.py",
         "tasks/py/remote_ssh_lint.py",
+        "tasks/py/doppler_token_lint.py",
         "tasks/py/py39_compat.py",
       )
     check =
