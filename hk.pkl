@@ -62,7 +62,8 @@ local const hygieneGroup = picked["hygiene"] as Group
 local const miseGroup = picked["mise"] as Group
 local const oxfmtStep = picked["oxfmt"] as Step
 local const shellGroup = picked["shell"] as Group
-// These scripts are byte-for-byte cpp-standard imports used by pc bootstrap.
+// These scripts were imported byte for byte from cpp-standard (6eec09e, now sunset).
+// This repository is their source of truth.
 local const pcRunnerLauncher = "unix/home/.config/mise/assets/pc/gha-slot"
 local const pcAgentSecrets = "unix/home/.config/mise/assets/pc/agent-secrets.bash"
 // Preserve the live pc scripts exactly, including their existing formatting.
