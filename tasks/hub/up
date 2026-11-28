@@ -183,9 +183,9 @@ mkdir -p "${REMOTE_HOME}/.local/share/pc-hub/ollama/models"
 board_prefix="${REMOTE_HOME}/.local/share/pc-hub/board"
 vb_bin="${board_prefix}/node_modules/.bin/vb"
 board_pkg="${board_prefix}/node_modules/@vercel/board/package.json"
-if [[ ! -x ${vb_bin} ]] || ! grep -Fq '"version": "0.56.1"' "${board_pkg}" 2>/dev/null; then
+if [[ ! -x ${vb_bin} ]] || ! grep -Fq '"version": "0.57.0"' "${board_pkg}" 2>/dev/null; then
 	mkdir -p "${board_prefix}"
-	npm install --no-audit --no-fund --prefix "${board_prefix}" "@vercel/board@0.56.1" >/dev/null
+	npm install --no-audit --no-fund --prefix "${board_prefix}" "@vercel/board@0.57.0" >/dev/null
 fi
 ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"
 

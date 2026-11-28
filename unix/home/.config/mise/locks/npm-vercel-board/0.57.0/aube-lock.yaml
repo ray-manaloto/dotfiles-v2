@@ -9,21 +9,24 @@ importers:
   .:
     dependencies:
       '@vercel/board':
-        specifier: 0.56.1
-        version: 0.56.1
+        specifier: 0.57.0
+        version: 0.57.0
 
 packages:
 
-  '@vercel/board@0.56.1':
-    resolution: {integrity: sha512-fevWChw7CaZ0hIEMh8g8L8cHudzw/vqO9IfWWUxZCjzgAQ0hMxR1pv+QnM2FIMZLiO9WXJR+UD1onw0xOA/pSg==}
+  '@vercel/board@0.57.0':
+    resolution: {integrity: sha512-n/rnmtR7UPWw3xsuLgbrw6WYPt5vq5ZuBUOUEmpERcyRa3NKuH/e5BAf3wuvOarQfRnqq93cU4vkbDx6D4590A==}
     engines: {node: '>=22.18'}
     hasBin: true
     peerDependencies:
       '@chat-adapter/github': ^4.41.1
       '@chat-adapter/linear': ^4.41.1
       '@chat-adapter/slack': ^4.41.1
+      '@vercel/blob': ^2.8.0
       '@vercel/connect': ^2.3.4
+      '@vercel/queue': '*'
       chat: ^4.41.1
+      pg: ^8.11.0
     peerDependenciesMeta:
       '@chat-adapter/github':
         optional: true
@@ -31,9 +34,15 @@ packages:
         optional: true
       '@chat-adapter/slack':
         optional: true
+      '@vercel/blob':
+        optional: true
       '@vercel/connect':
         optional: true
+      '@vercel/queue':
+        optional: true
       chat:
+        optional: true
+      pg:
         optional: true
 
   '@vercel/cli-config@0.3.1':
@@ -135,7 +144,7 @@ packages:
 
 snapshots:
 
-  '@vercel/board@0.56.1':
+  '@vercel/board@0.57.0':
     dependencies:
       '@vercel/oidc': 3.8.10
       jose: 6.2.18

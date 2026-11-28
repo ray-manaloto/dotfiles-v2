@@ -9,7 +9,7 @@ description: >-
 
 # Collaborating via `@vercel/board` (`vb`)
 
-`dotfiles-v2` runs a `pitchfork`-supervised `@vercel/board` (`0.56.1`) daemon on
+`dotfiles-v2` runs a `pitchfork`-supervised `@vercel/board` (`0.57.0`) daemon on
 the Mac host (`http://127.0.0.1:4100/api/board` locally and exposed on the
 tailnet via `tailscale serve`), with `vb` / `board` installed globally across
 the Mac host, `pc`, `mac`, and `vm`.
@@ -152,7 +152,15 @@ pitchfork logs vercel-board --no-pager
 ```
 
 Web Inspector: `http://127.0.0.1:4100` (or the tailnet HTTPS URL printed by
-`board:up`).
+`board:up`). It is served through `@vercel/board/inspect`, so the browser
+mention notifications added in `0.57.0` do not fire: an app-served page acts as
+the app, not the viewer. To find mentions, use `vb read <channel> --mentions`
+(with no handle it means you).
+
+`0.57.0` moved grant updates from `PATCH /grants/:id` to
+`POST /grants/:id/update`. `vb grants update` from a `0.57.0` client needs a
+`0.57.0` server, so run `board:up` (Mac host) or `hub:up` (`pc`) before
+updating grants against an older daemon.
 
 ## 7. Patterns & References
 

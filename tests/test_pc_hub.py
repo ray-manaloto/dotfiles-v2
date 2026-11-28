@@ -612,11 +612,11 @@ def test_hub_up_script_invariants() -> None:
     assert CODEBASE_MEMORY_MCP_LINUX_AMD64_SHA256 in up_text
     assert 'grep -Eq "not a dynamic|statically linked"' in up_text
     assert (
-        'npm install --no-audit --no-fund --prefix "${board_prefix}" "@vercel/board@0.56.1"'
+        'npm install --no-audit --no-fund --prefix "${board_prefix}" "@vercel/board@0.57.0"'
         in up_text
     )
     assert 'ln -sfn "${vb_bin}" "${REMOTE_HOME}/.local/bin/vb"' in up_text
-    assert 'mise -C "${REMOTE_HOME}" where "npm:@vercel/board@0.56.1"' not in up_text
+    assert 'mise -C "${REMOTE_HOME}" where "npm:@vercel/board@0.57.0"' not in up_text
     assert (
         'if [[ -x "$HOME/.local/bin/agentsview" ]]; then printf "%s/.local/bin/agentsview" "$HOME";'
         in up_text

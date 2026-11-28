@@ -2,6 +2,6 @@
   "name": "mise-npm-install",
   "private": true,
   "dependencies": {
-    "@vercel/board": "0.56.1"
+    "@vercel/board": "0.57.0"
   }
 }
