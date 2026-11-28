@@ -413,7 +413,7 @@ def test_herdr_env_stats_mod_and_sync_tasks(tmp_path: Path) -> None:
 
 
 def _quota_stubs(
-    tmp_path: Path, start_with_tab: bool
+    tmp_path: Path, start_with_tab: bool, ls_delay: str = "0"
 ) -> tuple[dict[str, str], Path, Path]:
     bin_stub = tmp_path / "bin"
     bin_stub.mkdir()
@@ -435,7 +435,7 @@ def _quota_stubs(
         bin_stub,
         "herdr-app",
         f'if [ "$1" = "ls" ]; then if grep -q -e "tab.new" -e "^hc run" "{log}"; then echo \'{with_board}\'; '
-        f"else echo '{first}'; fi; exit 0; fi\n"
+        f"else sleep {ls_delay}; echo '{first}'; fi; exit 0; fi\n"
         f'echo "$@" >> "{log}"\necho \'{{"pane":"p10"}}\'\n',
     )
     _make_stub(
@@ -477,8 +477,34 @@ def test_realtime_stats_refill_after_restart_adds_no_second_widget(
             ["bash", str(task)], env=env, capture_output=True, text=True, check=True
         )
     calls = log.read_text(encoding="utf-8").splitlines()
-    assert any(c.startswith("hc run") for c in calls)
-    assert not any("pane.split" in c or "pane.resize" in c for c in calls)
+    assert sum(c.startswith("hc run") for c in calls) == 1
+    assert not any("pane.split" in c for c in calls)
+    # The refilled board lands right of the widget: swap it back left, restore the width.
+    assert [c for c in calls if c.startswith(("do pane.swap", "do pane.resize"))] == [
+        "do pane.swap --pane p9 --direction left",
+        "do pane.resize --direction right --pane p9 --px 100",
+    ]
+
+
+def test_realtime_stats_concurrent_runs_add_one_widget(tmp_path: Path) -> None:
+    # ls is slow until a tab exists, so both runs would see "no tab" without the lock.
+    env, log, task = _quota_stubs(tmp_path, start_with_tab=False, ls_delay="0.4")
+    procs = [
+        subprocess.Popen(
+            ["bash", str(task)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    for proc in procs:
+        _out, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, err
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert sum(c.startswith("do tab.new") for c in calls) == 1
+    assert sum(c.startswith("do pane.split") for c in calls) == 1
 
 
 def test_agy_statusline_atomic_output_cache_and_sub25ms_latency(tmp_path: Path) -> None:
@@ -720,3 +746,65 @@ def test_env_stats_schema_first_collector_and_cli(tmp_path: Path) -> None:
     validated = EnvStatsSnapshotResponse.model_validate(json.loads(cli_res.stdout))
     assert validated.rc == 0
     assert validated.agy_sessions[0].compaction_headroom_tokens == 254000
+
+
+_FLOCK_HOLDER = """
+import fcntl, sys, time
+handle = open(sys.argv[1], "a")
+fcntl.flock(handle, fcntl.LOCK_EX)
+print("held", flush=True)
+time.sleep(60)
+"""
+
+
+def test_realtime_stats_waits_for_live_holder_then_runs_after_it_dies(
+    tmp_path: Path,
+) -> None:
+    env, log, task = _quota_stubs(tmp_path, start_with_tab=False)
+    lock = Path(env["HOME"]) / ".local" / "state" / "env-board" / "quotas-tab.lock"
+    lock.parent.mkdir(parents=True)
+    holder = subprocess.Popen(
+        [sys.executable, "-I", "-c", _FLOCK_HOLDER, str(lock)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        blocked = subprocess.run(
+            ["bash", str(task)],
+            env={**env, "HERDR_QUOTAS_LOCK_WAIT_S": "1"},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert blocked.returncode == 1 and "holds" in blocked.stderr
+        assert "tab.new" not in log.read_text(encoding="utf-8")
+    finally:
+        holder.kill()  # SIGKILL: the kernel must drop the lock with the process
+        holder.wait()
+    subprocess.run(
+        ["bash", str(task)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert sum(c.startswith("do tab.new") for c in calls) == 1
+
+
+def test_realtime_stats_leftover_lock_file_does_not_block(tmp_path: Path) -> None:
+    env, log, task = _quota_stubs(tmp_path, start_with_tab=False)
+    lock = Path(env["HOME"]) / ".local" / "state" / "env-board" / "quotas-tab.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("", encoding="utf-8")
+    subprocess.run(
+        ["bash", str(task)],
+        env={**env, "HERDR_QUOTAS_LOCK_WAIT_S": "1"},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert "do tab.new" in log.read_text(encoding="utf-8")

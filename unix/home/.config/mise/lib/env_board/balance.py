@@ -279,7 +279,9 @@ class BalanceScheduler:
         self.runner = runner
         self.availability = availability
         self.clock = clock
-        self.settings = DEFAULT_SETTINGS
+        # Read live settings now (a cheap local read) so the first frame shows the
+        # owner's interval and pause state instead of the defaults.
+        self.settings = load_settings(self.settings_path, DEFAULT_SETTINGS)
         self.unavailable: str | None = None
         self.running = False
         self._lock = threading.Lock()

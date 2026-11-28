@@ -733,3 +733,75 @@ def test_widget_chmods_settings_after_write():
     write = main_js.index("await writeTextFile(path")
     chmod = main_js.index('exec("/bin/chmod", ["-h", "600", path]')
     assert 0 < chmod - write < 300
+
+
+def test_render_says_loading_while_pollers_pending():
+    text = board.render(
+        now=NOW,
+        quota_rows=None,
+        quota_age_s=None,
+        usage=None,
+        ledger=None,
+        window_days=7,
+        pending=("usage", "ledger"),
+    )
+    assert "ledger loading" in text and "(loading...)" in text
+    assert "ledger not found" not in text and "AgentsView unavailable" not in text
+
+
+def test_scheduler_reads_live_settings_before_first_tick(tmp_path):
+    state = tmp_path / "env-board"
+    state.mkdir()
+    (state / "settings.json").write_text(
+        json.dumps({"balance_interval_min": 15, "balance_paused": True})
+    )
+    sched = balance.BalanceScheduler(
+        state=state, repo_root=tmp_path, availability=lambda _root: None
+    )
+    view = sched.view()
+    assert view["interval_min"] == 15 and view["paused"] is True
+
+
+def test_cli_frame_marks_unreported_pollers_pending():
+    from env_board import cli
+
+    pollers = {n: cli.Poller(n, lambda: None, 1) for n in ("quota", "usage", "ledger")}
+    text = cli.frame(pollers, 7, 10)
+    assert "ledger loading" in text and "ledger not found" not in text
+    pollers["ledger"].updated = time.monotonic()  # reported: no ledger on disk
+    assert "ledger not found" in cli.frame(pollers, 7, 10)
+
+
+def test_wait_for_returns_once_poller_reports():
+    from env_board import cli
+
+    poller = cli.Poller("ledger", lambda: {"x": 1}, 60)
+    poller.start()
+    started = time.monotonic()
+    cli.wait_for(poller, 5)
+    assert poller.updated is not None and time.monotonic() - started < 2
+
+
+def test_ctrl_c_during_first_frame_wait_exits_cleanly(monkeypatch):
+    from env_board import cli
+
+    stopped = []
+
+    class FakeTicker:
+        def __init__(self, _scheduler):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            stopped.append(True)
+
+    def interrupt(_poller, _timeout):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "BalanceScheduler", lambda: None)
+    monkeypatch.setattr(cli, "BalanceTicker", FakeTicker)
+    monkeypatch.setattr(cli.Poller, "start", lambda self: None)
+    monkeypatch.setattr(cli, "wait_for", interrupt)
+    assert cli.run() == 0 and stopped == [True]
