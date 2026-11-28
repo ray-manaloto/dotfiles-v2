@@ -79,10 +79,15 @@ fi
 
 if [[ ${want_quotas} == "true" ]]; then
 	quota_tab="AI Harness Quotas & Usage"
+	# Fixed widths (Herdr points) for whatever sits left of the board (the session-tree mod) and for
+	# the env-board-controls widget on its right; the board takes the rest.
+	QUOTA_LEFT_PT=260
+	QUOTA_WIDGET_PT=170
 	quota_cwd="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || pwd -P)"
 	commands+=("tab.new --space ${space_id} --name ${quota_tab} --argv [\"mise\",\"run\",\"env:board\"]")
 	commands+=("pane.split --direction right --pane <quota-board pane> --mod env-board-controls (new tab only)")
 	commands+=("pane.swap --pane <quota-board pane> --direction left (refilled tab only)")
+	commands+=("pane.resize --pane <quota-board pane>: left pane ${QUOTA_LEFT_PT}pt, widget ${QUOTA_WIDGET_PT}pt, board the rest")
 	if [[ ${dry_run} != "true" ]]; then
 		find_board_pane() {
 			local pane=""
@@ -92,6 +97,16 @@ if [[ ${want_quotas} == "true" ]]; then
 				sleep 0.5
 			done
 			printf '%s' "${pane}"
+		}
+		# Herdr gives a closed pane's width to its neighbour and splits 50/50, so widths drift with
+		# every restart. Push both board borders to the neighbours' minimum, then hand the neighbours
+		# fixed widths back. With no neighbour on a side, that side's moves do nothing.
+		normalize_board_widths() {
+			local pane="$1"
+			herdr-app "do" pane.resize --direction left --pane "${pane}" --px 100000 >/dev/null 2>&1 || true
+			herdr-app "do" pane.resize --direction right --pane "${pane}" --px 100000 >/dev/null 2>&1 || true
+			herdr-app "do" pane.resize --direction left --pane "${pane}" --px "-${QUOTA_LEFT_PT}" >/dev/null 2>&1 || true
+			herdr-app "do" pane.resize --direction right --pane "${pane}" --px "-${QUOTA_WIDGET_PT}" >/dev/null 2>&1 || true
 		}
 		# Reuse an existing tab by name: fill it when it has no terminal, else leave it running.
 		tab_json="$(herdr-app ls 2>/dev/null | jq -c --arg sp "${space_id}" --arg n "${quota_tab}" '[.spaces[]? | select(.id == $sp) | .tabs[]? | select(.name == $n)] | first // empty' || true)"
@@ -106,12 +121,12 @@ if [[ ${want_quotas} == "true" ]]; then
 			tab_id="$(printf '%s' "${tab_json}" | jq -r '.id')"
 			hc run --bg --no-parent --outlive-parent --name quota-board --cwd "${quota_cwd}" \
 				--label "herdr.space=${space_id}" --label "herdr.tab=${tab_id}" mise run env:board >/dev/null 9>&-
-			# Herdr adds the refilled board to the right of the surviving widget at 50/50. Swap it back
-			# to the left and restore the narrower widget. With no widget, the swap is a no-op.
+			# Herdr adds the refilled board to the right of the surviving widget. Swap it back to the
+			# left (a no-op with no widget), then reset the widths.
 			board_pane="$(find_board_pane)"
 			if [[ -n ${board_pane} ]]; then
 				herdr-app "do" pane.swap --pane "${board_pane}" --direction left >/dev/null 2>&1 || true
-				herdr-app "do" pane.resize --direction right --pane "${board_pane}" --px 100 >/dev/null 2>&1 || true
+				normalize_board_widths "${board_pane}"
 			fi
 		fi
 		# Put the env-board-controls widget beside the board only in a tab this run created. Refilling an
@@ -121,8 +136,7 @@ if [[ ${want_quotas} == "true" ]]; then
 		if [[ ${created_tab:-false} == "true" ]]; then
 			board_pane="$(find_board_pane)"
 			if [[ -n ${board_pane} ]] && herdr-app "do" pane.split --direction right --pane "${board_pane}" --mod env-board-controls >/dev/null; then
-				# The split is 50/50; move the board's right border 100px toward the widget.
-				herdr-app "do" pane.resize --direction right --pane "${board_pane}" --px 100 >/dev/null 2>&1 || true
+				normalize_board_widths "${board_pane}"
 			fi
 		fi
 		exec 9>&-
