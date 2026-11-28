@@ -63,6 +63,18 @@ def collect_ledger(root: Path) -> dict[str, Any] | None:
         return board.parse_ledger(handle)
 
 
+FIRST_FRAME_WAIT_S = 2.0
+
+
+def wait_for(poller: Poller, timeout_s: float) -> None:
+    """Block until ``poller`` has reported once (value or error) or the timeout passes."""
+    deadline = time.monotonic() + timeout_s
+    while (
+        time.monotonic() < deadline and poller.updated is None and poller.error is None
+    ):
+        time.sleep(0.05)
+
+
 class Poller:
     """Background refresher so a slow probe never freezes the clock."""
 
@@ -111,6 +123,7 @@ def _frame(
     scheduler: BalanceScheduler | None,
 ) -> str:
     errors = [p.error for p in pollers.values() if p.error]
+    pending = [n for n, p in pollers.items() if p.updated is None and p.error is None]
     return board.render(
         now=datetime.now(UTC),
         quota_rows=pollers["quota"].value,
@@ -121,6 +134,7 @@ def _frame(
         errors=errors,
         interval_s=interval_s,
         balance=None if scheduler is None else scheduler.view(),
+        pending=pending,
     )
 
 
@@ -156,6 +170,8 @@ def run(
         return 0
     ticker = BalanceTicker(scheduler)
     ticker.start()
+    # Give the fast local reads (the ledger) a moment so the first frame is real data.
+    wait_for(pollers["ledger"], FIRST_FRAME_WAIT_S)
     try:
         while True:
             sys.stdout.write(CLEAR + frame(pollers, window_days, interval, scheduler))

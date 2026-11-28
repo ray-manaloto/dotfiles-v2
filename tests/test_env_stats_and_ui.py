@@ -413,7 +413,7 @@ def test_herdr_env_stats_mod_and_sync_tasks(tmp_path: Path) -> None:
 
 
 def _quota_stubs(
-    tmp_path: Path, start_with_tab: bool
+    tmp_path: Path, start_with_tab: bool, ls_delay: str = "0"
 ) -> tuple[dict[str, str], Path, Path]:
     bin_stub = tmp_path / "bin"
     bin_stub.mkdir()
@@ -435,7 +435,7 @@ def _quota_stubs(
         bin_stub,
         "herdr-app",
         f'if [ "$1" = "ls" ]; then if grep -q -e "tab.new" -e "^hc run" "{log}"; then echo \'{with_board}\'; '
-        f"else echo '{first}'; fi; exit 0; fi\n"
+        f"else sleep {ls_delay}; echo '{first}'; fi; exit 0; fi\n"
         f'echo "$@" >> "{log}"\necho \'{{"pane":"p10"}}\'\n',
     )
     _make_stub(
@@ -477,8 +477,56 @@ def test_realtime_stats_refill_after_restart_adds_no_second_widget(
             ["bash", str(task)], env=env, capture_output=True, text=True, check=True
         )
     calls = log.read_text(encoding="utf-8").splitlines()
-    assert any(c.startswith("hc run") for c in calls)
-    assert not any("pane.split" in c or "pane.resize" in c for c in calls)
+    assert sum(c.startswith("hc run") for c in calls) == 1
+    assert not any("pane.split" in c for c in calls)
+    # The refilled board lands right of the widget: swap it back left, restore the width.
+    assert [c for c in calls if c.startswith(("do pane.swap", "do pane.resize"))] == [
+        "do pane.swap --pane p9 --direction left",
+        "do pane.resize --direction right --pane p9 --px 100",
+    ]
+
+
+def test_realtime_stats_concurrent_runs_add_one_widget(tmp_path: Path) -> None:
+    # ls is slow until a tab exists, so both runs would see "no tab" without the lock.
+    env, log, task = _quota_stubs(tmp_path, start_with_tab=False, ls_delay="0.4")
+    procs = [
+        subprocess.Popen(
+            ["bash", str(task)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(2)
+    ]
+    for proc in procs:
+        _out, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, err
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert sum(c.startswith("do tab.new") for c in calls) == 1
+    assert sum(c.startswith("do pane.split") for c in calls) == 1
+    lock = Path(env["HOME"]) / ".local" / "state" / "env-board" / "quotas-tab.lock"
+    assert not lock.exists()
+
+
+def test_realtime_stats_reclaims_lock_from_dead_holder(tmp_path: Path) -> None:
+    env, log, task = _quota_stubs(tmp_path, start_with_tab=False)
+    lock = Path(env["HOME"]) / ".local" / "state" / "env-board" / "quotas-tab.lock"
+    lock.mkdir(parents=True)
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    (lock / "pid").write_text(f"{dead.pid}\n", encoding="utf-8")
+    subprocess.run(
+        ["bash", str(task)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert sum(c.startswith("do tab.new") for c in calls) == 1
+    assert not lock.exists()
 
 
 def test_agy_statusline_atomic_output_cache_and_sub25ms_latency(tmp_path: Path) -> None:
@@ -720,3 +768,25 @@ def test_env_stats_schema_first_collector_and_cli(tmp_path: Path) -> None:
     validated = EnvStatsSnapshotResponse.model_validate(json.loads(cli_res.stdout))
     assert validated.rc == 0
     assert validated.agy_sessions[0].compaction_headroom_tokens == 254000
+
+
+def test_realtime_stats_reclaims_old_lock_even_with_live_pid(tmp_path: Path) -> None:
+    # A crashed run's pid may be reused by a live process: age alone must free the lock.
+    env, log, task = _quota_stubs(tmp_path, start_with_tab=False)
+    lock = Path(env["HOME"]) / ".local" / "state" / "env-board" / "quotas-tab.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    old = time.time() - 600
+    os.utime(lock, (old, old))
+    subprocess.run(
+        ["bash", str(task)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert sum(c.startswith("do tab.new") for c in calls) == 1
+    assert not lock.exists()
+    assert not list(lock.parent.glob("quotas-tab.lock.stale.*"))

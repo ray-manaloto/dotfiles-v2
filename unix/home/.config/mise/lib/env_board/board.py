@@ -266,8 +266,13 @@ def render(
     errors: Sequence[str] = (),
     interval_s: int = 10,
     balance: Mapping[str, Any] | None = None,
+    pending: Sequence[str] = (),
 ) -> str:
-    """Render the whole board as plain text (no ANSI) for one frame."""
+    """Render the whole board as plain text (no ANSI) for one frame.
+
+    ``pending`` names pollers that have not reported yet ("usage", "ledger"),
+    so a first frame says "loading" instead of "unavailable" or "not found".
+    """
     stamp = now.astimezone().strftime("%Y-%m-%d %H:%M:%S")
     lines = [f"AI HARNESS QUOTAS & USAGE   {stamp}   refresh {interval_s}s", ""]
 
@@ -298,7 +303,9 @@ def render(
     lines.append(
         f"  {'family':<13} {'today tok':>10} {'today $':>9} {f'{window_days}d tok':>10} {f'{window_days}d $':>10}"
     )
-    if usage is None:
+    if usage is None and "usage" in pending:
+        lines.append("  (loading...)")
+    elif usage is None:
         lines.append("  (AgentsView unavailable)")
     else:
         for fam in FAMILIES:
@@ -312,7 +319,9 @@ def render(
     lines.append("")
 
     lines.append("API CREDIT")
-    if ledger is None:
+    if ledger is None and "ledger" in pending:
+        lines.append("  Anthropic  ledger loading...")
+    elif ledger is None:
         lines.append("  Anthropic  ledger not found; no local spend record")
     else:
         lines.append(
