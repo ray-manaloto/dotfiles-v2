@@ -463,8 +463,12 @@ def test_realtime_stats_splits_controls_only_in_new_tab(tmp_path: Path) -> None:
     assert [c for c in calls if c.startswith("do pane.split")] == [
         "do pane.split --direction right --pane p9 --mod env-board-controls"
     ]
+    # Widths are reset, not nudged: borders pinned, then fixed widths handed back.
     assert [c for c in calls if c.startswith("do pane.resize")] == [
-        "do pane.resize --direction right --pane p9 --px 100"
+        "do pane.resize --direction left --pane p9 --px 100000",
+        "do pane.resize --direction right --pane p9 --px 100000",
+        "do pane.resize --direction left --pane p9 --px -260",
+        "do pane.resize --direction right --pane p9 --px -170",
     ]
 
 
@@ -479,11 +483,16 @@ def test_realtime_stats_refill_after_restart_adds_no_second_widget(
     calls = log.read_text(encoding="utf-8").splitlines()
     assert sum(c.startswith("hc run") for c in calls) == 1
     assert not any("pane.split" in c for c in calls)
-    # The refilled board lands right of the widget: swap it back left, restore the width.
+    # The refilled board lands right of the widget: swap it back left, then reset the widths
+    # (Herdr gave the dead board's width to its left neighbour). No 100px nudge any more.
     assert [c for c in calls if c.startswith(("do pane.swap", "do pane.resize"))] == [
         "do pane.swap --pane p9 --direction left",
-        "do pane.resize --direction right --pane p9 --px 100",
+        "do pane.resize --direction left --pane p9 --px 100000",
+        "do pane.resize --direction right --pane p9 --px 100000",
+        "do pane.resize --direction left --pane p9 --px -260",
+        "do pane.resize --direction right --pane p9 --px -170",
     ]
+    assert not any(c.endswith("--px 100") for c in calls)
 
 
 def test_realtime_stats_concurrent_runs_add_one_widget(tmp_path: Path) -> None:
