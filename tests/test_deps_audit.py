@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from deps_audit import auditor
 from deps_audit.auditor import audit_dependencies
 from dotfiles_py.generated.deps_audit_schema import (
@@ -264,3 +266,45 @@ def test_deps_audit_cli_help_and_repo_offline_json(tmp_path: Path) -> None:
     hk_cfg = next(i for i in payload["items"] if i["name"] == "ray-manaloto/hk-config")
     assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", hk_cfg["current_version"])
     assert (tmp_path / "state" / "deps-audit.log.jsonl").is_file()
+
+
+def test_kb_outdated_timeout_scales_with_pin_count(tmp_path: Path) -> None:
+    from deps_audit import auditor
+
+    pins = tmp_path / "pins.json"
+    pins.write_text(
+        json.dumps({f"r{i}": {"name": f"n{i}"} for i in range(85)}), encoding="utf-8"
+    )
+    # 85 pins took 31.5 s live; the old fixed 30 s limit killed the probe.
+    assert auditor._kb_outdated_timeout_s(pins) > 31.5 * 2
+    pins.write_text("{}", encoding="utf-8")
+    assert auditor._kb_outdated_timeout_s(pins) == auditor.KB_OUTDATED_MIN_TIMEOUT_S
+    pins.write_text(json.dumps({f"r{i}": {} for i in range(10_000)}), encoding="utf-8")
+    assert auditor._kb_outdated_timeout_s(pins) == auditor.KB_OUTDATED_MAX_TIMEOUT_S
+    pins.write_text("not json", encoding="utf-8")
+    assert auditor._kb_outdated_timeout_s(pins) == auditor.KB_OUTDATED_MIN_TIMEOUT_S
+
+
+def test_kb_outdated_probe_uses_scaled_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deps_audit import auditor
+
+    kb_dir = tmp_path / "kb"
+    (kb_dir / "prototype" / "kb").mkdir(parents=True)
+    (kb_dir / "prototype" / "kb" / "snap.py").write_text("", encoding="utf-8")
+    kb_state = tmp_path / "kb_state"
+    kb_state.mkdir()
+    (kb_state / "pins.json").write_text(
+        json.dumps({f"r{i}": {"name": f"n{i}"} for i in range(85)}), encoding="utf-8"
+    )
+    monkeypatch.setenv("KB_STATE", str(kb_state))
+    seen: list[float] = []
+
+    def fake_run(*args, **kwargs):
+        seen.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(args[0], 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(auditor.subprocess, "run", fake_run)
+    auditor._audit_kb_workspace(kb_dir, offline=False)
+    assert seen and seen[0] > 30

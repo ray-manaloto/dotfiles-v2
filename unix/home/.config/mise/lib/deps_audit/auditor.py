@@ -906,6 +906,25 @@ def _resolve_kb_pins_file(candidate: Path) -> Path:
     return candidate / "pins.json"
 
 
+# snap.outdated() runs one `git ls-remote` per pin, one after another (about 0.4 s each), so a
+# fixed timeout breaks as pins are added: 85 pins took 31.5 s against the old 30 s limit.
+KB_OUTDATED_SECONDS_PER_PIN = 1.5
+KB_OUTDATED_MIN_TIMEOUT_S = 60.0
+KB_OUTDATED_MAX_TIMEOUT_S = 600.0
+
+
+def _kb_outdated_timeout_s(pins_file: Path) -> float:
+    try:
+        pins = json.loads(pins_file.read_text(encoding="utf-8"))
+        count = len(pins) if isinstance(pins, dict) else 0
+    except OSError, json.JSONDecodeError:
+        count = 0
+    return min(
+        KB_OUTDATED_MAX_TIMEOUT_S,
+        max(KB_OUTDATED_MIN_TIMEOUT_S, KB_OUTDATED_SECONDS_PER_PIN * count),
+    )
+
+
 def _audit_kb_workspace(kb_root: Path | None, *, offline: bool) -> list[AuditItem]:
     candidate = kb_root or (
         Path.home() / "dev" / "github" / "ray-manaloto" / "knowledge-base-v2"
@@ -988,7 +1007,7 @@ def _audit_kb_workspace(kb_root: Path | None, *, offline: bool) -> list[AuditIte
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
-            timeout=30,
+            timeout=_kb_outdated_timeout_s(pins_file),
             check=False,
         )
         if proc.returncode != 0:
