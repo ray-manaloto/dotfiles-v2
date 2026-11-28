@@ -1,4 +1,4 @@
-# agnix (agent-sh/agnix 0.61.0): agent configuration validation in hk.
+# agnix (agent-sh/agnix 0.62.0): agent configuration validation in hk.
 tools = ["antigravity", "claude-code", "codex", "opencode"]
 
 # Synced via mise [dotfiles] to ~/.config/opencode/opencode.json rather than used project-local.
