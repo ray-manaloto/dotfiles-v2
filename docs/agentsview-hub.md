@@ -140,7 +140,10 @@ mise run hub:embed resume    # restart both units, then check the run picked up 
   `vectors.db` and its `-wal` and `-shm` files into `paused-snapshot/`, and
   appends an `EMBED-PAUSED` line to `build-progress.log`. It refuses when the
   running units belong to another data dir, because the unit names are global.
-  It warns if anything still holds `vectors.db` after the stop. A lock file
+  It warns if anything still holds `vectors.db` after the stop. The state
+  records `snapshot_complete` only after every copy succeeds. A pause
+  interrupted before that is finished by the next `pause`, and `resume` refuses
+  until it is. A lock file
   keeps two pause or resume runs on one data dir apart.
 
 - **Resume refuses** in three cases:

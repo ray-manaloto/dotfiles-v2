@@ -88,9 +88,48 @@ status() {
 	return 0
 }
 
+snapshot_complete() {
+	"${py}" -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("snapshot_complete") else 1)' "${state}"
+}
+
+# Snapshot vectors.db, then mark the pause state complete and log EMBED-PAUSED. Units must be down.
+finish_pause() {
+	# A reflink copy on btrfs is instant and shares blocks; elsewhere it falls back to a full copy.
+	# Missing WAL/SHM files are written empty so the snapshot never pairs a new db with an old WAL.
+	mkdir -p "${snapshot_dir}"
+	local f
+	for f in vectors.db vectors.db-wal vectors.db-shm; do
+		if [[ -f ${data_dir}/${f} ]]; then
+			cp --reflink=auto -f "${data_dir}/${f}" "${snapshot_dir}/${f}"
+		else
+			: >"${snapshot_dir}/${f}"
+		fi
+	done
+	# Only now is the snapshot whole; a pause interrupted before this is finished by the next pause.
+	"${py}" -I - "${state}" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1], encoding="utf-8"))
+s["snapshot_complete"] = True
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+	json.dump(s, f, indent=2)
+PY
+	mark "EMBED-PAUSED $("${py}" -I -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["last_progress"]))' <"${state}")"
+	if fuser -s "${data_dir}/vectors.db" 2>/dev/null; then
+		echo "hub:embed: WARNING: a process still holds ${data_dir}/vectors.db after stopping both units:" >&2
+		fuser -v "${data_dir}/vectors.db" >&2 || true
+	fi
+	echo "hub:embed: paused; vectors.db snapshot in ${snapshot_dir}"
+	status
+}
+
 pause() {
 	if [[ -f ${state} ]] && ! active "${build_unit}" && ! active "${daemon_unit}"; then
-		echo "hub:embed: already paused (${state})"
+		if snapshot_complete; then
+			echo "hub:embed: already paused (${state})"
+			return 0
+		fi
+		echo "hub:embed: finishing an interrupted pause (snapshot incomplete)"
+		finish_pause
 		return 0
 	fi
 	# The daemon does the embedding; a dead build unit with a live daemon still holds the GPU.
@@ -123,6 +162,7 @@ state = {
 	"version": version,
 	"generations": json.loads(gens)["generations"],
 	"last_progress": {"ts": last[0], "done": last[1], "total": last[2]} if last else None,
+	"snapshot_complete": False,
 }
 with open(path, "w", encoding="utf-8") as f:
 	json.dump(state, f, indent=2)
@@ -134,28 +174,12 @@ PY
 	if active "${build_unit}" || active "${daemon_unit}"; then
 		die "a unit is still active after the stop; the pause state is recorded, run pause again"
 	fi
-	# A reflink copy on btrfs is instant and shares blocks; elsewhere it falls back to a full copy.
-	# Missing WAL/SHM files are written empty so the snapshot never pairs a new db with an old WAL.
-	mkdir -p "${snapshot_dir}"
-	local f
-	for f in vectors.db vectors.db-wal vectors.db-shm; do
-		if [[ -f ${data_dir}/${f} ]]; then
-			cp --reflink=auto -f "${data_dir}/${f}" "${snapshot_dir}/${f}"
-		else
-			: >"${snapshot_dir}/${f}"
-		fi
-	done
-	mark "EMBED-PAUSED $("${py}" -I -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["last_progress"]))' <"${state}")"
-	if fuser -s "${data_dir}/vectors.db" 2>/dev/null; then
-		echo "hub:embed: WARNING: a process still holds ${data_dir}/vectors.db after stopping both units:" >&2
-		fuser -v "${data_dir}/vectors.db" >&2 || true
-	fi
-	echo "hub:embed: paused; vectors.db snapshot in ${snapshot_dir}"
-	status
+	finish_pause
 }
 
 resume() {
 	[[ -f ${state} ]] || die "no pause state at ${state}; pause with hub:embed first"
+	snapshot_complete || die "the pause did not finish its snapshot; run pause again first"
 	if active "${build_unit}" || active "${daemon_unit}"; then
 		die "${build_unit} or ${daemon_unit} is already running"
 	fi
