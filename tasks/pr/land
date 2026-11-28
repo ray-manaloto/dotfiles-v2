@@ -100,10 +100,25 @@ echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_ro
 # a manual `mise deps uv`. Run as a fresh shell in main (no worktree mise/venv vars), bounded, warn-only.
 sync_out="$(cd "${main_root}" && env -u VIRTUAL_ENV -u DOTFILES_DOCTOR_SCOPE -u MISE_PROJECT_ROOT -u MISE_CONFIG_ROOT \
 	MISE_YES=1 python3 -I -B -c '
-import subprocess, sys
+import os, signal, subprocess, sys
 def run(*args, timeout=300):
-    return subprocess.run(["mise", "deps", "uv", *args], capture_output=True, text=True, timeout=timeout,
-                          stdin=subprocess.DEVNULL)
+    # Own session, so a timeout stops the whole tree (mise and its uv child), not only mise.
+    p = subprocess.Popen(["mise", "deps", "uv", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(p.pid, sig)
+                p.wait(timeout=5)
+                break
+            except ProcessLookupError:
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        raise
+    return subprocess.CompletedProcess(p.args, p.returncode, out, "")
 try:
     if run("--explain", timeout=60).returncode == 0:  # exit 1 means stale (or mise could not tell)
         sys.exit(0)
