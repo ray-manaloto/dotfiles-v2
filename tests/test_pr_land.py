@@ -160,3 +160,107 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
             # The land already happened: the doctor failure warns loudly but keeps exit 0.
             assert "WARNING: live 'mise doctor project' on main failed" in result.stderr
             assert "FAIL fake-check: boom" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("changed", "prepulled", "synced"),
+    [
+        ("uv.lock", False, True),
+        ("pyproject.toml", False, True),
+        ("uv.lock", True, True),
+        ("README.md", False, False),
+    ],
+    ids=["uv-lock", "pyproject", "uv-lock-main-already-pulled", "unrelated"],
+)
+def test_pr_land_syncs_venv_when_uv_inputs_change(tmp_path, changed, prepulled, synced):
+    # The merged PR changes `changed`; main's .venv is resynced only for uv.lock / pyproject.toml,
+    # including when main was already pulled before pr:land ran (empty pull range).
+    origin, main, feature, bin_dir = (
+        tmp_path / n for n in ("origin", "main", "feature", "bin")
+    )
+    bin_dir.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(
+        PATH=f"{bin_dir}{os.pathsep}{env['PATH']}",
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CONFIG_GLOBAL=os.devnull,
+        XDG_STATE_HOME=str(tmp_path / "state"),
+        PLAN_ID="deps-uv-test",
+        usage_pr="1",
+    )
+    env.pop("usage_skip_learn_check", None)
+
+    def git(*args):
+        return subprocess.check_output(
+            [
+                "git",
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.com",
+                *args,
+            ],
+            cwd=tmp_path,
+            env=env,
+            text=True,
+        ).strip()
+
+    git("init", "-q", "-b", "main", str(origin))
+    for name in ("uv.lock", "pyproject.toml", "README.md"):
+        (origin / name).write_text("v1\n", encoding="utf-8")
+    git("-C", str(origin), "add", ".")
+    git("-C", str(origin), "commit", "-q", "-m", "Base")
+    git("clone", "-q", str(origin), str(main))
+    (origin / changed).write_text("v2\n", encoding="utf-8")
+    git("-C", str(origin), "commit", "-q", "-am", "Merged PR")
+    merged = git("-C", str(origin), "rev-parse", "HEAD")
+    git("-C", str(main), "fetch", "-q", "origin")
+    if prepulled:
+        git("-C", str(main), "merge", "-q", "--ff-only", "origin/main")
+    git(
+        "-C",
+        str(main),
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "wt/fixture",
+        str(feature),
+        "origin/main",
+    )
+
+    reviews = tmp_path / "state" / "agy-learn" / "reviews.jsonl"
+    reviews.parent.mkdir(parents=True)
+    reviews.write_text(
+        json.dumps({"plan_id": env["PLAN_ID"], "outcome": "no_new_proposals"}) + "\n",
+        encoding="utf-8",
+    )
+    mise_log = tmp_path / "mise.log"
+    stubs = {
+        "gh": f"#!/bin/sh\nprintf '%s\\n' 'MERGED wt/fixture main {merged} {merged} 1970-01-01T00:00:00Z'\n",
+        "mise": f"#!/bin/sh\necho \"$* venv=${{VIRTUAL_ENV:-}}\" >> '{mise_log}'\n"
+        'if [ "$1 $2" = "doctor project" ]; then echo "0 failed"; fi\nexit 0\n',
+        "hc": "#!/bin/sh\nexit 0\n",
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text(body, encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    env["VIRTUAL_ENV"] = str(tmp_path / "caller" / ".venv")
+
+    result = subprocess.run(
+        ["bash", str(LAND)],
+        cwd=feature,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert git("-C", str(main), "rev-parse", "HEAD") == merged
+    calls = mise_log.read_text(encoding="utf-8").splitlines()
+    assert ("deps uv venv=" in calls) is synced, calls
+    assert ("synced main's .venv" in result.stdout) is synced, result.stdout
+    if synced:
+        # Runs before the post-land doctor, so the doctor sees the synced venv.
+        assert calls.index("deps uv venv=") < calls.index("doctor project venv=")
