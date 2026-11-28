@@ -3,7 +3,8 @@
 #USAGE flag "--pr <number>" help="PR number (default: the PR whose head is this worktree's branch)"
 #USAGE flag "--skip-learn-check" help="Land without a recorded post-task-learn review (prints a warning)"
 # Run from the merged wt/<slug> worktree. Read-only until every check passes; re-runnable.
-# After the fast-forward it runs `mise deps uv` on main when uv.lock or pyproject.toml changed, then the full live `mise doctor project` (host scope) on main; failures only WARN.
+# After the fast-forward it runs `mise deps uv` on main if its .venv is stale (uv.lock or pyproject.toml
+# changed), then the full live `mise doctor project` (host scope) on main; failures only WARN.
 # After removing the worktree it closes the finished Herdr agent tabs that worked in it (best effort, WARN only).
 # Exit: 0 landed, 3 refused (not merged, head mismatch, dirty tree, learn review missing), 4 GitHub API unavailable.
 set -euo pipefail
@@ -81,7 +82,6 @@ common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
 main_root="$(dirname "${common_dir}")"
 [[ "$(git -C "${main_root}" rev-parse --abbrev-ref HEAD)" == main ]] || refuse "main checkout ${main_root} is not on main"
 [[ -z "$(git -C "${main_root}" status --porcelain --untracked-files=no)" ]] || refuse "main checkout has uncommitted tracked changes"
-pre_pull="$(git -C "${main_root}" rev-parse --verify HEAD)" || refuse "could not resolve main HEAD before the pull"
 git -C "${main_root}" -c core.hooksPath=/dev/null pull -q --ff-only origin main </dev/null ||
 	refuse "could not fast-forward ${main_root} to origin/main (diverged local main?)"
 main_head="$(git -C "${main_root}" rev-parse --verify HEAD)" || refuse "could not resolve main HEAD after the pull"
@@ -95,16 +95,32 @@ fi
 git -C "${main_root}" merge-base --is-ancestor "${merge_commit}" HEAD || refuse "merge commit ${merge_commit:0:7} is not on main after the pull"
 echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_root}" rev-parse --short HEAD)"
 
-# 3a. Resync main's .venv when the pull, or this PR's merge, changed the Python lock inputs. Without it the
-# next hk run fails py-deps-fresh until someone runs `mise deps uv` by hand. Warn-only: the land already happened.
-uv_inputs=(uv.lock pyproject.toml)
-if ! git -C "${main_root}" diff --quiet "${pre_pull}" HEAD -- "${uv_inputs[@]}" ||
-	! git -C "${main_root}" diff --quiet "${merge_commit}^1" "${merge_commit}" -- "${uv_inputs[@]}"; then
-	if (cd "${main_root}" && env -u VIRTUAL_ENV MISE_YES=1 mise deps uv </dev/null); then
-		echo "pr:land: uv.lock or pyproject.toml changed; synced main's .venv (mise deps uv)"
-	else
-		echo "pr:land: WARNING: 'mise deps uv' failed on main; run it there before the next hk check" >&2
-	fi
+# 3a. Resync main's .venv when uv.lock or pyproject.toml changed since its last sync (this merge, an earlier
+# pull, anything): the same `mise deps uv --explain` test py-deps-fresh runs, so the next hk run passes without
+# a manual `mise deps uv`. Run as a fresh shell in main (no worktree mise/venv vars), bounded, warn-only.
+sync_out="$(cd "${main_root}" && env -u VIRTUAL_ENV -u DOTFILES_DOCTOR_SCOPE -u MISE_PROJECT_ROOT -u MISE_CONFIG_ROOT \
+	MISE_YES=1 python3 -I -B -c '
+import subprocess, sys
+def run(*args):
+    return subprocess.run(["mise", "deps", "uv", *args], capture_output=True, text=True, timeout=300,
+                          stdin=subprocess.DEVNULL)
+try:
+    if run("--explain").returncode == 0:
+        sys.exit(0)
+    p = run()
+except (OSError, subprocess.TimeoutExpired) as exc:
+    print("did not complete: %s" % exc)
+    sys.exit(124)
+if p.returncode:
+    lines = (p.stdout + p.stderr).strip().splitlines()
+    print(lines[-1] if lines else "no output")
+    sys.exit(p.returncode)
+print("synced")
+' </dev/null 2>&1)" && sync_rc=0 || sync_rc=$?
+if ((sync_rc != 0)); then
+	echo "pr:land: WARNING: main's .venv is stale and 'mise deps uv' failed (rc ${sync_rc}): ${sync_out}; run it in main" >&2
+elif [[ ${sync_out} == synced ]]; then
+	echo "pr:land: uv.lock or pyproject.toml changed; synced main's .venv (mise deps uv)"
 fi
 
 # 3b. Full live doctor on the merged main (host scope, not repo scope): guards from parallel lanes can conflict

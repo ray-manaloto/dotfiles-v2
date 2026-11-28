@@ -63,8 +63,9 @@ ambiguous and has produced live settings without owner approval.
    nothing survives). The retro is this step: corrections, failed attempts and bot findings become ledger proposals.
 8. **Land** (no owner prompt): `mise run pr:land` from the merged worktree. It refuses unless the PR is MERGED at the
    worktree's exact head, the tree is clean and the learn review from step 7 is recorded; then it fast-forwards the main
-   checkout, checks the merge commit is on `main`, runs `mise deps uv` there when the pull or the PR changed `uv.lock` or
-   `pyproject.toml` (warn-only, so `py-deps-fresh` passes on the next hk run), removes the worktree and its `wt/*` branch with `worktree:rm`, runs `learn:heal --check`, and runs the full live
+   checkout, checks the merge commit is on `main`, runs `mise deps uv` there when `mise deps uv --explain` reports the
+   `.venv` stale after a `uv.lock` or `pyproject.toml` change (bounded, warn-only, so `py-deps-fresh` passes on the next
+   hk run), removes the worktree and its `wt/*` branch with `worktree:rm`, runs `learn:heal --check`, and runs the full live
    `mise doctor project` (host scope) on the merged `main`, printing its summary; a failure there only warns, because the land
    already happened. It also prints the warn-only `roadmap-drift` lines (a `ROADMAP.md` "Remaining:" entry naming a path now
    on `main`); fix those on `main`. It then closes the finished Herdr agent tabs that worked in the removed worktree
