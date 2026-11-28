@@ -51,7 +51,7 @@ kingfisher = "2.20.0"
 lychee = "0.24.2"
 ninja = "1.13.2"
 node = "26.13.1"
-"npm:@vercel/board" = { version = "0.56.1", minimum_release_age = "0s" }
+"npm:@vercel/board" = { version = "0.57.0", minimum_release_age = "0s" }
 "npm:apify-cli" = "1.14.0"
 "npm:ctx7" = { version = "0.13.1", minimum_release_age = "0s" }
 "npm:firecrawl-cli" = { version = "1.30.0", minimum_release_age = "0s" }
