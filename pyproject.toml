@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Clean-room mise-managed dotfiles, herdr_roll, and schema-first Python automation"
 requires-python = ">=3.15"
 dependencies = [
-  "cyclopts==5.5.2",
-  "filelock==4.3.1",
+  "cyclopts==5.5.3",
+  "filelock==4.3.2",
   "openai-agents==0.25.0",
   "orjson==3.13.0",
   "psutil==7.2.2",
@@ -21,7 +21,7 @@ dev = [
   { include-group = "test" },
 ]
 lint = [
-  "datamodel-code-generator[ruff]==0.101.0",
+  "datamodel-code-generator[ruff]==0.104.0",
   "ruff==0.17.6",
   "ty==0.0.112",
 ]

@@ -285,7 +285,7 @@ wheels = [
 
 [[package]]
 name = "cyclopts"
-version = "5.5.2"
+version = "5.5.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -293,14 +293,14 @@ dependencies = [
     { name = "rich" },
     { name = "rich-rst" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/5d/cee0096dd8c5ad13ce516599c4823637d0107643666a03ddc43a9580391f/cyclopts-5.5.2.tar.gz", hash = "sha256:c0339b7ddd7b1c886f13bb8b68a6a65aa7144d3027f1d0e290be514b8fe1589b", size = 258336, upload-time = "2026-11-16T16:26:28.322Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ca/08/3cac2b682eb7cf561fe886d8322b3b65025193ed8753877ad3d9616aca45/cyclopts-5.5.3.tar.gz", hash = "sha256:784ddcc8847f69f96e6ff1b4222c8939ba8f47cea516b8eafb8f56c4a4fa5900", size = 258991, upload-time = "2026-11-24T18:13:27.769Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/b2/be66b75ce0a3ccc7aa3601c9e7f9cd0fbad4301183fc7105c6b9faebeaeb/cyclopts-5.5.2-py3-none-any.whl", hash = "sha256:4fbe863ebace1c65dafc6520c82217915b103d27fbd1d8fcd168f2abcca3a12a", size = 301206, upload-time = "2026-11-16T16:26:26.615Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/39/3ba06143fa391d355ec7d40bb49c7381f5f9cf54e861a88a0423c91a0e4c/cyclopts-5.5.3-py3-none-any.whl", hash = "sha256:61c5713c34fe161430bae6ced2de0ed29b60d0893ac0d9c3490a77aa8899068d", size = 301925, upload-time = "2026-11-24T18:13:26.508Z" },
 ]
 
 [[package]]
 name = "datamodel-code-generator"
-version = "0.101.0"
+version = "0.104.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -313,9 +313,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f9/2b/cc045afaf22e1046f11d5c667766613c13d5ff2b6805899c882bb52f3d27/datamodel_code_generator-0.101.0.tar.gz", hash = "sha256:5f1dbfb185f2ae7a1f236983ddcff98203bd0b32bf625fcc3a85ae8202516249", size = 13006476, upload-time = "2026-11-24T01:41:26.222Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/91/d3504871b7fdbb7e5be2c1701e97f209cd18ab3fb2f0f10e70461ca4a009/datamodel_code_generator-0.104.0.tar.gz", hash = "sha256:74616eb1a6625c90ec1f6830f9a7a711706e9349c57c3955a8c26ad43d8643b2", size = 13865036, upload-time = "2026-11-27T19:17:32.509Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bd/d9/db620b448bf4a1b1263e9f261e33bb0a11a61586dd33f055c23a3f2420bc/datamodel_code_generator-0.101.0-py3-none-any.whl", hash = "sha256:257b4682a3c55491b8f56cb89a004d1906954d39e9e87c6be438969d86ff914c", size = 2597902, upload-time = "2026-11-24T01:41:23.967Z" },
+    { url = "https://files.pythonhosted.org/packages/50/b4/327d24246fd1405a5b8ce590d57a9f3abe45a40ba0c67742f5cbca15c45b/datamodel_code_generator-0.104.0-py3-none-any.whl", hash = "sha256:380809c4a5e031ab9a1acfa886cfc4177caba3309f18350f4cf5ea1e0939981c", size = 2657506, upload-time = "2026-11-27T19:17:30.198Z" },
 ]
 
 [package.optional-dependencies]
@@ -381,8 +381,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cyclopts", specifier = "==5.5.2" },
-    { name = "filelock", specifier = "==4.3.1" },
+    { name = "cyclopts", specifier = "==5.5.3" },
+    { name = "filelock", specifier = "==4.3.2" },
     { name = "openai-agents", specifier = "==0.25.0" },
     { name = "orjson", specifier = "==3.13.0" },
     { name = "psutil", specifier = "==7.2.2" },
@@ -394,7 +394,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "datamodel-code-generator", extras = ["ruff"], specifier = "==0.101.0" },
+    { name = "datamodel-code-generator", extras = ["ruff"], specifier = "==0.104.0" },
     { name = "dirty-equals", specifier = "==0.11.0" },
     { name = "pytest", specifier = "==9.2.0" },
     { name = "pytest-cov", specifier = "==7.1.0" },
@@ -403,7 +403,7 @@ dev = [
     { name = "ty", specifier = "==0.0.112" },
 ]
 lint = [
-    { name = "datamodel-code-generator", extras = ["ruff"], specifier = "==0.101.0" },
+    { name = "datamodel-code-generator", extras = ["ruff"], specifier = "==0.104.0" },
     { name = "ruff", specifier = "==0.17.6" },
     { name = "ty", specifier = "==0.0.112" },
 ]
@@ -425,11 +425,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "4.3.1"
+version = "4.3.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e6/86/a5b9ec254b90efb180e390e31a4fa50a93b714d6e4174fa9a4ee25607159/filelock-4.3.1.tar.gz", hash = "sha256:4c5ee627c401f1863ac6a0de9a14a28d3bb5f8c730b45e2fd6e5dbc79cf34b9e", size = 742330, upload-time = "2026-11-23T18:01:13.656Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b2/de/99f4266dc2b97503fe35af46d4bf54ea4d434bc322992103145c9de7da95/filelock-4.3.2.tar.gz", hash = "sha256:4f0a21c70447782453c06bb20a9863ee385ead1abaef22049af79289496851b3", size = 744182, upload-time = "2026-11-27T22:58:32.45Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/7b/678c8fbd372ff96375ac0bbdd20b78f20ef8ba6ca5966c49548fa5886557/filelock-4.3.1-py3-none-any.whl", hash = "sha256:79e43df8e9fe509cd83a3899a7c186c8077cbbe4d200a1ed3705c2f3bb6bc487", size = 244559, upload-time = "2026-11-23T18:01:12.261Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/4f/6429bb372197194e65bb33885cd112c7008c2b9cf7496285874aa274e506/filelock-4.3.2-py3-none-any.whl", hash = "sha256:02a8801bc6b2a80921bf3d7895c63084d53bae2a3c86783adce5ae2b89a1825b", size = 244905, upload-time = "2026-11-27T22:58:31.01Z" },
 ]
 
 [[package]]
