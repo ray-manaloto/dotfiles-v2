@@ -101,11 +101,11 @@ echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_ro
 sync_out="$(cd "${main_root}" && env -u VIRTUAL_ENV -u DOTFILES_DOCTOR_SCOPE -u MISE_PROJECT_ROOT -u MISE_CONFIG_ROOT \
 	MISE_YES=1 python3 -I -B -c '
 import subprocess, sys
-def run(*args):
-    return subprocess.run(["mise", "deps", "uv", *args], capture_output=True, text=True, timeout=300,
+def run(*args, timeout=300):
+    return subprocess.run(["mise", "deps", "uv", *args], capture_output=True, text=True, timeout=timeout,
                           stdin=subprocess.DEVNULL)
 try:
-    if run("--explain").returncode == 0:
+    if run("--explain", timeout=60).returncode == 0:  # exit 1 means stale (or mise could not tell)
         sys.exit(0)
     p = run()
 except (OSError, subprocess.TimeoutExpired) as exc:
@@ -118,7 +118,7 @@ if p.returncode:
 print("synced")
 ' </dev/null 2>&1)" && sync_rc=0 || sync_rc=$?
 if ((sync_rc != 0)); then
-	echo "pr:land: WARNING: main's .venv is stale and 'mise deps uv' failed (rc ${sync_rc}): ${sync_out}; run it in main" >&2
+	echo "pr:land: WARNING: could not verify or sync main's .venv; 'mise deps uv' failed (rc ${sync_rc}): ${sync_out}; run it in main" >&2
 elif [[ ${sync_out} == synced ]]; then
 	echo "pr:land: uv.lock or pyproject.toml changed; synced main's .venv (mise deps uv)"
 fi

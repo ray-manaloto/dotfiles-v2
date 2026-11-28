@@ -287,7 +287,8 @@ def test_pr_land_syncs_stale_venv(tmp_path, changed, stamp, sync_fails, expect):
         )
     if expect == "warned":
         assert (
-            "WARNING: main's .venv is stale and 'mise deps uv' failed (rc 2)" in out
+            "WARNING: could not verify or sync main's .venv; 'mise deps uv' failed (rc 2)"
+            in out
         ), out
         assert "uv sync failed: boom" in out, out
         assert "removed worktree fixture" in result.stdout, (
