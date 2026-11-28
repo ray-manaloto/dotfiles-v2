@@ -44,8 +44,18 @@ back_to_paused() {
 	mark "EMBED-PAUSED resume refused: $*"
 	die "$*"
 }
-# AGENTSVIEW_NO_DAEMON=1 stops a read from starting its own background daemon, so a successful
-# list also proves the unit's daemon answers.
+# AGENTSVIEW_NO_DAEMON=1 stops a read from starting its own background daemon. The list can still
+# answer from the local archive, so it is not a readiness probe; see daemon_ready.
+# Ready = the unit's main process wrote its discovery record and answers HTTP on the port.
+daemon_ready() {
+	local pid
+	pid="$(systemctl --user show -p MainPID --value "${daemon_unit}")"
+	[[ -n ${pid} && ${pid} != 0 && -f ${data_dir}/daemon.${pid}.json ]] || return 1
+	# Any HTTP status counts: the API answers 401 without the daemon's token, which still proves it listens.
+	local code
+	code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/api/v1/embeddings/status" || true)"
+	[[ -n ${code} && ${code} != 000 ]]
+}
 generations() { env "${av_env[@]}" AGENTSVIEW_NO_DAEMON=1 "${av}" index embeddings list --json </dev/null; }
 
 [[ -d ${data_dir} ]] || die "data dir not found: ${data_dir}"
@@ -71,6 +81,13 @@ else:
 	pct = f"{100 * n1 / tot:.1f}%" if tot else "n/a"
 	print(f"{n1}/{tot} chunks ({pct}) this run, {rate:.2f} chunks/s over "
 		f"{(t1 - t0) / 3600:.1f}h, ETA {eta}, last update {(time.time() - t1) / 60:.0f}m ago")
+	# Across pauses: each run's total is what was still missing, so overall done is the first run's
+	# total minus what this run still has to do (sessions synced meanwhile skew it slightly).
+	first = next((int(m.group(3)) for m in map(pat.match, lines) if m), 0)
+	if start and first:
+		left = tot - n1
+		print(f"overall: {first - left}/{first} chunks ({100 * (first - left) / first:.1f}%), {left} left")
+	print(f"complete: {'yes' if tot and n1 >= tot else 'no'}")
 if exits:
 	print(f"run ended: {exits[-1].split(' ', 1)[1]}")
 if " EMBED-PAUSED" in marker:
@@ -199,13 +216,16 @@ PY
 		-p TimeoutStopSec=2min "${setenv[@]}" \
 		"${av}" serve --host 127.0.0.1 --port "${port}" --no-browser --no-update-check ||
 		back_to_paused "could not start ${daemon_unit}"
-	local gens=""
-	for _ in $(seq 1 60); do
-		gens="$(generations 2>/dev/null)" && break
-		gens=""
+	# The build finds the daemon through its daemon.<pid>.json record in the data dir, which appears
+	# after startup; a build started before that exits "no reachable local agentsview daemon found".
+	local ready=""
+	for _ in $(seq 1 90); do
+		daemon_ready && ready=1 && break
 		sleep 2
 	done
-	[[ -n ${gens} ]] || back_to_paused "daemon did not answer within 120s; check: journalctl --user -u ${daemon_unit}"
+	[[ -n ${ready} ]] || back_to_paused "daemon did not become reachable within 180s; check: journalctl --user -u ${daemon_unit}"
+	local gens
+	gens="$(generations)" || back_to_paused "could not list embedding generations"
 	# Same generations as at the pause: none gone, none with a new fingerprint, no new one cut (a
 	# config change cuts a new generation and keeps the old one listed).
 	"${py}" -I - "${state}" "${gens}" <<'PY' || back_to_paused "the embedding generations changed since the pause"

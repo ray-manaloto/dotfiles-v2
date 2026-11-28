@@ -125,15 +125,30 @@ mise run hub:embed resume    # restart both units, then check the run picked up 
   pause loses at most the batch in flight. The real binary has done this once:
   on 2026-11-27 a `timeout`-killed benchmark build and its daemon were stopped,
   a new daemon and build started on the same data dir, and generation 1
-  carried on with a total 945 chunks smaller. The first live `hub:embed`
-  pause and resume is the first test of the task itself on the real build.
+  carried on with a total 945 chunks smaller. The task did the same on
+  2026-11-28: it paused at 74,357 of 261,665 chunks, ran `pc:sync`, and the
+  resumed run reported 187,311 chunks to embed, against 187,308 left at the
+  pause.
 
 - **The daemon does the embedding.** `index embeddings build` proxies to the
   daemon over HTTP, and the daemon holds `vectors.write.lock` and the Ollama
   connection. So pause works whenever the daemon is up, even if the build unit
   has died, and stops both units. Reads in the task set `AGENTSVIEW_NO_DAEMON=1`,
-  so they never start a stray daemon, and a successful read proves the unit's
-  daemon answers.
+  so they never start a stray daemon.
+
+- **Resume waits for the daemon to be discoverable.** `index embeddings list`
+  answers from the local archive even without a daemon, so it is no readiness
+  probe. A build started too early exits with `no reachable local agentsview
+  daemon found`. Resume waits up to 180s for the unit's main process to write
+  its `daemon.<pid>.json` record (so a stale record from an old pid never
+  counts), and for any HTTP answer on the port. The API answers `401` without
+  the daemon's token, and that still proves it is listening.
+
+- **`status` shows overall progress across pauses.** Each run's total is what
+  was still missing. So the overall figure is the first run's total minus what
+  the current run still has to embed, and `complete: yes` means the current
+  run's chunks reached its total. Judge the end of a build by that, not by
+  `BUILD-EXIT`.
 
 - **Pause** writes `embed-pause.json` to the data dir: the agentsview version,
   the generations and the last progress line. It takes a reflink snapshot of
