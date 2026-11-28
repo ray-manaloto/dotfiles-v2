@@ -203,12 +203,10 @@ if [[ ${skip_systemd} != "true" ]]; then
 	node_bin="$(ssh -o BatchMode=yes "${host}" 'command -v node || command -v /usr/bin/node')"
 	av_bin="$(ssh -o BatchMode=yes "${host}" 'if [[ -x "$HOME/.local/bin/agentsview" ]]; then printf "%s/.local/bin/agentsview" "$HOME"; else command -v agentsview || printf "%s/.local/bin/agentsview" "$HOME"; fi')"
 	qmd_bin="${remote_home}/.local/bin/qmd"
-	board_mjs="${remote_home}/.config/mise/assets/board/server.mjs"
-	if ! ssh -o BatchMode=yes "${host}" "test -f '${board_mjs}'"; then
-		board_mjs="${state_dir}/board/server.mjs"
-		ssh -o BatchMode=yes "${host}" "mkdir -p '${state_dir}/board'"
-		COPYFILE_DISABLE=1 tar -C "${repo_root}/unix/home/.config/mise/assets/board" -cf - server.mjs | ssh -o BatchMode=yes "${host}" "tar -C '${state_dir}/board' -xf -"
-	fi
+	# Always stage this checkout's server.mjs: pc's own ~/.config/mise checkout can lag main.
+	board_mjs="${state_dir}/board/server.mjs"
+	ssh -o BatchMode=yes "${host}" "mkdir -p '${state_dir}/board'"
+	COPYFILE_DISABLE=1 tar -C "${repo_root}/unix/home/.config/mise/assets/board" -cf - server.mjs | ssh -o BatchMode=yes "${host}" "tar -C '${state_dir}/board' -xf -"
 	units_dir_tmp="$(mktemp -d)"
 	trap 'rm -rf "${units_dir_tmp}"' EXIT
 	"${venv_py}" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from pc_hub.cli import main; raise SystemExit(main(sys.argv[2:]))' \
