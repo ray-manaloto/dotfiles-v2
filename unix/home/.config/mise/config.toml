@@ -68,7 +68,13 @@ oxfmt = "0.80.0"
 "packslip:grafana/flint" = "0.22.15"
 pinact = "5.0.2"
 "pypi:ray-manaloto/cpp-standard#subdirectory=python/repo" = "6eec09e90f98d53190662fef4519432c840fde71"
-"pypi:repowise" = { version = "0.62.0", python = "3.13", minimum_release_age = "0s" }
+# linux/arm64 (the mac container) is skipped: dependency tree-sitter-gdscript ships no aarch64 Linux
+# wheel, mise's locked pypi install never builds from source, and the container has no compiler.
+# The repowise guard task falls back to stdlib checks without the CLI.
+"pypi:repowise" = { version = "0.62.0", python = "3.13", minimum_release_age = "0s", os = [
+  "macos",
+  "linux/x64",
+] }
 pitchfork = { version = "2.36.0", workflow = "release.yml@refs/heads/main", minimum_release_age = "0s" }
 pkl = "0.33.1"
 pnpm = { version = "12.24.0", os = ["macos"] }
