@@ -151,10 +151,12 @@ mise run hub:embed resume    # restart both units, then check the run picked up 
 
   It starts the build without `--yes`, so a build that wants to confirm a full
   rebuild fails instead. It then checks the new run's first progress line. If
-  more than half of the already-done chunks (or 1% of the total) reappear, it
+  the new total exceeds what was left by more than half of the done chunks
+  (or 1% of the old total, whichever is larger), it
   treats the index as reset. Every refusal or failed start stops both units and
   keeps the pause state, so you can retry `resume`. A build that exits 0 at
-  once means nothing was left to embed, and resume reports it as done.
+  once, with no generation missing documents, means nothing was left to
+  embed, and resume reports it as done.
 
 - **Restore from the snapshot** only after a refusal says the index reset.
   With both units stopped, copy the three `paused-snapshot/vectors.db*` files

@@ -50,7 +50,6 @@ generations() { env "${av_env[@]}" AGENTSVIEW_NO_DAEMON=1 "${av}" index embeddin
 
 [[ -d ${data_dir} ]] || die "data dir not found: ${data_dir}"
 [[ -x ${av} ]] || die "agentsview wrapper not found: ${av}"
-[[ -f ${log} ]] || : >"${log}"
 
 # Progress of the current run: the lines after the last EMBED-RESUMED marker (or the whole log).
 progress() {
@@ -81,7 +80,7 @@ PY
 
 status() {
 	echo "units: build=$(systemctl --user is-active "${build_unit}" || true) daemon=$(systemctl --user is-active "${daemon_unit}" || true)"
-	progress || true
+	[[ -f ${log} ]] && { progress || true; }
 	[[ -f ${state} ]] && echo "pause state: ${state}"
 	if command -v nvidia-smi >/dev/null 2>&1; then
 		echo "gpu: $(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader)"
@@ -95,7 +94,11 @@ pause() {
 		return 0
 	fi
 	# The daemon does the embedding; a dead build unit with a live daemon still holds the GPU.
-	active "${daemon_unit}" || die "${daemon_unit} is not running; nothing to pause"
+	if ! active "${daemon_unit}"; then
+		active "${build_unit}" && die "${build_unit} runs without ${daemon_unit}; check it with journalctl --user -u ${build_unit}"
+		die "${daemon_unit} is not running; nothing to pause"
+	fi
+	[[ -f ${log} ]] || : >"${log}"
 	# The unit names are global, so make sure the running units belong to this data dir.
 	local unit
 	for unit in "${build_unit}" "${daemon_unit}"; do
@@ -128,6 +131,9 @@ PY
 	# Stop the driver first, then the daemon that does the embedding. SQLite's WAL keeps every
 	# committed save even if systemd has to kill the daemon after its stop timeout.
 	stop_units
+	if active "${build_unit}" || active "${daemon_unit}"; then
+		die "a unit is still active after the stop; the pause state is recorded, run pause again"
+	fi
 	# A reflink copy on btrfs is instant and shares blocks; elsewhere it falls back to a full copy.
 	# Missing WAL/SHM files are written empty so the snapshot never pairs a new db with an old WAL.
 	mkdir -p "${snapshot_dir}"
@@ -245,7 +251,11 @@ PY
 		back_to_paused "resumed build wants ${total} chunks but only ${left} were left; stopped it. The snapshot is in ${snapshot_dir}"
 		;;
 	exit)
-		if [[ ${total} == 0 ]]; then
+		# "total" holds the exit code here. Exit 0 counts as done only if nothing is missing.
+		if [[ ${total} == 0 ]] && generations | "${py}" -I -c '
+import json, sys
+gens = json.load(sys.stdin)["generations"]
+sys.exit(0 if all(g["missing"] == 0 for g in gens if g["state"] in ("building", "active")) else 1)'; then
 			stop_units
 			mv -f "${state}" "${data_dir}/embed-pause.last.json"
 			mark "EMBED-DONE nothing left to embed"
