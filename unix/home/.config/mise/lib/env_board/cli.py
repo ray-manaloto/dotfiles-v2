@@ -170,9 +170,9 @@ def run(
         return 0
     ticker = BalanceTicker(scheduler)
     ticker.start()
-    # Give the fast local reads (the ledger) a moment so the first frame is real data.
-    wait_for(pollers["ledger"], FIRST_FRAME_WAIT_S)
     try:
+        # Give the fast local reads (the ledger) a moment so the first frame is real data.
+        wait_for(pollers["ledger"], FIRST_FRAME_WAIT_S)
         while True:
             sys.stdout.write(CLEAR + frame(pollers, window_days, interval, scheduler))
             sys.stdout.flush()

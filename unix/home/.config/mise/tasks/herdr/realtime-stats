@@ -28,53 +28,28 @@ if ! command -v herdr-app >/dev/null 2>&1; then
 fi
 
 # Serialize --quotas runs from the space lookup to the widget split: two concurrent runs could
-# otherwise both create the space or the tab and add two widgets. mkdir and rename are atomic.
+# otherwise both create the space or the tab and add two widgets. flock(2) on fd 9 is held by this
+# shell's open file description, so the kernel drops it the moment the run exits, even on SIGKILL:
+# no stale lock to reclaim. A live holder is never preempted; waiters give up after the wait.
 if [[ ${want_quotas} == "true" && ${dry_run} != "true" ]]; then
 	lock_parent="${XDG_STATE_HOME:-${HOME}/.local/state}/env-board"
-	lock_dir="${lock_parent}/quotas-tab.lock"
+	lock_file="${lock_parent}/quotas-tab.lock"
 	mkdir -p "${lock_parent}"
 	chmod 700 "${lock_parent}"
-	release_quota_lock() {
-		# Remove the lock only while it is still ours.
-		if [[ "$(cat "${lock_dir}/pid" 2>/dev/null || true)" == "$$" ]]; then
-			rm -f "${lock_dir}/pid"
-			rmdir "${lock_dir}" 2>/dev/null || true
-		fi
-	}
-	reclaim_quota_lock() {
-		# Rename first so only one waiter reclaims, then drop it only if it is the lock we judged stale.
-		local seen="$1" stale="${lock_dir}.stale.$$"
-		mv "${lock_dir}" "${stale}" 2>/dev/null || return 0
-		if [[ "$(cat "${stale}/pid" 2>/dev/null || true)" == "${seen}" ]]; then
-			rm -f "${stale}/pid"
-			rmdir "${stale}" 2>/dev/null || true
-		elif [[ ! -e ${lock_dir} ]]; then
-			mv "${stale}" "${lock_dir}" 2>/dev/null || true
-		fi
-	}
-	locked="false"
-	for _ in $(seq 1 120); do
-		if mkdir "${lock_dir}" 2>/dev/null; then
-			trap release_quota_lock EXIT
-			printf '%s\n' "$$" >"${lock_dir}/pid"
-			locked="true"
-			break
-		fi
-		holder="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
-		# Stale: the holder died, or the lock outlived any real run (about 15 s) by minutes, which also
-		# covers a crashed holder whose pid was since reused.
-		if [[ -n ${holder} ]] && ! kill -0 "${holder}" 2>/dev/null; then
-			reclaim_quota_lock "${holder}"
-			continue
-		fi
-		if [[ -n "$(find "${lock_dir}" -maxdepth 0 -mmin +2 2>/dev/null)" ]]; then
-			reclaim_quota_lock "${holder}"
-			continue
-		fi
-		sleep 0.25
-	done
-	if [[ ${locked} != "true" ]]; then
-		echo "herdr:realtime-stats: another --quotas run holds ${lock_dir}; try again shortly" >&2
+	exec 9>>"${lock_file}"
+	if ! python3 -I -c '
+import fcntl, sys, time
+deadline = time.monotonic() + float(sys.argv[1])
+while True:
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.monotonic() >= deadline:
+            sys.exit(1)
+        time.sleep(0.2)
+' "${HERDR_QUOTAS_LOCK_WAIT_S:-30}"; then
+		echo "herdr:realtime-stats: another --quotas run holds ${lock_file}; try again shortly" >&2
 		exit 1
 	fi
 fi
@@ -88,7 +63,7 @@ commands=()
 if [[ -z ${space_id} ]]; then
 	commands+=("space.new --name realtime-stats")
 	if [[ ${dry_run} != "true" ]]; then
-		created="$(herdr-app "do" space.new --name "realtime-stats")"
+		created="$(herdr-app "do" space.new --name "realtime-stats" 9>&-)"
 		space_id="$(printf '%s' "${created}" | jq -r '.space // empty')"
 	else
 		space_id="realtime-stats"
@@ -125,12 +100,12 @@ if [[ ${want_quotas} == "true" ]]; then
 		if [[ ${board_live:-0} != "0" ]]; then
 			:
 		elif [[ -z ${tab_json} ]]; then
-			herdr-app "do" tab.new --space "${space_id}" --name "${quota_tab}" --folder "${quota_cwd}" --argv '["mise","run","env:board"]' >/dev/null
+			herdr-app "do" tab.new --space "${space_id}" --name "${quota_tab}" --folder "${quota_cwd}" --argv '["mise","run","env:board"]' >/dev/null 9>&-
 			created_tab="true"
 		elif [[ "$(printf '%s' "${tab_json}" | jq '.terminals | length')" == "0" ]]; then
 			tab_id="$(printf '%s' "${tab_json}" | jq -r '.id')"
 			hc run --bg --no-parent --outlive-parent --name quota-board --cwd "${quota_cwd}" \
-				--label "herdr.space=${space_id}" --label "herdr.tab=${tab_id}" mise run env:board >/dev/null
+				--label "herdr.space=${space_id}" --label "herdr.tab=${tab_id}" mise run env:board >/dev/null 9>&-
 			# Herdr adds the refilled board to the right of the surviving widget at 50/50. Swap it back
 			# to the left and restore the narrower widget. With no widget, the swap is a no-op.
 			board_pane="$(find_board_pane)"
@@ -150,8 +125,7 @@ if [[ ${want_quotas} == "true" ]]; then
 				herdr-app "do" pane.resize --direction right --pane "${board_pane}" --px 100 >/dev/null 2>&1 || true
 			fi
 		fi
-		trap - EXIT
-		release_quota_lock
+		exec 9>&-
 	fi
 fi
 

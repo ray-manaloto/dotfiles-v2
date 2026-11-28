@@ -780,3 +780,28 @@ def test_wait_for_returns_once_poller_reports():
     started = time.monotonic()
     cli.wait_for(poller, 5)
     assert poller.updated is not None and time.monotonic() - started < 2
+
+
+def test_ctrl_c_during_first_frame_wait_exits_cleanly(monkeypatch):
+    from env_board import cli
+
+    stopped = []
+
+    class FakeTicker:
+        def __init__(self, _scheduler):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            stopped.append(True)
+
+    def interrupt(_poller, _timeout):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "BalanceScheduler", lambda: None)
+    monkeypatch.setattr(cli, "BalanceTicker", FakeTicker)
+    monkeypatch.setattr(cli.Poller, "start", lambda self: None)
+    monkeypatch.setattr(cli, "wait_for", interrupt)
+    assert cli.run() == 0 and stopped == [True]
