@@ -331,7 +331,7 @@ def render_systemd_units(
     ollama_exec = ollama_bin or f"{home_dir}/.local/bin/ollama"
     ollama_port = DEFAULT_PORTS["ollama"]
     qmd_exec = qmd_bin or f"{home_dir}/.local/bin/qmd"
-    board_mjs = board_server_mjs or f"{home_dir}/.config/mise/assets/board/server.mjs"
+    board_mjs = board_server_mjs or f"{home_dir}/.local/state/pc-hub/board/server.mjs"
     board_port = DEFAULT_PORTS["vercel_board"]
     av_port = DEFAULT_PORTS["agentsview_hub"]
     qmd_port = DEFAULT_PORTS["qmd"]
@@ -351,6 +351,7 @@ def render_systemd_units(
             f"Environment=BOARD_TOKEN_FILE={home_dir}/.config/board/agent-token",
             f"Environment=BOARD_TAILSCALE_HOST={ts_host}",
             f"Environment=MISE_DATA_DIR={home_dir}/.local/share/mise",
+            f"Environment=BOARD_VB_BIN={home_dir}/.local/share/pc-hub/board/node_modules/.bin/vb",
             f"ExecStart={node_bin} {board_mjs}",
             "Restart=on-failure",
             "RestartSec=5",

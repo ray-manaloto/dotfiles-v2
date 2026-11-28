@@ -36,6 +36,13 @@ function normalizeHandle(raw) {
 }
 
 function resolveVbBinary() {
+  // A host that pins vb outside its mise config (pc hub:up's npm prefix) names it here, so a
+  // stale mise config cannot pick an older @vercel/board.
+  const pinned = process.env.BOARD_VB_BIN;
+  if (pinned) {
+    if (existsSync(pinned)) return pinned;
+    throw new Error(`BOARD_VB_BIN does not exist: ${pinned}`);
+  }
   for (const [cmd, args] of [
     ["mise", ["which", "vb"]],
     ["which", ["vb"]],

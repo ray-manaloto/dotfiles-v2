@@ -172,7 +172,14 @@ def test_render_env_systemd_and_launchd_plists() -> None:
     assert "Environment=OLLAMA_HOST=127.0.0.1:11434" in ollama_unit
     assert "Environment=OLLAMA_NO_CLOUD=1" in ollama_unit
     assert "ExecStart=/home/dev/.local/bin/ollama serve" in ollama_unit
-    assert "BOARD_PORT=4100" in units["dev.mise.vercel-board.service"]
+    board_unit = units["dev.mise.vercel-board.service"]
+    assert "BOARD_PORT=4100" in board_unit
+    # The hub board runs the vb that hub:up installs, not whatever pc's mise config pins.
+    assert (
+        "Environment=BOARD_VB_BIN=/home/dev/.local/share/pc-hub/board/node_modules/.bin/vb"
+        in board_unit
+    )
+    assert "/home/dev/.local/state/pc-hub/board/server.mjs" in board_unit
     for unit_name, unit_text in units.items():
         assert "Environment=PATH=/home/dev/.local/share/mise/shims:" in unit_text, (
             unit_name
