@@ -3,7 +3,8 @@
 #USAGE flag "--pr <number>" help="PR number (default: the PR whose head is this worktree's branch)"
 #USAGE flag "--skip-learn-check" help="Land without a recorded post-task-learn review (prints a warning)"
 # Run from the merged wt/<slug> worktree. Read-only until every check passes; re-runnable.
-# After the fast-forward it runs the full live `mise doctor project` (host scope) on main; failures only WARN.
+# After the fast-forward it runs `mise deps uv` on main if its .venv is stale (uv.lock or pyproject.toml
+# changed), then the full live `mise doctor project` (host scope) on main; failures only WARN.
 # After removing the worktree it closes the finished Herdr agent tabs that worked in it (best effort, WARN only).
 # Exit: 0 landed, 3 refused (not merged, head mismatch, dirty tree, learn review missing), 4 GitHub API unavailable.
 set -euo pipefail
@@ -93,6 +94,49 @@ if [[ ${main_head} != "${origin_main}" ]]; then
 fi
 git -C "${main_root}" merge-base --is-ancestor "${merge_commit}" HEAD || refuse "merge commit ${merge_commit:0:7} is not on main after the pull"
 echo "pr:land: #${pr} merged as ${merge_commit:0:7}; main at $(git -C "${main_root}" rev-parse --short HEAD)"
+
+# 3a. Resync main's .venv when uv.lock or pyproject.toml changed since its last sync (this merge, an earlier
+# pull, anything): the same `mise deps uv --explain` test py-deps-fresh runs, so the next hk run passes without
+# a manual `mise deps uv`. Run as a fresh shell in main (no worktree mise/venv vars), bounded, warn-only.
+sync_out="$(cd "${main_root}" && env -u VIRTUAL_ENV -u DOTFILES_DOCTOR_SCOPE -u MISE_PROJECT_ROOT -u MISE_CONFIG_ROOT \
+	MISE_YES=1 python3 -I -B -c '
+import os, signal, subprocess, sys
+def run(*args, timeout=300):
+    # Own session, so a timeout stops the whole tree (mise and its uv child), not only mise.
+    p = subprocess.Popen(["mise", "deps", "uv", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(p.pid, sig)
+                p.wait(timeout=5)
+                break
+            except ProcessLookupError:
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        raise
+    return subprocess.CompletedProcess(p.args, p.returncode, out, "")
+try:
+    if run("--explain", timeout=60).returncode == 0:  # exit 1 means stale (or mise could not tell)
+        sys.exit(0)
+    p = run()
+except (OSError, subprocess.TimeoutExpired) as exc:
+    print("did not complete: %s" % exc)
+    sys.exit(124)
+if p.returncode:
+    lines = (p.stdout + p.stderr).strip().splitlines()
+    print(lines[-1] if lines else "no output")
+    sys.exit(p.returncode)
+print("synced")
+' </dev/null 2>&1)" && sync_rc=0 || sync_rc=$?
+if ((sync_rc != 0)); then
+	echo "pr:land: WARNING: could not verify or sync main's .venv; 'mise deps uv' failed (rc ${sync_rc}): ${sync_out}; run it in main" >&2
+elif [[ ${sync_out} == synced ]]; then
+	echo "pr:land: uv.lock or pyproject.toml changed; synced main's .venv (mise deps uv)"
+fi
 
 # 3b. Full live doctor on the merged main (host scope, not repo scope): guards from parallel lanes can conflict
 # with each other and only a live run sees it. The land already happened, so failures WARN and never change the exit code.

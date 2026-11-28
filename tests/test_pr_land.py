@@ -160,3 +160,141 @@ def test_pr_land_requires_main_to_match_origin(tmp_path, ahead, doctor_fails):
             # The land already happened: the doctor failure warns loudly but keeps exit 0.
             assert "WARNING: live 'mise doctor project' on main failed" in result.stderr
             assert "FAIL fake-check: boom" in result.stderr
+
+
+# The fake mise treats main's .venv as fresh while uv.lock + pyproject.toml match the stamp its last
+# `mise deps uv` wrote, mirroring `mise deps uv --explain` (exit 1 when stale).
+FAKE_MISE = """#!/bin/sh
+echo "$* venv=${VIRTUAL_ENV:-} root=${MISE_PROJECT_ROOT:-}" >> '{log}'
+if [ "$1 $2" = "deps uv" ]; then
+  cur="$(cat uv.lock pyproject.toml)"
+  if [ "$3" = "--explain" ]; then [ "$cur" = "$(cat '{stamp}' 2>/dev/null)" ]; exit $?; fi
+  if [ -n "$FAKE_SYNC_FAIL" ]; then echo "uv sync failed: boom"; exit 2; fi
+  printf '%s' "$cur" > '{stamp}'; exit 0
+fi
+if [ "$1 $2" = "doctor project" ]; then echo "0 failed"; fi
+exit 0
+"""
+
+
+@pytest.mark.parametrize(
+    ("changed", "stamp", "sync_fails", "expect"),
+    [
+        ("uv.lock", "v1\nv1", False, "synced"),
+        ("pyproject.toml", "v1\nv1", False, "synced"),
+        ("README.md", "v1\nv1", False, "fresh"),
+        # uv.lock reached main earlier (an owner pull, an older land): still resynced.
+        ("README.md", "old\nv1", False, "synced"),
+        ("uv.lock", "v1\nv1", True, "warned"),
+    ],
+    ids=["uv-lock", "pyproject", "unrelated", "stale-from-earlier-pull", "sync-fails"],
+)
+def test_pr_land_syncs_stale_venv(tmp_path, changed, stamp, sync_fails, expect):
+    origin, main, feature, bin_dir = (
+        tmp_path / n for n in ("origin", "main", "feature", "bin")
+    )
+    bin_dir.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(
+        PATH=f"{bin_dir}{os.pathsep}{env['PATH']}",
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CONFIG_GLOBAL=os.devnull,
+        XDG_STATE_HOME=str(tmp_path / "state"),
+        PLAN_ID="deps-uv-test",
+        usage_pr="1",
+    )
+    for key in ("usage_skip_learn_check", "FAKE_SYNC_FAIL"):
+        env.pop(key, None)
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=f@example.com", *args],
+            cwd=tmp_path,
+            env=env,
+            text=True,
+        ).strip()
+
+    git("init", "-q", "-b", "main", str(origin))
+    for name in ("uv.lock", "pyproject.toml", "README.md"):
+        (origin / name).write_text("v1\n", encoding="utf-8")
+    git("-C", str(origin), "add", ".")
+    git("-C", str(origin), "commit", "-q", "-m", "Base")
+    git("clone", "-q", str(origin), str(main))
+    (origin / changed).write_text("v2\n", encoding="utf-8")
+    git("-C", str(origin), "commit", "-q", "-am", "Merged PR")
+    merged = git("-C", str(origin), "rev-parse", "HEAD")
+    git("-C", str(main), "fetch", "-q", "origin")
+    git(
+        "-C",
+        str(main),
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "wt/fixture",
+        str(feature),
+        "origin/main",
+    )
+
+    reviews = tmp_path / "state" / "agy-learn" / "reviews.jsonl"
+    reviews.parent.mkdir(parents=True)
+    reviews.write_text(
+        json.dumps({"plan_id": env["PLAN_ID"], "outcome": "no_new_proposals"}) + "\n",
+        encoding="utf-8",
+    )
+    log, stamp_file = tmp_path / "mise.log", tmp_path / "venv.stamp"
+    stamp_file.write_text(stamp, encoding="utf-8")
+    stubs = {
+        "gh": f"#!/bin/sh\nprintf '%s\\n' 'MERGED wt/fixture main {merged} {merged} 1970-01-01T00:00:00Z'\n",
+        "mise": FAKE_MISE.replace("{log}", str(log)).replace(
+            "{stamp}", str(stamp_file)
+        ),
+        "hc": "#!/bin/sh\nexit 0\n",
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text(body, encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    # A stale caller venv and the worktree's mise project root must not reach the sync.
+    env["VIRTUAL_ENV"] = str(tmp_path / "caller" / ".venv")
+    env["MISE_PROJECT_ROOT"] = str(feature)
+    if sync_fails:
+        env["FAKE_SYNC_FAIL"] = "1"
+
+    result = subprocess.run(
+        ["bash", str(LAND)],
+        cwd=feature,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert git("-C", str(main), "rev-parse", "HEAD") == merged
+    calls = log.read_text(encoding="utf-8").splitlines()
+    clean = " venv= root="
+    assert calls[0] == "deps uv --explain" + clean, calls
+    synced_line = "uv.lock or pyproject.toml changed; synced main's .venv"
+    assert ("deps uv" + clean in calls) is (expect != "fresh"), calls
+    assert (synced_line in result.stdout) is (expect == "synced"), out
+    if expect == "synced":
+        assert (
+            stamp_file.read_text(encoding="utf-8")
+            == (main / "uv.lock").read_text(encoding="utf-8").strip()
+            + "\n"
+            + (main / "pyproject.toml").read_text(encoding="utf-8").strip()
+        )
+    if expect == "warned":
+        assert (
+            "WARNING: could not verify or sync main's .venv; 'mise deps uv' failed (rc 2)"
+            in out
+        ), out
+        assert "uv sync failed: boom" in out, out
+        assert "removed worktree fixture" in result.stdout, (
+            out
+        )  # the land still completes
+    # The sync precedes the post-land doctor, so the doctor sees the synced venv.
+    doctor = [c for c in calls if c.startswith("doctor project")]
+    assert doctor, calls
+    assert calls.index("deps uv --explain" + clean) < calls.index(doctor[0]), calls
