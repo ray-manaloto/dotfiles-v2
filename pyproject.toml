@@ -6,7 +6,7 @@ requires-python = ">=3.15"
 dependencies = [
   "cyclopts==5.5.3",
   "filelock==4.3.2",
-  "openai-agents==0.25.0",
+  "openai-agents==0.26.0",
   "orjson==3.13.0",
   "psutil==7.2.2",
   "pydantic==2.14.4",
@@ -101,5 +101,5 @@ root = ["unix/home/.config/mise/lib", ".github/openai-review", "."]
 
 [tool.uv]
 package = false
-exclude-newer = "7 days"
-exclude-newer-package = { filelock = false, pydantic = false, pydantic-core = false, datamodel-code-generator = false, cyclopts = false, ruff = false, ty = false }
+# Releases must be at least 1 hour old, matching mise's global minimum_release_age = "1h".
+exclude-newer = "1 hour"
