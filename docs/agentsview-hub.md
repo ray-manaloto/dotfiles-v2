@@ -108,6 +108,42 @@ watchdog. The cap came from a benchmark, and the benchmark was wrong:
   Raise both units, the daemon and the build, because the build needs the
   daemon. Remove the drop-ins once the units have exited.
 
+### Pausing a long build
+
+Pause the build before `pc:sync`, an omarchy update, a reboot or anything else
+that needs the GPU. Resume it afterwards:
+
+```sh
+mise run hub:embed pause     # stop the build, then its daemon; Ollama keeps running
+mise run hub:embed status    # units, progress of the current run, PAUSED marker, GPU
+mise run hub:embed resume    # restart both units, then check the run picked up where it stopped
+```
+
+- **Pausing keeps the work.** The daemon writes each document's vectors to
+  `vectors.db` as it finishes. A plain `index embeddings build` (no
+  `--full-rebuild`) fills only what the building generation is missing, so a
+  pause loses at most the batch in flight. The 2026-11-27 benchmark showed
+  this: its 879 embedded chunks dropped out of the real build's total.
+- **The daemon does the embedding.** `index embeddings build` proxies to the
+  daemon over HTTP, and the daemon holds `vectors.write.lock` and the Ollama
+  connection. Pause therefore stops both units, then refuses to continue if
+  anything still holds `vectors.db`.
+- **Pause** writes `embed-pause.json` to the data dir: the agentsview version,
+  the generations and the last progress line. It takes a reflink snapshot of
+  `vectors.db` into `paused-snapshot/` and appends an `EMBED-PAUSED` line to
+  `build-progress.log`. It refuses when the running units belong to another
+  data dir, because the unit names are global.
+- **Resume refuses** if the agentsview version or the building generation's
+  fingerprint changed (an upgrade or config change can reset the index). It
+  starts the build without `--yes`, so a build that wants to confirm a full
+  rebuild fails instead. It also checks the new run's first progress line: if
+  more than half of the already-done chunks reappear, it treats the index as
+  reset. Every refusal stops both units and keeps the pause state, so `resume`
+  can be retried.
+- **Rehearse it without the GPU.** `EMBED_UNIT_PREFIX` and `EMBED_AV` point the
+  remote script, `assets/agentsview/embed-build.sh`, at throwaway units and a
+  stub `agentsview`.
+
 ## Watching upstream
 
 A read-only cloud scheduled task checks #3437 and new releases every 6 hours.
