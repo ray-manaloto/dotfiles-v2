@@ -95,8 +95,11 @@
   - [ ] [#3](https://github.com/ray-manaloto/dotfiles-v2/issues/3) Add a
     self-run Claude coding agent using linked API credits. **Shipped:**
     fail-closed, read-only `mise run api:review` `claude -p` runner on the
-    `api-credit` fnox profile (`4270119`, PR `#31`). **Remaining:** a
-    write-capable Claude coding mode (or re-scope `#3` on GitHub to review-only).
+    `api-credit` fnox profile (`4270119`, PR `#31`). **Withdrawn (owner
+    decision D8, [#171](https://github.com/ray-manaloto/dotfiles-v2/issues/171)):**
+    the credit-funded write-capable Claude coding mode is dropped, since "use API
+    credits whenever possible" no longer applies and agent work runs on subscriptions.
+    `api:review` stays available only for runs the owner approves one at a time.
 - [ ] **Follow-up (Option A cutover, `@vercel/board@0.55.0`, schema-first
   Python & self-healing `/learn`):**
   - [x] [#9](https://github.com/ray-manaloto/dotfiles-v2/issues/9) Execute
