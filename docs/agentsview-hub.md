@@ -122,24 +122,53 @@ mise run hub:embed resume    # restart both units, then check the run picked up 
 - **Pausing keeps the work.** The daemon writes each document's vectors to
   `vectors.db` as it finishes. A plain `index embeddings build` (no
   `--full-rebuild`) fills only what the building generation is missing, so a
-  pause loses at most the batch in flight. The 2026-11-27 benchmark showed
-  this: its 879 embedded chunks dropped out of the real build's total.
+  pause loses at most the batch in flight. The real binary has done this once:
+  on 2026-11-27 a `timeout`-killed benchmark build and its daemon were stopped,
+  a new daemon and build started on the same data dir, and generation 1
+  carried on with a total 945 chunks smaller. The first live `hub:embed`
+  pause and resume is the first test of the task itself on the real build.
+
 - **The daemon does the embedding.** `index embeddings build` proxies to the
   daemon over HTTP, and the daemon holds `vectors.write.lock` and the Ollama
-  connection. Pause therefore stops both units, then refuses to continue if
-  anything still holds `vectors.db`.
+  connection. So pause works whenever the daemon is up, even if the build unit
+  has died, and stops both units. Reads in the task set `AGENTSVIEW_NO_DAEMON=1`,
+  so they never start a stray daemon, and a successful read proves the unit's
+  daemon answers.
+
 - **Pause** writes `embed-pause.json` to the data dir: the agentsview version,
   the generations and the last progress line. It takes a reflink snapshot of
-  `vectors.db` into `paused-snapshot/` and appends an `EMBED-PAUSED` line to
-  `build-progress.log`. It refuses when the running units belong to another
-  data dir, because the unit names are global.
-- **Resume refuses** if the agentsview version or the building generation's
-  fingerprint changed (an upgrade or config change can reset the index). It
-  starts the build without `--yes`, so a build that wants to confirm a full
-  rebuild fails instead. It also checks the new run's first progress line: if
-  more than half of the already-done chunks reappear, it treats the index as
-  reset. Every refusal stops both units and keeps the pause state, so `resume`
-  can be retried.
+  `vectors.db` and its `-wal` and `-shm` files into `paused-snapshot/`, and
+  appends an `EMBED-PAUSED` line to `build-progress.log`. It refuses when the
+  running units belong to another data dir, because the unit names are global.
+  It warns if anything still holds `vectors.db` after the stop. A lock file
+  keeps two pause or resume runs on one data dir apart.
+
+- **Resume refuses** in three cases:
+  - the agentsview version changed;
+  - a known generation is gone or has a new fingerprint;
+  - a new generation appeared. A config change cuts a new one and keeps the
+    old one listed.
+
+  It starts the build without `--yes`, so a build that wants to confirm a full
+  rebuild fails instead. It then checks the new run's first progress line. If
+  more than half of the already-done chunks (or 1% of the total) reappear, it
+  treats the index as reset. Every refusal or failed start stops both units and
+  keeps the pause state, so you can retry `resume`. A build that exits 0 at
+  once means nothing was left to embed, and resume reports it as done.
+
+- **Restore from the snapshot** only after a refusal says the index reset.
+  With both units stopped, copy the three `paused-snapshot/vectors.db*` files
+  back over the data dir's, then run `resume` again.
+
+- **The watchdog comes from the drop-in when one exists.** A drop-in under
+  `~/.config/systemd/user/<unit>.service.d/` overrides `--runtime-max` for the
+  restarted unit, and resume prints the effective value.
+
+- **systemd expands `${NAME}` in `ExecStart`.** It emptied the first build's
+  `${PIPESTATUS[0]}`, so that run's final `BUILD-EXIT` line has no exit code;
+  judge it by chunks done against the total. Units that resume starts record
+  the code through `pipefail` and `$rc`.
+
 - **Rehearse it without the GPU.** `EMBED_UNIT_PREFIX` and `EMBED_AV` point the
   remote script, `assets/agentsview/embed-build.sh`, at throwaway units and a
   stub `agentsview`.
