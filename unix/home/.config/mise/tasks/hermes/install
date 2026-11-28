@@ -16,7 +16,7 @@ if [[ "$(git -C "${source_dir}" rev-parse HEAD)" != "${commit}" ]]; then
 fi
 
 uv sync --project "${source_dir}" --frozen --no-dev --python 3.14.8
-mise x pnpm@12.23.0 -- node "${source_dir}/scripts/build/node-deps.mjs" --source "${source_dir}" --reuse --workspace ui-tui
-mise x pnpm@12.23.0 -- node "${source_dir}/scripts/build/tui.mjs" --source "${source_dir}" --out "${install_dir}/tui"
+mise x pnpm@12.24.0 -- node "${source_dir}/scripts/build/node-deps.mjs" --source "${source_dir}" --reuse --workspace ui-tui
+mise x pnpm@12.24.0 -- node "${source_dir}/scripts/build/tui.mjs" --source "${source_dir}" --out "${install_dir}/tui"
 mkdir -p "${install_dir}/bin"
 ln -sfn "${source_dir}/.venv/bin/hermes" "${install_dir}/bin/hermes"

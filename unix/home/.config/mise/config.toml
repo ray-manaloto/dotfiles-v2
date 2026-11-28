@@ -23,9 +23,9 @@ betterleaks = "1.10.1"
 bottom = "0.15.0"
 bun = "1.4.5"
 cmake = "4.5.1"
-communique = { version = "1.9.0", workflow = "release.yml@refs/heads/main", minimum_release_age = "0s" }
+communique = { version = "1.10.0", workflow = "release.yml@refs/heads/main", minimum_release_age = "0s" }
 delta = "0.22.0"
-docker-cli = { version = "29.10.0", os = ["macos"] }
+docker-cli = { version = "29.10.1", os = ["macos"] }
 docker-compose = { version = "5.8.1", os = ["macos"] }
 doppler = "3.77.1"
 editorconfig-checker = "4.0.2"
@@ -34,14 +34,14 @@ fnox = { version = "1.50.0", workflow = "release.yml", minimum_release_age = "0s
 fzf = "0.75.0"
 "github:0xMassi/webclaw" = { version = "0.7.5", minimum_release_age = "0s" }
 "github:Dicklesworthstone/destructive_command_guard" = { version = "0.17.2", bin = "dcg", platforms = { macos-arm64 = { asset_pattern = "dcg-aarch64-apple-darwin.tar.xz" }, linux-arm64 = { asset_pattern = "dcg-aarch64-unknown-linux-gnu.tar.xz" }, linux-x64 = { asset_pattern = "dcg-x86_64-unknown-linux-musl.tar.xz" } } }
-"github:agent-sh/agnix" = { version = "0.61.0", minimum_release_age = "0s" }
+"github:agent-sh/agnix" = { version = "0.62.0", minimum_release_age = "0s" }
 "github:kenn-io/agentsview" = { version = "0.48.0", minimum_release_age = "0s" }
 "github:microsoft/vcpkg-tool" = { version = "2026-10-29", additional_asset_patterns = [
   "vcpkg-standalone-bundle.tar.gz",
 ], rename_exe = "vcpkg", platforms = { macos-arm64 = { asset_pattern = "vcpkg-macos" }, linux-x64 = { asset_pattern = "vcpkg-glibc" }, linux-arm64 = { asset_pattern = "vcpkg-glibc-arm64" } } }
 "github:openai/openai-cli" = { version = "1.57.0", bin = "openai", platforms = { macos-arm64 = { asset_pattern = "openai_*_macos_arm64.zip" }, linux-arm64 = { asset_pattern = "openai_*_linux_arm64.tar.gz" }, linux-x64 = { asset_pattern = "openai_*_linux_amd64.tar.gz" } } }
 ghalint = "1.6.0"
-github-cli = "2.105.0"
+github-cli = "2.106.0"
 hadolint = "2.15.1"
 hk = { version = "2.14.0", workflow = "release.yml", minimum_release_age = "0s" }
 jactionlint = { version = "2.6.0", minimum_release_age = "0s" }
@@ -71,12 +71,12 @@ pinact = "5.0.2"
 "pypi:repowise" = { version = "0.62.0", python = "3.13", minimum_release_age = "0s" }
 pitchfork = { version = "2.36.0", workflow = "release.yml@refs/heads/main", minimum_release_age = "0s" }
 pkl = "0.33.1"
-pnpm = { version = "12.23.0", os = ["macos"] }
+pnpm = { version = "12.24.0", os = ["macos"] }
 prettier = "3.10.1"
 python = "3.15.2"
 ripgrep = "16.0.0"
 ruff = "0.17.6"
-rumdl = "0.3.5"
+rumdl = "0.3.8"
 sccache = "0.20.1"
 shellcheck = "0.11.0"
 shfmt = "3.14.1"
@@ -87,7 +87,7 @@ tombi = "1.11.3"
 ty = "0.0.112"
 typos = "1.52.2"
 usage = { version = "7.4.1", workflow = "publish-cli.yml", minimum_release_age = "0s" }
-uv = "0.13.9"
+uv = "0.13.10"
 yt-dlp = "2026.11.23"
 zizmor = "1.33.1"
 zoxide = "0.10.0"
